@@ -1,25 +1,26 @@
 /*
  * Mupen64PlusAE, an N64 emulator for the Android platform
- * 
+ *
  * Copyright (C) 2013 Paul Lamb
- * 
+ *
  * This file is part of Mupen64PlusAE.
- * 
+ *
  * Mupen64PlusAE is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
  * License, or (at your option) any later version.
- * 
+ *
  * Mupen64PlusAE is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
  * without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License along with Mupen64PlusAE. If
  * not, see <http://www.gnu.org/licenses/>.
- * 
+ *
  * Authors: fzurita
  */
 package paulscode.android.mupen64plusae.task;
 
+import android.Manifest;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -30,6 +31,7 @@ import android.app.job.JobService;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
@@ -43,7 +45,9 @@ import android.os.Process;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.documentfile.provider.DocumentFile;
 
 import com.google.android.gms.auth.api.signin.GoogleSignIn;
@@ -64,8 +68,7 @@ import paulscode.android.mupen64plusae.util.FileUtil;
 import paulscode.android.mupen64plusae.util.GoogleDriveFileHolder;
 
 @SuppressWarnings("FieldCanBeLocal")
-public class SyncToGoogleDriveService extends JobService
-{
+public class SyncToGoogleDriveService extends JobService {
     private static String TAG = "SyncToGoogleDriveService";
 
     private Looper mServiceLooper;
@@ -79,6 +82,7 @@ public class SyncToGoogleDriveService extends JobService
 
     final static int ONGOING_NOTIFICATION_ID = 1;
     final static String NOTIFICATION_CHANNEL_ID = "CopyFilesServiceChannel";
+    final static int NOTIFICATION_ID= 155;
 
     /**
      * Class used for the client Binder.  Because we know this service always
@@ -91,8 +95,7 @@ public class SyncToGoogleDriveService extends JobService
         }
     }
 
-    private DocumentFile getExternalGameFolder(String gameFolderName)
-    {
+    private DocumentFile getExternalGameFolder(String gameFolderName) {
         File gameDataFolder = new File(mAppData.gameDataDir);
 
         DocumentFile sourceLocation = FileUtil.getDocumentFileTree(getApplicationContext(), Uri.parse(mGlobalPrefs.externalFileStoragePath));
@@ -107,8 +110,7 @@ public class SyncToGoogleDriveService extends JobService
         return sourceLocation;
     }
 
-    private DocumentFile getExternalFlatGameFolder()
-    {
+    private DocumentFile getExternalFlatGameFolder() {
         File gameDataFolder = new File(mAppData.gameDataDir);
 
         DocumentFile sourceLocation = FileUtil.getDocumentFileTree(getApplicationContext(), Uri.parse(mGlobalPrefs.externalFileStoragePath));
@@ -119,14 +121,12 @@ public class SyncToGoogleDriveService extends JobService
         return sourceLocation;
     }
 
-    private DocumentFile getInternalGameFolder(String gameFolderName)
-    {
+    private DocumentFile getInternalGameFolder(String gameFolderName) {
         File gameDataFolder = new File(mAppData.gameDataDir + "/" + gameFolderName);
         return FileUtil.getDocumentFileTree(getApplicationContext(), Uri.fromFile(gameDataFolder));
     }
 
-    private DocumentFile getInternalFlatGameFolder()
-    {
+    private DocumentFile getInternalFlatGameFolder() {
         File gameDataFolder = new File(mAppData.gameDataDir);
         return FileUtil.getDocumentFileTree(getApplicationContext(), Uri.fromFile(gameDataFolder));
     }
@@ -137,8 +137,7 @@ public class SyncToGoogleDriveService extends JobService
             super(looper);
         }
 
-        private void backupGameData(DriveServiceHelper driveServiceHelper, String gameFolderName, String gameGoodName, String gameHeaderName)
-        {
+        private void backupGameData(DriveServiceHelper driveServiceHelper, String gameFolderName, String gameGoodName, String gameHeaderName) {
             DocumentFile sourceData;
             DocumentFile sourceFlataData;
             // Copy game data from external storage
@@ -177,10 +176,9 @@ public class SyncToGoogleDriveService extends JobService
                 e.printStackTrace();
             }
         }
-        
+
         @Override
-        public void handleMessage(@NonNull Message msg)
-        {
+        public void handleMessage(@NonNull Message msg) {
             Scope driveFileScope = new Scope(Scopes.DRIVE_FILE);
             Scope emailScope = new Scope(Scopes.EMAIL);
 
@@ -204,7 +202,10 @@ public class SyncToGoogleDriveService extends JobService
                             new NotificationCompat.Builder(getApplicationContext(), NOTIFICATION_CHANNEL_ID).setSmallIcon(R.drawable.icon)
                                     .setContentTitle(getString(R.string.exportGoogleDriveService_exportNotificationTitle))
                                     .setContentText(sourceGameDataDirName);
-                    startForeground(ONGOING_NOTIFICATION_ID, builder.build());
+                    NotificationManagerCompat notificationManager = NotificationManagerCompat.from(SyncToGoogleDriveService.this);
+                    if (ActivityCompat.checkSelfPermission(SyncToGoogleDriveService.this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                        notificationManager.notify(NOTIFICATION_ID, builder.build());
+                    }
 
                     // Backup the data
                     Log.d(TAG, "backing up: " + sourceGameDataDirName);
@@ -214,10 +215,6 @@ public class SyncToGoogleDriveService extends JobService
             }
 
             jobFinished(mParams,false);
-
-            //Stop the service
-            stopForeground(true);
-            stopSelf();
         }
     }
 
