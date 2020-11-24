@@ -29,7 +29,6 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
-import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -134,7 +133,7 @@ public class DownloadFromGoogleDriveService extends Service
                     DriveServiceHelper.getGoogleDriveService(getApplicationContext(), account, getString(R.string.app_name_pro)));
 
                 // Copy game data to external storage
-                DocumentFile destData = null;
+                DocumentFile destData;
                 if (mGlobalPrefs.useExternalStorge) {
                     destData = getExternalGameFolder();
                 } else {
@@ -154,7 +153,7 @@ public class DownloadFromGoogleDriveService extends Service
 
                             for (GoogleDriveFileHolder file : files) {
                                 int maxStringLength = 30;
-                                int endIndex = file.getName().length() > maxStringLength ? maxStringLength : file.getName().length();
+                                int endIndex = Math.min(file.getName().length(), maxStringLength);
                                 mListener.GetProgressDialog().setText(file.getName().substring(0, endIndex));
                                 driveServiceHelper.downloadFolder(getApplicationContext(), gameDataDir, file);
 
