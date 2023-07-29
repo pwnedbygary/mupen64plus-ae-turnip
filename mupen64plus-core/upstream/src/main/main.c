@@ -470,6 +470,9 @@ static void main_set_speedlimiter(int enable)
 
 void main_speedlimiter_toggle(void)
 {
+    if (netplay_is_init())
+        return;
+
     l_MainSpeedLimit = !l_MainSpeedLimit;
     main_set_speedlimiter(l_MainSpeedLimit);
 
@@ -1588,9 +1591,6 @@ m64p_error main_run(void)
     if (count_per_scanline_override <= 0) {
         count_per_scanline_override = ROM_SETTINGS.countPerScanlineOverride;
     }
-
-    rdram_size = (disable_extra_mem == 0) ? RDRAM_8MB_SIZE : RDRAM_4MB_SIZE;
-
     if (count_per_op <= 0)
         count_per_op = ROM_SETTINGS.countperop;
 
@@ -1603,6 +1603,8 @@ m64p_error main_run(void)
 
     //During netplay, player 1 is the source of truth for these settings
     netplay_sync_settings(&count_per_op, &count_per_op_denom_pot, &disable_extra_mem, &si_dma_duration, &emumode, &no_compiled_jump);
+
+    rdram_size = (disable_extra_mem == 0) ? RDRAM_8MB_SIZE : RDRAM_4MB_SIZE;
 
     /* Writable-ROM persistence must be off during netplay: a player with an
      * existing .cart_ram would inject different cart ROM content than an

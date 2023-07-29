@@ -19,6 +19,8 @@
  *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
+#define SETTINGS_SIZE 24
+
 #define M64P_CORE_PROTOTYPES 1
 #include "api/callbacks.h"
 #include "main.h"
@@ -55,6 +57,7 @@ static uint8_t l_player_lag[4];
 #define UDP_SEND_KEY_INFO 0
 #define UDP_RECEIVE_KEY_INFO 1
 #define UDP_REQUEST_KEY_INFO 2
+#define UDP_RECEIVE_KEY_INFO_GRATUITOUS 3
 #define UDP_SYNC_DATA 4
 
 //TCP packet formats
@@ -195,10 +198,11 @@ static int netplay_packet_has_data(const UDPpacket* packet, size_t offset, size_
         && size <= (size_t) packet->len - offset;
 }
 
-static uint8_t netplay_validate_plugin(uint8_t plugin)
+static uint8_t netplay_validate_plugin(uint8_t player, uint8_t plugin)
 {
-    if (plugin != PLUGIN_NONE && plugin != PLUGIN_MEMPAK && plugin != PLUGIN_RUMBLE_PAK
-     && plugin != PLUGIN_TRANSFER_PAK && plugin != PLUGIN_RAW)
+    if ((player > 0 && plugin == PLUGIN_MEMPAK)
+     || (plugin != PLUGIN_NONE && plugin != PLUGIN_MEMPAK
+      && plugin != PLUGIN_RUMBLE_PAK && plugin != PLUGIN_RAW))
     {
         return PLUGIN_NONE;
     }
@@ -271,6 +275,7 @@ static void netplay_process()
         switch (packet->data[0])
         {
             case UDP_RECEIVE_KEY_INFO:
+            case UDP_RECEIVE_KEY_INFO_GRATUITOUS:
                 player = packet->data[1];
                 if (player >= 4)
                 {
@@ -286,7 +291,8 @@ static void netplay_process()
                 //current_status is a status update from the server
                 //it will let us know if another player has disconnected, or the games have desynced
                 current_status = packet->data[2];
-                l_player_lag[player] = packet->data[3];
+                if (packet->data[0] == UDP_RECEIVE_KEY_INFO)
+                    l_player_lag[player] = packet->data[3];
                 if (current_status != l_status)
                 {
                     if (((current_status & 0x1) ^ (l_status & 0x1)) != 0)
@@ -320,7 +326,7 @@ static void netplay_process()
 
                     keys = SDLNet_Read32(&packet->data[curr]);
                     curr += 4;
-                    plugin = netplay_validate_plugin(packet->data[curr]);
+                    plugin = netplay_validate_plugin(player, packet->data[curr]);
                     curr += 1;
 
                     //insert new event at beginning of linked list
@@ -548,7 +554,7 @@ void netplay_sync_settings(uint32_t *count_per_op, uint32_t *count_per_op_denom_
     if (!netplay_is_init())
         return;
 
-    char output_data[25];
+    char output_data[SETTINGS_SIZE + 1];
     uint8_t request;
     if (l_netplay_control[0] != -1) //player 1 is the source of truth for settings
     {
@@ -560,7 +566,7 @@ void netplay_sync_settings(uint32_t *count_per_op, uint32_t *count_per_op_denom_
         SDLNet_Write32(*si_dma_duration, &output_data[13]);
         SDLNet_Write32(*emumode, &output_data[17]);
         SDLNet_Write32(*no_compiled_jump, &output_data[21]);
-        SDLNet_TCP_Send(l_tcpSocket, &output_data[0], 25);
+        SDLNet_TCP_Send(l_tcpSocket, &output_data[0], SETTINGS_SIZE + 1);
     }
     else
     {
@@ -568,8 +574,8 @@ void netplay_sync_settings(uint32_t *count_per_op, uint32_t *count_per_op_denom_
         memcpy(&output_data[0], &request, 1);
         SDLNet_TCP_Send(l_tcpSocket, &output_data[0], 1);
         int32_t recv = 0;
-        while (recv < 24)
-            recv += SDLNet_TCP_Recv(l_tcpSocket, &output_data[recv], 24 - recv);
+        while (recv < SETTINGS_SIZE)
+            recv += SDLNet_TCP_Recv(l_tcpSocket, &output_data[recv], SETTINGS_SIZE - recv);
         *count_per_op = SDLNet_Read32(&output_data[0]);
         *count_per_op_denom_pot = SDLNet_Read32(&output_data[4]);
         *disable_extra_mem = SDLNet_Read32(&output_data[8]);
@@ -582,14 +588,14 @@ void netplay_sync_settings(uint32_t *count_per_op, uint32_t *count_per_op_denom_
 void netplay_check_sync(struct cp0* cp0)
 {
     //This function is used to check if games have desynced
-    //Every 60 VIs, it sends the value of the CP0 registers to the server
+    //Every 600 VIs, it sends the value of the CP0 registers to the server
     //The server will compare the values, and update the status byte if it detects a desync
     if (!netplay_is_init())
         return;
 
     const uint32_t* cp0_regs = r4300_cp0_regs(cp0);
 
-    if (l_vi_counter % 60 == 0)
+    if (l_vi_counter % 600 == 0)
     {
         uint32_t packet_len = (CP0_REGS_COUNT * 4) + 5;
         UDPpacket *packet = SDLNet_AllocPacket(packet_len);
@@ -630,14 +636,14 @@ void netplay_read_registration(struct controller_input_compat* cin_compats)
         if (reg_id == 0) //No one registered to control this player
         {
             Controls[i].Present = 0;
-            Controls[i].Plugin = 1;
+            Controls[i].Plugin = PLUGIN_NONE;
             Controls[i].RawData = 0;
             curr += 2;
         }
         else
         {
             Controls[i].Present = 1;
-            Controls[i].Plugin = netplay_validate_plugin(input_data[curr]);
+            Controls[i].Plugin = netplay_validate_plugin(i, input_data[curr]);
             l_plugin[i] = Controls[i].Plugin;
             ++curr;
             Controls[i].RawData = input_data[curr];
@@ -716,12 +722,6 @@ void netplay_update_input(struct pif* pif)
         netplay_send_raw_input(pif);
         netplay_get_raw_input(pif);
     }
-}
-
-void netplay_set_plugin(uint8_t control_id, uint8_t plugin)
-{
-    if (!(control_id > 0 && plugin == 2)) //Only P1 can use mempak
-        l_plugin[control_id] = plugin;
 }
 
 m64p_error netplay_send_config(char* data, int size)
