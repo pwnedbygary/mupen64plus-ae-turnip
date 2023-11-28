@@ -21,9 +21,11 @@
 package paulscode.android.mupen64plusae;
 
 import android.app.Activity;
+import android.app.PendingIntent;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.IntentSender;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
@@ -77,6 +79,9 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
+import com.google.licensingservicehelper.LicensingServiceCallback;
+import com.google.licensingservicehelper.LicensingServiceHelper;
+
 import paulscode.android.mupen64plusae.GameSidebar.GameSidebarActionHandler;
 import paulscode.android.mupen64plusae.dialog.ConfirmationDialog;
 import paulscode.android.mupen64plusae.dialog.ConfirmationDialog.PromptConfirmListener;
@@ -101,6 +106,7 @@ import paulscode.android.mupen64plusae.util.Notifier;
 public class GalleryActivity extends AppCompatActivity implements GameSidebarActionHandler, PromptConfirmListener,
         GalleryRefreshFinishedListener, TryProDialog.PromptTryPoListener
 {
+    private static final String PUBLIC_LICENSE_KEY = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlJ1L4rtpKLxKlBD72WtMbHr4llShHi1N3VO62TrHJZPePlmfBjjzM7NRpEqmfRJmNbR0prbAEjbWQB4nGNVgkXOLMC3jPdEVvjhiTa4bHX655ZcOkj7XESm1r8zZQ0Y2bzROln495egVi8v09Q76n+lcblOTA+1aQXTQLmqFk3CMH5d9Am++03nx1fGXXbRvWWVs+5oDBnMUo9MBqLWYgARVD9wxD70LbnmmtSCIjX9GFjUT12ab4WMeO7ZAcdixayq/nJ40t4lvUZZkbsx/7+93gugM4HNW2Qb9ZdZUVhMAJOTki2T/eZML+fs6nQaEezsEfE5IvILz3Ua2RWVljQIDAQAB";
     // Saved instance states
     private static final String STATE_QUERY = "STATE_QUERY";
     private static final String STATE_SIDEBAR = "STATE_SIDEBAR";
@@ -123,6 +129,33 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
 
     public static final int REMOVE_FROM_LIBRARY_DIALOG_ID = 1;
     public static final int CLEAR_SHADER_CACHE_DIALOG_ID = 2;
+
+    private class MyLicensingServiceCallback implements LicensingServiceCallback
+    {
+        @Override
+        public void allow(String payloadJson) {
+            Log.d("GalleryActivity", "Allow access");
+        }
+
+        @Override
+        public void dontAllow(PendingIntent paywallIntent) {
+            Log.d("GalleryActivity", "Don't allow access");
+
+            try {
+                mLicensingServiceHelper.showPaywall(paywallIntent);
+                GalleryActivity.this.finish();
+            } catch (IntentSender.SendIntentException e) {
+                Log.d("GalleryActivity", "Error launching paywall");
+            }
+        }
+
+        @Override
+        public void applicationError(String errorMessage) {
+            Log.d("GalleryActivity", String.format("Application error: %s", errorMessage));
+        }
+    }
+
+    private LicensingServiceHelper mLicensingServiceHelper;
 
     // App data and user preferences
     private AppData mAppData = null;
@@ -340,6 +373,9 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         Log.i("GalleryActivity", "onCreate");
 
         super.onCreate( savedInstanceState );
+
+        mLicensingServiceHelper = new LicensingServiceHelper(this, PUBLIC_LICENSE_KEY);
+        mLicensingServiceHelper.checkLicense(new MyLicensingServiceCallback());
 
         if( savedInstanceState != null )
         {
@@ -629,6 +665,15 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         if (layoutManager != null) {
             mCurrentVisiblePosition = ((GridLayoutManager)mGridView.getLayoutManager()).findFirstCompletelyVisibleItemPosition();
         }
+    }
+
+    @Override
+    protected void onDestroy()
+    {
+        if (mLicensingServiceHelper != null) {
+            mLicensingServiceHelper.onDestroy();
+        }
+        super.onDestroy();
     }
 
     @Override
