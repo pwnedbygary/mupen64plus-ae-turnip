@@ -55,22 +55,23 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
     {
         for(j=0; j<count; j++) {
             for(i=0; i<length; i++) {
-                dram[dramaddr^S8] = spmem[memaddr^S8];
+                dram[(dramaddr^S8) & 0xffffff] = spmem[memaddr^S8];
                 memaddr = (memaddr + 1) & 0xfff;
                 dramaddr++;
             }
-
-            post_framebuffer_write(&sp->dp->fb, dramaddr - length, length);
+            if (dramaddr <= 0x800000)
+                post_framebuffer_write(&sp->dp->fb, dramaddr - length, length);
             dramaddr+=skip;
         }
     }
     else
     {
         for(j=0; j<count; j++) {
-            pre_framebuffer_read(&sp->dp->fb, dramaddr);
+            if (dramaddr < 0x800000)
+                pre_framebuffer_read(&sp->dp->fb, dramaddr);
 
             for(i=0; i<length; i++) {
-                spmem[memaddr^S8] = dram[dramaddr^S8];
+                spmem[memaddr^S8] = dram[(dramaddr^S8) & 0xffffff];
                 memaddr = (memaddr + 1) & 0xfff;
                 dramaddr++;
             }
