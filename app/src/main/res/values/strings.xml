@@ -309,6 +309,14 @@
     <string name="gpuDriver_importSuccess">Driver imported successfully.</string>
     <string name="gpuDriver_errorBadZip">Invalid driver zip file. A meta.json with driverName and libraryName is required.</string>
     <string name="gpuDriver_errorExtract">Failed to extract driver files.</string>
+    <string name="gpuDriver_download">Download driver…</string>
+    <string name="gpuDriver_downloadTitle">Download GPU driver</string>
+    <string name="gpuDriver_downloadSources">Pick a driver source</string>
+    <string name="gpuDriver_downloadFetching">Fetching releases…</string>
+    <string name="gpuDriver_downloadSelect">Select a driver from %1$s</string>
+    <string name="gpuDriver_downloading">Downloading driver…</string>
+    <string name="gpuDriver_downloadError">Failed to download driver.</string>
+    <string name="gpuDriver_noReleases">No compatible drivers found for this source.</string>
     <string name="gallerySortingMethod_title">Sort</string>
     <string name="gallerySortingMethod_entryRomName">ROM name</string>
     <string name="gallerySortingMethod_entryFileName">File name</string>

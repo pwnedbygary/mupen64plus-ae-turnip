@@ -31,6 +31,7 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.preference.PreferenceManager;
 import android.text.TextUtils;
 
+import paulscode.android.mupen64plusae.GpuDriverDownloadActivity;
 import paulscode.android.mupen64plusae.R;
 
 import paulscode.android.mupen64plusae.compat.AppCompatPreferenceActivity;
@@ -111,7 +112,13 @@ public class DisplayPrefsActivity extends AppCompatPreferenceActivity implements
         if (mGpuDriverPreference != null) {
             mGpuDriverPreference.populateDriverOptions(this);
             mGpuDriverPreference.setOnImportDriverCallback(this::startDriverPicker);
+            mGpuDriverPreference.setOnDownloadDriverCallback(this::startDriverDownload);
         }
+    }
+
+    private void startDriverDownload()
+    {
+        startActivity(new Intent(this, GpuDriverDownloadActivity.class));
     }
 
     private void startDriverPicker()

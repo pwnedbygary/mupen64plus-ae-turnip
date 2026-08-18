@@ -55,7 +55,16 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
         void importDriver();
     }
 
+    public interface OnDownloadDriver {
+
+        /**
+         * Called when the user wants to download a driver zip
+         */
+        void downloadDriver();
+    }
+
     private OnImportDriver mImportCallback = null;
+    private OnDownloadDriver mDownloadCallback = null;
 
     public DriverPreference(Context context )
     {
@@ -87,10 +96,20 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
                 mImportCallback.importDriver();
             }
         });
+        builder.setNegativeButton( R.string.gpuDriver_download, (dialog, which) -> {
+            dialog.dismiss();
+            if (mDownloadCallback != null) {
+                mDownloadCallback.downloadDriver();
+            }
+        });
     }
 
     public void setOnImportDriverCallback(OnImportDriver onImportDriverCallback) {
         mImportCallback = onImportDriverCallback;
+    }
+
+    public void setOnDownloadDriverCallback(OnDownloadDriver onDownloadDriverCallback) {
+        mDownloadCallback = onDownloadDriverCallback;
     }
 
     /**
