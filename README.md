@@ -54,4 +54,4 @@ If the driver fails to load (e.g. device or Android version mismatch), the app f
 
 ## License
 
-The app itself is licensed under the GPLv3, following Mupen64Plus-AE. The vendored [libadrenotools](https://github.com/bylaws/libadrenotools) is BSD-2-Clause (see `adrenotools/LICENSE`).
+The app is licensed under the GNU GPL, following Mupen64Plus-AE. The vendored [libadrenotools](https://github.com/bylaws/libadrenotools) is BSD-2-Clause (see `adrenotools/LICENSE`).
