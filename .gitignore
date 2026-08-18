@@ -1,6 +1,8 @@
 # Generated and temporary files
 bin/
 gen/
+!adrenotools/src/gen/
+!adrenotools/src/gen/bcenabler_patch.h
 obj/
 tmp/
 *~
@@ -18,6 +20,7 @@ tmp/
 *.tmp
 gdb.setup
 gdbserver
+.cxx/
 
 # Eclipse project files
 .settings/

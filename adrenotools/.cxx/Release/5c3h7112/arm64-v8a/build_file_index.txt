@@ -1,3 +1,0 @@
-/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/CMakeLists.txt
-/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/lib/linkernsbypass/CMakeLists.txt
-/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/src/hook/CMakeLists.txt

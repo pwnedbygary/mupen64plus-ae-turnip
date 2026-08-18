@@ -1,7 +1,0 @@
-/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/include/adrenotools/bcenabler.h
-/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/include/adrenotools/driver.h
-/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/include/adrenotools/priv.h
-/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/src/hook/hook_impl.h
-/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/src/hook/hook_impl_params.h
-/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/lib/linkernsbypass/android_linker_ns.h
-/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/lib/linkernsbypass/elf_soname_patcher.h
