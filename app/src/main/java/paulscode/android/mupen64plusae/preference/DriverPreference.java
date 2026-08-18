@@ -82,6 +82,7 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
             dialog.dismiss();
         });
         builder.setPositiveButton( R.string.gpuDriver_import, (dialog, which) -> {
+            dialog.dismiss();
             if (mImportCallback != null) {
                 mImportCallback.importDriver();
             }

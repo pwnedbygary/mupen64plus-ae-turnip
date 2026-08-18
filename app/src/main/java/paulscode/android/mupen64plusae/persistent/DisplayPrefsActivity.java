@@ -103,7 +103,10 @@ public class DisplayPrefsActivity extends AppCompatPreferenceActivity implements
 
         // Refresh the preference data wrapper
         mGlobalPrefs = new GlobalPrefs(this, mAppData);
+    }
 
+    private void setupGpuDriverPreference()
+    {
         mGpuDriverPreference = (DriverPreference) findPreference(GPU_DRIVER);
         if (mGpuDriverPreference != null) {
             mGpuDriverPreference.populateDriverOptions(this);
@@ -147,6 +150,10 @@ public class DisplayPrefsActivity extends AppCompatPreferenceActivity implements
         super.onResume();
 
         mPrefs.registerOnSharedPreferenceChangeListener(this);
+
+        // The preference hierarchy is not available until the fragment is created,
+        // so set this up here instead of in onCreate
+        setupGpuDriverPreference();
     }
 
     @Override
