@@ -226,7 +226,7 @@ public class DownloadFromGoogleDriveService extends Service
 
             if (GoogleSignIn.hasPermissions(account, driveFileScope, emailScope) && (singleGame || allData)) {
                 DriveServiceHelper driveServiceHelper = new DriveServiceHelper(
-                    DriveServiceHelper.getGoogleDriveService(getApplicationContext(), account, getString(R.string.app_name_pro)));
+                    DriveServiceHelper.getGoogleDriveService(getApplicationContext(), account, getString(R.string.app_name)));
 
                 // Copy game data to external storage
                 DocumentFile destData;
@@ -242,7 +242,7 @@ public class DownloadFromGoogleDriveService extends Service
                         DocumentFile gameDataDir = FileUtil.createFolderIfNotPresent(getApplicationContext(), destData, gameDataFolder.getName());
 
                         // Delete the old folder before downloading the new one
-                        GoogleDriveFileHolder gameFolder = driveServiceHelper.getExistingFolder(getString(R.string.app_name_pro), null);
+                        GoogleDriveFileHolder gameFolder = driveServiceHelper.getExistingFolder(getString(R.string.app_name), null);
 
                         if (gameFolder != null && gameDataDir != null && !TextUtils.isEmpty(gameDataDir.getName())) {
                             List<GoogleDriveFileHolder> files = driveServiceHelper.queryFiles(gameFolder.getId());

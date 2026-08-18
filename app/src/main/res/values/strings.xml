@@ -791,8 +791,6 @@
     <string name="clearTexturePack_message">Select a texture pack to delete</string>
     <string name="confirmClearData_message">Are you sure you want to clear the selected high resolution texture pack?</string>
     <string name="confirmRemoveFromLibrary_message">Are you sure you want to remove this game from the library?</string>
-    <string name="confirmTryPro">Try M64Plus FZ Pro</string>
-    <string name="confirmPleaseTryPro">If you enjoy using M64Plus FZ, please consider supporting the developer by buying the Pro version. The Pro version adds netplay server support and google drive support!</string>
     <string name="confirmRemindMeLater">Remind me later</string>
     <string name="confirmNoThanks">No, thanks</string>
 
@@ -901,7 +899,6 @@
     <string name="netplay_codeNotFound">Code was not found!</string>
     <string name="netplay_codeRetrieveFailure">Unable to get code!</string>
     <string name="netplay_advanced">Advanced</string>
-    <string name="netplay_serverProOnly">Netplay server can only be used by the Pro version.</string>
 
     <!-- ROM Scanning -->
     <string name="scanning_title">Scanning…</string>

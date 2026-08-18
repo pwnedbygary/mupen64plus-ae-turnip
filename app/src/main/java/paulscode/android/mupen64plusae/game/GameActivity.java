@@ -56,10 +56,6 @@ import android.view.WindowManager.LayoutParams;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 
-import com.google.firebase.FirebaseApp;
-import com.google.firebase.analytics.FirebaseAnalytics;
-import com.google.firebase.crashlytics.FirebaseCrashlytics;
-
 import paulscode.android.mupen64plusae.R;
 
 import java.io.File;
@@ -145,8 +141,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         NetplayServerSetupDialog.OnClientDialogActionListener, NetplayFragment.NetplayListener
 {
     private static final String TAG = "GameActivity";
-
-    private FirebaseAnalytics mFirebaseAnalytics;
 
     // Activity and views
     private GameOverlay mOverlay;
@@ -241,10 +235,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
     {
         Log.i(TAG, "onNewIntent");
 
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "onNewIntent");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
-
         // If the activity is already running and is launched again (e.g. from a file manager app),
         // the existing instance will be reused rather than a new one created. This behavior is
         // specified in the manifest (launchMode = singleTask). In that situation, any activities
@@ -279,15 +269,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         Log.i(TAG, "onCreate");
         super.onCreate(savedInstanceState);
         super.setTheme( androidx.appcompat.R.style.Theme_AppCompat_NoActionBar );
-
-        FirebaseApp.initializeApp(getApplicationContext());
-
-        // Obtain the FirebaseAnalytics instance.
-        mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
-
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "onCreate");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
 
         mAppData = new AppData( this );
 
@@ -345,8 +326,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
         mGamePrefs = new GamePrefs( this, mRomMd5, mRomCrc, mRomHeaderName, mRomGoodName,
             CountryCode.getCountryCode(mRomCountryCode).toString(), mAppData, mGlobalPrefs );
-
-        fillCrashlyticsKeys();
 
         final Window window = this.getWindow();
 
@@ -531,44 +510,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         mNetplayServerDialog = (NetplayServerSetupDialog) fm.findFragmentByTag(STATE_NETPLAY_SERVER_DIALOG);
     }
 
-    private void fillCrashlyticsKeys()
-    {
-        FirebaseCrashlytics.getInstance().setCustomKey("ROM_PATH", mRomPath);
-        FirebaseCrashlytics.getInstance().setCustomKey("ZIP_PATH", mZipPath);
-        FirebaseCrashlytics.getInstance().setCustomKey("ROM_MD5", mRomMd5);
-        FirebaseCrashlytics.getInstance().setCustomKey("ROM_CRC", mRomCrc);
-        FirebaseCrashlytics.getInstance().setCustomKey("ROM_HEADER_NAME", mRomHeaderName);
-        FirebaseCrashlytics.getInstance().setCustomKey("ROM_COUNTRY_CODE", mRomCountryCode);
-        FirebaseCrashlytics.getInstance().setCustomKey("ROM_ART_PATH", mRomArtPath);
-        FirebaseCrashlytics.getInstance().setCustomKey("ROM_GOOD_NAME", mRomGoodName);
-        FirebaseCrashlytics.getInstance().setCustomKey("ROM_DISPLAY_NAME", mRomDisplayName);
-        FirebaseCrashlytics.getInstance().setCustomKey("DO_RESTART", mDoRestart);
-        FirebaseCrashlytics.getInstance().setCustomKey("R4300Emulator", mGamePrefs.r4300Emulator);
-        FirebaseCrashlytics.getInstance().setCustomKey("DisableExtraMem", mGamePrefs.disableExpansionPak);
-        FirebaseCrashlytics.getInstance().setCustomKey("SaveSRAMPath", mGamePrefs.getSramDataDir());
-        FirebaseCrashlytics.getInstance().setCustomKey("CountPerOp", mGamePrefs.countPerOp);
-        FirebaseCrashlytics.getInstance().setCustomKey("video plugin", mGamePrefs.videoPluginLib.getPluginLib());
-        FirebaseCrashlytics.getInstance().setCustomKey("audio plugin", mGamePrefs.audioPluginLib.getPluginLib());
-        FirebaseCrashlytics.getInstance().setCustomKey("rsp plugin", mGamePrefs.rspPluginLib.getPluginLib());
-
-        if (mGlobalPrefs.useRaphnetDevicesIfAvailable) {
-            FirebaseCrashlytics.getInstance().setCustomKey("input plugin", AppData.InputPlugin.RAPHNET.getPluginLib());
-        } else {
-            FirebaseCrashlytics.getInstance().setCustomKey("input plugin", AppData.InputPlugin.ANDROID.getPluginLib());
-        }
-
-        if (TextUtils.isEmpty(mZipPath)) {
-
-            if (mGlobalPrefs.japanIplPath != null) {
-                FirebaseCrashlytics.getInstance().setCustomKey("DD ROM", mGlobalPrefs.japanIplPath);
-            }
-            FirebaseCrashlytics.getInstance().setCustomKey("DD Disk", mRomPath);
-        } else {
-            FirebaseCrashlytics.getInstance().setCustomKey("DD ROM", mGamePrefs.idlPath64Dd);
-            FirebaseCrashlytics.getInstance().setCustomKey("DD DISK", mGamePrefs.diskPath64Dd);
-        }
-    }
-
     @Override
     public void onFpsChanged(int newValue)
     {
@@ -595,10 +536,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
     {
         super.onStart();
         Log.i(TAG, "onStart");
-
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "onStart");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
 
         final FragmentManager fm = this.getSupportFragmentManager();
 
@@ -637,10 +574,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         super.onResume();
         Log.i(TAG, "onResume");
 
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "onResume");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
-
         if (mSensorController != null) {
             mSensorController.onResume();
         }
@@ -666,19 +599,11 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
     public void onPause() {
         super.onPause();
         Log.i(TAG, "onPause");
-
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "onPause");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
     }
 
     @Override
     public void onSaveInstanceState( Bundle savedInstanceState )
     {
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "onSaveInstanceState");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
-
         savedInstanceState.putBoolean(STATE_DRAWER_OPEN, mDrawerOpenState);
         savedInstanceState.putInt(STATE_CURRENT_FPS, currentFps);
 
@@ -691,10 +616,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         super.onStop();
 
         Log.i( TAG, "onStop" );
-
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "onStop");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
 
         //Don't pause emulation when rotating the screen or the core fragment has been set to null
         //on a shutdown
@@ -722,10 +643,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         Log.i( TAG, "onDestroy" );
 
         super.onDestroy();
-
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "onDestroy");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
 
         // This apparently can happen on rare occasion, not sure how, so protect against it
         if(mHandler != null)
@@ -864,9 +781,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
         if (menuItem.getTitle() != null) {
             Log.i(TAG, "User selected: " + menuItem.getTitle().toString());
-            Bundle bundle = new Bundle();
-            bundle.putString("Action", menuItem.getTitle().toString());
-            mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SELECT_ITEM, bundle);
         }
 
         if (menuItem.getItemId() ==  R.id.menuItem_exit) {
@@ -1054,10 +968,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
     {
         Log.i(TAG, "onCoreServiceStarted");
 
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "onCoreServiceStarted");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
-
         if(mCoreFragment == null) return;
 
         Vibrator vibrator;
@@ -1146,10 +1056,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
     public void finishActivity()
     {
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "finishActivity");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
-
         if(mCoreFragment != null)
         {
             mCoreFragment.setCoreEventListener(null);
@@ -1366,10 +1272,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
     private void shutdownEmulator()
     {
         Log.i( TAG, "shutdownEmulator" );
-
-        Bundle bundle = new Bundle();
-        bundle.putString("Lifecycle", "shutdownEmulator");
-        mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
 
         if(mCoreFragment != null && mCoreFragment.hasServiceStarted())
         {

@@ -288,11 +288,7 @@ public class GamePrefsActivity extends AppCompatPreferenceActivity implements On
     @Override
     protected int getSharedPrefsId()
     {
-        if (mAppData.isPro) {
-            return R.xml.preferences_game_pro;
-        } else {
-            return R.xml.preferences_game;
-        }
+        return R.xml.preferences_game;
     }
 
     @Override

@@ -597,8 +597,6 @@
     <string name="confirmDeleteProfile_message">¿Eliminar perfil \"%1$s\"?</string>
     <string name="confirmClearData_message">¿Seguro que desea borrar el paquetes de texturas seleccionado?</string>
     <string name="confirmRemoveFromLibrary_message">¿Seguro que desea eliminar ese juego de la librería?</string>
-    <string name="confirmTryPro">Pruebe M64Plus FZ Pro</string>
-    <string name="confirmPleaseTryPro">Si le gusta usar M64Plus FZ, considere apoyar al desarrollador con comprando la versión Pro. ¡La versión Pro agrega soporte para servidor de netplay y soporte para Google Drive!</string>
     <string name="confirmRemindMeLater">Recuérdame más tarde</string>
     <string name="confirmNoThanks">No, gracias</string>
 
@@ -680,7 +678,6 @@
     <string name="netplay_codeNotFound">¡El código no fue encontrado!</string>
     <string name="netplay_codeRetrieveFailure">¡El código no se pudo conseguir!</string>
     <string name="netplay_advanced">Avanzado</string>
-    <string name="netplay_serverProOnly">El servidor de netplay solo funciona con la version Pro.</string>
 	
     <!-- Google Drive Sync -->
     <string name="exportGoogleDriveService_exportNotificationTitle">Guardando datos en Google Drive</string>

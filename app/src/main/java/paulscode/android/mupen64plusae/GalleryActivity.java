@@ -67,10 +67,6 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
-import com.google.android.play.core.review.ReviewInfo;
-import com.google.android.play.core.review.ReviewManager;
-import com.google.android.play.core.review.ReviewManagerFactory;
-import com.google.android.play.core.tasks.Task;
 
 import java.io.File;
 import java.io.UnsupportedEncodingException;
@@ -79,14 +75,10 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
-import com.google.licensingservicehelper.LicensingServiceCallback;
-import com.google.licensingservicehelper.LicensingServiceHelper;
-
 import paulscode.android.mupen64plusae.GameSidebar.GameSidebarActionHandler;
 import paulscode.android.mupen64plusae.dialog.ConfirmationDialog;
 import paulscode.android.mupen64plusae.dialog.ConfirmationDialog.PromptConfirmListener;
 import paulscode.android.mupen64plusae.dialog.LocaleDialog;
-import paulscode.android.mupen64plusae.dialog.TryProDialog;
 import paulscode.android.mupen64plusae.dialog.Popups;
 import paulscode.android.mupen64plusae.game.GameActivity;
 import paulscode.android.mupen64plusae.jni.CoreService;
@@ -104,9 +96,8 @@ import paulscode.android.mupen64plusae.util.LocaleContextWrapper;
 import paulscode.android.mupen64plusae.util.Notifier;
 
 public class GalleryActivity extends AppCompatActivity implements GameSidebarActionHandler, PromptConfirmListener,
-        GalleryRefreshFinishedListener, TryProDialog.PromptTryPoListener
+        GalleryRefreshFinishedListener
 {
-    private static final String PUBLIC_LICENSE_KEY = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlJ1L4rtpKLxKlBD72WtMbHr4llShHi1N3VO62TrHJZPePlmfBjjzM7NRpEqmfRJmNbR0prbAEjbWQB4nGNVgkXOLMC3jPdEVvjhiTa4bHX655ZcOkj7XESm1r8zZQ0Y2bzROln495egVi8v09Q76n+lcblOTA+1aQXTQLmqFk3CMH5d9Am++03nx1fGXXbRvWWVs+5oDBnMUo9MBqLWYgARVD9wxD70LbnmmtSCIjX9GFjUT12ab4WMeO7ZAcdixayq/nJ40t4lvUZZkbsx/7+93gugM4HNW2Qb9ZdZUVhMAJOTki2T/eZML+fs6nQaEezsEfE5IvILz3Ua2RWVljQIDAQAB";
     // Saved instance states
     private static final String STATE_QUERY = "STATE_QUERY";
     private static final String STATE_SIDEBAR = "STATE_SIDEBAR";
@@ -122,40 +113,12 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
     private static final String STATE_HARDWARE_INFO_POPUP = "STATE_HARDWARE_INFO_POPUP";
     private static final String STATE_SHOW_APP_VERSION_POPUP = "STATE_SHOW_APP_VERSION_POPUP";
     private static final String STATE_FAQ_POPUP = "STATE_FAQ_POPUP";
-    private static final String STATE_TRY_PRO_DIALOG = "STATE_TRY_PRO_DIALOG";
 
     public static final String KEY_IS_LEANBACK = "KEY_IS_LEANBACK";
     public static final String KEY_IS_SHORTCUT = "KEY_IS_SHORTCUT";
 
     public static final int REMOVE_FROM_LIBRARY_DIALOG_ID = 1;
     public static final int CLEAR_SHADER_CACHE_DIALOG_ID = 2;
-
-    private class MyLicensingServiceCallback implements LicensingServiceCallback
-    {
-        @Override
-        public void allow(String payloadJson) {
-            Log.d("GalleryActivity", "Allow access");
-        }
-
-        @Override
-        public void dontAllow(PendingIntent paywallIntent) {
-            Log.d("GalleryActivity", "Don't allow access");
-
-            try {
-                mLicensingServiceHelper.showPaywall(paywallIntent);
-                GalleryActivity.this.finish();
-            } catch (IntentSender.SendIntentException e) {
-                Log.d("GalleryActivity", "Error launching paywall");
-            }
-        }
-
-        @Override
-        public void applicationError(String errorMessage) {
-            Log.d("GalleryActivity", String.format("Application error: %s", errorMessage));
-        }
-    }
-
-    private LicensingServiceHelper mLicensingServiceHelper;
 
     // App data and user preferences
     private AppData mAppData = null;
@@ -228,9 +191,6 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
                     {
                         finishAffinity();
                     }
-
-                    mAppData.incrementNumberOfSuccesfulLaunchesToRate();
-                    mAppData.incrementNumberOfSuccesfulLaunchesToTryPro();
                 }
             });
 
@@ -374,9 +334,6 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
 
         super.onCreate( savedInstanceState );
 
-        mLicensingServiceHelper = new LicensingServiceHelper(this, PUBLIC_LICENSE_KEY);
-        mLicensingServiceHelper.checkLicense(new MyLicensingServiceCallback());
-
         if( savedInstanceState != null )
         {
             mSelectedItem = null;
@@ -440,11 +397,7 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         // Add the toolbar to the activity (which supports the fancy menu/arrow animation)
         final Toolbar toolbar = findViewById( R.id.toolbar );
 
-        if (mAppData.isPro || mAppData.isAmazon) {
-            toolbar.setTitle( R.string.app_name_pro );
-        } else {
-            toolbar.setTitle( R.string.app_name );
-        }
+        toolbar.setTitle( R.string.app_name );
 
         final View firstGridChild = mGridView.getChildAt(0);
 
@@ -622,37 +575,6 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         if(ActivityHelper.isServiceRunning(this, ActivityHelper.coreServiceProcessName)) {
             Log.i("GalleryActivity", "CoreService is running");
         }
-
-        // If no game was launched on creation
-        if ((getIntent() == null || getIntent().getExtras() == null) && !mAppData.isAmazon) {
-            if(mAppData.getNumberOfSuccesfulLaunchesToTryPro() > 5 && mAppData.getTimeSinceFirstStartToTryPro() > 10 && !mAppData.shouldNag() && !mAppData.isPro) {
-                if (fm.findFragmentByTag(STATE_TRY_PRO_DIALOG) == null) {
-                    final TryProDialog tryProDialog = TryProDialog.newInstance();
-                    tryProDialog.show(fm, STATE_TRY_PRO_DIALOG);
-                }
-            } else {
-                if(mAppData.getNumberOfSuccesfulLaunchesToRate() > 5 && mAppData.getTimeSinceFirstStartToRate() > 5) {
-
-                    // Request a review
-                    ReviewManager manager = ReviewManagerFactory.create(this);
-                    Task<ReviewInfo> request = manager.requestReviewFlow();
-                    request.addOnCompleteListener(task -> {
-                        if (task.isSuccessful()) {
-                            try {
-                                // We can get the ReviewInfo object
-                                ReviewInfo reviewInfo = task.getResult();
-                                Task<Void> flow = manager.launchReviewFlow(this, reviewInfo);
-                                flow.addOnCompleteListener(flowTask -> mAppData.resetStatisticsToRate());
-                            } catch (android.content.ActivityNotFoundException e) {
-                                e.printStackTrace();
-                            }
-                        } else {
-                            Log.w("GalleryActivity", "Unable to ask for review");
-                        }
-                    });
-                }
-            }
-        }
     }
 
     @Override
@@ -670,9 +592,6 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
     @Override
     protected void onDestroy()
     {
-        if (mLicensingServiceHelper != null) {
-            mLicensingServiceHelper.onDestroy();
-        }
         super.onDestroy();
     }
 
@@ -1039,16 +958,12 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
                     item.goodName, item.displayName, true,
                     true, false);
         } else if (menuItem.getItemId() == R.id.menuItem_startNetplayServer) {
-            if (mAppData.isPro || mAppData.isAmazon) {
-                launchGameActivity(item.romUri,
-                        item.zipUri,
-                        item.md5, item.crc,
-                        item.headerName, item.countryCode.getValue(), item.artPath,
-                        item.goodName, item.displayName, true,
-                        true, true);
-            } else {
-                Notifier.showToast( this, R.string.netplay_serverProOnly );
-            }
+            launchGameActivity(item.romUri,
+                    item.zipUri,
+                    item.md5, item.crc,
+                    item.headerName, item.countryCode.getValue(), item.artPath,
+                    item.goodName, item.displayName, true,
+                    true, true);
 
         } else if (menuItem.getItemId() == R.id.menuItem_settings) {
             tagForRefreshNeeded();
@@ -1086,21 +1001,6 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
             if (id == CLEAR_SHADER_CACHE_DIALOG_ID) {
                 FileUtil.deleteFolder(new File(mGlobalPrefs.shaderCacheDir));
             }
-        }
-    }
-
-    @Override
-    public void onTryProDialogClosed(int which)
-    {
-        Log.i( "GalleryActivity", "onPromptRateDialogClosed" );
-
-        if( which == DialogInterface.BUTTON_POSITIVE ) {
-            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=org.mupen64plusae.v3.fzurita.pro")));
-            mAppData.setNoNagPlease();
-        } else if (which == DialogInterface.BUTTON_NEUTRAL) {
-            mAppData.resetStatisticsToTryPro();
-        } else if (which == DialogInterface.BUTTON_NEGATIVE) {
-            mAppData.setNoNagPlease();
         }
     }
 

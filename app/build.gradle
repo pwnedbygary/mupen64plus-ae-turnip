@@ -1,7 +1,5 @@
 apply plugin: 'com.android.application'
 apply plugin: 'signing'
-apply plugin: 'com.google.gms.google-services'
-apply plugin: 'com.google.firebase.crashlytics'
 apply from: '../build_common/version_common.gradle'
 
 android {
@@ -37,10 +35,6 @@ android {
             ndk {
                 debugSymbolLevel 'FULL'
             }
-            firebaseCrashlytics {
-                nativeSymbolUploadEnabled true
-                unstrippedNativeLibsDir "build/tmp/libs"
-            }
         }
         debug {
             minifyEnabled false
@@ -49,10 +43,6 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             ndk {
                 debugSymbolLevel 'FULL'
-            }
-            firebaseCrashlytics {
-                nativeSymbolUploadEnabled true
-                unstrippedNativeLibsDir "build/tmp/libs"
             }
         }
 		
@@ -91,43 +81,8 @@ android {
     }
 
     afterEvaluate {
-        bundleFreeRelease.finalizedBy createLibsFolder
+        bundleRelease.finalizedBy createLibsFolder
         createLibsFolder.finalizedBy copyLibsTask
-        copyLibsTask.finalizedBy generateCrashlyticsSymbolFileFreeRelease
-        generateCrashlyticsSymbolFileFreeRelease.finalizedBy uploadCrashlyticsSymbolFileFreeRelease
-    }
-
-    flavorDimensions += "version"
-    productFlavors {
-        free {
-            // Assigns this product flavor to the "version" flavor dimension.
-            // If you are using only one dimension, this property is optional,
-            // and the plugin automatically assigns all the module's flavors to
-            // that dimension.
-            dimension "version"
-            applicationIdSuffix ""
-            versionNameSuffix "-free"
-        }
-        pro {
-            dimension "version"
-            applicationIdSuffix ".pro"
-            versionNameSuffix "-pro"
-            manifestPlaceholders = [appLabel:"@string/app_name_pro",
-                                    appBanner:"@drawable/banner_pro",
-                                    appLogo:"@drawable/hireslogo_pro",
-                                    appIcon:"@mipmap/ic_launcher_pro",
-                                    appIconRound:"@mipmap/ic_launcher_pro_round"]
-        }
-        amazon {
-            dimension "version"
-            applicationIdSuffix ".amazon"
-            versionNameSuffix "-amazon"
-            manifestPlaceholders = [appLabel:"@string/app_name_pro",
-                                    appBanner:"@drawable/banner_pro",
-                                    appLogo:"@drawable/hireslogo_pro",
-                                    appIcon:"@mipmap/ic_launcher_pro",
-                                    appIconRound:"@mipmap/ic_launcher_pro_round"]
-        }
     }
 
     bundle {
@@ -175,7 +130,6 @@ android {
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation 'androidx.preference:preference:1.2.1'
-    implementation platform('com.google.firebase:firebase-bom:30.1.0')
     implementation 'androidx.tvprovider:tvprovider:1.0.0'
     implementation 'androidx.multidex:multidex:2.0.1'
     implementation 'androidx.documentfile:documentfile:1.0.1'
@@ -235,10 +189,6 @@ dependencies {
     implementation('com.google.apis:google-api-services-drive:v3-rev197-1.25.0') {
         exclude group: 'org.apache.httpcomponents'
     }
-    implementation 'com.google.android.play:core:1.10.3'
-    implementation 'com.google.firebase:firebase-crashlytics-ndk'
-    implementation 'com.google.firebase:firebase-analytics'
-    implementation project(":licensingservicehelper")
 
     implementation project(':ae-bridge')
     implementation project(':miniupnp-bridge')

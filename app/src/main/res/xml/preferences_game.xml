@@ -246,6 +246,18 @@
         android:title="@string/actionClearGameCoverArt_title" />
 
     <androidx.preference.Preference
+        android:icon="@drawable/ic_folder"
+        android:key="downloadDataFromGoogleDrive"
+        android:summary="@string/actionDownloadData_summary"
+        android:title="@string/actionDownloadData_title" />
+
+    <androidx.preference.Preference
+        android:icon="@drawable/ic_save"
+        android:key="uploadDataToGoogleDrive"
+        android:summary="@string/actionUploadData_summary"
+        android:title="@string/actionUploadData_title" />
+
+    <androidx.preference.Preference
         android:icon="@drawable/ic_undo"
         android:key="deleteGameData"
         android:summary="@string/actionDeleteGameData_summary"

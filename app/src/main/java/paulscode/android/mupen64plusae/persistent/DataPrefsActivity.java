@@ -174,11 +174,7 @@ public class DataPrefsActivity extends AppCompatPreferenceActivity implements On
     protected int getSharedPrefsId()
     {
         // Load user preference menu structure from XML and update view
-        if (mAppData.isPro) {
-            return R.xml.preferences_data_pro;
-        } else {
-            return R.xml.preferences_data;
-        }
+        return R.xml.preferences_data;
     }
 
     @Override

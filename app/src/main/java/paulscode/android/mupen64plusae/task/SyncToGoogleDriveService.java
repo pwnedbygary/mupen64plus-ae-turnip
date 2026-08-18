@@ -156,7 +156,7 @@ public class SyncToGoogleDriveService extends JobService {
             }
 
             try {
-                GoogleDriveFileHolder driveFile = driveServiceHelper.createFolderIfNotExist(getString(R.string.app_name_pro), null);
+                GoogleDriveFileHolder driveFile = driveServiceHelper.createFolderIfNotExist(getString(R.string.app_name), null);
 
                 if (driveFile == null) {
                     Log.w(TAG, "Unable to create google drive folder");
@@ -202,7 +202,7 @@ public class SyncToGoogleDriveService extends JobService {
             if (GoogleSignIn.hasPermissions(account, driveFileScope, emailScope)) {
 
                 DriveServiceHelper driveServiceHelper = new DriveServiceHelper(
-                        DriveServiceHelper.getGoogleDriveService(getApplicationContext(), account, getString(R.string.app_name_pro)));
+                        DriveServiceHelper.getGoogleDriveService(getApplicationContext(), account, getString(R.string.app_name)));
 
                 Bundle data = msg.getData();
                 String sourceGameDataDirName = data.getString(ActivityHelper.Keys.FILE_PATH);
