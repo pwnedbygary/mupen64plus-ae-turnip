@@ -407,6 +407,8 @@ public class GlobalPrefs
     public static final String KEY_LOCALE_OVERRIDE = "localeOverride";
     public static final String KEY_TOUCHSCREEN_SKIN_CUSTOM_PATH = "touchscreenCustomSkin";
     public static final String KEY_SHADER_PASS = "shaderPass";
+    public static final String KEY_GPU_DRIVER_NAME = "gpuDriverName";
+    public static final String KEY_GPU_DRIVER_LIB = "gpuDriverLib";
     public static final String CONTROLLER_PROFILE1 = "controllerProfile1";
     public static final String CONTROLLER_PROFILE2 = "controllerProfile2";
     public static final String CONTROLLER_PROFILE3 = "controllerProfile3";
@@ -935,6 +937,22 @@ public class GlobalPrefs
     public void putString( String key, String value )
     {
         mPreferences.edit().putString( key, value ).apply();
+    }
+
+    public String getGpuDriverName()
+    {
+        return getString( KEY_GPU_DRIVER_NAME, "" );
+    }
+
+    public String getGpuDriverLib()
+    {
+        return getString( KEY_GPU_DRIVER_LIB, "" );
+    }
+
+    public void putGpuDriver(String name, String lib)
+    {
+        putString( KEY_GPU_DRIVER_NAME, name );
+        putString( KEY_GPU_DRIVER_LIB, lib );
     }
 
     /**

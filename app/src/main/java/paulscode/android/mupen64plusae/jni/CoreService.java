@@ -646,6 +646,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                 try {
                     // When using netplay, these plugins will be set when the server tell us what they are
                     if (!mUsingNetplay) {
+                        mCoreInterface.setCustomVulkanDriver(getApplicationContext(), mGamePrefs.videoPluginLib == AppData.VideoPlugin.PARALLEL);
                         mCoreInterface.coreAttachPlugin(CoreTypes.m64p_plugin_type.M64PLUGIN_GFX, mGamePrefs.videoPluginLib.getPluginLib(), true);
                         mCoreInterface.coreAttachPlugin(CoreTypes.m64p_plugin_type.M64PLUGIN_AUDIO, mGamePrefs.audioPluginLib.getPluginLib(), true);
 
@@ -676,6 +677,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                         Log.i(TAG, "Netplay is ready!");
 
                         if (mNetplayInitSuccess) {
+                            mCoreInterface.setCustomVulkanDriver(getApplicationContext(), netplayVideoPlugin.equals(AppData.VideoPlugin.PARALLEL.getPluginLib()));
                             mCoreInterface.coreAttachPlugin(CoreTypes.m64p_plugin_type.M64PLUGIN_GFX, netplayVideoPlugin, true);
                             mCoreInterface.coreAttachPlugin(CoreTypes.m64p_plugin_type.M64PLUGIN_AUDIO, mGamePrefs.audioPluginLib.getPluginLib(), true);
 
@@ -914,6 +916,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
         mAppData = new AppData(this);
         mGlobalPrefs = new GlobalPrefs( this, mAppData );
+        mCoreInterface.setGlobalPrefs(mGlobalPrefs);
 
         // Register to receive messages.
         // We are registering an observer (mMessageReceiver) to receive Intents

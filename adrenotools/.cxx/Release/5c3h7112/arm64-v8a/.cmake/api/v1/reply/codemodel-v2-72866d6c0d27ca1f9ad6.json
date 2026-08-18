@@ -1,0 +1,154 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"childIndexes" : 
+					[
+						1,
+						2
+					],
+					"jsonFile" : "directory-.-Release-f5ebdc15457944623624.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.6.0"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0
+					]
+				},
+				{
+					"build" : "lib/linkernsbypass",
+					"jsonFile" : "directory-lib.linkernsbypass-Release-e3d323966316f3867f46.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.14"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 1,
+					"source" : "lib/linkernsbypass",
+					"targetIndexes" : 
+					[
+						4
+					]
+				},
+				{
+					"build" : "src/hook",
+					"jsonFile" : "directory-src.hook-Release-f3c576f36f76a2ff8985.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.6.0"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 0,
+					"source" : "src/hook",
+					"targetIndexes" : 
+					[
+						1,
+						2,
+						3,
+						5
+					]
+				}
+			],
+			"name" : "Release",
+			"projects" : 
+			[
+				{
+					"childIndexes" : 
+					[
+						1
+					],
+					"directoryIndexes" : 
+					[
+						0,
+						2
+					],
+					"name" : "adrenotools",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						5
+					]
+				},
+				{
+					"directoryIndexes" : 
+					[
+						1
+					],
+					"name" : "linkernsbypass",
+					"parentIndex" : 0,
+					"targetIndexes" : 
+					[
+						4
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "adrenotools::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-adrenotools-Release-1ff95e4cc08bd7792b31.json",
+					"name" : "adrenotools",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 2,
+					"id" : "file_redirect_hook::@cb32e3b7eb5e226c372a",
+					"jsonFile" : "target-file_redirect_hook-Release-1ef42bc7c4c87f18182a.json",
+					"name" : "file_redirect_hook",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 2,
+					"id" : "gsl_alloc_hook::@cb32e3b7eb5e226c372a",
+					"jsonFile" : "target-gsl_alloc_hook-Release-72b5b2a730750c9b8dab.json",
+					"name" : "gsl_alloc_hook",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 2,
+					"id" : "hook_impl::@cb32e3b7eb5e226c372a",
+					"jsonFile" : "target-hook_impl-Release-429c696e977d341f66d7.json",
+					"name" : "hook_impl",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 1,
+					"id" : "linkernsbypass::@3ca77ea79c8e519f2001",
+					"jsonFile" : "target-linkernsbypass-Release-ddd307ccc2c564ea23bf.json",
+					"name" : "linkernsbypass",
+					"projectIndex" : 1
+				},
+				{
+					"directoryIndex" : 2,
+					"id" : "main_hook::@cb32e3b7eb5e226c372a",
+					"jsonFile" : "target-main_hook-Release-3aa5c7ac1de352d6c930.json",
+					"name" : "main_hook",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools/.cxx/Release/5c3h7112/arm64-v8a",
+		"source" : "/home/garyb/LLM-Projects/mupen64plus-ae-turnip/adrenotools"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

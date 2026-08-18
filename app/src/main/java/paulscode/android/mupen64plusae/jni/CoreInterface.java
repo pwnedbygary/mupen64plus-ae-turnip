@@ -57,6 +57,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import paulscode.android.mupen64plusae.persistent.AppData;
+import paulscode.android.mupen64plusae.persistent.GlobalPrefs;
 import paulscode.android.mupen64plusae.util.FileUtil;
 import paulscode.android.mupen64plusae.util.RomHeader;
 import paulscode.android.mupen64plusae.util.SevenZInputStream;
@@ -129,6 +130,7 @@ class CoreInterface
     private final AndroidAudioLibrary mAndroidAudioLibrary = Native.load("mupen64plus-audio-android", AndroidAudioLibrary.class);
     private final AndroidAudioLibrary mAndroidAudioLibraryFp = Native.load("mupen64plus-audio-android-fp", AndroidAudioLibrary.class);
     private AppData.AudioPlugin mSelectedAudioPlugin = AppData.AudioPlugin.DUMMY;
+    private GlobalPrefs mGlobalPrefs = null;
     private final HashMap<CoreTypes.m64p_plugin_type, PluginLibrary> mPlugins = new HashMap<>();
 
     private Pointer mCoreContext;
@@ -588,6 +590,22 @@ class CoreInterface
         mMupen64PlusLibrary.CoreDoCommand(CoreTypes.m64p_command.M64CMD_NETPLAY_CLOSE.ordinal(), 0, parameter);
     }
 
+    /**
+     * Configure a custom (Turnip) Vulkan driver to be used by the parallel video plugin.
+     * Must be called before the video plugin is loaded.
+     */
+    void setCustomVulkanDriver(Context context, boolean usingParallelPlugin)
+    {
+        if (!usingParallelPlugin || TextUtils.isEmpty(mGlobalPrefs.getGpuDriverName()) || TextUtils.isEmpty(mGlobalPrefs.getGpuDriverLib())) {
+            mAeBridgeLibrary.setCustomVulkanDriver(null, null, null);
+            return;
+        }
+
+        String driverDir = new File(context.getFilesDir(), "driver/" + mGlobalPrefs.getGpuDriverName()).getAbsolutePath() + "/";
+        String nativeLibDir = context.getApplicationInfo().nativeLibraryDir;
+        mAeBridgeLibrary.setCustomVulkanDriver(driverDir, mGlobalPrefs.getGpuDriverLib(), nativeLibDir);
+    }
+
     /* coreAttachPlugin()
      *
      * This function attaches the given plugin to the emulator core. There can only
@@ -625,6 +643,10 @@ class CoreInterface
 
     void setSelectedAudioPlugin(AppData.AudioPlugin audioPlugin) {
         mSelectedAudioPlugin = audioPlugin;
+    }
+
+    void setGlobalPrefs(GlobalPrefs globalPrefs) {
+        mGlobalPrefs = globalPrefs;
     }
 
     /* coreDetachPlugin()

@@ -127,4 +127,10 @@
         android:summary="@string/videoPolygonOffset_summary"
         android:title="@string/videoPolygonOffset_title" />
 
+    <paulscode.android.mupen64plusae.preference.DriverPreference
+        android:defaultValue=""
+        android:key="gpuDriver"
+        android:summary="@string/selectedValue"
+        android:title="@string/gpuDriver_title" />
+
 </androidx.preference.PreferenceScreen>

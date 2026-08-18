@@ -191,6 +191,7 @@ dependencies {
     }
 
     implementation project(':ae-bridge')
+    implementation project(':adrenotools')
     implementation project(':miniupnp-bridge')
     implementation project(':mupen64plus-audio-android')
     implementation project(':mupen64plus-video-gliden64')

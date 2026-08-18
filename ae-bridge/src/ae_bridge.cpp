@@ -12,6 +12,11 @@
 #include <unistd.h>
 #include <dlfcn.h>
 #include <m64p_frontend.h>
+#include <string>
+
+#if defined(__aarch64__)
+#include <adrenotools/driver.h>
+#endif
 
 EGLDisplay display = EGL_NO_DISPLAY;
 EGLConfig config;
@@ -33,6 +38,33 @@ m64p_dynlib_handle CoreHandle = NULL;
 ptr_CoreOverrideVidExt  CoreOverrideVidExt = NULL;
 
 void (*fpsCounterCallback)(int);
+
+#if defined(__aarch64__)
+static void* customVulkanProcAddr = nullptr;
+static std::string customDriverDir;
+static std::string customDriverName;
+static std::string customHookLibDir;
+
+extern "C" DECLSPEC void setCustomVulkanDriver(const char* driverDir, const char* driverName, const char* hookLibDir)
+{
+	customDriverDir = driverDir ? driverDir : "";
+	customDriverName = driverName ? driverName : "";
+	customHookLibDir = hookLibDir ? hookLibDir : "";
+	customVulkanProcAddr = nullptr;
+}
+
+static int setupCustomVulkanDriver()
+{
+	if (!customVulkanProcAddr && !customDriverDir.empty() && !customDriverName.empty() && !customHookLibDir.empty()) {
+		void* handle = adrenotools_open_libvulkan(0, ADRENOTOOLS_DRIVER_CUSTOM, nullptr,
+			customHookLibDir.c_str(), customDriverDir.c_str(), customDriverName.c_str(), nullptr, nullptr);
+		if (handle)
+			customVulkanProcAddr = dlsym(handle, "vkGetInstanceProcAddr");
+	}
+
+	return customVulkanProcAddr ? 1 : 0;
+}
+#endif
 
 
 EGLint const defaultAttributeList[] = {
@@ -564,6 +596,16 @@ extern "C" DECLSPEC void* loadLibrary(const char* libName)
 	if (!handle)
 		LOGE("Failed to load lib%s.so", libName);
 	checkLibraryError(libName);
+
+#if defined(__aarch64__)
+	if (handle && !strcmp(libName, "mupen64plus-video-parallel") && setupCustomVulkanDriver()) {
+		void (*setLoader)(void*) = reinterpret_cast<void (*)(void*)>(dlsym(handle, "parallel_vulkan_loader_set"));
+		if (setLoader)
+			setLoader(customVulkanProcAddr);
+		else
+			LOGE("Failed to find parallel_vulkan_loader_set in mupen64plus-video-parallel");
+	}
+#endif
 
 	return handle;
 }

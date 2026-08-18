@@ -16,6 +16,13 @@ static unique_ptr<RDP::CommandProcessor> frontend;
 static unique_ptr<Device> device;
 static unique_ptr<Context> context;
 
+static PFN_vkGetInstanceProcAddr custom_vk_loader;
+
+extern "C" __attribute__((visibility("default"))) void parallel_vulkan_loader_set(PFN_vkGetInstanceProcAddr addr)
+{
+	custom_vk_loader = addr;
+}
+
 int32_t vk_rescaling;
 bool vk_ssreadbacks;
 bool vk_ssdither;
@@ -219,7 +226,7 @@ bool vk_init()
 	device.reset(new Device);
 	frontend.reset();
 
-	if (!::Vulkan::Context::init_loader(nullptr))
+	if (!::Vulkan::Context::init_loader(custom_vk_loader))
 		return false;
 	if (!context->init_instance_and_device(nullptr, 0, nullptr, 0, ::Vulkan::CONTEXT_CREATION_DISABLE_BINDLESS_BIT))
 		return false;

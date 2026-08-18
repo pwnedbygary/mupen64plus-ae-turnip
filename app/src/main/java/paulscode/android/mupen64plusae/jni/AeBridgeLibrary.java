@@ -45,4 +45,7 @@ public interface AeBridgeLibrary extends Library {
 
     // Unload library using dlclose
     int unloadLibrary(Pointer handle, String libName);
+
+    // Set the custom Vulkan driver to use (dir, driver lib name, hook lib dir); nulls disable it
+    void setCustomVulkanDriver(String driverDir, String driverName, String hookLibDir);
 }

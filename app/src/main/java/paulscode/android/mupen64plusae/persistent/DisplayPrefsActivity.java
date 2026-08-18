@@ -21,17 +21,23 @@
 package paulscode.android.mupen64plusae.persistent;
 
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
+import android.net.Uri;
 import android.os.Bundle;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.preference.PreferenceManager;
 import android.text.TextUtils;
 
 import paulscode.android.mupen64plusae.R;
 
 import paulscode.android.mupen64plusae.compat.AppCompatPreferenceActivity;
+import paulscode.android.mupen64plusae.preference.DriverPreference;
 import paulscode.android.mupen64plusae.preference.PrefUtil;
 import paulscode.android.mupen64plusae.util.LocaleContextWrapper;
+import paulscode.android.mupen64plusae.util.Notifier;
 
 public class DisplayPrefsActivity extends AppCompatPreferenceActivity implements OnSharedPreferenceChangeListener
 {
@@ -40,12 +46,37 @@ public class DisplayPrefsActivity extends AppCompatPreferenceActivity implements
     private static final String DISPLAY_IMMERSIVE_MODE = "displayImmersiveMode";
     private static final String VIDEO_POLYGON_OFFSET = "videoPolygonOffset";
     private static final String DISPLAY_ORIENTATION = "displayOrientation";
+    private static final String GPU_DRIVER = "gpuDriver";
     private static final int VIDEO_HARDWARE_TYPE_CUSTOM = 999;
 
     // App data and user preferences
     private AppData mAppData = null;
     private GlobalPrefs mGlobalPrefs = null;
     private SharedPreferences mPrefs = null;
+
+    private DriverPreference mGpuDriverPreference = null;
+
+    ActivityResultLauncher<Intent> mLaunchDriverPicker = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                Intent data = result.getData();
+                if (result.getResultCode() == RESULT_OK && data != null) {
+                    Uri driverUri = data.getData();
+                    if (driverUri != null) {
+                        String[] driverInfo = DriverPreference.importDriver(this, driverUri);
+                        if (driverInfo != null) {
+                            mGlobalPrefs.putGpuDriver(driverInfo[0], driverInfo[1]);
+                            Notifier.showToast(this, R.string.gpuDriver_importSuccess);
+                            if (mGpuDriverPreference != null) {
+                                mGpuDriverPreference.populateDriverOptions(this);
+                                mGpuDriverPreference.setValue(driverInfo[0]);
+                            }
+                        } else {
+                            Notifier.showToast(this, R.string.gpuDriver_errorBadZip);
+                        }
+                    }
+                }
+            });
 
     @Override
     protected void attachBaseContext(Context newBase) {
@@ -72,6 +103,23 @@ public class DisplayPrefsActivity extends AppCompatPreferenceActivity implements
 
         // Refresh the preference data wrapper
         mGlobalPrefs = new GlobalPrefs(this, mAppData);
+
+        mGpuDriverPreference = (DriverPreference) findPreference(GPU_DRIVER);
+        if (mGpuDriverPreference != null) {
+            mGpuDriverPreference.populateDriverOptions(this);
+            mGpuDriverPreference.setOnImportDriverCallback(this::startDriverPicker);
+        }
+    }
+
+    private void startDriverPicker()
+    {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/zip");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
+        intent.putExtra("android.content.extra.SHOW_ADVANCED", true);
+        mLaunchDriverPicker.launch(intent);
     }
 
     @Override

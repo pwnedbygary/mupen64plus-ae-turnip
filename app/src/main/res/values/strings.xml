@@ -302,6 +302,13 @@
     <!-- List Preferences (in this app, most ListPreferences use android:summary="@string/selectedValue") -->
     <string name="preferenceAdd_title">Add</string>
     <string name="preferenceRemove_title">Remove</string>
+    <string name="gpuDriver_title">GPU driver</string>
+    <string name="gpuDriver_summary">Custom Vulkan driver used by the Parallel renderer. Requires Android 9+ on 64-bit ARM devices.</string>
+    <string name="gpuDriver_default">System driver (default)</string>
+    <string name="gpuDriver_import">Import driver…</string>
+    <string name="gpuDriver_importSuccess">Driver imported successfully.</string>
+    <string name="gpuDriver_errorBadZip">Invalid driver zip file. A meta.json with driverName and libraryName is required.</string>
+    <string name="gpuDriver_errorExtract">Failed to extract driver files.</string>
     <string name="gallerySortingMethod_title">Sort</string>
     <string name="gallerySortingMethod_entryRomName">ROM name</string>
     <string name="gallerySortingMethod_entryFileName">File name</string>
