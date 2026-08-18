@@ -167,6 +167,9 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
                     }
                     JSONObject meta = new JSONObject(jsonBuilder.toString());
                     driverName = meta.optString("driverName", "");
+                    if (TextUtils.isEmpty(driverName)) {
+                        driverName = meta.optString("name", "");
+                    }
                     libraryName = meta.optString("libraryName", "");
                 }
             }
