@@ -1,3 +1,4 @@
 # TODO
 
 - [ ] **Turnip driver support for remaining rendering plugins** — the custom Vulkan driver (AdrenoTools) currently only works with the Parallel (ParaLLEl-RDP) plugin. Add Vulkan-backed rendering to the other video plugins (e.g. GLideN64's Vulkan backend) and wire them into the same `setCustomVulkanDriver` hookup so the Turnip driver applies across all cores.
+- [ ] **On-disk Vulkan shader/pipeline cache for the Parallel plugin** — neither Vulkan plugin persists shaders today: Granite's Fossilize disk cache (`GRANITE_VULKAN_FOSSILIZE`, `device_fossilize.cpp`) is compiled out and no `VkPipelineCache` is created, so pipelines recompile on every game launch (first-launch stutter). Build the Fossilize library into `mupen64plus-video-parallel` and persist a `.foz`/pipeline cache in the app cache dir keyed by driver.
