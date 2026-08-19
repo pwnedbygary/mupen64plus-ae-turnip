@@ -5,7 +5,11 @@
     android:layout_height="wrap_content"
     android:checkMark="?android:attr/listChoiceIndicatorSingle"
     android:gravity="center_vertical"
-    android:minHeight="?android:attr/listPreferredItemHeight"
-    android:paddingStart="16dip"
-    android:paddingEnd="7dip"
-    android:textAppearance="@android:style/TextAppearance.Medium" />
+    android:minHeight="?attr/listPreferredItemHeightSmall"
+    android:paddingStart="?attr/dialogPreferredPadding"
+    android:paddingEnd="?attr/dialogPreferredPadding"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp"
+    android:lineSpacingExtra="2dp"
+    android:textAppearance="?android:attr/textAppearanceMedium"
+    android:textColor="?attr/textColorAlertDialogListItem" />

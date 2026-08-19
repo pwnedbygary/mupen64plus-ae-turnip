@@ -1,25 +1,317 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <style name="appTheme" parent="@android:style/Theme.Holo">
-        <item name="preferenceTheme">@style/PreferenceThemeOverlay</item>
+    <!-- Base App Theme - Material Components Dark -->
+    <style name="Theme.Mupen64PlusAE" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+        <!-- Material Color System -->
+        <item name="colorPrimary">@color/m3_primary</item>
+        <item name="colorOnPrimary">@color/m3_on_primary</item>
+        <item name="colorPrimaryContainer">@color/m3_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/m3_on_primary_container</item>
+
+        <item name="colorSecondary">@color/m3_secondary</item>
+        <item name="colorOnSecondary">@color/m3_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/m3_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/m3_on_secondary_container</item>
+
+        <item name="colorTertiary">@color/m3_tertiary</item>
+        <item name="colorOnTertiary">@color/m3_on_tertiary</item>
+        <item name="colorTertiaryContainer">@color/m3_tertiary_container</item>
+        <item name="colorOnTertiaryContainer">@color/m3_on_tertiary_container</item>
+
+        <item name="colorError">@color/m3_error</item>
+        <item name="colorOnError">@color/m3_on_error</item>
+        <item name="colorErrorContainer">@color/m3_error_container</item>
+        <item name="colorOnErrorContainer">@color/m3_on_error_container</item>
+
+        <item name="colorOnBackground">@color/m3_on_background</item>
+
+        <item name="colorSurface">@color/m3_surface</item>
+        <item name="colorOnSurface">@color/m3_on_surface</item>
+        <item name="colorSurfaceVariant">@color/m3_surface_variant</item>
+        <item name="colorOnSurfaceVariant">@color/m3_on_surface_variant</item>
+
+        <item name="colorOutline">@color/m3_outline</item>
+        <item name="colorOutlineVariant">@color/m3_outline_variant</item>
+
+        <!-- Window & System UI -->
+        <item name="android:windowBackground">@color/m3_background</item>
+        <item name="android:colorBackground">@color/m3_background</item>
+        <item name="android:navigationBarColor">@color/m3_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowIsTranslucent">true</item>
+
+        <!-- No Action Bar - we use Toolbar -->
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+
+        <!-- Typography -->
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColorPrimary">@color/m3_on_background</item>
+        <item name="android:textColorSecondary">@color/m3_on_surface_variant</item>
+        <item name="android:textColorTertiary">@color/m3_on_surface_variant</item>
+        <item name="android:textColorHint">@color/m3_outline_variant</item>
+
+        <!-- Shape Appearance -->
+        <item name="shapeAppearanceSmallComponent">@style/ShapeAppearance.Mupen64PlusAE.SmallComponent</item>
+        <item name="shapeAppearanceMediumComponent">@style/ShapeAppearance.Mupen64PlusAE.MediumComponent</item>
+        <item name="shapeAppearanceLargeComponent">@style/ShapeAppearance.Mupen64PlusAE.LargeComponent</item>
+
+        <!-- Component Overrides -->
+        <item name="materialButtonStyle">@style/Widget.Mupen64PlusAE.Button</item>
+        <item name="materialButtonOutlinedStyle">@style/Widget.Mupen64PlusAE.Button.Outlined</item>
+        <item name="floatingActionButtonStyle">@style/Widget.Mupen64PlusAE.FloatingActionButton</item>
+        <item name="chipStyle">@style/Widget.Mupen64PlusAE.Chip</item>
+        <item name="textInputStyle">@style/Widget.Mupen64PlusAE.TextInputLayout</item>
+        <item name="bottomSheetDialogTheme">@style/Theme.Mupen64PlusAE.BottomSheetDialog</item>
+        <item name="dialogTheme">@style/Theme.Mupen64PlusAE.Dialog</item>
+        <item name="alertDialogTheme">@style/Theme.Mupen64PlusAE.AlertDialog</item>
+        <item name="navigationViewStyle">@style/Widget.Mupen64PlusAE.NavigationView</item>
+        <item name="toolbarStyle">@style/Widget.Mupen64PlusAE.Toolbar</item>
+        <item name="searchViewStyle">@style/Widget.Mupen64PlusAE.SearchView</item>
+        <item name="switchStyle">@style/Widget.Mupen64PlusAE.Switch</item>
+        <item name="checkboxStyle">@style/Widget.Mupen64PlusAE.CheckBox</item>
+        <item name="radioButtonStyle">@style/Widget.Mupen64PlusAE.RadioButton</item>
+
+        <!-- Preference Theme -->
+        <item name="preferenceTheme">@style/PreferenceThemeOverlay.Mupen64PlusAE</item>
+
+        <!-- Window Transitions -->
+        <item name="android:windowActivityTransitions">true</item>
+        <item name="android:windowEnterTransition">@transition/fade_scale</item>
+        <item name="android:windowExitTransition">@transition/fade_scale</item>
+        <item name="android:windowSharedElementEnterTransition">@transition/move_transform</item>
+        <item name="android:windowSharedElementExitTransition">@transition/move_transform</item>
+    </style>
+
+    <!-- Shape Appearance -->
+    <style name="ShapeAppearance.Mupen64PlusAE.SmallComponent" parent="ShapeAppearance.MaterialComponents.SmallComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">12dp</item>
+    </style>
+
+    <style name="ShapeAppearance.Mupen64PlusAE.MediumComponent" parent="ShapeAppearance.MaterialComponents.MediumComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">16dp</item>
+    </style>
+
+    <style name="ShapeAppearance.Mupen64PlusAE.LargeComponent" parent="ShapeAppearance.MaterialComponents.LargeComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">24dp</item>
+    </style>
+
+    <!-- Component Styles -->
+
+    <!-- Buttons -->
+    <style name="Widget.Mupen64PlusAE.Button" parent="Widget.MaterialComponents.Button">
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="cornerRadius">24dp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textAppearance">@style/TextAppearance.Mupen64PlusAE.Button</item>
+        <item name="rippleColor">@color/glass_highlight</item>
+        <item name="backgroundTint">@color/m3_primary</item>
+        <item name="iconTint">@color/m3_on_primary</item>
+    </style>
+
+    <style name="Widget.Mupen64PlusAE.Button.Outlined" parent="Widget.MaterialComponents.Button.OutlinedButton">
+        <item name="android:minHeight">48dp</item>
+        <item name="cornerRadius">24dp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textAppearance">@style/TextAppearance.Mupen64PlusAE.Button</item>
+        <item name="strokeWidth">1.5dp</item>
+        <item name="strokeColor">@color/glass_stroke_medium</item>
+        <item name="rippleColor">@color/glass_highlight</item>
+    </style>
+
+    <style name="Widget.Mupen64PlusAE.Button.Text" parent="Widget.MaterialComponents.Button.TextButton">
+        <item name="android:minHeight">40dp</item>
+        <item name="cornerRadius">20dp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textAppearance">@style/TextAppearance.Mupen64PlusAE.Button</item>
+        <item name="rippleColor">@color/glass_highlight</item>
+    </style>
+
+    <style name="TextAppearance.Mupen64PlusAE.Button" parent="TextAppearance.MaterialComponents.Button">
+        <item name="android:letterSpacing">0.02</item>
+        <item name="android:fontWeight">500</item>
+    </style>
+
+    <!-- FAB -->
+    <style name="Widget.Mupen64PlusAE.FloatingActionButton" parent="Widget.MaterialComponents.FloatingActionButton">
+        <item name="backgroundTint">@drawable/bg_frosted_glass_fab</item>
+        <item name="rippleColor">@color/glass_highlight</item>
+        <item name="elevation">8dp</item>
+    </style>
+
+    <!-- Chip -->
+    <style name="Widget.Mupen64PlusAE.Chip" parent="Widget.MaterialComponents.Chip.Entry">
+        <item name="chipBackgroundColor">@drawable/bg_frosted_glass_button</item>
+        <item name="android:textColor">@color/m3_on_surface</item>
+        <item name="iconTint">@color/m3_primary</item>
+        <item name="checkedIconTint">@color/m3_on_primary</item>
+        <item name="closeIconTint">@color/m3_on_surface_variant</item>
+        <item name="rippleColor">@color/glass_highlight</item>
+        <item name="shapeAppearance">@style/ShapeAppearance.Mupen64PlusAE.SmallComponent</item>
+    </style>
+
+    <!-- TextInputLayout -->
+    <style name="Widget.Mupen64PlusAE.TextInputLayout" parent="Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+        <item name="boxBackgroundColor">@color/glass_bg_medium</item>
+        <item name="boxStrokeColor">@color/glass_stroke_medium</item>
+        <item name="boxStrokeWidth">1.5dp</item>
+        <item name="boxStrokeWidthFocused">2dp</item>
+        <item name="boxCornerRadiusTopStart">16dp</item>
+        <item name="boxCornerRadiusTopEnd">16dp</item>
+        <item name="boxCornerRadiusBottomStart">16dp</item>
+        <item name="boxCornerRadiusBottomEnd">16dp</item>
+        <item name="hintTextColor">@color/m3_on_surface_variant</item>
+        <item name="android:textColorHint">@color/m3_on_surface_variant</item>
+    </style>
+
+    <!-- Bottom Sheet Dialog -->
+    <style name="Theme.Mupen64PlusAE.BottomSheetDialog" parent="ThemeOverlay.MaterialComponents.BottomSheetDialog">
+        <item name="bottomSheetStyle">@style/Widget.Mupen64PlusAE.BottomSheet</item>
+    </style>
+
+    <style name="Widget.Mupen64PlusAE.BottomSheet" parent="Widget.MaterialComponents.BottomSheet.Modal">
+        <item name="android:background">@drawable/bg_frosted_glass_dialog</item>
+    </style>
+
+    <!-- Dialog -->
+    <style name="Theme.Mupen64PlusAE.Dialog" parent="ThemeOverlay.MaterialComponents.Dialog.Alert">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsFloating">true</item>
+    </style>
+
+    <style name="Theme.Mupen64PlusAE.AlertDialog" parent="ThemeOverlay.MaterialComponents.MaterialAlertDialog">
+        <item name="shapeAppearanceOverlay">@style/ShapeAppearanceOverlay.Mupen64PlusAE.AlertDialog</item>
+        <item name="android:windowBackground">@drawable/bg_frosted_glass_dialog</item>
+        <item name="colorSurface">@color/glass_bg_strong</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.45</item>
+        <item name="titleTextColor">@color/m3_on_surface</item>
+        <item name="android:textColor">@color/m3_on_surface_variant</item>
+        <item name="buttonBarPositiveButtonStyle">@style/Widget.Mupen64PlusAE.Button.Text</item>
+        <item name="buttonBarNegativeButtonStyle">@style/Widget.Mupen64PlusAE.Button.Text</item>
+        <item name="buttonBarNeutralButtonStyle">@style/Widget.Mupen64PlusAE.Button.Text</item>
+    </style>
+
+    <style name="ShapeAppearanceOverlay.Mupen64PlusAE.AlertDialog" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">24dp</item>
+    </style>
+
+    <!-- Navigation View -->
+    <style name="Widget.Mupen64PlusAE.NavigationView" parent="Widget.MaterialComponents.NavigationView">
+        <item name="android:background">@drawable/bg_frosted_glass_sidebar</item>
+        <item name="itemTextColor">@color/nav_item_text_color</item>
+        <item name="itemIconTint">@color/nav_item_icon_tint</item>
+        <item name="itemBackground">@drawable/nav_item_background</item>
+        <item name="itemHorizontalPadding">20dp</item>
+        <item name="itemVerticalPadding">14dp</item>
+        <item name="itemMaxLines">1</item>
+        <item name="dividerColor">@color/glass_stroke_subtle</item>
+    </style>
+
+    <!-- Toolbar -->
+    <style name="Widget.Mupen64PlusAE.Toolbar" parent="Widget.MaterialComponents.Toolbar">
+        <item name="android:background">@drawable/bg_frosted_glass_strong</item>
+        <item name="titleTextColor">@color/m3_on_surface</item>
+        <item name="subtitleTextColor">@color/m3_on_surface_variant</item>
+        <item name="navigationIconTint">@color/m3_on_surface</item>
+    </style>
+
+    <!-- SearchView -->
+    <style name="Widget.Mupen64PlusAE.SearchView" parent="Widget.AppCompat.SearchView">
+        <item name="queryBackground">@drawable/bg_frosted_glass_light</item>
+        <item name="submitBackground">@drawable/bg_frosted_glass_light</item>
+        <item name="iconifiedByDefault">false</item>
+        <item name="queryHint">@string/actionSearchRoms</item>
+        <item name="android:textColorHint">@color/m3_outline_variant</item>
+    </style>
+
+    <!-- Switch -->
+    <style name="Widget.Mupen64PlusAE.Switch" parent="Widget.MaterialComponents.CompoundButton.Switch">
+        <item name="trackColor">@color/switch_track_color</item>
+        <item name="thumbColor">@color/switch_thumb_color</item>
+    </style>
+
+    <!-- CheckBox -->
+    <style name="Widget.Mupen64PlusAE.CheckBox" parent="Widget.MaterialComponents.CompoundButton.CheckBox">
+        <item name="buttonTint">@color/checkbox_button_tint</item>
+    </style>
+
+    <!-- RadioButton -->
+    <style name="Widget.Mupen64PlusAE.RadioButton" parent="Widget.MaterialComponents.CompoundButton.RadioButton">
+        <item name="buttonTint">@color/radio_button_tint</item>
+    </style>
+
+    <!-- Preference Theme Overlay -->
+    <style name="PreferenceThemeOverlay.Mupen64PlusAE" parent="PreferenceThemeOverlay.v14.Material">
+        <item name="preferenceStyle">@style/Preference.Mupen64PlusAE</item>
+        <item name="preferenceCategoryStyle">@style/Preference.Mupen64PlusAE.Category</item>
+        <item name="android:listDivider">@drawable/pref_divider</item>
+        <item name="android:dividerHeight">1px</item>
+    </style>
+
+    <style name="Preference.Mupen64PlusAE" parent="Preference.Material">
+        <item name="android:layout">@layout/preference_item_mupen</item>
+        <item name="android:background">@drawable/bg_frosted_glass_card</item>
+        <item name="android:paddingStart">20dp</item>
+        <item name="android:paddingEnd">20dp</item>
+        <item name="android:paddingTop">14dp</item>
+        <item name="android:paddingBottom">14dp</item>
+    </style>
+
+    <style name="Preference.Mupen64PlusAE.Category" parent="Preference.Category.Material">
+        <item name="android:layout">@layout/preference_category_mupen</item>
+        <item name="android:textColor">@color/m3_primary</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.08</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:paddingStart">20dp</item>
+        <item name="android:paddingTop">16dp</item>
+        <item name="android:paddingBottom">8dp</item>
+    </style>
+
+    <!-- Legacy compatibility themes -->
+    <style name="appTheme" parent="Theme.Mupen64PlusAE">
         <item name="android:windowTranslucentStatus">true</item>
         <item name="android:windowTranslucentNavigation">true</item>
     </style>
 
-    <style name="Theme.AppCompat.Black">
-        <item name="android:windowBackground">@android:color/black</item>
-        <item name="android:colorBackground">@android:color/black</item>
-        <item name="preferenceTheme">@style/PreferenceThemeOverlay</item>
-        <item name="android:navigationBarColor">@color/mupen_black</item>
+    <style name="Theme.AppCompat.Black" parent="Theme.Mupen64PlusAE">
+        <item name="android:windowBackground">@color/m3_background</item>
+        <item name="android:colorBackground">@color/m3_background</item>
+        <item name="android:navigationBarColor">@color/m3_background</item>
     </style>
 
-    <style name="Theme.AppCompat.Black.OverlayActionBar">
+    <style name="Theme.AppCompat.Black.OverlayActionBar" parent="Theme.Mupen64PlusAE">
         <item name="windowActionBarOverlay">true</item>
-        <item name="preferenceTheme">@style/PreferenceThemeOverlay</item>
-        <item name="android:navigationBarColor">@color/mupen_black</item>
     </style>
 
+    <style name="MupenTheme_Dark" parent="Theme.Mupen64PlusAE" />
+    <style name="MupenTheme_Dark.NoActionBar" parent="Theme.Mupen64PlusAE" />
+
+    <style name="MupenTheme_Dark_Sidebar" parent="Theme.Mupen64PlusAE">
+        <item name="android:background">@drawable/bg_frosted_glass_sidebar</item>
+        <item name="android:textColor">@color/m3_on_surface</item>
+        <item name="android:listChoiceBackgroundIndicator">@color/m3_primary</item>
+        <item name="android:divider">@drawable/pref_divider</item>
+        <item name="android:childDivider">@drawable/pref_divider</item>
+        <item name="android:scrollbars">none</item>
+    </style>
+
+    <style name="Theme.Mupen64plusaeTheme" parent="MupenTheme_Dark" />
+    <style name="Theme.Mupen64plusaeTheme.NoActionBar" parent="MupenTheme_Dark.NoActionBar" />
+    <style name="Theme.Mupen64plusaeTheme.Game" parent="Theme.AppCompat.Black" />
+
+    <!-- Gamepad/Input Mapping Button Styles -->
     <style name="btnMappable" parent="@android:style/Widget.Button">
         <item name="android:layout_width">@dimen/inputMapPreferenceButtonSize</item>
         <item name="android:layout_height">@dimen/inputMapPreferenceButtonSize</item>
@@ -50,37 +342,10 @@
         <item name="android:textAppearance">?android:attr/textAppearanceMedium</item>
     </style>
 
-    <!-- Dark (default) Theme Styles -->
-    <style name="MupenTheme_Dark.NoActionBar" parent="Theme.AppCompat.NoActionBar">
-        <item name="android:fontFamily">@string/default_font</item>
-        <item name="android:navigationBarColor">@color/mupen_black</item>
-        <item name="android:textSize">17sp</item>
-        <item name="android:statusBarColor">@color/mupen_black</item>
+    <!-- Full Screen Dialog Theme -->
+    <style name="Theme.Mupen64PlusAE.Dialog.FullScreen" parent="Theme.Mupen64PlusAE">
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
     </style>
-
-    <style name="MupenTheme_Dark" parent="Theme.AppCompat">
-        <item name="android:fontFamily">@string/default_font</item>
-        <item name="android:navigationBarColor">@color/mupen_black</item>
-        <item name="android:textSize">17sp</item>
-        <item name="android:statusBarColor">@color/mupen_black</item>
-    </style>
-
-    <style name="MupenTheme_Dark_Sidebar" parent="MupenTheme_Dark">
-        <item name="android:background">@color/mupen_black</item>
-        <item name="android:textColor">@color/mupen_white</item>
-        <item name="android:listChoiceBackgroundIndicator">@color/mupen_primary</item>
-        <item name="android:divider">@drawable/divider_parent</item>
-        <item name="android:childDivider">@drawable/divider_menu</item>
-        <item name="android:scrollbars">none</item>
-    </style>
-
-    <style name="Theme.Mupen64plusaeTheme" parent="MupenTheme_Dark">
-    </style>
-
-    <style name="Theme.Mupen64plusaeTheme.NoActionBar" parent="MupenTheme_Dark.NoActionBar">
-    </style>
-
-    <style name="Theme.Mupen64plusaeTheme.Game" parent="@style/Theme.AppCompat.Black">
-    </style>
-
 </resources>

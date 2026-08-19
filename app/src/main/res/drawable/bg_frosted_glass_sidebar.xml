@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="@color/glass_bg_strong" />
+    <stroke
+        android:width="1px"
+        android:color="@color/glass_stroke_medium" />
+    <corners
+        android:topRightRadius="24dp"
+        android:bottomRightRadius="24dp" />
+</shape>

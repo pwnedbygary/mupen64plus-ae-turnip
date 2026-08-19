@@ -261,7 +261,7 @@ public class GalleryItem
                 Activity tempActivity = mActivity.get();
 
                 if (tempActivity != null) {
-                    LinearLayout linearLayout = view.findViewById( R.id.galleryItem );
+                    androidx.cardview.widget.CardView card = view.findViewById( R.id.galleryItemCard );
                     GalleryActivity activity = (GalleryActivity) tempActivity;
 
                     if( item.isHeading )
@@ -270,7 +270,9 @@ public class GalleryItem
                         tv1.setGravity(Gravity.BOTTOM);
                         view.setClickable( false );
                         view.setLongClickable( false );
-                        linearLayout.setPadding( 0, 0, 0, 0 );
+                        card.setRadius( 0 );
+                        card.setCardElevation( 0 );
+                        card.setPadding( 0, 0, 0, 0 );
                         tv1.setPadding( 25, 10, 0, 0 );
                         tv1.setTextSize( TypedValue.COMPLEX_UNIT_DIP, 14.5f );
                         tv1.setLetterSpacing(0.1f);
@@ -280,9 +282,6 @@ public class GalleryItem
                     {
                         view.setClickable( true );
                         view.setLongClickable( true );
-                        linearLayout.setPadding( activity.galleryHalfSpacing,
-                                activity.galleryHalfSpacing, activity.galleryHalfSpacing,
-                                activity.galleryHalfSpacing );
                         tv1.setPadding( 0, 0, 0, 0 );
                         tv1.setTextSize( TypedValue.COMPLEX_UNIT_DIP, 13.0f*item.scale );
                         artView.setVisibility( View.VISIBLE );

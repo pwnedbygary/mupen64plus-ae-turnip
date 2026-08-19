@@ -1,36 +1,52 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:paddingBottom="0dip" >
+    android:padding="24dp"
+    android:background="@drawable/bg_frosted_glass_sidebar">
 
     <LinearLayout
         android:id="@+id/imageLayout"
-        android:layout_width="279dip"
-        android:layout_height="match_parent"
-        android:focusable="false" >
+        android:layout_width="match_parent"
+        android:layout_height="160dp"
+        android:gravity="center"
+        android:layout_marginBottom="16dp">
 
-        <ImageView
-            android:id="@+id/imageArt"
+        <androidx.cardview.widget.CardView
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:adjustViewBounds="true"
-            android:scaleType="fitCenter"
-            android:cropToPadding="false"
-            android:focusable="false"
-            android:src="@drawable/default_coverart"
-            tools:ignore="ContentDescription" />
+            android:layout_height="match_parent"
+            android:layout_marginHorizontal="16dp"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="8dp"
+            app:cardBackgroundColor="@color/glass_bg_medium"
+            app:cardPreventCornerOverlap="false">
+
+            <ImageView
+                android:id="@+id/imageArt"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:adjustViewBounds="true"
+                android:scaleType="fitCenter"
+                android:cropToPadding="false"
+                android:focusable="false"
+                android:src="@drawable/default_coverart"
+                tools:ignore="ContentDescription" />
+        </androidx.cardview.widget.CardView>
     </LinearLayout>
 
     <TextView
         android:id="@+id/gameTitle"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:gravity="center"
         android:focusable="false"
-        android:padding="5dip"
         android:text="@string/galleryItemAdapter_dummyText"
-        style="@style/Theme.Mupen64plusaeTheme" />
-
+        android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
+        android:textColor="@color/m3_on_surface"
+        android:letterSpacing="0.01"
+        android:ellipsize="end"
+        android:maxLines="1" />
 </LinearLayout>

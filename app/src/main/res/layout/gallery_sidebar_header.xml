@@ -2,16 +2,35 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_height="193dp"
     android:orientation="vertical"
-    android:paddingBottom="0dip" >
+    android:gravity="bottom"
+    android:padding="24dp"
+    android:background="@drawable/bg_frosted_glass_sidebar">
 
     <ImageView
         android:id="@+id/headerLogoArt"
-        android:layout_width="match_parent"
-        android:layout_height="193dip"
-        android:focusable="false"
-        android:src="@drawable/ouya_icon"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginBottom="12dp"
+        android:src="@drawable/ic_n64_controller"
         tools:ignore="ContentDescription" />
 
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/app_name"
+        android:textAppearance="@style/TextAppearance.Material3.HeadlineSmall"
+        android:textColor="@color/m3_on_surface"
+        android:letterSpacing="0.02" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="N64 Emulator"
+        android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+        android:textColor="@color/m3_on_surface_variant"
+        android:letterSpacing="0.01" />
 </LinearLayout>

@@ -25,6 +25,7 @@ import android.net.Uri;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextUtils;
+import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
@@ -32,9 +33,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.CheckedTextView;
+import android.widget.TextView;
 
-import androidx.appcompat.app.AlertDialog.Builder;
-import androidx.fragment.app.FragmentActivity;
 import androidx.preference.ListPreference;
 
 import paulscode.android.mupen64plusae.R;
@@ -89,19 +89,24 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
     }
 
     @Override
-    public void onPrepareDialogBuilder( Context context, Builder builder )
+    public void onPrepareDialogBuilder( Context context, androidx.appcompat.app.AlertDialog.Builder builder )
     {
         populateDriverOptions(context);
 
+        // Custom title with device GPU info as a subtitle
+        View titleView = View.inflate(context, R.layout.dialog_title_driver, null);
+        TextView subtitleView = titleView.findViewById(R.id.subtitle);
         String gpuModel = getGpuModel();
         if (!TextUtils.isEmpty(gpuModel)) {
-            builder.setMessage(context.getString(R.string.gpuDriver_deviceInfo, gpuModel));
+            subtitleView.setText(context.getString(R.string.gpuDriver_deviceInfo, gpuModel));
+        } else {
+            subtitleView.setVisibility(View.GONE);
         }
+        builder.setCustomTitle(titleView);
 
         ArrayAdapter<DriverRow> adapter = new DriverRowAdapter(context, mDriverRows);
 
         int currentIndex = findIndexOfValue(getCurrentValue());
-        builder.setTitle(R.string.gpuDriver_selectTitle);
         builder.setSingleChoiceItems(adapter, currentIndex, (dialog, item) -> {
             if (mDriverRows.get(item).isHeader) {
                 return;
@@ -134,6 +139,46 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
 
     public void setOnDownloadDriverCallback(OnDownloadDriver onDownloadDriverCallback) {
         mDownloadCallback = onDownloadDriverCallback;
+    }
+
+    /**
+     * Populate the list of installed drivers, grouped under section headers.
+     * The stock system driver is always offered as the first choice.
+     */
+    public void populateDriverOptions(Context context)
+    {
+        ArrayList<CharSequence> entriesList = new ArrayList<>();
+        ArrayList<CharSequence> valuesList = new ArrayList<>();
+        mDriverRows = new ArrayList<>();
+
+        entriesList.add(context.getString(R.string.gpuDriver_sectionSystem).toUpperCase());
+        valuesList.add(HEADER_SENTINEL);
+        mDriverRows.add(new DriverRow(
+                context.getString(R.string.gpuDriver_sectionSystem).toUpperCase(), "", true));
+
+        entriesList.add(context.getString(R.string.gpuDriver_default));
+        valuesList.add("");
+        mDriverRows.add(new DriverRow(context.getString(R.string.gpuDriver_default), "", false));
+
+        File driverDir = getDriverDir(context);
+        File[] drivers = driverDir.listFiles(File::isDirectory);
+        if (drivers != null && drivers.length > 0) {
+            entriesList.add(context.getString(R.string.gpuDriver_sectionInstalled).toUpperCase());
+            valuesList.add(HEADER_SENTINEL);
+            mDriverRows.add(new DriverRow(
+                    context.getString(R.string.gpuDriver_sectionInstalled).toUpperCase(), "", true));
+
+            for (File driver : drivers) {
+                String name = driver.getName();
+                entriesList.add(name);
+                valuesList.add(name);
+                mDriverRows.add(new DriverRow(name, getDriverDetails(context, driver), false));
+            }
+        }
+
+        setEntries(entriesList.toArray(new CharSequence[0]));
+        setEntryValues(valuesList.toArray(new CharSequence[0]));
+        setValue(getPersistedString(""));
     }
 
     /**
@@ -207,7 +252,9 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
             } else {
                 String text = row.name + "\n" + row.details;
                 SpannableString spannable = new SpannableString(text);
-                spannable.setSpan(new RelativeSizeSpan(0.8f), row.name.length() + 1, text.length(),
+                spannable.setSpan(new ForegroundColorSpan(0x8AFFFFFF), row.name.length() + 1, text.length(),
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                spannable.setSpan(new RelativeSizeSpan(0.85f), row.name.length() + 1, text.length(),
                         Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 text1.setText(spannable);
             }
@@ -219,50 +266,20 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
 
     private List<DriverRow> mDriverRows = new ArrayList<>();
 
-    /**
-     * Populate the list of installed drivers, grouped under section headers.
-     * The stock system driver is always offered as the first choice.
-     */
-    public void populateDriverOptions(Context context)
-    {
-        ArrayList<CharSequence> entriesList = new ArrayList<>();
-        ArrayList<CharSequence> valuesList = new ArrayList<>();
-        mDriverRows = new ArrayList<>();
+    @Override
+    public void onDialogClosed(boolean positiveResult) {
+        // Selection is handled by the AlertDialog's single-choice listener
+    }
 
-        entriesList.add(context.getString(R.string.gpuDriver_sectionSystem).toUpperCase());
-        valuesList.add(HEADER_SENTINEL);
-        mDriverRows.add(new DriverRow(
-                context.getString(R.string.gpuDriver_sectionSystem).toUpperCase(), "", true));
-
-        entriesList.add(context.getString(R.string.gpuDriver_default));
-        valuesList.add("");
-        mDriverRows.add(new DriverRow(context.getString(R.string.gpuDriver_default), "", false));
-
-        File driverDir = getDriverDir(context);
-        File[] drivers = driverDir.listFiles(File::isDirectory);
-        if (drivers != null && drivers.length > 0) {
-            entriesList.add(context.getString(R.string.gpuDriver_sectionInstalled).toUpperCase());
-            valuesList.add(HEADER_SENTINEL);
-            mDriverRows.add(new DriverRow(
-                    context.getString(R.string.gpuDriver_sectionInstalled).toUpperCase(), "", true));
-
-            for (File driver : drivers) {
-                String name = driver.getName();
-                entriesList.add(name);
-                valuesList.add(name);
-                mDriverRows.add(new DriverRow(name, getDriverDetails(context, driver), false));
-            }
-        }
-
-        setEntries(entriesList.toArray(new CharSequence[0]));
-        setEntryValues(valuesList.toArray(new CharSequence[0]));
-        setValue(getPersistedString(""));
+    @Override
+    public void onBindDialogView(View view, androidx.fragment.app.FragmentActivity associatedActivity) {
+        // The dialog is fully built in onPrepareDialogBuilder
     }
 
     /**
      * Read version/minApi details from an installed driver's meta.json
      */
-    private static String getDriverDetails(Context context, File driverDir)
+    public static String getDriverDetails(Context context, File driverDir)
     {
         File metaFile = new File(driverDir, "meta.json");
         ArrayList<String> parts = new ArrayList<>();
@@ -339,7 +356,6 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
                     FileUtil.deleteFolder(driverDir);
                     setValue("");
                     syncGlobalDriverPrefs();
-                    populateDriverOptions(getContext());
                     notifyChanged();
                     Notifier.showToast(getContext(), R.string.gpuDriver_deleteSuccess);
                 })
@@ -488,17 +504,5 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
             outputStream.write(buffer, 0, read);
         }
         return outputStream.toByteArray();
-    }
-
-    @Override
-    public void onBindDialogView(View view, FragmentActivity associatedActivity)
-    {
-        //Nothing to do here
-    }
-
-    @Override
-    public void onDialogClosed(boolean result)
-    {
-        //Nothing to do here
     }
 }

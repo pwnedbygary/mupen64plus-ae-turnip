@@ -1,6 +1,70 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
+    <!-- Material3 Color System -->
+    <color name="m3_primary">#00DFDF</color>
+    <color name="m3_on_primary">#002020</color>
+    <color name="m3_primary_container">#003636</color>
+    <color name="m3_on_primary_container">#A0F0F0</color>
+
+    <color name="m3_secondary">#7CC4C4</color>
+    <color name="m3_on_secondary">#001F1F</color>
+    <color name="m3_secondary_container">#1A3A3A</color>
+    <color name="m3_on_secondary_container">#C8F0F0</color>
+
+    <color name="m3_tertiary">#C8E6E6</color>
+    <color name="m3_on_tertiary">#001E1E</color>
+    <color name="m3_tertiary_container">#003535</color>
+    <color name="m3_on_tertiary_container">#D0F0F0</color>
+
+    <color name="m3_error">#F2B8B5</color>
+    <color name="m3_on_error">#601410</color>
+    <color name="m3_error_container">#8C1D18</color>
+    <color name="m3_on_error_container">#F9DEDC</color>
+
+    <color name="m3_background">#121212</color>
+    <color name="m3_on_background">#E6E1E5</color>
+
+    <color name="m3_surface">#1E1E1E</color>
+    <color name="m3_on_surface">#E6E1E5</color>
+    <color name="m3_surface_variant">#2A2A2A</color>
+    <color name="m3_on_surface_variant">#CAC4CC</color>
+
+    <color name="m3_outline">#79747E</color>
+    <color name="m3_outline_variant">#49454F</color>
+    <color name="m3_shadow">#000000</color>
+
+    <color name="m3_inverse_surface">#E6E1E5</color>
+    <color name="m3_inverse_on_surface">#313033</color>
+    <color name="m3_inverse_primary">#006E6E</color>
+
+    <!-- Surface containers for elevation layering -->
+    <color name="m3_surface_container_low">#252525</color>
+    <color name="m3_surface_container">#2A2A2A</color>
+    <color name="m3_surface_container_high">#323232</color>
+    <color name="m3_surface_container_highest">#3A3A3A</color>
+
+    <!-- Frosted Glass / Glassmorphism Colors -->
+    <color name="glass_bg_strong">#E61A1A1A</color>      <!-- 90% opacity -->
+    <color name="glass_bg_medium">#BF1E1E1E</color>      <!-- 75% opacity -->
+    <color name="glass_bg_light">#99222222</color>       <!-- 60% opacity -->
+    <color name="glass_bg_subtle">#661A1A1A</color>      <!-- 40% opacity -->
+    <color name="glass_bg_overlay">#4D000000</color>     <!-- 30% overlay -->
+
+    <color name="glass_stroke_strong">#4DFFFFFF</color>  <!-- 30% -->
+    <color name="glass_stroke_medium">#33FFFFFF</color>  <!-- 20% -->
+    <color name="glass_stroke_subtle">#1FFFFFFF</color>  <!-- 12% -->
+
+    <color name="glass_highlight">#1AFFFFFF</color>      <!-- 10% highlight -->
+    <color name="glass_shadow">#99000000</color>         <!-- 60% shadow -->
+
+    <!-- Legacy color mappings -->
+    <color name="mupen_black">#D8252525</color>
+    <color name="mupen_white">#EFEFEF</color>
+    <color name="mupen_black_wAlpha">#00ffffff</color>
+    <color name="mupen_primary">#00DFDF</color>
+    <color name="mupen_highlight">#22808080</color>
+
     <color name="yellow1">#F8E334</color>
     <color name="yellow2">#F29620</color>
     <color name="red1">#F1001C</color>
@@ -18,16 +82,7 @@
     <color name="holo_purple1">#AA66CC</color>
     <color name="holo_purple2">#9933CC</color>
 
-    <color name="mupen_black">#D8252525</color>
-    <color name="mupen_white">#EFEFEF</color>
-    <color name="mupen_black_wAlpha">#00ffffff</color>
-    <color name="mupen_primary">#00DFDF</color>
-    <color name="mupen_highlight">#22808080</color>
-
-
-
     <color name="accent_material_dark">#ff80cbc4</color>
     <color name="dim_foreground_disabled_material_dark">#80bebebe</color>
-
 
 </resources>

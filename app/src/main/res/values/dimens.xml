@@ -1,13 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
+    <!-- Input Mapping -->
     <dimen name="inputMapPreferenceButtonSize">40dp</dimen>
     <dimen name="inputMapPreferenceButtonSizeX1_5">60dp</dimen>
     <dimen name="inputMapPreferenceButtonSizeX3">120dp</dimen>
     <dimen name="inputMapPreferenceButtonSizeX5">200dp</dimen>
+
+    <!-- Gallery Grid -->
     <dimen name="galleryImageWidth">175dp</dimen>
-    <dimen name="galleryImageHeight">121dp</dimen> <!-- galleryImageWidth * 177 / 256 -->
+    <dimen name="galleryImageHeight">121dp</dimen>
     <dimen name="galleryTextHeight">50dp</dimen>
     <dimen name="galleryHalfSpacing">5dp</dimen>
+
+    <!-- Modern Gallery Card -->
+    <dimen name="galleryItemWidth">180dp</dimen>
+    <dimen name="galleryItemSpacing">8dp</dimen>
+
+    <!-- Spacing System -->
+    <dimen name="spacing_xs">4dp</dimen>
+    <dimen name="spacing_sm">8dp</dimen>
+    <dimen name="spacing_md">16dp</dimen>
+    <dimen name="spacing_lg">24dp</dimen>
+    <dimen name="spacing_xl">32dp</dimen>
+
+    <!-- Corner Radius -->
+    <dimen name="corner_radius_sm">8dp</dimen>
+    <dimen name="corner_radius_md">12dp</dimen>
+    <dimen name="corner_radius_lg">16dp</dimen>
+    <dimen name="corner_radius_xl">20dp</dimen>
+    <dimen name="corner_radius_full">100dp</dimen>
+
+    <!-- Elevation -->
+    <dimen name="elevation_level1">2dp</dimen>
+    <dimen name="elevation_level2">4dp</dimen>
+    <dimen name="elevation_level3">8dp</dimen>
+    <dimen name="elevation_level4">12dp</dimen>
+    <dimen name="elevation_level5">24dp</dimen>
 
 </resources>

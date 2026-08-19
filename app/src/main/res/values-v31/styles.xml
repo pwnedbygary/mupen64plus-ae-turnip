@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Android 12+ (API 31+): blur the activity behind dialogs for a true frosted-glass effect -->
+    <style name="Theme.Mupen64PlusAE.Dialog" parent="ThemeOverlay.MaterialComponents.Dialog.Alert">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.45</item>
+        <item name="android:windowBlurBehindEnabled">true</item>
+        <item name="android:windowBlurBehindRadius">24dp</item>
+    </style>
+
+    <style name="Theme.Mupen64PlusAE.AlertDialog" parent="ThemeOverlay.MaterialComponents.MaterialAlertDialog">
+        <item name="shapeAppearanceOverlay">@style/ShapeAppearanceOverlay.Mupen64PlusAE.AlertDialog</item>
+        <item name="android:windowBackground">@drawable/bg_frosted_glass_dialog</item>
+        <item name="colorSurface">@color/glass_bg_strong</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.45</item>
+        <item name="android:windowBlurBehindEnabled">true</item>
+        <item name="android:windowBlurBehindRadius">24dp</item>
+        <item name="titleTextColor">@color/m3_on_surface</item>
+        <item name="android:textColor">@color/m3_on_surface_variant</item>
+        <item name="buttonBarPositiveButtonStyle">@style/Widget.Mupen64PlusAE.Button.Text</item>
+        <item name="buttonBarNegativeButtonStyle">@style/Widget.Mupen64PlusAE.Button.Text</item>
+        <item name="buttonBarNeutralButtonStyle">@style/Widget.Mupen64PlusAE.Button.Text</item>
+    </style>
+
+    <style name="Theme.Mupen64PlusAE.Dialog.FullScreen" parent="Theme.Mupen64PlusAE">
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.45</item>
+        <item name="android:windowBlurBehindEnabled">true</item>
+        <item name="android:windowBlurBehindRadius">24dp</item>
+    </style>
+</resources>
