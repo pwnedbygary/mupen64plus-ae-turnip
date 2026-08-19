@@ -35,8 +35,8 @@
 #include <windows.h>
 #endif
 
-#ifdef GRANITE_VULKAN_FILESYSTEM
-#include "string_helpers.hpp"
+#if defined(GRANITE_VULKAN_FILESYSTEM) || defined(PLUGIN_VULKAN_PIPELINE_CACHE)
+#include "plugin_filesystem.hpp"
 #endif
 
 #ifdef GRANITE_VULKAN_MT
@@ -603,7 +603,7 @@ string Device::get_pipeline_cache_string() const
 
 void Device::init_pipeline_cache()
 {
-#ifdef GRANITE_VULKAN_FILESYSTEM
+#if defined(GRANITE_VULKAN_FILESYSTEM) || defined(PLUGIN_VULKAN_PIPELINE_CACHE)
 	if (!system_handles.filesystem)
 		return;
 	auto file = system_handles.filesystem->open(Util::join("cache://pipeline_cache_", get_pipeline_cache_string(), ".bin"),
@@ -660,7 +660,7 @@ bool Device::get_pipeline_cache_data(uint8_t *data, size_t size)
 
 void Device::flush_pipeline_cache()
 {
-#ifdef GRANITE_VULKAN_FILESYSTEM
+#if defined(GRANITE_VULKAN_FILESYSTEM) || defined(PLUGIN_VULKAN_PIPELINE_CACHE)
 	if (!system_handles.filesystem)
 		return;
 
@@ -761,6 +761,8 @@ void Device::set_context(const Context &context)
 	ext = context.get_enabled_device_features();
 
 	init_workarounds();
+
+	system_handles = context.get_system_handles();
 
 	init_stock_samplers();
 	init_pipeline_cache();

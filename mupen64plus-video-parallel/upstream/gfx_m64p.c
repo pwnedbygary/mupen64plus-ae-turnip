@@ -63,6 +63,14 @@ static ptr_ConfigSetDefaultBool ConfigSetDefaultBool = NULL;
 static ptr_ConfigGetParamInt ConfigGetParamInt = NULL;
 static ptr_ConfigGetParamBool ConfigGetParamBool = NULL;
 static ptr_ConfigSetParameter ConfigSetParameter = NULL;
+static ptr_ConfigGetUserCachePath ConfigGetUserCachePath = NULL;
+
+const char *plugin_get_user_cache_path(void)
+{
+    if (ConfigGetUserCachePath == NULL)
+        return NULL;
+    return ConfigGetUserCachePath();
+}
 
 static bool vk_initialized;
 static bool warn_hle;
@@ -125,6 +133,7 @@ EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle _CoreLibHandle, void *Co
     ConfigGetParamInt = (ptr_ConfigGetParamInt)DLSYM(CoreLibHandle, "ConfigGetParamInt");
     ConfigGetParamBool = (ptr_ConfigGetParamBool)DLSYM(CoreLibHandle, "ConfigGetParamBool");
     ConfigSetParameter = (ptr_ConfigSetParameter)DLSYM(CoreLibHandle, "ConfigSetParameter");
+    ConfigGetUserCachePath = (ptr_ConfigGetUserCachePath)DLSYM(CoreLibHandle, "ConfigGetUserCachePath");
 
     ConfigOpenSection("Video-Parallel", &configVideoParallel);
     ConfigSetDefaultBool(configVideoParallel, KEY_FULLSCREEN, 0, "Use fullscreen mode if True, or windowed mode if False");

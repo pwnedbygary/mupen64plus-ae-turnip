@@ -10,7 +10,7 @@ else()
     set(NAME_PLUGIN_M64P "mupen64plus-video-parallel")
 endif()
 
-add_definitions(-DM64P_PLUGIN_API -DGRANITE_VULKAN_MT)
+add_definitions(-DM64P_PLUGIN_API -DGRANITE_VULKAN_MT -DPLUGIN_VULKAN_PIPELINE_CACHE)
 
 # check for INTERPROCEDURAL_OPTIMIZATION support
 if((${CMAKE_VERSION} VERSION_EQUAL 3.9) OR (${CMAKE_VERSION} VERSION_GREATER 3.9))
@@ -69,6 +69,7 @@ add_library(${NAME_PLUGIN_M64P} SHARED
     vulkan/fence_manager.cpp
     vulkan/image.cpp
     vulkan/memory_allocator.cpp
+    vulkan/plugin_filesystem.cpp
     vulkan/pipeline_event.cpp
     vulkan/query_pool.cpp
     vulkan/render_pass.cpp

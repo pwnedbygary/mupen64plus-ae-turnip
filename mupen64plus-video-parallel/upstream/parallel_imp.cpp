@@ -4,6 +4,8 @@
 #include "rdp_device.hpp"
 #include "context.hpp"
 #include "device.hpp"
+#include "plugin_filesystem.hpp"
+#include "gfx_m64p.h"
 
 using namespace Vulkan;
 using namespace std;
@@ -15,6 +17,7 @@ static uint32_t cmd_data[0x00040000 >> 2];
 static unique_ptr<RDP::CommandProcessor> frontend;
 static unique_ptr<Device> device;
 static unique_ptr<Context> context;
+static unique_ptr<DirFilesystem> plugin_cache_fs;
 
 static PFN_vkGetInstanceProcAddr custom_vk_loader;
 
@@ -213,6 +216,7 @@ void vk_destroy()
 	running = false;
 	frontend.reset();
 	device.reset();
+	plugin_cache_fs.reset();
 	context.reset();
 
 	screen_close();
@@ -230,6 +234,15 @@ bool vk_init()
 		return false;
 	if (!context->init_instance_and_device(nullptr, 0, nullptr, 0, ::Vulkan::CONTEXT_CREATION_DISABLE_BINDLESS_BIT))
 		return false;
+
+	const char *cache_path = plugin_get_user_cache_path();
+	if (cache_path != nullptr && cache_path[0] != '\0')
+	{
+		plugin_cache_fs = unique_ptr<DirFilesystem>(new DirFilesystem(cache_path));
+		Context::SystemHandles handles;
+		handles.filesystem = plugin_cache_fs.get();
+		context->set_system_handles(handles);
+	}
 
 	uintptr_t aligned_rdram = reinterpret_cast<uintptr_t>(gfx.RDRAM);
 	uintptr_t offset = 0;
