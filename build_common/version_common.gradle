@@ -8,7 +8,18 @@ android {
     defaultConfig {
         minSdkVersion 23
         targetSdkVersion 34
-        versionCode = 333
-        versionName = "3.0.333 (beta)"
+        versionCode = 334
+        versionName = "3.0.334 (beta) " + gitCommitHash()
+    }
+}
+
+def gitCommitHash()
+{
+    try {
+        def process = ['git', 'rev-parse', '--short=8', 'HEAD'].execute(null, rootProject.projectDir)
+        process.waitFor()
+        return process.exitValue() == 0 ? process.text.trim() : ''
+    } catch (Exception e) {
+        return ''
     }
 }
