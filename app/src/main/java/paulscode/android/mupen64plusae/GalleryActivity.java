@@ -97,6 +97,7 @@ import paulscode.android.mupen64plusae.util.FileUtil;
 import paulscode.android.mupen64plusae.util.LocaleContextWrapper;
 import paulscode.android.mupen64plusae.util.Notifier;
 import paulscode.android.mupen64plusae.util.UpdateChecker;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 public class GalleryActivity extends AppCompatActivity implements GameSidebarActionHandler, PromptConfirmListener,
         GalleryRefreshFinishedListener
@@ -605,6 +606,9 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
 
         super.onResume();
 
+        // Re-apply the runtime-customizable UI theme
+        UiTheme.get(this).applyToActivity(this);
+
         //mRefreshNeeded will be set to true whenever a game is launched
         if(mRefreshNeeded)
         {
@@ -793,6 +797,10 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         } else if (item.getItemId() == R.id.menuItem_categoryDisplay) {
             tagForRefreshNeeded();
             ActivityHelper.startDisplayPrefsActivity( this );
+            return true;
+        } else if (item.getItemId() == R.id.menuItem_categoryTheme) {
+            tagForRefreshNeeded();
+            ActivityHelper.startThemePrefsActivity( this );
             return true;
         } else if (item.getItemId() == R.id.menuItem_categoryShaders) {
             tagForRefreshNeeded();

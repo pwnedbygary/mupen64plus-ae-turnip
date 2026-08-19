@@ -537,6 +537,9 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         super.onStart();
         Log.i(TAG, "onStart");
 
+        // Re-apply the runtime-customizable UI theme
+        paulscode.android.mupen64plusae.ui.UiTheme.get(this).applyToActivity(this);
+
         final FragmentManager fm = this.getSupportFragmentManager();
 
         if (mIsNetplayEnabled && mIsNetplayServer) {

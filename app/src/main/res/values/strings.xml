@@ -230,6 +230,7 @@
     <string name="categoryParallel_title">Parallel RDP settings</string>
     <string name="categoryLibrary_title">Library</string>
     <string name="categoryDisplay_title">Display</string>
+    <string name="categoryTheme_title">Theme</string>
     <string name="categoryShaders_title">Shaders</string>
     <string name="categoryAudio_title">Audio</string>
     <string name="categoryTouchscreen_title">Touchscreen</string>
@@ -1062,6 +1063,31 @@
     <string name="coreFragment_sdcard_write_error">Unable to write configuration to SD card</string>
     <string name="actionOpenMenu">Open main menu</string>
     <string name="actionSearchRoms">Search ROMs</string>
+
+    <!-- UI Theme -->
+    <string name="uiThemeCategoryAccents_title">Accent colors</string>
+    <string name="uiThemeCategorySurfaces_title">Backgrounds</string>
+    <string name="uiThemeCategoryText_title">Text colors</string>
+    <string name="uiThemeCategoryEffects_title">Effects</string>
+    <string name="uiThemeCategoryReset_title">Reset</string>
+    <string name="uiThemePrimary_title">Primary accent</string>
+    <string name="uiThemeSecondary_title">Secondary accent</string>
+    <string name="uiThemeTertiary_title">Tertiary accent</string>
+    <string name="uiThemeError_title">Error color</string>
+    <string name="uiThemeBackground_title">Background</string>
+    <string name="uiThemeSurface_title">Surface (cards)</string>
+    <string name="uiThemeSurfaceVariant_title">Surface variant</string>
+    <string name="uiThemeOnSurface_title">Primary text</string>
+    <string name="uiThemeOnSurfaceVariant_title">Secondary text</string>
+    <string name="uiThemeColor_summary">Tap to customize with the color picker</string>
+    <string name="uiThemeGlassOpacity_title">Glass opacity</string>
+    <string name="uiThemeGlassOpacity_summary">Opacity of frosted glass panels</string>
+    <string name="uiThemeContrast_title">Text contrast</string>
+    <string name="uiThemeContrast_summary">Contrast of text against backgrounds</string>
+    <string name="uiThemeReset_title">Reset theme</string>
+    <string name="uiThemeReset_summary">Restore all colors to the default palette</string>
+    <string name="uiTheme_resetDone">Theme reset to defaults</string>
+    <string name="uiTheme_pickColor">Pick a color</string>
 
 
 </resources>

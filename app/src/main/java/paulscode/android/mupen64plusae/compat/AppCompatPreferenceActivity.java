@@ -43,6 +43,7 @@ import androidx.preference.PreferenceScreen;
 
 import paulscode.android.mupen64plusae.compat.AppCompatPreferenceFragment.OnDisplayDialogListener;
 import paulscode.android.mupen64plusae.compat.AppCompatPreferenceFragment.OnFragmentCreationListener;
+import paulscode.android.mupen64plusae.preference.ColorPickerPreference;
 import paulscode.android.mupen64plusae.util.DisplayWrapper;
 
 public abstract class AppCompatPreferenceActivity extends AppCompatActivity implements OnDisplayDialogListener, OnPreferenceStartScreenCallback, OnFragmentCreationListener
@@ -80,6 +81,18 @@ public abstract class AppCompatPreferenceActivity extends AppCompatActivity impl
 
             frag.setArguments(args);
             return frag;
+        }
+
+        @Override
+        public void onStart()
+        {
+            super.onStart();
+
+            // Apply the runtime-customizable UI theme to preference dialogs
+            android.app.Dialog dialog = getDialog();
+            if (dialog != null) {
+                paulscode.android.mupen64plusae.ui.UiTheme.get(dialog.getContext()).applyToDialog(dialog);
+            }
         }
 
         @Override
@@ -165,7 +178,16 @@ public abstract class AppCompatPreferenceActivity extends AppCompatActivity impl
     protected abstract String getSharedPrefsName();
 
     protected abstract int getSharedPrefsId();
-    
+
+    @Override
+    protected void onResume()
+    {
+        super.onResume();
+
+        // Re-apply the runtime-customizable UI theme
+        paulscode.android.mupen64plusae.ui.UiTheme.get(this).applyToActivity(this);
+    }
+
     public void resetPreferences()
     {        
         getSupportFragmentManager().beginTransaction().remove(mPrefFrag);
@@ -184,7 +206,11 @@ public abstract class AppCompatPreferenceActivity extends AppCompatActivity impl
     {
         DialogFragment returnFragment = null;
 
-        if (preference instanceof OnPreferenceDialogListener)
+        if (preference instanceof ColorPickerPreference)
+        {
+            returnFragment = ((ColorPickerPreference) preference).createPickerFragment();
+        }
+        else if (preference instanceof OnPreferenceDialogListener)
         {
             returnFragment = PreferenceDialog.newInstance(preference);
         }

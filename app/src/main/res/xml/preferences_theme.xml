@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    UI Theme customization: every color slot maps to a runtime-applied theme color.
+    Changes apply immediately to all screens.
+-->
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:mupen64="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory
+        android:key="uiThemeCategoryAccents"
+        android:title="@string/uiThemeCategoryAccents_title">
+
+        <paulscode.android.mupen64plusae.preference.ColorPickerPreference
+            android:key="uiThemePrimary"
+            android:title="@string/uiThemePrimary_title"
+            android:summary="@string/uiThemeColor_summary" />
+
+        <paulscode.android.mupen64plusae.preference.ColorPickerPreference
+            android:key="uiThemeSecondary"
+            android:title="@string/uiThemeSecondary_title"
+            android:summary="@string/uiThemeColor_summary" />
+
+        <paulscode.android.mupen64plusae.preference.ColorPickerPreference
+            android:key="uiThemeTertiary"
+            android:title="@string/uiThemeTertiary_title"
+            android:summary="@string/uiThemeColor_summary" />
+
+        <paulscode.android.mupen64plusae.preference.ColorPickerPreference
+            android:key="uiThemeError"
+            android:title="@string/uiThemeError_title"
+            android:summary="@string/uiThemeColor_summary" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:key="uiThemeCategorySurfaces"
+        android:title="@string/uiThemeCategorySurfaces_title">
+
+        <paulscode.android.mupen64plusae.preference.ColorPickerPreference
+            android:key="uiThemeBackground"
+            android:title="@string/uiThemeBackground_title"
+            android:summary="@string/uiThemeColor_summary" />
+
+        <paulscode.android.mupen64plusae.preference.ColorPickerPreference
+            android:key="uiThemeSurface"
+            android:title="@string/uiThemeSurface_title"
+            android:summary="@string/uiThemeColor_summary" />
+
+        <paulscode.android.mupen64plusae.preference.ColorPickerPreference
+            android:key="uiThemeSurfaceVariant"
+            android:title="@string/uiThemeSurfaceVariant_title"
+            android:summary="@string/uiThemeColor_summary" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:key="uiThemeCategoryText"
+        android:title="@string/uiThemeCategoryText_title">
+
+        <paulscode.android.mupen64plusae.preference.ColorPickerPreference
+            android:key="uiThemeOnSurface"
+            android:title="@string/uiThemeOnSurface_title"
+            android:summary="@string/uiThemeColor_summary" />
+
+        <paulscode.android.mupen64plusae.preference.ColorPickerPreference
+            android:key="uiThemeOnSurfaceVariant"
+            android:title="@string/uiThemeOnSurfaceVariant_title"
+            android:summary="@string/uiThemeColor_summary" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:key="uiThemeCategoryEffects"
+        android:title="@string/uiThemeCategoryEffects_title">
+
+        <paulscode.android.mupen64plusae.preference.SeekBarPreference
+            android:defaultValue="85"
+            android:key="uiThemeGlassOpacity"
+            android:title="@string/uiThemeGlassOpacity_title"
+            android:summary="@string/uiThemeGlassOpacity_summary"
+            mupen64:maximumValue="100"
+            mupen64:minimumValue="20"
+            mupen64:stepSize="1"
+            mupen64:units="%" />
+
+        <paulscode.android.mupen64plusae.preference.SeekBarPreference
+            android:defaultValue="100"
+            android:key="uiThemeContrast"
+            android:title="@string/uiThemeContrast_title"
+            android:summary="@string/uiThemeContrast_summary"
+            mupen64:maximumValue="200"
+            mupen64:minimumValue="50"
+            mupen64:stepSize="1"
+            mupen64:units="%" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:key="uiThemeCategoryReset"
+        android:title="@string/uiThemeCategoryReset_title">
+
+        <Preference
+            android:key="uiThemeReset"
+            android:title="@string/uiThemeReset_title"
+            android:summary="@string/uiThemeReset_summary" />
+    </PreferenceCategory>
+
+</PreferenceScreen>

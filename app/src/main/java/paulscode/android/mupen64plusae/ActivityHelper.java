@@ -52,6 +52,7 @@ import paulscode.android.mupen64plusae.persistent.InputPrefsActivity;
 import paulscode.android.mupen64plusae.persistent.LibraryPrefsActivity;
 import paulscode.android.mupen64plusae.persistent.NetplayPrefsActivity;
 import paulscode.android.mupen64plusae.persistent.ShaderPrefsActivity;
+import paulscode.android.mupen64plusae.persistent.ThemePrefsActivity;
 import paulscode.android.mupen64plusae.persistent.TouchscreenPrefsActivity;
 import paulscode.android.mupen64plusae.profile.ManageControllerProfilesActivity;
 import paulscode.android.mupen64plusae.profile.ManageEmulationProfilesActivity;
@@ -247,6 +248,12 @@ public class ActivityHelper
     static void startDisplayPrefsActivity( Context context )
     {
         Intent intent = new Intent( context, DisplayPrefsActivity.class );
+        context.startActivity( intent );    
+    }
+
+    static void startThemePrefsActivity( Context context )
+    {
+        Intent intent = new Intent( context, ThemePrefsActivity.class );
         context.startActivity( intent );    
     }
 

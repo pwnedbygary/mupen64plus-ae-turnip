@@ -18,6 +18,7 @@ import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.OnChildAttachStateChangeListener;
 
 import paulscode.android.mupen64plusae.R;
+import paulscode.android.mupen64plusae.preference.ColorPickerPreference;
 
 public class AppCompatPreferenceFragment extends PreferenceFragmentCompat
 {
@@ -109,6 +110,17 @@ public class AppCompatPreferenceFragment extends PreferenceFragmentCompat
         mHasFocusBeenSet = false;
         
         return super.onCreateView(inflater, container, savedInstanceState);
+    }
+
+    @Override
+    public boolean onPreferenceTreeClick(@NonNull Preference preference)
+    {
+        if (preference instanceof ColorPickerPreference)
+        {
+            onDisplayPreferenceDialog(preference);
+            return true;
+        }
+        return super.onPreferenceTreeClick(preference);
     }
 
     @Override

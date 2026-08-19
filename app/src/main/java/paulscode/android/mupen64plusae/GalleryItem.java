@@ -263,12 +263,23 @@ public class GalleryItem
                 if (tempActivity != null) {
                     androidx.cardview.widget.CardView card = view.findViewById( R.id.galleryItemCard );
                     GalleryActivity activity = (GalleryActivity) tempActivity;
+                    paulscode.android.mupen64plusae.ui.UiTheme uiTheme =
+                            paulscode.android.mupen64plusae.ui.UiTheme.get(tempActivity);
+
+                    // Frosted glass card background from the runtime theme
+                    if (!item.isHeading) {
+                        card.setCardBackgroundColor(
+                                paulscode.android.mupen64plusae.ui.UiTheme.withAlpha(
+                                        uiTheme.surface(),
+                                        Math.round(uiTheme.glassOpacity() * 255)));
+                    }
 
                     if( item.isHeading )
                     {
                         tv1.setText( item.toString().toUpperCase() );
                         tv1.setGravity(Gravity.CENTER);
                         tv1.setSelected(false);
+                        tv1.setTextColor(paulscode.android.mupen64plusae.ui.UiTheme.get(tempActivity).primary());
                         view.setClickable( false );
                         view.setLongClickable( false );
                         card.setRadius( 20 );
@@ -292,6 +303,7 @@ public class GalleryItem
                         tv1.setEllipsize(TextUtils.TruncateAt.MARQUEE);
                         tv1.setMarqueeRepeatLimit(-1);
                         tv1.setSelected(true);
+                        tv1.setTextColor(paulscode.android.mupen64plusae.ui.UiTheme.get(tempActivity).onSurface());
                         artView.setVisibility( View.VISIBLE );
 
                         artView.setImageResource( R.drawable.default_coverart );
