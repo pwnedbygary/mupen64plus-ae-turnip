@@ -212,30 +212,34 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
     private static String getDriverDetails(Context context, File driverDir)
     {
         File metaFile = new File(driverDir, "meta.json");
-        if (!metaFile.isFile()) {
-            return "";
+        ArrayList<String> parts = new ArrayList<>();
+        if (metaFile.isFile()) {
+            try (InputStream inputStream = new FileInputStream(metaFile)) {
+                String json = new String(readAll(inputStream), StandardCharsets.UTF_8);
+                JSONObject meta = new JSONObject(json);
+                String driverVersion = meta.optString("driverVersion", "");
+                String libraryName = meta.optString("libraryName", "");
+                String minApi = meta.optString("minApi", "");
+                if (!TextUtils.isEmpty(driverVersion)) {
+                    parts.add(driverVersion);
+                }
+                if (!TextUtils.isEmpty(minApi)) {
+                    parts.add(context.getString(R.string.gpuDriver_minApi, Integer.parseInt(minApi)));
+                }
+                if (!TextUtils.isEmpty(libraryName)) {
+                    parts.add(libraryName);
+                }
+            } catch (Exception ignored) {
+            }
         }
 
-        try (InputStream inputStream = new FileInputStream(metaFile)) {
-            String json = new String(readAll(inputStream), StandardCharsets.UTF_8);
-            JSONObject meta = new JSONObject(json);
-            String driverVersion = meta.optString("driverVersion", "");
-            String libraryName = meta.optString("libraryName", "");
-            String minApi = meta.optString("minApi", "");
-            ArrayList<String> parts = new ArrayList<>();
-            if (!TextUtils.isEmpty(driverVersion)) {
-                parts.add(driverVersion);
-            }
-            if (!TextUtils.isEmpty(minApi)) {
-                parts.add(context.getString(R.string.gpuDriver_minApi, Integer.parseInt(minApi)));
-            }
-            if (!TextUtils.isEmpty(libraryName)) {
-                parts.add(libraryName);
-            }
-            return TextUtils.join(" · ", parts);
-        } catch (Exception e) {
-            return "";
+        String benchmarkResult = androidx.preference.PreferenceManager.getDefaultSharedPreferences(context)
+                .getString("gpuDriverBenchmarkResult_" + driverDir.getName(), "");
+        if (!TextUtils.isEmpty(benchmarkResult)) {
+            parts.add(context.getString(R.string.gpuDriver_benchmarkResultShort, benchmarkResult));
         }
+
+        return TextUtils.join(" · ", parts);
     }
 
     /**

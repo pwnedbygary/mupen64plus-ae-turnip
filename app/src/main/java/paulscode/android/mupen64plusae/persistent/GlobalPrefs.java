@@ -409,6 +409,8 @@ public class GlobalPrefs
     public static final String KEY_SHADER_PASS = "shaderPass";
     public static final String KEY_GPU_DRIVER_NAME = "gpuDriverName";
     public static final String KEY_GPU_DRIVER_LIB = "gpuDriverLib";
+    public static final String KEY_GPU_DRIVER_BENCHMARK = "gpuDriverBenchmark";
+    public static final String KEY_GPU_DRIVER_BENCHMARK_RESULT_PREFIX = "gpuDriverBenchmarkResult_";
     public static final String CONTROLLER_PROFILE1 = "controllerProfile1";
     public static final String CONTROLLER_PROFILE2 = "controllerProfile2";
     public static final String CONTROLLER_PROFILE3 = "controllerProfile3";
@@ -953,6 +955,26 @@ public class GlobalPrefs
     {
         putString( KEY_GPU_DRIVER_NAME, name );
         putString( KEY_GPU_DRIVER_LIB, lib );
+    }
+
+    public boolean getGpuDriverBenchmark()
+    {
+        return getBoolean( KEY_GPU_DRIVER_BENCHMARK, false );
+    }
+
+    public void putGpuDriverBenchmark(boolean enabled)
+    {
+        mPreferences.edit().putBoolean( KEY_GPU_DRIVER_BENCHMARK, enabled ).apply();
+    }
+
+    public String getGpuDriverBenchmarkResult(String driverName)
+    {
+        return getString( KEY_GPU_DRIVER_BENCHMARK_RESULT_PREFIX + driverName, "" );
+    }
+
+    public void putGpuDriverBenchmarkResult(String driverName, String result)
+    {
+        putString( KEY_GPU_DRIVER_BENCHMARK_RESULT_PREFIX + driverName, result );
     }
 
     /**

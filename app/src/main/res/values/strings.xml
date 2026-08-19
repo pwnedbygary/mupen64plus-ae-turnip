@@ -336,6 +336,10 @@
     <string name="updateCheck_failed">Could not check for updates. Please try again later.</string>
     <string name="updateCheck_download">Open releases page</string>
     <string name="uri_updates">https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases</string>
+    <string name="gpuDriver_benchmarkTitle">Benchmark mode</string>
+    <string name="gpuDriver_benchmarkSummary">Measure average FPS for 30 seconds when a game starts with the Parallel renderer and save the result per driver.</string>
+    <string name="gpuDriver_benchmarkResult">Benchmark: avg %1$s FPS (%2$s)</string>
+    <string name="gpuDriver_benchmarkResultShort">bench %1$s FPS</string>
     <string name="gallerySortingMethod_title">Sort</string>
     <string name="gallerySortingMethod_entryRomName">ROM name</string>
     <string name="gallerySortingMethod_entryFileName">File name</string>

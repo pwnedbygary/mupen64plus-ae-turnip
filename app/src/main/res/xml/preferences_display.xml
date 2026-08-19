@@ -133,4 +133,10 @@
         android:summary="@string/selectedValue"
         android:title="@string/gpuDriver_title" />
 
+    <androidx.preference.CheckBoxPreference
+        android:defaultValue="false"
+        android:key="gpuDriverBenchmark"
+        android:summary="@string/gpuDriver_benchmarkSummary"
+        android:title="@string/gpuDriver_benchmarkTitle" />
+
 </androidx.preference.PreferenceScreen>

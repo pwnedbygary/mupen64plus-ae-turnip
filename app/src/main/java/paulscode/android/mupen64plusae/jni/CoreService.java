@@ -69,6 +69,7 @@ import paulscode.android.mupen64plusae.persistent.GlobalPrefs;
 import paulscode.android.mupen64plusae.task.SyncToGoogleDriveService;
 import paulscode.android.mupen64plusae.util.CountryCode;
 import paulscode.android.mupen64plusae.util.FileUtil;
+import paulscode.android.mupen64plusae.util.Notifier;
 import paulscode.android.mupen64plusae.util.PixelBuffer;
 import paulscode.android.mupen64plusae.util.RomHeader;
 
@@ -186,6 +187,14 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
      */
     private long mLastFpsChangedTime;
     private final Handler mFpsCangedHandler = new Handler(Looper.getMainLooper());
+
+    // Driver benchmark state
+    private static final long BENCHMARK_DURATION_MS = 30000;
+    private boolean mBenchmarkActive = false;
+    private long mBenchmarkStartTime = 0;
+    private long mBenchmarkTotalFps = 0;
+    private int mBenchmarkSamples = 0;
+    private String mBenchmarkDriverName = "";
     private final Handler mPeriodicActionHandler = new Handler(Looper.getMainLooper());
     private final Handler mShutdownHandler = new Handler(Looper.getMainLooper());
 
@@ -733,6 +742,14 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                         mCoreInterface.emuLoadFile(latestSave);
                     }
 
+                    // Measure average FPS when benchmark mode is enabled
+                    if (!mUsingNetplay && mGlobalPrefs.getGpuDriverBenchmark()
+                            && mGamePrefs.videoPluginLib == AppData.VideoPlugin.PARALLEL) {
+                        String driverName = TextUtils.isEmpty(mGamePrefs.gpuDriverName)
+                                ? mGlobalPrefs.getGpuDriverName() : mGamePrefs.gpuDriverName;
+                        startBenchmark(driverName);
+                    }
+
                     // This call blocks until emulation is stopped
                     mCoreInterface.emuStart();
                 }
@@ -1225,8 +1242,49 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     public void onFpsChanged(int newValue) {
         mLastFpsChangedTime = System.currentTimeMillis() / 1000L;
 
+        if (mBenchmarkActive) {
+            long now = System.currentTimeMillis();
+            if (mBenchmarkStartTime == 0) {
+                mBenchmarkStartTime = now;
+            }
+
+            if (now - mBenchmarkStartTime >= BENCHMARK_DURATION_MS) {
+                finishBenchmark();
+            } else {
+                mBenchmarkTotalFps += newValue;
+                mBenchmarkSamples++;
+            }
+        }
+
         if (mListener != null) {
             mListener.onFpsChanged(newValue);
         }
+    }
+
+    private void startBenchmark(String driverName)
+    {
+        mBenchmarkActive = true;
+        mBenchmarkStartTime = 0;
+        mBenchmarkTotalFps = 0;
+        mBenchmarkSamples = 0;
+        mBenchmarkDriverName = driverName;
+        Log.i(TAG, "Driver benchmark started for: " + driverName);
+    }
+
+    private void finishBenchmark()
+    {
+        mBenchmarkActive = false;
+
+        double averageFps = mBenchmarkSamples > 0 ? (double) mBenchmarkTotalFps / mBenchmarkSamples : 0.0;
+        String result = String.format(java.util.Locale.US, "%.1f", averageFps);
+
+        if (!TextUtils.isEmpty(mBenchmarkDriverName)) {
+            mGlobalPrefs.putGpuDriverBenchmarkResult(mBenchmarkDriverName, result);
+        }
+
+        String message = getApplicationContext().getString(R.string.gpuDriver_benchmarkResult,
+                result, mBenchmarkDriverName);
+        Log.i(TAG, "Driver benchmark finished: " + message);
+        Notifier.showToast(getApplicationContext(), message);
     }
 }
