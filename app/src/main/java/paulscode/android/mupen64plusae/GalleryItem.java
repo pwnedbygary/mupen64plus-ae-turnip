@@ -267,15 +267,19 @@ public class GalleryItem
                     if( item.isHeading )
                     {
                         tv1.setText( item.toString().toUpperCase() );
-                        tv1.setGravity(Gravity.BOTTOM);
+                        tv1.setGravity(Gravity.CENTER);
+                        tv1.setSelected(false);
                         view.setClickable( false );
                         view.setLongClickable( false );
-                        card.setRadius( 0 );
+                        card.setRadius( 20 );
                         card.setCardElevation( 0 );
                         card.setPadding( 0, 0, 0, 0 );
-                        tv1.setPadding( 25, 10, 0, 0 );
+                        tv1.setPadding( 16, 10, 16, 10 );
                         tv1.setTextSize( TypedValue.COMPLEX_UNIT_DIP, 14.5f );
                         tv1.setLetterSpacing(0.1f);
+                        tv1.setEllipsize(null);
+                        tv1.setSingleLine(false);
+                        tv1.setMaxLines(1);
                         artView.setVisibility( View.GONE );
                     }
                     else
@@ -284,6 +288,10 @@ public class GalleryItem
                         view.setLongClickable( true );
                         tv1.setPadding( 0, 0, 0, 0 );
                         tv1.setTextSize( TypedValue.COMPLEX_UNIT_DIP, 13.0f*item.scale );
+                        tv1.setSingleLine(true);
+                        tv1.setEllipsize(TextUtils.TruncateAt.MARQUEE);
+                        tv1.setMarqueeRepeatLimit(-1);
+                        tv1.setSelected(true);
                         artView.setVisibility( View.VISIBLE );
 
                         artView.setImageResource( R.drawable.default_coverart );
