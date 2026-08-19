@@ -109,6 +109,9 @@
                 android:id="@+id/menuItem_appVersion"
                 android:title="@string/menuItem_appVersion"/>
             <item
+                android:id="@+id/menuItem_checkUpdates"
+                android:title="@string/menuItem_checkUpdates"/>
+            <item
                 android:id="@+id/menuItem_credits"
                 android:title="@string/menuItem_credits"/>
         </menu>

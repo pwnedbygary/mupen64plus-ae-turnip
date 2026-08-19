@@ -328,6 +328,14 @@
     <string name="gpuDriver_updateCheckFailed">Could not check for driver updates.</string>
     <string name="gpuDriver_importing">Importing driver…</string>
     <string name="gpuDriver_gameSummary">Custom Vulkan driver for this game. Leave on System driver (default) to use the global setting.</string>
+    <string name="menuItem_checkUpdates">Check for updates</string>
+    <string name="updateCheck_title">Check for updates</string>
+    <string name="updateCheck_checking">Checking for updates…</string>
+    <string name="updateCheck_available">A new version (%1$s) is available. Open the releases page to download it.</string>
+    <string name="updateCheck_current">You are running the latest version.</string>
+    <string name="updateCheck_failed">Could not check for updates. Please try again later.</string>
+    <string name="updateCheck_download">Open releases page</string>
+    <string name="uri_updates">https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases</string>
     <string name="gallerySortingMethod_title">Sort</string>
     <string name="gallerySortingMethod_entryRomName">ROM name</string>
     <string name="gallerySortingMethod_entryFileName">File name</string>

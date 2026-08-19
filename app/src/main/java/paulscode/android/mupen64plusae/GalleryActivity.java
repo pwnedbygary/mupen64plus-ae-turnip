@@ -50,6 +50,7 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.ActionBarDrawerToggle;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SearchView;
 import androidx.appcompat.widget.SearchView.OnQueryTextListener;
@@ -80,6 +81,7 @@ import paulscode.android.mupen64plusae.dialog.ConfirmationDialog;
 import paulscode.android.mupen64plusae.dialog.ConfirmationDialog.PromptConfirmListener;
 import paulscode.android.mupen64plusae.dialog.LocaleDialog;
 import paulscode.android.mupen64plusae.dialog.Popups;
+import paulscode.android.mupen64plusae.dialog.ProgressDialog;
 import paulscode.android.mupen64plusae.game.GameActivity;
 import paulscode.android.mupen64plusae.jni.CoreService;
 import paulscode.android.mupen64plusae.persistent.AppData;
@@ -94,6 +96,7 @@ import paulscode.android.mupen64plusae.util.DisplayWrapper;
 import paulscode.android.mupen64plusae.util.FileUtil;
 import paulscode.android.mupen64plusae.util.LocaleContextWrapper;
 import paulscode.android.mupen64plusae.util.Notifier;
+import paulscode.android.mupen64plusae.util.UpdateChecker;
 
 public class GalleryActivity extends AppCompatActivity implements GameSidebarActionHandler, PromptConfirmListener,
         GalleryRefreshFinishedListener
@@ -843,8 +846,10 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
             final FragmentManager fm = getSupportFragmentManager();
             pop.show(fm, STATE_SHOW_APP_VERSION_POPUP);
             return true;
-        } else if (item.getItemId() == R.id.menuItem_logcat) {
-            ActivityHelper.startLogcatActivity(this);
+        } else if (item.getItemId() == R.id.menuItem_checkUpdates) {
+            checkForUpdates();
+            return true;
+        } else if (item.getItemId() == R.id.menuItem_logcat) {            ActivityHelper.startLogcatActivity(this);
             return true;
         } else if (item.getItemId() == R.id.menuItem_hardwareInfo) {
             final Popups pop = Popups.newInstance(this, STATE_HARDWARE_INFO_POPUP);
@@ -882,6 +887,35 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         } else {
             return super.onOptionsItemSelected(item);
         }
+    }
+
+    private void checkForUpdates()
+    {
+        final ProgressDialog progressDialog = new ProgressDialog(this,
+                getText(R.string.updateCheck_title), "", getText(R.string.updateCheck_checking), false);
+        progressDialog.show();
+
+        UpdateChecker.checkForUpdates(this, (latestTag, updateAvailable) -> {
+            progressDialog.dismiss();
+
+            if (latestTag == null) {
+                Notifier.showToast(this, R.string.updateCheck_failed);
+                return;
+            }
+
+            AlertDialog.Builder builder = new AlertDialog.Builder(this);
+            builder.setTitle(R.string.updateCheck_title);
+            if (updateAvailable) {
+                builder.setMessage(getString(R.string.updateCheck_available, latestTag));
+                builder.setPositiveButton(R.string.updateCheck_download, (dialog, which) ->
+                        ActivityHelper.launchUri(this, R.string.uri_updates));
+                builder.setNegativeButton(android.R.string.cancel, null);
+            } else {
+                builder.setMessage(R.string.updateCheck_current);
+                builder.setPositiveButton(android.R.string.ok, null);
+            }
+            builder.show();
+        });
     }
 
     private void createGameShortcut(GalleryItem item)
