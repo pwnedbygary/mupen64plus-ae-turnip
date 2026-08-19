@@ -72,34 +72,23 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Generate signing keystore
+      - name: Restore signing keystore
         env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          SIGNING_ORG: ${{ secrets.SIGNING_ORG }}
-          SIGNING_ORG_UNIT: ${{ secrets.SIGNING_ORG_UNIT }}
-          SIGNING_CITY: ${{ secrets.SIGNING_CITY }}
-          SIGNING_STATE: ${{ secrets.SIGNING_STATE }}
-          SIGNING_COUNTRY: ${{ secrets.SIGNING_COUNTRY }}
         run: |
-          : "${KEYSTORE_PASSWORD:=mupen64plusae}"
-          : "${KEY_ALIAS:=mupen64plusae}"
-          : "${KEY_PASSWORD:=mupen64plusae}"
-          : "${SIGNING_ORG:=Mupen64PlusAE}"
-          : "${SIGNING_ORG_UNIT:=Mupen64PlusAE}"
-          : "${SIGNING_CITY:=Unknown}"
-          : "${SIGNING_STATE:=Unknown}"
-          : "${SIGNING_COUNTRY:=US}"
-          keytool -genkeypair -v -keystore release.keystore -alias "$KEY_ALIAS" \
-            -keyalg RSA -keysize 4096 -validity 10000 \
-            -storepass "$KEYSTORE_PASSWORD" -keypass "$KEY_PASSWORD" \
-            -dname "CN=$SIGNING_ORG, OU=$SIGNING_ORG_UNIT, L=$SIGNING_CITY, ST=$SIGNING_STATE, C=$SIGNING_COUNTRY"
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::KEYSTORE_BASE64 secret not set. Configure the signing secrets first."
+            exit 1
+          fi
+          : "${KEYSTORE_PASSWORD:?KEYSTORE_PASSWORD secret not set}"
+          : "${KEY_ALIAS:?KEY_ALIAS secret not set}"
+          : "${KEY_PASSWORD:?KEY_PASSWORD secret not set}"
+          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
           printf 'storeFile=../release.keystore\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
             "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
-          if [ -z "${{ secrets.KEYSTORE_PASSWORD }}" ]; then
-            echo "::warning::No KEYSTORE_PASSWORD secret set, using ephemeral keystore. Release will NOT be upgradeable."
-          fi
 
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --console=plain
