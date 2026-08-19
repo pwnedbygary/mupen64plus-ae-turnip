@@ -56,3 +56,7 @@ crashreport.txt
 
 # Transifex client
 tx.exe
+
+# Release signing
+keystore.properties
+*.keystore
