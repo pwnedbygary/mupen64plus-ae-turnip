@@ -25,11 +25,16 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.preference.PreferenceManager;
 import android.text.TextUtils;
+
+import java.io.File;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import paulscode.android.mupen64plusae.GpuDriverDownloadActivity;
 import paulscode.android.mupen64plusae.R;
@@ -37,6 +42,8 @@ import paulscode.android.mupen64plusae.R;
 import paulscode.android.mupen64plusae.compat.AppCompatPreferenceActivity;
 import paulscode.android.mupen64plusae.preference.DriverPreference;
 import paulscode.android.mupen64plusae.preference.PrefUtil;
+import paulscode.android.mupen64plusae.util.FileUtil;
+import paulscode.android.mupen64plusae.util.GpuDriverDownloader;
 import paulscode.android.mupen64plusae.util.LocaleContextWrapper;
 import paulscode.android.mupen64plusae.util.Notifier;
 
@@ -66,6 +73,18 @@ public class DisplayPrefsActivity extends AppCompatPreferenceActivity implements
                     if (driverUri != null) {
                         String[] driverInfo = DriverPreference.importDriver(this, driverUri);
                         if (driverInfo != null) {
+                            int minApi = 0;
+                            try {
+                                minApi = Integer.parseInt(driverInfo[2]);
+                            } catch (NumberFormatException ignored) {
+                            }
+
+                            if (minApi > Build.VERSION.SDK_INT) {
+                                FileUtil.deleteFolder(new File(DriverPreference.getDriverDir(this), driverInfo[0]));
+                                Notifier.showToast(this, getString(R.string.gpuDriver_errorMinApi, minApi, Build.VERSION.SDK_INT));
+                                return;
+                            }
+
                             mGlobalPrefs.putGpuDriver(driverInfo[0], driverInfo[1]);
                             Notifier.showToast(this, R.string.gpuDriver_importSuccess);
                             if (mGpuDriverPreference != null) {
@@ -114,6 +133,38 @@ public class DisplayPrefsActivity extends AppCompatPreferenceActivity implements
             mGpuDriverPreference.setOnImportDriverCallback(this::startDriverPicker);
             mGpuDriverPreference.setOnDownloadDriverCallback(this::startDriverDownload);
         }
+        checkForDriverUpdates();
+    }
+
+    private void checkForDriverUpdates()
+    {
+        File driverDir = DriverPreference.getDriverDir(this);
+        File[] drivers = driverDir.listFiles(File::isDirectory);
+        if (drivers == null || drivers.length == 0) {
+            return;
+        }
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        executor.execute(() -> {
+            for (File driver : drivers) {
+                GpuDriverDownloader.DriverSource source = GpuDriverDownloader.readSourceInfo(driver);
+                String installedTag = GpuDriverDownloader.readSourceTag(driver);
+                if (source == null || installedTag == null || TextUtils.isEmpty(installedTag)) {
+                    continue;
+                }
+                try {
+                    String latestTag = GpuDriverDownloader.fetchLatestTag(source.owner, source.repo);
+                    if (!TextUtils.isEmpty(latestTag) && GpuDriverDownloader.compareTags(latestTag, installedTag) > 0) {
+                        runOnUiThread(() -> Notifier.showToast(this,
+                                getString(R.string.gpuDriver_updateAvailable, driver.getName(), latestTag)));
+                        break;
+                    }
+                } catch (Exception e) {
+                    // Ignore individual failures
+                }
+            }
+            executor.shutdown();
+        });
     }
 
     private void startDriverDownload()

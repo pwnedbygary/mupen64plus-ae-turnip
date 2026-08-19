@@ -27,6 +27,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 
 import androidx.activity.result.ActivityResultLauncher;
@@ -53,6 +54,7 @@ import java.util.ArrayList;
 import paulscode.android.mupen64plusae.ActivityHelper;
 import paulscode.android.mupen64plusae.DeleteFilesFragment;
 import paulscode.android.mupen64plusae.DownloadFromGoogleDriveFragment;
+import paulscode.android.mupen64plusae.GpuDriverDownloadActivity;
 import paulscode.android.mupen64plusae.cheat.CheatEditorActivity;
 import paulscode.android.mupen64plusae.cheat.CheatFile;
 import paulscode.android.mupen64plusae.cheat.CheatPreference;
@@ -64,6 +66,7 @@ import paulscode.android.mupen64plusae.dialog.PromptInputCodeDialog.PromptInputC
 import paulscode.android.mupen64plusae.preference.PlayerMapPreference;
 import paulscode.android.mupen64plusae.preference.PrefUtil;
 import paulscode.android.mupen64plusae.preference.ProfilePreference;
+import paulscode.android.mupen64plusae.preference.DriverPreference;
 import paulscode.android.mupen64plusae.task.ExtractCheatsTask;
 import paulscode.android.mupen64plusae.task.ExtractCheatsTask.ExtractCheatListener;
 import paulscode.android.mupen64plusae.task.SyncToGoogleDriveService;
@@ -137,6 +140,45 @@ public class GamePrefsActivity extends AppCompatPreferenceActivity implements On
     private boolean mInCheatsScreen = false;
 
     private String mCurrentFilePickerKey = null;
+
+    ActivityResultLauncher<Intent> mLaunchDriverPicker = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                Intent data = result.getData();
+                if (result.getResultCode() == Activity.RESULT_OK && data != null) {
+                    Uri driverUri = data.getData();
+                    if (driverUri != null) {
+                        String[] driverInfo = DriverPreference.importDriver(this, driverUri);
+                        if (driverInfo != null) {
+                            int minApi = 0;
+                            try {
+                                minApi = Integer.parseInt(driverInfo[2]);
+                            } catch (NumberFormatException ignored) {
+                            }
+
+                            if (minApi > Build.VERSION.SDK_INT) {
+                                FileUtil.deleteFolder(new File(DriverPreference.getDriverDir(this), driverInfo[0]));
+                                Notifier.showToast(this, getString(R.string.gpuDriver_errorMinApi, minApi, Build.VERSION.SDK_INT));
+                                return;
+                            }
+
+                            mPrefs.edit()
+                                    .putString("gpuDriverName", driverInfo[0])
+                                    .putString("gpuDriverLib", driverInfo[1])
+                                    .putString("gpuDriver", driverInfo[0])
+                                    .apply();
+                            Notifier.showToast(this, R.string.gpuDriver_importSuccess);
+                            DriverPreference gpuDriverPreference = (DriverPreference) findPreference("gpuDriver");
+                            if (gpuDriverPreference != null) {
+                                gpuDriverPreference.populateDriverOptions(this);
+                                gpuDriverPreference.setValue(driverInfo[0]);
+                            }
+                        } else {
+                            Notifier.showToast(this, R.string.gpuDriver_errorBadZip);
+                        }
+                    }
+                }
+            });
 
     ActivityResultLauncher<Intent> mLaunchFilePicker = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
@@ -303,7 +345,35 @@ public class GamePrefsActivity extends AppCompatPreferenceActivity implements On
             refreshViews();
         }
 
+        setupGpuDriverPreference();
+
         mPrefs.registerOnSharedPreferenceChangeListener( this );
+    }
+
+    private void setupGpuDriverPreference()
+    {
+        DriverPreference gpuDriverPreference = (DriverPreference) findPreference("gpuDriver");
+        if (gpuDriverPreference != null) {
+            gpuDriverPreference.populateDriverOptions(this);
+            gpuDriverPreference.setOnImportDriverCallback(this::startDriverPicker);
+            gpuDriverPreference.setOnDownloadDriverCallback(this::startDriverDownload);
+        }
+    }
+
+    private void startDriverPicker()
+    {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/zip");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
+        intent.putExtra("android.content.extra.SHOW_ADVANCED", true);
+        mLaunchDriverPicker.launch(intent);
+    }
+
+    private void startDriverDownload()
+    {
+        startActivity(new Intent(this, GpuDriverDownloadActivity.class));
     }
 
     private void setFilePickerPreferenceSummary(String filePickerPreferenceKey, String value)

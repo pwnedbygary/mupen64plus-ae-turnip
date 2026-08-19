@@ -593,17 +593,25 @@ class CoreInterface
     /**
      * Configure a custom (Turnip) Vulkan driver to be used by the parallel video plugin.
      * Must be called before the video plugin is loaded.
+     *
+     * @param context application context
+     * @param usingParallelPlugin true when the parallel plugin will be attached
+     * @param gameDriverName per-game driver override, or null/empty to use the global setting
+     * @param gameDriverLib library name matching gameDriverName
      */
-    void setCustomVulkanDriver(Context context, boolean usingParallelPlugin)
+    void setCustomVulkanDriver(Context context, boolean usingParallelPlugin, String gameDriverName, String gameDriverLib)
     {
-        if (!usingParallelPlugin || TextUtils.isEmpty(mGlobalPrefs.getGpuDriverName()) || TextUtils.isEmpty(mGlobalPrefs.getGpuDriverLib())) {
+        String driverName = TextUtils.isEmpty(gameDriverName) ? mGlobalPrefs.getGpuDriverName() : gameDriverName;
+        String driverLib = TextUtils.isEmpty(gameDriverName) ? mGlobalPrefs.getGpuDriverLib() : gameDriverLib;
+
+        if (!usingParallelPlugin || TextUtils.isEmpty(driverName) || TextUtils.isEmpty(driverLib)) {
             mAeBridgeLibrary.setCustomVulkanDriver(null, null, null);
             return;
         }
 
-        String driverDir = new File(context.getFilesDir(), "driver/" + mGlobalPrefs.getGpuDriverName()).getAbsolutePath() + "/";
+        String driverDir = new File(context.getFilesDir(), "driver/" + driverName).getAbsolutePath() + "/";
         String nativeLibDir = context.getApplicationInfo().nativeLibraryDir;
-        mAeBridgeLibrary.setCustomVulkanDriver(driverDir, mGlobalPrefs.getGpuDriverLib(), nativeLibDir);
+        mAeBridgeLibrary.setCustomVulkanDriver(driverDir, driverLib, nativeLibDir);
     }
 
     /* coreAttachPlugin()

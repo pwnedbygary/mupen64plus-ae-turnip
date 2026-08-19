@@ -317,6 +317,17 @@
     <string name="gpuDriver_downloading">Downloading driver…</string>
     <string name="gpuDriver_downloadError">Failed to download driver.</string>
     <string name="gpuDriver_noReleases">No compatible drivers found for this source.</string>
+    <string name="gpuDriver_delete">Delete driver…</string>
+    <string name="gpuDriver_deleteConfirm">Delete driver \"%1$s\"? This cannot be undone.</string>
+    <string name="gpuDriver_deleteSuccess">Driver deleted.</string>
+    <string name="gpuDriver_noDriverToDelete">Select a driver to delete first.</string>
+    <string name="gpuDriver_minApi">min API %1$d</string>
+    <string name="gpuDriver_errorMinApi">Driver requires Android %1$d or newer. This device runs Android %2$d.</string>
+    <string name="gpuDriver_deviceInfo">Device GPU: %1$s</string>
+    <string name="gpuDriver_updateAvailable">Update available for %1$s: %2$s</string>
+    <string name="gpuDriver_updateCheckFailed">Could not check for driver updates.</string>
+    <string name="gpuDriver_importing">Importing driver…</string>
+    <string name="gpuDriver_gameSummary">Custom Vulkan driver for this game. Leave on System driver (default) to use the global setting.</string>
     <string name="gallerySortingMethod_title">Sort</string>
     <string name="gallerySortingMethod_entryRomName">ROM name</string>
     <string name="gallerySortingMethod_entryFileName">File name</string>

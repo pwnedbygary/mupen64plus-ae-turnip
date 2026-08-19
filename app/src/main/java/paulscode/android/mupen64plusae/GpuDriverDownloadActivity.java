@@ -12,6 +12,7 @@ package paulscode.android.mupen64plusae;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -33,6 +34,7 @@ import paulscode.android.mupen64plusae.dialog.ProgressDialog;
 import paulscode.android.mupen64plusae.persistent.AppData;
 import paulscode.android.mupen64plusae.persistent.GlobalPrefs;
 import paulscode.android.mupen64plusae.preference.DriverPreference;
+import paulscode.android.mupen64plusae.util.FileUtil;
 import paulscode.android.mupen64plusae.util.GpuDriverDownloader;
 import paulscode.android.mupen64plusae.util.Notifier;
 
@@ -221,14 +223,30 @@ public class GpuDriverDownloadActivity extends AppCompatActivity
                     return;
                 }
 
-                if (finalDriverInfo != null) {
-                    GlobalPrefs globalPrefs = new GlobalPrefs(this, new AppData(this));
-                    globalPrefs.putGpuDriver(finalDriverInfo[0], finalDriverInfo[1]);
-                    Notifier.showToast(this, R.string.gpuDriver_importSuccess);
-                    finish();
-                } else {
+                if (finalDriverInfo == null) {
                     Notifier.showToast(this, R.string.gpuDriver_downloadError);
+                    return;
                 }
+
+                int minApi = 0;
+                try {
+                    minApi = Integer.parseInt(finalDriverInfo[2]);
+                } catch (NumberFormatException ignored) {
+                }
+
+                File driverDir = new File(DriverPreference.getDriverDir(this), finalDriverInfo[0]);
+                if (minApi > Build.VERSION.SDK_INT) {
+                    FileUtil.deleteFolder(driverDir);
+                    Notifier.showToast(this, getString(R.string.gpuDriver_errorMinApi, minApi, Build.VERSION.SDK_INT));
+                    return;
+                }
+
+                GpuDriverDownloader.writeSourceInfo(driverDir, mCurrentSource.owner, mCurrentSource.repo, asset.tag);
+
+                GlobalPrefs globalPrefs = new GlobalPrefs(this, new AppData(this));
+                globalPrefs.putGpuDriver(finalDriverInfo[0], finalDriverInfo[1]);
+                Notifier.showToast(this, R.string.gpuDriver_importSuccess);
+                finish();
             });
         });
     }

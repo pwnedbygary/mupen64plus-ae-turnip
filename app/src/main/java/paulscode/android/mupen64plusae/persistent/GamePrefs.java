@@ -133,6 +133,11 @@ public class GamePrefs
     /** The selected video plug-in. */
     public final Plugin videoPlugin;
 
+    /** Custom GPU driver override; empty means inherit the global setting. */
+    public final String gpuDriverName;
+
+    public final String gpuDriverLib;
+
     public final Glide64mk2Prefs glide64mk2Prefs;
 
     /** The maximum frameskip in the gln64 library. */
@@ -468,6 +473,10 @@ public class GamePrefs
         videoPlugin = new Plugin( emulationProfile, "videoPlugin" );
         videoPluginLib = AppData.VideoPlugin.getPlugin(videoPlugin.name);
         audioPluginLib = AppData.AudioPlugin.getPlugin(mGlobalPrefs);
+
+        // Custom GPU driver override, empty means inherit the global setting
+        gpuDriverName = mPreferences.getString( "gpuDriverName", "" );
+        gpuDriverLib = mPreferences.getString( "gpuDriverLib", "" );
 
         // Video prefs - gln64
         int maxFrameskip = getSafeInt( emulationProfile, "gln64Frameskip", 0 );

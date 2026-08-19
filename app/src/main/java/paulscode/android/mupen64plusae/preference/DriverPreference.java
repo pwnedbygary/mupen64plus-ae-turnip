@@ -20,11 +20,18 @@
 package paulscode.android.mupen64plusae.preference;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.net.Uri;
+import android.text.SpannableString;
+import android.text.Spanned;
 import android.text.TextUtils;
+import android.text.style.RelativeSizeSpan;
 import android.util.AttributeSet;
+import android.view.LayoutInflater;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
+import android.widget.CheckedTextView;
 
 import androidx.appcompat.app.AlertDialog.Builder;
 import androidx.fragment.app.FragmentActivity;
@@ -35,14 +42,19 @@ import paulscode.android.mupen64plusae.R;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import paulscode.android.mupen64plusae.compat.AppCompatPreferenceActivity.OnPreferenceDialogListener;
+import paulscode.android.mupen64plusae.util.FileUtil;
+import paulscode.android.mupen64plusae.util.Notifier;
 
 @SuppressWarnings({"unused", "RedundantSuppression"})
 public class DriverPreference extends ListPreference implements OnPreferenceDialogListener
@@ -81,13 +93,18 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
     {
         populateDriverOptions(context);
 
-        ArrayAdapter<CharSequence> adapter = new ArrayAdapter<>(
-            context, R.layout.list_preference, getEntries());
+        String gpuModel = getGpuModel();
+        if (!TextUtils.isEmpty(gpuModel)) {
+            builder.setMessage(context.getString(R.string.gpuDriver_deviceInfo, gpuModel));
+        }
+
+        ArrayAdapter<DriverRow> adapter = new DriverRowAdapter(context, mDriverRows);
 
         int currentIndex = findIndexOfValue(getCurrentValue());
         builder.setTitle(getTitle());
         builder.setSingleChoiceItems(adapter, currentIndex, (dialog, item) -> {
             setValue(getEntryValues()[item].toString());
+            syncGlobalDriverPrefs();
             dialog.dismiss();
         });
         builder.setPositiveButton( R.string.gpuDriver_import, (dialog, which) -> {
@@ -102,6 +119,10 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
                 mDownloadCallback.downloadDriver();
             }
         });
+        builder.setNeutralButton( R.string.gpuDriver_delete, (dialog, which) -> {
+            dialog.dismiss();
+            deleteSelectedDriver();
+        });
     }
 
     public void setOnImportDriverCallback(OnImportDriver onImportDriverCallback) {
@@ -113,28 +134,160 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
     }
 
     /**
-     * Populate the list of installed drivers
+     * Adapter row data for a single installed driver
+     */
+    private static class DriverRow {
+        final String name;
+        final String details;
+
+        DriverRow(String name, String details) {
+            this.name = name;
+            this.details = details;
+        }
+    }
+
+    private static class DriverRowAdapter extends ArrayAdapter<DriverRow>
+    {
+        DriverRowAdapter(Context context, List<DriverRow> rows)
+        {
+            super(context, R.layout.list_item_driver, rows);
+        }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent)
+        {
+            if (convertView == null) {
+                convertView = LayoutInflater.from(getContext()).inflate(R.layout.list_item_driver, parent, false);
+            }
+
+            DriverRow row = getItem(position);
+            CheckedTextView text1 = (CheckedTextView) convertView;
+            if (TextUtils.isEmpty(row.details)) {
+                text1.setText(row.name);
+            } else {
+                String text = row.name + "\n" + row.details;
+                SpannableString spannable = new SpannableString(text);
+                spannable.setSpan(new RelativeSizeSpan(0.8f), row.name.length() + 1, text.length(),
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                text1.setText(spannable);
+            }
+            return convertView;
+        }
+    }
+
+    private List<DriverRow> mDriverRows = new ArrayList<>();
+
+    /**
+     * Populate the list of installed drivers, showing version info when available
      */
     public void populateDriverOptions(Context context)
     {
         ArrayList<CharSequence> entriesList = new ArrayList<>();
         ArrayList<CharSequence> valuesList = new ArrayList<>();
+        mDriverRows = new ArrayList<>();
 
         entriesList.add(context.getString(R.string.gpuDriver_default));
         valuesList.add("");
+        mDriverRows.add(new DriverRow(context.getString(R.string.gpuDriver_default), ""));
 
         File driverDir = getDriverDir(context);
         File[] drivers = driverDir.listFiles(File::isDirectory);
         if (drivers != null) {
             for (File driver : drivers) {
-                entriesList.add(driver.getName());
-                valuesList.add(driver.getName());
+                String name = driver.getName();
+                entriesList.add(name);
+                valuesList.add(name);
+                mDriverRows.add(new DriverRow(name, getDriverDetails(context, driver)));
             }
         }
 
         setEntries(entriesList.toArray(new CharSequence[0]));
         setEntryValues(valuesList.toArray(new CharSequence[0]));
         setValue(getPersistedString(""));
+    }
+
+    /**
+     * Read version/minApi details from an installed driver's meta.json
+     */
+    private static String getDriverDetails(Context context, File driverDir)
+    {
+        File metaFile = new File(driverDir, "meta.json");
+        if (!metaFile.isFile()) {
+            return "";
+        }
+
+        try (InputStream inputStream = new FileInputStream(metaFile)) {
+            String json = new String(readAll(inputStream), StandardCharsets.UTF_8);
+            JSONObject meta = new JSONObject(json);
+            String driverVersion = meta.optString("driverVersion", "");
+            String libraryName = meta.optString("libraryName", "");
+            String minApi = meta.optString("minApi", "");
+            ArrayList<String> parts = new ArrayList<>();
+            if (!TextUtils.isEmpty(driverVersion)) {
+                parts.add(driverVersion);
+            }
+            if (!TextUtils.isEmpty(minApi)) {
+                parts.add(context.getString(R.string.gpuDriver_minApi, Integer.parseInt(minApi)));
+            }
+            if (!TextUtils.isEmpty(libraryName)) {
+                parts.add(libraryName);
+            }
+            return TextUtils.join(" · ", parts);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * Write the selected driver into the name/lib pref keys that the native side reads.
+     * Also fixes stale prefs when switching between already-installed drivers.
+     */
+    private void syncGlobalDriverPrefs()
+    {
+        String driverName = getCurrentValue();
+        String driverLib = "";
+
+        if (!TextUtils.isEmpty(driverName)) {
+            File driverDir = new File(getDriverDir(getContext()), driverName);
+            File metaFile = new File(driverDir, "meta.json");
+            if (metaFile.isFile()) {
+                try (InputStream inputStream = new FileInputStream(metaFile)) {
+                    String json = new String(readAll(inputStream), StandardCharsets.UTF_8);
+                    driverLib = new JSONObject(json).optString("libraryName", "");
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
+        SharedPreferences prefs = getPreferenceManager().getSharedPreferences();
+        prefs.edit()
+                .putString("gpuDriverName", driverName)
+                .putString("gpuDriverLib", driverLib)
+                .apply();
+    }
+
+    private void deleteSelectedDriver()
+    {
+        String driverName = getCurrentValue();
+        if (TextUtils.isEmpty(driverName)) {
+            Notifier.showToast(getContext(), R.string.gpuDriver_noDriverToDelete);
+            return;
+        }
+
+        File driverDir = new File(getDriverDir(getContext()), driverName);
+        new androidx.appcompat.app.AlertDialog.Builder(getContext())
+                .setTitle(R.string.gpuDriver_title)
+                .setMessage(getContext().getString(R.string.gpuDriver_deleteConfirm, driverName))
+                .setPositiveButton(R.string.listItem_delete, (dialog, which) -> {
+                    FileUtil.deleteFolder(driverDir);
+                    setValue("");
+                    syncGlobalDriverPrefs();
+                    populateDriverOptions(getContext());
+                    notifyChanged();
+                    Notifier.showToast(getContext(), R.string.gpuDriver_deleteSuccess);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     public String getCurrentValue()
@@ -160,12 +313,13 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
     }
 
     /**
-     * Import a driver zip, returning {sanitizedDriverName, libraryName} on success or null on failure
+     * Import a driver zip, returning {sanitizedDriverName, libraryName, minApi} on success or null on failure
      */
     public static String[] importDriver(Context context, Uri uri)
     {
         String driverName = null;
         String libraryName = null;
+        String minApi = "0";
 
         try (InputStream inputStream = context.getContentResolver().openInputStream(uri);
              ZipInputStream zipStream = new ZipInputStream(inputStream)) {
@@ -190,6 +344,7 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
                         driverName = meta.optString("name", "");
                     }
                     libraryName = meta.optString("libraryName", "");
+                    minApi = meta.optString("minApi", "0");
                 }
             }
         } catch (Exception e) {
@@ -235,7 +390,47 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
             return null;
         }
 
-        return new String[] { sanitizedName, libraryName };
+        return new String[] { sanitizedName, libraryName, minApi };
+    }
+
+    /**
+     * Best-effort Adreno model lookup for displaying in the picker
+     */
+    public static String getGpuModel()
+    {
+        String[] sysfsPaths = {
+                "/sys/class/kgsl/kgsl-3d0/gpu_model",
+                "/sys/kernel/gpu/gpu_model",
+        };
+        for (String path : sysfsPaths) {
+            String model = readSysfs(path);
+            if (!TextUtils.isEmpty(model)) {
+                return model;
+            }
+        }
+        return "";
+    }
+
+    private static String readSysfs(String path)
+    {
+        try (FileInputStream inputStream = new FileInputStream(path)) {
+            byte[] buffer = new byte[256];
+            int read = inputStream.read(buffer);
+            return read > 0 ? new String(buffer, 0, read, StandardCharsets.UTF_8).trim() : "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static byte[] readAll(InputStream inputStream) throws IOException
+    {
+        java.io.ByteArrayOutputStream outputStream = new java.io.ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int read;
+        while ((read = inputStream.read(buffer)) > 0) {
+            outputStream.write(buffer, 0, read);
+        }
+        return outputStream.toByteArray();
     }
 
     @Override

@@ -36,6 +36,13 @@
         android:summary="@string/selectedValue"
         android:title="@string/displayScaling_title" />
 
+    <paulscode.android.mupen64plusae.preference.DriverPreference
+        android:defaultValue=""
+        android:icon="@drawable/ic_display"
+        android:key="gpuDriver"
+        android:summary="@string/gpuDriver_gameSummary"
+        android:title="@string/gpuDriver_title" />
+
     <paulscode.android.mupen64plusae.preference.CompatListPreference
         android:defaultValue="@string/touchscreenAutoHoldGame_default"
         android:entries="@array/touchscreenAutoHoldGame_entries"
