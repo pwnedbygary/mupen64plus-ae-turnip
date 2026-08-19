@@ -407,6 +407,7 @@ public class GlobalPrefs
     public static final String KEY_LOCALE_OVERRIDE = "localeOverride";
     public static final String KEY_TOUCHSCREEN_SKIN_CUSTOM_PATH = "touchscreenCustomSkin";
     public static final String KEY_SHADER_PASS = "shaderPass";
+    public static final String KEY_GPU_DRIVER = "gpuDriver";
     public static final String KEY_GPU_DRIVER_NAME = "gpuDriverName";
     public static final String KEY_GPU_DRIVER_LIB = "gpuDriverLib";
     public static final String KEY_GPU_DRIVER_BENCHMARK = "gpuDriverBenchmark";
@@ -955,6 +956,7 @@ public class GlobalPrefs
     {
         putString( KEY_GPU_DRIVER_NAME, name );
         putString( KEY_GPU_DRIVER_LIB, lib );
+        mPreferences.edit().putString( KEY_GPU_DRIVER, name ).apply();
     }
 
     public boolean getGpuDriverBenchmark()

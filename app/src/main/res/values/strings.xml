@@ -303,8 +303,11 @@
     <string name="preferenceAdd_title">Add</string>
     <string name="preferenceRemove_title">Remove</string>
     <string name="gpuDriver_title">GPU driver</string>
+    <string name="gpuDriver_selectTitle">Select GPU driver</string>
+    <string name="gpuDriver_sectionSystem">System</string>
+    <string name="gpuDriver_sectionInstalled">Installed drivers</string>
     <string name="gpuDriver_summary">Custom Vulkan driver used by the Parallel renderer. Requires Android 9+ on 64-bit ARM devices.</string>
-    <string name="gpuDriver_default">System driver (default)</string>
+    <string name="gpuDriver_default">Stock system driver</string>
     <string name="gpuDriver_import">Import driver…</string>
     <string name="gpuDriver_importSuccess">Driver imported successfully.</string>
     <string name="gpuDriver_errorBadZip">Invalid driver zip file. A meta.json with driverName and libraryName is required.</string>
@@ -327,7 +330,7 @@
     <string name="gpuDriver_updateAvailable">Update available for %1$s: %2$s</string>
     <string name="gpuDriver_updateCheckFailed">Could not check for driver updates.</string>
     <string name="gpuDriver_importing">Importing driver…</string>
-    <string name="gpuDriver_gameSummary">Custom Vulkan driver for this game. Leave on System driver (default) to use the global setting.</string>
+    <string name="gpuDriver_gameSummary">Custom Vulkan driver for this game. Leave on Stock system driver to use the global setting.</string>
     <string name="menuItem_checkUpdates">Check for updates</string>
     <string name="updateCheck_title">Check for updates</string>
     <string name="updateCheck_checking">Checking for updates…</string>

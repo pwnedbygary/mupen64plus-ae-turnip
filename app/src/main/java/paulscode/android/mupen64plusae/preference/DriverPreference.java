@@ -101,8 +101,11 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
         ArrayAdapter<DriverRow> adapter = new DriverRowAdapter(context, mDriverRows);
 
         int currentIndex = findIndexOfValue(getCurrentValue());
-        builder.setTitle(getTitle());
+        builder.setTitle(R.string.gpuDriver_selectTitle);
         builder.setSingleChoiceItems(adapter, currentIndex, (dialog, item) -> {
+            if (mDriverRows.get(item).isHeader) {
+                return;
+            }
             setValue(getEntryValues()[item].toString());
             syncGlobalDriverPrefs();
             dialog.dismiss();
@@ -139,10 +142,12 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
     private static class DriverRow {
         final String name;
         final String details;
+        final boolean isHeader;
 
-        DriverRow(String name, String details) {
+        DriverRow(String name, String details, boolean isHeader) {
             this.name = name;
             this.details = details;
+            this.isHeader = isHeader;
         }
     }
 
@@ -154,13 +159,48 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
         }
 
         @Override
+        public int getViewTypeCount()
+        {
+            return 2;
+        }
+
+        @Override
+        public int getItemViewType(int position)
+        {
+            return getItem(position).isHeader ? 0 : 1;
+        }
+
+        @Override
+        public boolean areAllItemsEnabled()
+        {
+            return false;
+        }
+
+        @Override
+        public boolean isEnabled(int position)
+        {
+            return !getItem(position).isHeader;
+        }
+
+        @Override
         public View getView(int position, View convertView, ViewGroup parent)
         {
-            if (convertView == null) {
-                convertView = LayoutInflater.from(getContext()).inflate(R.layout.list_item_driver, parent, false);
+            DriverRow row = getItem(position);
+            if (row.isHeader) {
+                if (convertView == null || convertView.getTag() == null) {
+                    convertView = LayoutInflater.from(getContext()).inflate(
+                            R.layout.list_item_driver_header, parent, false);
+                    convertView.setTag(Boolean.TRUE);
+                }
+                ((android.widget.TextView) convertView).setText(row.name);
+                return convertView;
             }
 
-            DriverRow row = getItem(position);
+            if (convertView == null || convertView.getTag() != null) {
+                convertView = LayoutInflater.from(getContext()).inflate(R.layout.list_item_driver, parent, false);
+                convertView.setTag(null);
+            }
+
             CheckedTextView text1 = (CheckedTextView) convertView;
             if (TextUtils.isEmpty(row.details)) {
                 text1.setText(row.name);
@@ -175,10 +215,13 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
         }
     }
 
+    private static final String HEADER_SENTINEL = "\u0000header";
+
     private List<DriverRow> mDriverRows = new ArrayList<>();
 
     /**
-     * Populate the list of installed drivers, showing version info when available
+     * Populate the list of installed drivers, grouped under section headers.
+     * The stock system driver is always offered as the first choice.
      */
     public void populateDriverOptions(Context context)
     {
@@ -186,18 +229,28 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
         ArrayList<CharSequence> valuesList = new ArrayList<>();
         mDriverRows = new ArrayList<>();
 
+        entriesList.add(context.getString(R.string.gpuDriver_sectionSystem).toUpperCase());
+        valuesList.add(HEADER_SENTINEL);
+        mDriverRows.add(new DriverRow(
+                context.getString(R.string.gpuDriver_sectionSystem).toUpperCase(), "", true));
+
         entriesList.add(context.getString(R.string.gpuDriver_default));
         valuesList.add("");
-        mDriverRows.add(new DriverRow(context.getString(R.string.gpuDriver_default), ""));
+        mDriverRows.add(new DriverRow(context.getString(R.string.gpuDriver_default), "", false));
 
         File driverDir = getDriverDir(context);
         File[] drivers = driverDir.listFiles(File::isDirectory);
-        if (drivers != null) {
+        if (drivers != null && drivers.length > 0) {
+            entriesList.add(context.getString(R.string.gpuDriver_sectionInstalled).toUpperCase());
+            valuesList.add(HEADER_SENTINEL);
+            mDriverRows.add(new DriverRow(
+                    context.getString(R.string.gpuDriver_sectionInstalled).toUpperCase(), "", true));
+
             for (File driver : drivers) {
                 String name = driver.getName();
                 entriesList.add(name);
                 valuesList.add(name);
-                mDriverRows.add(new DriverRow(name, getDriverDetails(context, driver)));
+                mDriverRows.add(new DriverRow(name, getDriverDetails(context, driver), false));
             }
         }
 
