@@ -29,7 +29,11 @@ import androidx.documentfile.provider.DocumentFile;
 import androidx.recyclerview.widget.RecyclerView;
 
 import android.net.Uri;
+import android.text.SpannableString;
+import android.text.Spanned;
 import android.text.TextUtils;
+import android.text.style.AbsoluteSizeSpan;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -37,6 +41,7 @@ import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.View.OnLongClickListener;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -238,6 +243,12 @@ public class GalleryItem
         }
 
         @Override
+        public void onViewAttachedToWindow(@NonNull ViewHolder holder )
+        {
+            super.onViewAttachedToWindow( holder );
+        }
+
+        @Override
         public void onBindViewHolder(@NonNull ViewHolder holder, int position )
         {
             // Clear the now-offscreen bitmap to conserve memory, also cancel any tasks reading the bitmap
@@ -272,6 +283,21 @@ public class GalleryItem
                                 paulscode.android.mupen64plusae.ui.UiTheme.withAlpha(
                                         uiTheme.surface(),
                                         Math.round(uiTheme.glassOpacity() * 255)));
+
+                        // ROMM-style colored glow: tint the card's elevation shadow
+                        // (the native Android way to get a soft halo around a view, as
+                        // used by launchers such as Argosy) to the accent color.
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                            int glowColor = uiTheme.primary();
+                            card.setOutlineSpotShadowColor(glowColor);
+                            card.setOutlineAmbientShadowColor(glowColor);
+                        }
+                        float glowScale = uiTheme.cardGlow();
+                        card.setCardElevation(50f * glowScale);
+                        card.setMaxCardElevation(70f * glowScale);
+                        // Draw the foreground glow flush to the card edge (compat
+                        // padding would otherwise inset it and misalign the rim).
+                        card.setUseCompatPadding(false);
                     }
 
                     if( item.isHeading )
@@ -285,38 +311,95 @@ public class GalleryItem
                         card.setRadius( 20 );
                         card.setCardElevation( 0 );
                         card.setPadding( 0, 0, 0, 0 );
-                        tv1.setPadding( 16, 10, 16, 10 );
+                        tv1.setPadding( 0, 0, 0, 0 );
                         tv1.setTextSize( TypedValue.COMPLEX_UNIT_DIP, 14.5f );
                         tv1.setLetterSpacing(0.1f);
                         tv1.setEllipsize(null);
                         tv1.setSingleLine(false);
                         tv1.setMaxLines(1);
                         artView.setVisibility( View.GONE );
+                        FrameLayout cover = view.findViewById( R.id.coverFrame );
+                        if (cover != null) cover.setVisibility( View.GONE );
+                        card.post( new Runnable() { public void run() { card.setForeground( null ); } } );
                     }
                     else
                     {
                         view.setClickable( true );
                         view.setLongClickable( true );
                         tv1.setPadding( 0, 0, 0, 0 );
+                        tv1.setGravity(Gravity.CENTER);
+                        int titleLines = (activity != null && activity.maxTitleLines > 0) ? activity.maxTitleLines : 3;
                         tv1.setTextSize( TypedValue.COMPLEX_UNIT_DIP, 13.0f*item.scale );
-                        tv1.setSingleLine(true);
-                        tv1.setEllipsize(TextUtils.TruncateAt.MARQUEE);
-                        tv1.setMarqueeRepeatLimit(-1);
-                        tv1.setSelected(true);
+                        tv1.setMaxLines( Math.max(titleLines, 6) );
+                        tv1.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+                        tv1.setLetterSpacing(0.01f);
                         tv1.setTextColor(paulscode.android.mupen64plusae.ui.UiTheme.get(tempActivity).onSurface());
+
+                        // Static, centred title (ROMM-style): show the name and let it
+                        // centre within the card; long names clip symmetrically instead
+                        // of scrolling, so every card reads like ROMM's library grid.
+                        tv1.setText(item.toString());
+                        tv1.setEllipsize(TextUtils.TruncateAt.END);
+                        tv1.setGravity(Gravity.CENTER);
+                        tv1.setTextAlignment(android.view.View.TEXT_ALIGNMENT_CENTER);
+                        tv1.setBackground(null);
+
+                        float density = view.getResources().getDisplayMetrics().density;
+
                         artView.setVisibility( View.VISIBLE );
+                        artView.setBackground(null);
 
                         artView.setImageResource( R.drawable.default_coverart );
 
                         //Load the real cover art in a background task
                         mLoadBitMapTask.loadInBackGround(holder.hashCode(), item.artPath, artView);
 
-                        artView.getLayoutParams().width = activity.galleryWidth;
+                        artView.getLayoutParams().width = ViewGroup.LayoutParams.MATCH_PARENT;
                         artView.getLayoutParams().height = (int) ( activity.galleryWidth / activity.galleryAspectRatio );
 
+                        FrameLayout cover = view.findViewById( R.id.coverFrame );
+                        if (cover != null) {
+                            cover.setVisibility(View.VISIBLE);
+                            cover.setBackground(null);
+                            cover.getLayoutParams().width = ViewGroup.LayoutParams.MATCH_PARENT;
+                            cover.getLayoutParams().height = (int) ( activity.galleryWidth / activity.galleryAspectRatio );
+                        }
+
                         LinearLayout layout = view.findViewById( R.id.info );
-                        layout.getLayoutParams().width = activity.galleryWidth;
-                        layout.getLayoutParams().height = (int)(activity.getResources().getDimension( R.dimen.galleryTextHeight )*item.scale);
+                        if (layout != null) {
+                            layout.setBackground(null);
+                        }
+
+                        // Generous padding with extra bottom clearance above the card's rounded bottom corners
+                        int boxPad = Math.round(10f * density);
+                        int bottomPad = Math.round(14f * density);
+                        layout.setPadding( boxPad, boxPad, boxPad, bottomPad );
+
+                        android.graphics.Paint.FontMetricsInt fm = tv1.getPaint().getFontMetricsInt();
+                        int lineHeight = (fm != null) ? (fm.descent - fm.ascent + fm.leading) : tv1.getLineHeight();
+                        if (lineHeight <= 0) {
+                            lineHeight = Math.round(tv1.getTextSize() * 1.35f);
+                        }
+                        int neededTextHeight = lineHeight * titleLines + Math.round(6f * density);
+                        tv1.setMinHeight( neededTextHeight );
+                        if (tv1.getLayoutParams() != null) {
+                            tv1.getLayoutParams().height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                        }
+                        if (layout.getLayoutParams() != null) {
+                            layout.getLayoutParams().height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                        }
+
+                        // Neon ROMM-style card glow. A single framework GradientDrawable is
+                        // set as the CardView foreground (this older CardView library only
+                        // composites a single GradientDrawable as a foreground; custom
+                        // drawables / LayerDrawables / backgrounds do not render here).
+                        // The foreground bounds are captured at bind time (before the card
+                        // is laid out to full height), so defer via post() so the glow
+                        // outlines the whole card.
+                        final android.graphics.drawable.Drawable glow = uiTheme.cardGlowDrawable( 14 );
+                        if (glow != null) {
+                            card.post( new Runnable() { public void run() { card.setForeground( glow ); } } );
+                        }
                     }
                 }
             }

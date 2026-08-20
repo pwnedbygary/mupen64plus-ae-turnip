@@ -70,7 +70,11 @@ public class ShaderPreference extends ListPreference implements OnPreferenceDial
         builder.setTitle(getTitle());
         builder.setPositiveButton(null, null);
         builder.setSingleChoiceItems(adapter, currentIndex, (dialog, item) -> {
-            setValue(getEntryValues()[item].toString());
+            String val = getEntryValues()[item].toString();
+            if (callChangeListener(val)) {
+                setValue(val);
+                notifyChanged();
+            }
             dialog.dismiss();
         });
         builder.setNeutralButton( R.string.preferenceRemove_title, (dialog, which) -> {
@@ -115,6 +119,23 @@ public class ShaderPreference extends ListPreference implements OnPreferenceDial
     public String getCurrentValue(String defaultValue)
     {
         return getPersistedString( defaultValue );
+    }
+
+    @Override
+    public CharSequence getSummary() {
+        CharSequence entry = getEntry();
+        CharSequence summary = super.getSummary();
+        if (summary == null) {
+            return entry;
+        }
+        String summaryStr = summary.toString();
+        if (summaryStr.equals("%1$s") || summaryStr.equals("%s") || summaryStr.isEmpty()) {
+            return entry != null ? entry : "";
+        }
+        if (summaryStr.contains("%1$s") || summaryStr.contains("%s")) {
+            return entry != null ? String.format(summaryStr, entry) : "";
+        }
+        return summary;
     }
 
     @Override

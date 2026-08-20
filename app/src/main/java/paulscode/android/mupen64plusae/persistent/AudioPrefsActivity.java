@@ -101,9 +101,6 @@ public class AudioPrefsActivity extends AppCompatPreferenceActivity implements O
     {
         // Refresh the preferences object
         mGlobalPrefs = new GlobalPrefs(this, mAppData);
-
-        // Enable audio prefs if audio is enabled
-        PrefUtil.enablePreference(this, AUDIO_SAMPLING_TYPE, !mGlobalPrefs.enableAudioTimeSretching);
     }
 
     @Override

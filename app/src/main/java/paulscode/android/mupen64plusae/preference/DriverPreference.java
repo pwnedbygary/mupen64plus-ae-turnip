@@ -111,8 +111,12 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
             if (mDriverRows.get(item).isHeader) {
                 return;
             }
-            setValue(getEntryValues()[item].toString());
-            syncGlobalDriverPrefs();
+            String val = getEntryValues()[item].toString();
+            if (callChangeListener(val)) {
+                setValue(val);
+                syncGlobalDriverPrefs();
+                notifyChanged();
+            }
             dialog.dismiss();
         });
         builder.setPositiveButton( R.string.gpuDriver_import, (dialog, which) -> {
@@ -493,6 +497,23 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
         } catch (Exception e) {
             return "";
         }
+    }
+
+    @Override
+    public CharSequence getSummary() {
+        CharSequence entry = getEntry();
+        CharSequence summary = super.getSummary();
+        if (summary == null) {
+            return entry;
+        }
+        String summaryStr = summary.toString();
+        if (summaryStr.equals("%1$s") || summaryStr.equals("%s") || summaryStr.isEmpty()) {
+            return entry != null ? entry : "";
+        }
+        if (summaryStr.contains("%1$s") || summaryStr.contains("%s")) {
+            return entry != null ? String.format(summaryStr, entry) : "";
+        }
+        return summary;
     }
 
     private static byte[] readAll(InputStream inputStream) throws IOException

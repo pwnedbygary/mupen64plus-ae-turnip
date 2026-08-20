@@ -145,6 +145,7 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
     public int galleryHalfSpacing;
     public int galleryColumns = 2;
     public float galleryAspectRatio;
+    public int maxTitleLines = 2;
 
     // Misc.
     private GalleryItem mSelectedItem = null;
@@ -476,7 +477,14 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         mDrawerLayout.addDrawerListener( mDrawerToggle );
 
         // Configure the list in the navigation drawer
+        View drawerContainer = findViewById(R.id.drawerContainer);
+        if (drawerContainer != null) {
+            drawerContainer.setClipToOutline(true);
+        }
         mDrawerList = findViewById( R.id.drawerNavigation );
+        if (mDrawerList != null) {
+            mDrawerList.setClipToOutline(true);
+        }
         mDrawerList.setMenuResource( R.menu.gallery_drawer );
 
         // Set up the header image in the navigation drawer
@@ -1212,13 +1220,51 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         galleryAspectRatio = galleryMaxWidth * 1.0f
                 / getResources().getDimension( R.dimen.galleryImageHeight )/mGlobalPrefs.coverArtScale;
 
-        int widthPixels = mDrawerLayout.getWidth();
+        int widthPixels = (mDrawerLayout != null && mDrawerLayout.getWidth() > 0)
+                ? mDrawerLayout.getWidth()
+                : getResources().getDisplayMetrics().widthPixels;
 
         int width = widthPixels - galleryHalfSpacing * 2;
         width = Math.max(width, galleryHalfSpacing*4);
         galleryColumns = (int) Math
                 .ceil( width * 1.0 / ( galleryMaxWidth + galleryHalfSpacing * 2 ) );
         galleryWidth = width / galleryColumns - galleryHalfSpacing * 2;
+
+        // Programmatically calculate the maximum number of text lines required for the longest game title
+        float density = getResources().getDisplayMetrics().density;
+        int boxPad = Math.round(12f * density);
+        int availableTextWidth = Math.max(1, galleryWidth - 2 * boxPad - Math.round(8f * density));
+
+        android.text.TextPaint textPaint = new android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        textPaint.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+        textPaint.setLetterSpacing(0.01f);
+        textPaint.setTextSize(TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP, 13.0f * mGlobalPrefs.coverArtScale, getResources().getDisplayMetrics()));
+
+        int calculatedMaxLines = 1;
+        for (GalleryItem item : items) {
+            if (item != null && !item.isHeading) {
+                String title = item.toString();
+                if (!TextUtils.isEmpty(title)) {
+                    android.text.StaticLayout layout;
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                        layout = android.text.StaticLayout.Builder.obtain(title, 0, title.length(), textPaint, availableTextWidth)
+                                .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
+                                .setIncludePad(false)
+                                .build();
+                    } else {
+                        layout = new android.text.StaticLayout(title, textPaint, availableTextWidth,
+                                android.text.Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, false);
+                    }
+                    int lines = layout.getLineCount();
+                    if (lines > calculatedMaxLines) {
+                        calculatedMaxLines = lines;
+                    }
+                }
+            }
+        }
+        // Support the full line count required by the longest title (minimum 2 for balance)
+        maxTitleLines = Math.max(2, calculatedMaxLines);
 
         layoutManager.setSpanCount( galleryColumns );
 

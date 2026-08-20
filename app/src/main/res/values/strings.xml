@@ -1065,6 +1065,9 @@
     <string name="actionSearchRoms">Search ROMs</string>
 
     <!-- UI Theme -->
+    <string name="uiThemeCategoryPresets_title">Presets</string>
+    <string name="uiThemePresets_title">Color presets</string>
+    <string name="uiThemePresets_summary">Apply a complete colorscheme in one tap</string>
     <string name="uiThemeCategoryAccents_title">Accent colors</string>
     <string name="uiThemeCategorySurfaces_title">Backgrounds</string>
     <string name="uiThemeCategoryText_title">Text colors</string>
@@ -1084,6 +1087,8 @@
     <string name="uiThemeGlassOpacity_summary">Opacity of frosted glass panels</string>
     <string name="uiThemeContrast_title">Text contrast</string>
     <string name="uiThemeContrast_summary">Contrast of text against backgrounds</string>
+    <string name="uiThemeCardGlow_title">Card glow</string>
+    <string name="uiThemeCardGlow_summary">Neon outline around game cards</string>
     <string name="uiThemeReset_title">Reset theme</string>
     <string name="uiThemeReset_summary">Restore all colors to the default palette</string>
     <string name="uiTheme_resetDone">Theme reset to defaults</string>

@@ -21,7 +21,7 @@ android {
     buildFeatures.buildConfig = true
 
     defaultConfig {
-        applicationId = "org.mupen64plusae.v3.fzurita"
+        applicationId = "org.mupen64plusae.turnip.pwnedbygary"
         manifestPlaceholders = [appLabel:"@string/app_name",
                                 appBanner:"@drawable/banner",
                                 appLogo:"@drawable/hireslogo",
@@ -224,5 +224,6 @@ dependencies {
     implementation project(':mupen64plus-video-angrylion-plus')
     implementation project(':mupen64plus-video-parallel')
     implementation project(':mupen64plus-core')
+    implementation "com.github.skydoves:colorpickerview:2.3.0"
 }
 

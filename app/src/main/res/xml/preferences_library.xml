@@ -69,7 +69,7 @@
         android:key="libraryArtScale"
         android:title="@string/libraryScale_title"
         mupen64:maximumValue="200"
-        mupen64:minimumValue="50"
+        mupen64:minimumValue="75"
         mupen64:stepSize="1"
         mupen64:units="%" />
     <androidx.preference.PreferenceScreen

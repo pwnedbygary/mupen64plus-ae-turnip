@@ -7,6 +7,16 @@
     xmlns:mupen64="http://schemas.android.com/apk/res-auto">
 
     <PreferenceCategory
+        android:key="uiThemeCategoryPresets"
+        android:title="@string/uiThemeCategoryPresets_title">
+
+        <paulscode.android.mupen64plusae.preference.ThemePresetPreference
+            android:key="uiThemePreset"
+            android:title="@string/uiThemePresets_title"
+            android:summary="@string/uiThemePresets_summary" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
         android:key="uiThemeCategoryAccents"
         android:title="@string/uiThemeCategoryAccents_title">
 
@@ -87,6 +97,16 @@
             android:summary="@string/uiThemeContrast_summary"
             mupen64:maximumValue="200"
             mupen64:minimumValue="50"
+            mupen64:stepSize="1"
+            mupen64:units="%" />
+
+        <paulscode.android.mupen64plusae.preference.SeekBarPreference
+            android:defaultValue="45"
+            android:key="uiThemeCardGlow"
+            android:title="@string/uiThemeCardGlow_title"
+            android:summary="@string/uiThemeCardGlow_summary"
+            mupen64:maximumValue="100"
+            mupen64:minimumValue="0"
             mupen64:stepSize="1"
             mupen64:units="%" />
     </PreferenceCategory>

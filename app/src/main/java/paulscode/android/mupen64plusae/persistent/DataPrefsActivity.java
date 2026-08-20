@@ -111,6 +111,27 @@ public class DataPrefsActivity extends AppCompatPreferenceActivity implements On
                 }
             });
 
+    ActivityResultLauncher<Intent> mGoogleSignInLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                Log.i("DataPrefs", "Google Sign In result: " + result.getResultCode());
+                if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
+                    com.google.android.gms.tasks.Task<com.google.android.gms.auth.api.signin.GoogleSignInAccount> task =
+                            GoogleSignIn.getSignedInAccountFromIntent(result.getData());
+                    try {
+                        com.google.android.gms.auth.api.signin.GoogleSignInAccount account =
+                                task.getResult(com.google.android.gms.common.api.ApiException.class);
+                        if (account != null) {
+                            Notifier.showToast(DataPrefsActivity.this, R.string.alreadyHaveGoogleDrivePermissions);
+                            Log.i("DataPrefs", "Sign in success: " + account.getEmail());
+                        }
+                    } catch (Exception e) {
+                        Log.e("DataPrefs", "Sign in error: " + e.getMessage(), e);
+                        Notifier.showToast(DataPrefsActivity.this, "Sign in failed: " + e.getMessage());
+                    }
+                }
+            });
+
     private Uri getUri(Intent data)
     {
         AppData appData = new AppData( this );
@@ -303,19 +324,20 @@ public class DataPrefsActivity extends AppCompatPreferenceActivity implements On
     {
         Scope driveFileScope = new Scope(Scopes.DRIVE_FILE);
         Scope emailScope = new Scope(Scopes.EMAIL);
+        com.google.android.gms.auth.api.signin.GoogleSignInAccount account = GoogleSignIn.getLastSignedInAccount(this);
 
-        if (!GoogleSignIn.hasPermissions(
-                GoogleSignIn.getLastSignedInAccount(this),
-                driveFileScope, emailScope)) {
-            GoogleSignIn.requestPermissions(
-                    this,
-                    GOOGLE_SIGNIN_REQUEST_CODE,
-                    GoogleSignIn.getLastSignedInAccount(this),
-                    driveFileScope, emailScope);
-        } else {
-            Notifier.showToast( this, R.string.alreadyHaveGoogleDrivePermissions );
-            Log.e("DataPrefs", "Already have permission");
+        if (account != null && GoogleSignIn.hasPermissions(account, driveFileScope, emailScope)) {
+            Notifier.showToast(this, R.string.alreadyHaveGoogleDrivePermissions);
+            Log.i("DataPrefs", "Already have permission: " + account.getEmail());
+            return;
         }
+
+        GoogleSignInOptions gso = new GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                .requestEmail()
+                .requestScopes(driveFileScope)
+                .build();
+        GoogleSignInClient client = GoogleSignIn.getClient(this, gso);
+        mGoogleSignInLauncher.launch(client.getSignInIntent());
     }
 
     private void downloadFromGoogleDrive()
@@ -325,11 +347,9 @@ public class DataPrefsActivity extends AppCompatPreferenceActivity implements On
 
     private void signOutOffGoogleDrive()
     {
-        GoogleSignInOptions.Builder signInOptionsBuiler = new GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN);
-        GoogleSignInClient client = GoogleSignIn.getClient(this, signInOptionsBuiler.build());
-
-        client.signOut()
-                .addOnCompleteListener(this, task -> Notifier.showToast( DataPrefsActivity.this, R.string.signedOutOfGoogleDrive ));
+        GoogleSignInOptions gso = new GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build();
+        GoogleSignInClient client = GoogleSignIn.getClient(this, gso);
+        client.signOut().addOnCompleteListener(this, task -> Notifier.showToast(DataPrefsActivity.this, R.string.signedOutOfGoogleDrive));
     }
 
     @Override

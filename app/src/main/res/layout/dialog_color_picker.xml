@@ -1,170 +1,159 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:fillViewport="true"
-    android:scrollbars="none">
+    android:orientation="horizontal"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp"
+    android:gravity="center_vertical">
 
-    <LinearLayout
-        android:layout_width="match_parent"
+    <!-- Left Column: Color Wheel -->
+    <FrameLayout
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:paddingStart="?attr/dialogPreferredPadding"
-        android:paddingEnd="?attr/dialogPreferredPadding"
-        android:paddingTop="4dp"
-        android:paddingBottom="8dp">
+        android:layout_gravity="center_vertical"
+        android:padding="2dp">
 
-        <!-- Current / New color preview -->
+        <com.skydoves.colorpickerview.ColorPickerView
+            android:id="@+id/colorPickerView"
+            android:layout_width="190dp"
+            android:layout_height="190dp"
+            android:layout_gravity="center"
+            app:selector="@drawable/colorpickerview_wheel" />
+    </FrameLayout>
+
+    <!-- Right Column: Previews, Hex, Brightness & Alpha Sliders -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="16dp"
+        android:layout_gravity="center_vertical"
+        android:orientation="vertical">
+
+        <!-- Previews & Hex Row -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="48dp"
+            android:layout_height="38dp"
             android:orientation="horizontal"
-            android:layout_marginTop="8dp">
+            android:gravity="center_vertical">
 
-            <View
-                android:id="@+id/colorPreviewCurrent"
+            <!-- Current Color Tile -->
+            <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:background="@color/m3_surface" />
+                android:orientation="vertical">
 
-            <View
-                android:id="@+id/colorPreviewNew"
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Current"
+                    android:textSize="10sp"
+                    android:textColor="@color/m3_on_surface_variant" />
+
+                <com.skydoves.colorpickerview.AlphaTileView
+                    android:id="@+id/colorPreviewCurrent"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <!-- New Color Tile -->
+            <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
                 android:layout_marginStart="8dp"
-                android:background="@color/m3_surface" />
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="New"
+                    android:textSize="10sp"
+                    android:textColor="@color/m3_on_surface_variant" />
+
+                <com.skydoves.colorpickerview.AlphaTileView
+                    android:id="@+id/colorPreviewNew"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <!-- Hex Code Input -->
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1.5"
+                android:layout_marginStart="10dp"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Hex Code"
+                    android:textSize="10sp"
+                    android:textColor="@color/m3_on_surface_variant" />
+
+                <EditText
+                    android:id="@+id/hexValue"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:layout_marginTop="2dp"
+                    android:gravity="center"
+                    android:inputType="textCapCharacters|textNoSuggestions"
+                    android:maxLength="9"
+                    android:fontFamily="monospace"
+                    android:textSize="12sp"
+                    android:textColor="@color/m3_on_surface"
+                    android:background="@drawable/bg_frosted_glass_button"
+                    android:padding="2dp" />
+            </LinearLayout>
         </LinearLayout>
 
-        <!-- Rainbow box -->
-        <paulscode.android.mupen64plusae.ui.RainbowPickerView
-            android:id="@+id/rainbowBox"
-            android:layout_width="match_parent"
-            android:layout_height="220dp"
-            android:layout_marginTop="16dp"
-            android:nextFocusDown="@+id/hueSlider"
-            android:nextFocusUp="@+id/hueSlider" />
-
-        <!-- Hue slider -->
+        <!-- Brightness Slider -->
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="Hue"
-            android:textColor="@color/m3_on_surface_variant"
-            android:textAppearance="@style/TextAppearance.Material3.LabelMedium"
-            android:labelFor="@+id/hueSlider" />
-
-        <paulscode.android.mupen64plusae.ui.PickerSliderView
-            android:id="@+id/hueSlider"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="4dp"
-            android:nextFocusDown="@+id/saturationSlider"
-            android:nextFocusUp="@+id/rainbowBox" />
-
-        <!-- Saturation slider -->
-        <TextView
-            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Saturation"
-            android:textColor="@color/m3_on_surface_variant"
-            android:textAppearance="@style/TextAppearance.Material3.LabelMedium"
-            android:labelFor="@+id/saturationSlider" />
-
-        <paulscode.android.mupen64plusae.ui.PickerSliderView
-            android:id="@+id/saturationSlider"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="4dp"
-            android:nextFocusDown="@+id/valueSlider"
-            android:nextFocusUp="@+id/hueSlider" />
-
-        <!-- Brightness slider -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
             android:text="Brightness"
+            android:textSize="10sp"
             android:textColor="@color/m3_on_surface_variant"
-            android:textAppearance="@style/TextAppearance.Material3.LabelMedium"
-            android:labelFor="@+id/valueSlider" />
+            android:layout_marginTop="10dp" />
 
-        <paulscode.android.mupen64plusae.ui.PickerSliderView
-            android:id="@+id/valueSlider"
+        <com.skydoves.colorpickerview.sliders.BrightnessSlideBar
+            android:id="@+id/brightnessSlideBar"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="4dp"
-            android:nextFocusDown="@+id/opacitySlider"
-            android:nextFocusUp="@+id/saturationSlider" />
-
-        <!-- Opacity slider -->
-        <TextView
-            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Opacity"
-            android:textColor="@color/m3_on_surface_variant"
-            android:textAppearance="@style/TextAppearance.Material3.LabelMedium"
-            android:labelFor="@+id/opacitySlider" />
+            android:layout_marginTop="3dp"
+            app:selector_BrightnessSlider="@drawable/colorpickerview_wheel" />
 
-        <paulscode.android.mupen64plusae.ui.PickerSliderView
-            android:id="@+id/opacitySlider"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="4dp"
-            android:nextFocusDown="@+id/contrastSlider"
-            android:nextFocusUp="@+id/valueSlider" />
-
-        <!-- Contrast slider -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Contrast"
-            android:textColor="@color/m3_on_surface_variant"
-            android:textAppearance="@style/TextAppearance.Material3.LabelMedium"
-            android:labelFor="@+id/contrastSlider" />
-
-        <paulscode.android.mupen64plusae.ui.PickerSliderView
-            android:id="@+id/contrastSlider"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="4dp"
-            android:nextFocusUp="@+id/opacitySlider" />
-
-        <!-- Hex value -->
+        <!-- Opacity Slider (toggleable) -->
         <LinearLayout
+            android:id="@+id/alphaSlideBarContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
+            android:orientation="vertical">
 
             <TextView
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Hex"
+                android:text="Opacity"
+                android:textSize="10sp"
                 android:textColor="@color/m3_on_surface_variant"
-                android:textAppearance="@style/TextAppearance.Material3.LabelMedium"
-                android:labelFor="@+id/hexValue" />
+                android:layout_marginTop="8dp" />
 
-            <EditText
-                android:id="@+id/hexValue"
-                android:layout_width="0dp"
+            <com.skydoves.colorpickerview.sliders.AlphaSlideBar
+                android:id="@+id/alphaSlideBar"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="12dp"
-                android:inputType="textCapCharacters"
-                android:maxLength="9"
-                android:singleLine="true"
-                android:textColor="@color/m3_on_surface"
-                android:textColorHint="@color/m3_on_surface_variant"
-                android:hint="#RRGGBBAA"
-                android:background="@android:color/transparent" />
+                android:layout_marginTop="3dp"
+                app:selector_AlphaSlideBar="@drawable/colorpickerview_wheel" />
         </LinearLayout>
+
     </LinearLayout>
-</ScrollView>
+
+</LinearLayout>

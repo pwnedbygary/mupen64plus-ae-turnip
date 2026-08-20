@@ -6,7 +6,7 @@
     android:orientation="vertical"
     android:gravity="bottom"
     android:padding="24dp"
-    android:background="@drawable/bg_frosted_glass_sidebar">
+    android:background="@android:color/transparent">
 
     <ImageView
         android:id="@+id/headerLogoArt"

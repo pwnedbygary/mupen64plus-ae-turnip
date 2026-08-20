@@ -6,7 +6,7 @@
     android:layout_height="wrap_content"
     android:orientation="vertical"
     android:padding="24dp"
-    android:background="@drawable/bg_frosted_glass_sidebar">
+    android:background="@android:color/transparent">
 
     <LinearLayout
         android:id="@+id/imageLayout"

@@ -134,10 +134,13 @@
 
     <!-- Navigation Drawer with Frosted Glass -->
     <RelativeLayout
+        android:id="@+id/drawerContainer"
         android:layout_width="280dp"
         android:layout_height="match_parent"
         android:layout_gravity="start"
         android:fitsSystemWindows="true"
+        android:clipToOutline="true"
+        android:outlineProvider="background"
         style="@style/MupenTheme_Dark_Sidebar">
 
         <paulscode.android.mupen64plusae.GameSidebar
@@ -145,11 +148,11 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:clipToPadding="false"
+            android:background="@android:color/transparent"
             android:nextFocusDown="@+id/drawerNavigation"
             android:nextFocusLeft="@+id/drawerNavigation"
             android:nextFocusRight="@+id/drawerNavigation"
-            android:nextFocusUp="@+id/drawerNavigation"
-            style="@style/MupenTheme_Dark_Sidebar" />
+            android:nextFocusUp="@+id/drawerNavigation" />
 
         <paulscode.android.mupen64plusae.GameSidebar
             android:id="@+id/gameSidebar"
@@ -157,7 +160,7 @@
             android:layout_height="match_parent"
             android:fillViewport="true"
             android:visibility="gone"
-            style="@style/MupenTheme_Dark_Sidebar" />
+            android:background="@android:color/transparent" />
     </RelativeLayout>
 
 </androidx.drawerlayout.widget.DrawerLayout>

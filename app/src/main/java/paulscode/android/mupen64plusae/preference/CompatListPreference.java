@@ -48,10 +48,18 @@ public class CompatListPreference extends ListPreference implements OnPreference
         ArrayAdapter<CharSequence> adapter = new ArrayAdapter<>(context, R.layout.list_preference,
                 getEntries());
 
-        int currentIndex = findIndexOfValue(getCurrentValue());
+        String currentVal = getValue();
+        if (currentVal == null) {
+            currentVal = getCurrentValue();
+        }
+        int currentIndex = findIndexOfValue(currentVal);
         builder.setTitle(getTitle());
         builder.setSingleChoiceItems(adapter, currentIndex, (dialog, item) -> {
-            setValue(getEntryValues()[item].toString());
+            String selectedVal = getEntryValues()[item].toString();
+            if (callChangeListener(selectedVal)) {
+                setValue(selectedVal);
+                notifyChanged();
+            }
             dialog.dismiss();
         });
         builder.setPositiveButton(null, null);
@@ -60,6 +68,23 @@ public class CompatListPreference extends ListPreference implements OnPreference
     public String getCurrentValue()
     {
         return getPersistedString( null );
+    }
+
+    @Override
+    public CharSequence getSummary() {
+        CharSequence entry = getEntry();
+        CharSequence summary = super.getSummary();
+        if (summary == null) {
+            return entry;
+        }
+        String summaryStr = summary.toString();
+        if (summaryStr.equals("%1$s") || summaryStr.equals("%s") || summaryStr.isEmpty()) {
+            return entry != null ? entry : "";
+        }
+        if (summaryStr.contains("%1$s") || summaryStr.contains("%s")) {
+            return entry != null ? String.format(summaryStr, entry) : "";
+        }
+        return summary;
     }
 
     @Override
