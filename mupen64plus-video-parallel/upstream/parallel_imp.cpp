@@ -1,4 +1,5 @@
 #include "parallel_imp.h"
+#include <chrono>
 #include <memory>
 #include <vector>
 #include "rdp_device.hpp"
@@ -6,6 +7,7 @@
 #include "device.hpp"
 #include "plugin_filesystem.hpp"
 #include "gfx_m64p.h"
+#include "logging.hpp"
 
 using namespace Vulkan;
 using namespace std;
@@ -20,6 +22,7 @@ static unique_ptr<Context> context;
 static unique_ptr<DirFilesystem> plugin_cache_fs;
 
 static PFN_vkGetInstanceProcAddr custom_vk_loader;
+static std::chrono::steady_clock::time_point s_last_fence_timeout_log;
 
 extern "C" __attribute__((visibility("default"))) void parallel_vulkan_loader_set(PFN_vkGetInstanceProcAddr addr)
 {
@@ -76,7 +79,18 @@ void vk_blit(unsigned &width, unsigned &height)
 		width = scanout.width;
 		height = scanout.height;
 
-		scanout.fence->wait();
+		if (!scanout.fence->wait_timeout(100'000'000ull))
+		{
+			auto now = std::chrono::steady_clock::now();
+			if (now - s_last_fence_timeout_log >= std::chrono::milliseconds(5000))
+			{
+				s_last_fence_timeout_log = now;
+				LOGW("scanout fence wait timed out (100ms), skipping frame\n");
+			}
+			width = 0;
+			height = 0;
+			return;
+		}
 		uint8_t* color_data = screen_get_texture_data();
 		memcpy(color_data, device->map_host_buffer(*scanout.buffer, Vulkan::MEMORY_ACCESS_READ_BIT),
 			   width * height * sizeof(uint32_t));
