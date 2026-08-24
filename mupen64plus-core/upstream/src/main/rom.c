@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
@@ -199,6 +200,7 @@ m64p_error open_rom(const unsigned char* romimage, unsigned int size)
         ROM_SETTINGS.aidmamodifier = entry->aidmamodifier;
         ROM_SETTINGS.forcealignmentofpidma = entry->forcealignmentofpidma;
         ROM_SETTINGS.countPerScanlineOverride = entry->countPerScanlineOverride;
+        ROM_SETTINGS.writablecartrom = entry->writablecartrom;
         ROM_PARAMS.cheats = entry->cheats;
     }
     else
@@ -217,6 +219,7 @@ m64p_error open_rom(const unsigned char* romimage, unsigned int size)
         ROM_SETTINGS.aidmamodifier = DEFAULT_AI_DMA_MODIFIER;
         ROM_SETTINGS.forcealignmentofpidma = DEFAULT_FORCE_ALIGNMENT_OF_PI_DMA;
         ROM_SETTINGS.countPerScanlineOverride = DEFAULT_COUNT_PER_SCANLINE_OVERRIDE;
+        ROM_SETTINGS.writablecartrom = 0;
         ROM_PARAMS.cheats = NULL;
 
         /* check if ROM has the Advanced Homebrew ROM Header (see https://n64brew.dev/wiki/ROM_Header) */
@@ -445,6 +448,12 @@ static size_t romdatabase_resolve_round(void)
             entry->entry.set_flags |= ROMDATABASE_ENTRY_COUNTPERSCANLINEOVERRIDE;
         }
 
+        if (!isset_bitmask(entry->entry.set_flags, ROMDATABASE_ENTRY_WRITABLECARTROM) &&
+            isset_bitmask(ref->set_flags, ROMDATABASE_ENTRY_WRITABLECARTROM)) {
+            entry->entry.writablecartrom = ref->writablecartrom;
+            entry->entry.set_flags |= ROMDATABASE_ENTRY_WRITABLECARTROM;
+        }
+
         free(entry->entry.refmd5);
         entry->entry.refmd5 = NULL;
     }
@@ -544,6 +553,7 @@ void romdatabase_open(void)
             search->entry.aidmamodifier = DEFAULT_AI_DMA_MODIFIER;
             search->entry.forcealignmentofpidma = 1; //If ROM is in database, force alignment by default
             search->entry.countPerScanlineOverride = DEFAULT_COUNT_PER_SCANLINE_OVERRIDE;
+            search->entry.writablecartrom = 0;
             search->entry.set_flags = ROMDATABASE_ENTRY_NONE;
 
             search->next_entry = NULL;
@@ -758,6 +768,11 @@ void romdatabase_open(void)
             {
                 search->entry.countPerScanlineOverride = atoi(l.value);
                 search->entry.set_flags |= ROMDATABASE_ENTRY_COUNTPERSCANLINEOVERRIDE;
+            }
+            else if(!strcmp(l.name, "WritableROM"))
+            {
+                search->entry.writablecartrom = (atoi(l.value) != 0) || (!strcasecmp(l.value, "yes")) || (!strcasecmp(l.value, "true"));
+                search->entry.set_flags |= ROMDATABASE_ENTRY_WRITABLECARTROM;
             }
             else
             {

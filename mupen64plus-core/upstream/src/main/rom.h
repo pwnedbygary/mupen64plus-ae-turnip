@@ -116,6 +116,7 @@ typedef struct
    unsigned int aidmamodifier;
    unsigned int forcealignmentofpidma;
    unsigned int countPerScanlineOverride;
+   unsigned char writablecartrom; /* 0 - No, 1 - Yes boolean: allow game writes to cart ROM space to persist */
    uint32_t set_flags;
 } romdatabase_entry;
 
@@ -136,6 +137,7 @@ typedef struct
 #define ROMDATABASE_ENTRY_AIDMAMODIFIER BIT(13)
 #define ROMDATABASE_ENTRY_FORCEALIGNMENTOFPIDMA BIT(14)
 #define ROMDATABASE_ENTRY_COUNTPERSCANLINEOVERRIDE BIT(15)
+#define ROMDATABASE_ENTRY_WRITABLECARTROM BIT(16)
 
 typedef struct _romdatabase_search
 {

@@ -286,6 +286,7 @@ typedef struct
    unsigned int aidmamodifier; /* Percentage modifier for AI DMA duration */
    unsigned int forcealignmentofpidma; /* Force alignment of PI DMA, needed for ROM hacks */
    unsigned int countPerScanlineOverride; /* Count per scanline override */
+   unsigned char writablecartrom; /* 0 - No, 1 - Yes boolean: allow game writes to cart ROM space to persist (ROM-hack save areas baked into ROM) */
 } m64p_rom_settings;
 
 /* ----------------------------------------- */

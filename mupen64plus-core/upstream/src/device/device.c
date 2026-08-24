@@ -194,12 +194,10 @@ void init_device(struct device* dev,
     init_si(&dev->si, si_dma_duration, &dev->mi, &dev->pif, &dev->ri);
     init_vi(&dev->vi, vi_clock, expected_refresh_rate, count_per_scanline_override, &dev->mi, &dev->dp);
 
-    /* FIXME: should boot on cart, unless only a disk is present, but having no cart is not yet supported by ui/core,
-     * so use another way of selecting boot device:
-     * use CART unless DD is plugged and the plugged CART is not a combo media (cart+disk).
-     */
-    uint8_t media = *((uint8_t*)mem_base_u32(base, MM_CART_ROM) + (0x3b ^ S8));
-    uint32_t rom_base = (dd_rom_size > 0 && media != 'C')
+    /* Boot via the 64DD IPL whenever a disk is inserted: on real hardware an
+     * inserted disk always takes boot priority, even with a combo ('C') cart
+     * such as F-Zero X + Expansion Kit. */
+    uint32_t rom_base = (dd_rom_size > 0)
         ? MM_DD_ROM
         : MM_CART_ROM;
 

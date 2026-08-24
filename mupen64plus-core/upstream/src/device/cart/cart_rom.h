@@ -53,6 +53,8 @@ void init_cart_rom(struct cart_rom* cart_rom,
 
 void poweron_cart_rom(struct cart_rom* cart_rom);
 
+void close_cart_rom(struct cart_rom* cart_rom);
+
 void read_cart_rom(void* opaque, uint32_t address, uint32_t* value);
 void write_cart_rom(void* opaque, uint32_t address, uint32_t value, uint32_t mask);
 

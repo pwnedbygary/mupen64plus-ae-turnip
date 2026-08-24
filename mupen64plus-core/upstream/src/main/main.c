@@ -1562,6 +1562,12 @@ m64p_error main_run(void)
     //During netplay, player 1 is the source of truth for these settings
     netplay_sync_settings(&count_per_op, &count_per_op_denom_pot, &disable_extra_mem, &si_dma_duration, &emumode, &no_compiled_jump);
 
+    /* Writable-ROM persistence must be off during netplay: a player with an
+     * existing .cart_ram would inject different cart ROM content than an
+     * opponent without it and desync the emulation. */
+    if (netplay_is_init())
+        ROM_SETTINGS.writablecartrom = 0;
+
     cheat_add_hacks(&g_cheat_ctx, ROM_PARAMS.cheats);
 
     /* do byte-swapping if it hasn't been done yet */
@@ -1904,6 +1910,7 @@ m64p_error main_run(void)
     close_file_storage(&eep);
     close_file_storage(&mpk);
     close_dd_disk(&dd_disk);
+    close_cart_rom(&g_dev.cart.cart_rom);
 
     if (ConfigGetParamBool(g_CoreConfig, "OnScreenDisplay"))
     {

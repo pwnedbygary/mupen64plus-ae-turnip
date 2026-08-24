@@ -368,6 +368,10 @@ public class GamePrefs
         isDpadGame = isDpadGame(headerName, goodName);
         is64DdGame = is64ddGame(headerName);
 
+        // One-time migration for F-Zero X Expansion Kit Cart Hack (DB RefMD5 + Translation patches)
+        // Copies legacy SramData/*.sra to new per-MD5 folder so MD5 changes don't orphan saves (Plan A)
+        migrateExpansionKitSaves(context);
+
 
         // Emulation profile
         Profile tempEmulationProfile = loadProfile( mPreferences, EMULATION_PROFILE,
@@ -834,6 +838,72 @@ public class GamePrefs
     public static String getAlternateGameDataPath( String romMd5)
     {
         return String.format( "%s", romMd5 );
+    }
+
+    private void migrateExpansionKitSaves(Context context)
+    {
+        // Only for F-Zero X family (header contains F-ZERO, case-insensitive)
+        if (TextUtils.isEmpty(gameHeaderName) || !gameHeaderName.toLowerCase().contains("f-zero"))
+            return;
+        // Only if target SramData is empty
+        File newSramDir = new File(getSramDataDir());
+        File[] newSras = newSramDir.listFiles((dir, name) -> name.endsWith(".sra") || name.endsWith(".eep") || name.endsWith(".fla"));
+        if (newSras != null && newSras.length > 0)
+            return;
+
+        File root = new File(mAppData.gameDataDir);
+        File[] subdirs = root.listFiles(File::isDirectory);
+        if (subdirs == null) return;
+
+        File bestDir = null;
+        long newest = -1;
+        String currentDirName = new File(getGameDataDir()).getName();
+        String altDirName = getAlternateGameDataPath(romMd5);
+
+        for (File dir : subdirs) {
+            String n = dir.getName();
+            if (n.equals(currentDirName) || n.equals(altDirName)) continue;
+            String lower = n.toLowerCase();
+            if (!lower.contains("f-zero") && !lower.contains("fzero")) continue;
+            File srcSram = new File(dir, SRAM_DATA_DIR);
+            File src = srcSram.exists() ? srcSram : dir;
+            File[] candidates = src.listFiles((d, name) -> name.endsWith(".sra") || name.endsWith(".eep") || name.endsWith(".fla"));
+            if (candidates == null || candidates.length == 0) continue;
+            long m = dir.lastModified();
+            if (m > newest) { newest = m; bestDir = dir; }
+        }
+        if (bestDir == null) {
+            // Also check flat saves at GameData root (useFlatGameDataPath case)
+            File[] flat = root.listFiles((dir, name) -> name.startsWith(gameHeaderName) || name.startsWith(gameGoodName) || name.toLowerCase().contains("f-zero"));
+            if (flat != null) for (File f : flat) if (f.isFile() && (f.getName().endsWith(".sra") || f.getName().endsWith(".eep"))) { bestDir = root; break; }
+            if (bestDir == null) return;
+        }
+
+        File srcSram = new File(bestDir, SRAM_DATA_DIR);
+        File srcRoot = srcSram.exists() ? srcSram : bestDir;
+        File[] toCopy = srcRoot.listFiles((d, name) -> name.endsWith(".sra") || name.endsWith(".eep") || name.endsWith(".fla") || name.endsWith(".mpk"));
+        if (toCopy == null || toCopy.length == 0) return;
+
+        FileUtil.makeDirs(getSramDataDir());
+        FileUtil.makeDirs(getSlotSaveDir());
+        // Prefer stable filename = gameGoodName + ext, but keep copy of all
+        for (File src : toCopy) {
+            String ext = src.getName().substring(src.getName().lastIndexOf('.'));
+            // If src is like "F-ZERO X (unknown rom).sra", rename to current goodName
+            File dst;
+            if (srcRoot == bestDir && !src.getParentFile().getName().equals(SRAM_DATA_DIR)) {
+                // Flat file case
+                dst = new File(newSramDir, src.getName());
+                if (dst.exists()) continue;
+            } else {
+                // SramData case: try stable name first, fallback to original
+                File stable = new File(newSramDir, gameGoodName + ext);
+                dst = !stable.exists() ? stable : new File(newSramDir, src.getName());
+                if (dst.exists()) continue;
+            }
+            boolean ok = FileUtil.copyFile(src, dst, false);
+            Log.i("GamePrefs", "Migrated Expansion Kit save " + src.getAbsolutePath() + " -> " + dst.getAbsolutePath() + " ok=" + ok);
+        }
     }
 
     private static Profile loadProfile( SharedPreferences prefs, String key, String defaultName,
