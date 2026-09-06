@@ -25,6 +25,7 @@
 struct r4300_core;
 
 #include <stdint.h>
+#include <stdio.h>
 #include <time.h>
 
 #include "osal/preproc.h"
@@ -73,6 +74,11 @@ struct dd_controller
     uint8_t ds_buf[0x100];              /* 0x400-0x4ff: data buffer */
     uint8_t ms_ram[0x40];               /* 0x580-0x5bf: micro sequencer */
 
+    /* drive controller */
+    unsigned char disk_type;        /* [0-6] */
+    short timer_standby;            /* -1 = Disabled, in seconds */
+    short timer_sleep;              /* -1 = Disabled, in seconds */
+
     /* buffer manager */
     unsigned char bm_write;         /* [0-1] */
     unsigned char bm_reset_held;    /* [0-1] */
@@ -84,6 +90,11 @@ struct dd_controller
     /* DD ROM */
     const uint32_t* rom;
     size_t rom_size;
+
+    /* cartridge source for C2S (cartridge->system) transfers */
+    const uint8_t* cart_rom;
+    size_t cart_size;
+    uint32_t c2s_addr;     /* window base set by a PI write to the C2S buffer */
 
     /* DD Disk */
     struct dd_disk* disk;
@@ -120,7 +131,13 @@ void write_dd_rom(void* opaque, uint32_t address, uint32_t value, uint32_t mask)
 unsigned int dd_dom_dma_read(void* opaque, const uint8_t* dram, uint32_t dram_addr, uint32_t cart_addr, uint32_t length);
 unsigned int dd_dom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr, uint32_t cart_addr, uint32_t length);
 
-void dd_on_pi_cart_addr_write(struct dd_controller* dd, uint32_t address);
 void dd_update_bm(void* opaque);
 
-#endif
+void dd_mecha_int_handler(void* opaque);
+void dd_bm_int_handler(void* opaque);
+void dd_dv_int_handler(void* opaque);
+void dd_trace_dump(FILE* f);
+void dd_trace_add_ext(uint32_t kind, uint32_t a, uint32_t b, uint32_t c2, uint32_t extra);
+void dd_on_pi_cart_addr_write(struct dd_controller* dd, uint32_t address);
+
+#endif /* M64P_DEVICE_DD_CONTROLLER_H */

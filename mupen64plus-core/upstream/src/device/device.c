@@ -126,7 +126,10 @@ void init_device(struct device* dev,
         { &dev->pif,       hw2_int_handler             }, /* HW2 */
         { dev,             nmi_int_handler             }, /* NMI */
         { dev,             reset_hard_handler          }, /* reset_hard */
-        { &dev->sp,        rsp_end_of_dma_event        }
+        { &dev->sp,        rsp_end_of_dma_event        },
+        { &dev->dd,        dd_mecha_int_handler        }, /* DD MECHA */
+        { &dev->dd,        dd_bm_int_handler           }, /* DD BM */
+        { &dev->dd,        dd_dv_int_handler           }, /* DD DRIVE */
     };
 
 #define R(x) read_ ## x
@@ -194,12 +197,21 @@ void init_device(struct device* dev,
     init_si(&dev->si, si_dma_duration, &dev->mi, &dev->pif, &dev->ri);
     init_vi(&dev->vi, vi_clock, expected_refresh_rate, count_per_scanline_override, &dev->mi, &dev->dp);
 
-    /* Boot via the 64DD IPL whenever a disk is inserted: on real hardware an
-     * inserted disk always takes boot priority, even with a combo ('C') cart
-     * such as F-Zero X + Expansion Kit. */
-    uint32_t rom_base = (dd_rom_size > 0)
-        ? MM_DD_ROM
-        : MM_CART_ROM;
+    /* Boot strategy:
+     *  - Disk-only game: the app opens the small dummy test ROM as the
+     *    cartridge, so the genuine 64DD IPL must boot (the game lives on the
+     *    disk). Real hardware matches: no cart -> IPL.
+     *  - Combo cart + disk (F-Zero X + Expansion Kit): boot the CART directly.
+     *    The base-cart game performs its own LeoDD/MFS disk mount; real 64DD
+     *    hardware boots the IPL first, but emulating the IPL's C2S cartridge
+     *    bootstrap is fragile (the retail IPL image executes data tables and
+     *    expects C2S-TLB refills), while the cartridge-first path is the one
+     *    upstream mupen64plus-ae/parallel-n64 run 64DD combo games with. */
+    uint32_t rom_base = MM_CART_ROM;
+    if (dd_rom_size > 0 && rom_size <= 0x100000) {
+        /* dummy test ROM (1MB) -> disk-only game -> boot via the 64DD IPL */
+        rom_base = MM_DD_ROM;
+    }
 
     init_pif(&dev->pif,
         (uint8_t*)mem_base_u32(base, MM_PIF_MEM),
@@ -217,6 +229,13 @@ void init_device(struct device* dev,
             flashram_type, flashram_storage, iflashram_storage,
             (const uint8_t*)dev->rdram.dram,
             sram_storage, isram_storage);
+
+    /* expose the cartridge ROM to the DD controller so the 64DD C2S
+       (cartridge->system) buffer can be filled from the real cartridge */
+    if (dd_rom_size > 0) {
+        dev->dd.cart_rom = dev->cart.cart_rom.rom;
+        dev->dd.cart_size = rom_size;
+    }
 }
 
 void poweron_device(struct device* dev)

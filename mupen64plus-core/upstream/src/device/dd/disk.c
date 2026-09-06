@@ -281,15 +281,34 @@ static uint8_t* get_sector_base_mame(const struct dd_disk* disk,
         + block * BLOCKSIZE(zone)
         + sector * sector_size;
 
+    /* Retail media: the unrecorded system-area gap (LBA 12) must READ-ERROR.
+       libultra's libleo disk-init requires it - "if expecting a retail disk,
+       LBA 12 is expected to do a read error, if not then freeze"
+       (leoRead_system_area). Real drives C1-fail every sector of that block,
+       so fail ALL sectors here (the drive's C1-error counter then crosses
+       the game's LEO_ERROR_UNRECOVERED_READ_ERROR threshold). Development
+       disks keep LBA 12 readable (libleo requires the opposite there). */
+    {
+        uint16_t lblock = offset / (BLOCKSIZE(0));
+        if (lblock == PROTECT_LBA && !disk->development) {
+            if (sector == 0)
+                DebugMessage(M64MSG_WARNING, "MAME-PROTECT(PROTECT_LBA): head=%u track=%04x block=%u sector=%u lblock=%u offset=%x",
+                    head, track, block, sector, lblock, offset);
+            return NULL;
+        }
+    }
+
     /* Access to protected LBA should return an error */
     if (sector == 0 && track < (SYSTEM_LBAS / 2))
     {
-        uint16_t lblock = offset / BLOCKSIZE(0);
-        uint16_t lblock_sys = disk->offset_sys / BLOCKSIZE(0);
-        uint16_t lblock_id = disk->offset_id / BLOCKSIZE(0);
+        uint16_t lblock = offset / (BLOCKSIZE(0));
+        uint16_t lblock_sys = disk->offset_sys / (BLOCKSIZE(0));
+        uint16_t lblock_id = disk->offset_id / (BLOCKSIZE(0));
 
         if ((lblock < PROTECT_LBA && lblock != lblock_sys)
          || (lblock > PROTECT_LBA && lblock < (DISKID_LBA + 2) && lblock != lblock_id)) {
+            DebugMessage(M64MSG_WARNING, "MAME-PROTECT: head=%u track=%04x block=%u sector=%u lblock=%u sys=%u id=%u offset=%x",
+                head, track, block, sector, lblock, lblock_sys, lblock_id, offset);
             return NULL;
         }
     }
@@ -317,21 +336,46 @@ static uint8_t* get_sector_base_sdk(const struct dd_disk* disk,
     const struct dd_sys_data* sys_data = (void*)(disk->istorage->data(disk->storage) + disk->offset_sys);
     unsigned int offset = LBAToByte(sys_data, 0, lba) + sector * sector_size;
 
-    /* Handle Errors for wrong System Data */
-    if (sector == 0 && lba < SYSTEM_LBAS)
-    {
-        uint16_t lblock = offset / BLOCKSIZE(0);
-        uint16_t lblock_sys = disk->offset_sys / BLOCKSIZE(0);
-        uint16_t lblock_id = disk->offset_id / BLOCKSIZE(0);
+    if (sector == 0)
+        DebugMessage(M64MSG_WARNING, "SDKGEOM2 head=%u track=%04x block=%u lba=%u offset=%08x lblock=%u dev=%u",
+            head, track, block, lba, offset, (unsigned)(offset / (BLOCKSIZE(0))), (unsigned)disk->development);
 
-        if ((lblock < PROTECT_LBA && lblock != lblock_sys)
-         || (lblock > PROTECT_LBA && lblock < (DISKID_LBA + 2) && lblock != lblock_id)) {
+    /* Retail media: the unrecorded system-area gap (LBA 12) must READ-ERROR.
+       libultra's libleo disk-init requires it (leoRead_system_area: "if
+       expecting a retail disk, LBA 12 is expected to do a read error, if not
+       then freeze"). Real drives C1-fail every sector of that block; fail ALL
+       sectors so the game's C1-error counter crosses its unrecovered-read
+       threshold. Development disks keep LBA 12 readable (opposite libleo). */
+    {
+        uint16_t lblock = offset / (BLOCKSIZE(0));
+        if (lblock == PROTECT_LBA && !disk->development) {
+            if (sector == 0)
+                DebugMessage(M64MSG_WARNING, "SDK-PROTECT(PROTECT_LBA): head=%u track=%04x block=%u sector=%u lba=%u lblock=%u offset=%x",
+                    head, track, block, sector, lba, lblock, offset);
             return NULL;
         }
     }
 
-    if (lba <= MAX_LBA && sector == 0)
-        DebugMessage(M64MSG_VERBOSE, "LBA %d - Offset %08X - Size %04X", lba, offset, sector_size * SECTORS_PER_BLOCK);
+    /* Handle Errors for wrong System Data */
+    if (sector == 0 && lba < SYSTEM_LBAS)
+    {
+        uint16_t lblock = offset / (BLOCKSIZE(0));
+        uint16_t lblock_sys = disk->offset_sys / (BLOCKSIZE(0));
+        uint16_t lblock_id = disk->offset_id / (BLOCKSIZE(0));
+
+        if ((lblock < PROTECT_LBA && lblock != lblock_sys)
+         || (lblock > PROTECT_LBA && lblock < (DISKID_LBA + 2) && lblock != lblock_id)) {
+            DebugMessage(M64MSG_WARNING, "SDK-PROTECT: head=%u track=%04x block=%u sector=%u lba=%u lblock=%u sys=%u id=%u offset=%x",
+                head, track, block, sector, lba, lblock, lblock_sys, lblock_id, offset);
+            return NULL;
+        }
+    }
+
+    if (sector == 0)
+        DebugMessage(M64MSG_WARNING, "SDKGEOM head=%u track=%04x block=%u sector=%u lba=%u type=%02x offset=%08x first=%02x%02x%02x%02x",
+            head, track, block, sector, lba, sys_data->type, offset,
+            disk->istorage->data(disk->storage)[offset], disk->istorage->data(disk->storage)[offset+1],
+            disk->istorage->data(disk->storage)[offset+2], disk->istorage->data(disk->storage)[offset+3]);
 
     return disk->istorage->data(disk->storage) + offset;
 }
@@ -429,7 +473,7 @@ uint8_t* scan_and_expand_disk_format(uint8_t* data, size_t size,
 
         //IPL Load Address
         uint32_t ipl_load_addr = big32(sys_data->ipl_load_addr);
-        if (ipl_load_addr < 0x80000000 && ipl_load_addr >= 0x80800000) continue;
+        if (ipl_load_addr < 0x80000000 || ipl_load_addr >= 0x80800000) continue;
 
         //Country Code
         uint32_t disk_region = big32(sys_data->region);
@@ -473,6 +517,9 @@ uint8_t* scan_and_expand_disk_format(uint8_t* data, size_t size,
 
     if (isValidDisk == 2 || isValidDisk == 3 || isValidDisk == 10 || isValidDisk == 11)
         isDevelopment = 1;
+
+    DebugMessage(M64MSG_WARNING, "DDSCAN size=%zx isValidDisk=%d isValidDiskID=%d dev=%u",
+        size, isValidDisk, isValidDiskID, isDevelopment);
 
     if (isValidDisk == -1)
     {
@@ -577,6 +624,7 @@ uint8_t* scan_and_expand_disk_format(uint8_t* data, size_t size,
     }
 
 
+    DebugMessage(M64MSG_WARNING, "DISKFMT size=%zu isValidDisk=%d isDevelopment=%u", size, isValidDisk, isDevelopment);
     switch (size)
     {
     case MAME_FORMAT_DUMP_SIZE:
@@ -606,7 +654,7 @@ uint8_t* scan_and_expand_disk_format(uint8_t* data, size_t size,
         {
             //D64
             *format = DISK_FORMAT_D64;
-            *development = 1;
+            *development = isDevelopment;
             *offset_sys = 0x000;
             *offset_id = 0x100;
             const struct dd_sys_data* sys_data = (void*)(&data[*offset_sys]);

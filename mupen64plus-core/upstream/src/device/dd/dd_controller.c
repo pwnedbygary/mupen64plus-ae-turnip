@@ -21,9 +21,74 @@
 
 #include "dd_controller.h"
 
+#include <stdlib.h>
 #include <assert.h>
 #include <string.h>
+#include <stdio.h>
 #include <time.h>
+
+/* ---- DIAGNOSTIC TRACE RING (persisted at freeze) ---- */
+#define DD_TRACE_MAX 4096
+struct dd_trace_ent {
+    uint64_t c;          /* seq */
+    uint32_t kind;       /* 1=dma_read 2=dma_write 3=pi_cart_addr 4=dd_int 5=dd_reg_wr 6=pi_int */
+    uint32_t a, b, c2;   /* kind-dependent */
+    uint32_t extra;
+};
+static struct dd_trace_ent dd_trace[DD_TRACE_MAX];
+static unsigned int dd_trace_pos = 0;
+static uint64_t dd_trace_seq = 0;
+static struct dd_controller* g_trace_dd = NULL;
+
+/* DIAG: streaming DD trace — append every event (including DMA reads k=1,
+   DD reg writes k=5, DD reg reads k=7) to a file so the full boot-read
+   sequence can be diffed offline to find where the load bails into its
+   retry loop.  The ring (dd_trace[]) is only persisted at freeze and wraps
+   at 4096 entries, losing the beginning of the load; this stream captures
+   the whole thing. */
+static uint64_t dd_stream_seq = 0;
+/* Diagnostic streaming trace disabled: the per-event file append was the
+   EK-load slowdown (minutes not seconds).  Keep the in-memory ring
+   (dd_trace_add) for the freeze dump. */
+static void dd_stream(uint32_t kind, uint32_t a, uint32_t b, uint32_t c2, uint32_t extra)
+{
+    (void)kind; (void)a; (void)b; (void)c2; (void)extra;
+}
+
+static void dd_trace_add(uint32_t kind, uint32_t a, uint32_t b, uint32_t c2, uint32_t extra)
+{
+    struct dd_trace_ent* e = &dd_trace[dd_trace_pos % DD_TRACE_MAX];
+    e->c = dd_trace_seq++;
+    e->kind = kind;
+    e->a = a; e->b = b; e->c2 = c2; e->extra = extra;
+    dd_trace_pos++;
+    dd_stream(kind, a, b, c2, extra);
+}
+
+void dd_trace_add_ext(uint32_t kind, uint32_t a, uint32_t b, uint32_t c2, uint32_t extra)
+{
+    dd_trace_add(kind, a, b, c2, extra);
+}
+
+void dd_trace_dump(FILE* f)
+{
+    unsigned int i, n = (dd_trace_pos < DD_TRACE_MAX) ? dd_trace_pos : DD_TRACE_MAX;
+    unsigned int start = (dd_trace_pos < DD_TRACE_MAX) ? 0 : (dd_trace_pos - DD_TRACE_MAX);
+    fprintf(f, "=== DD TRACE (%u entries, pos=%u) ===\n", n, dd_trace_pos);
+    for (i = 0; i < n; ++i) {
+        struct dd_trace_ent* e = &dd_trace[(start + i) % DD_TRACE_MAX];
+        fprintf(f, "%08llx k=%u a=%08x b=%08x c=%08x x=%08x\n",
+            (unsigned long long)e->c, e->kind, e->a, e->b, e->c2, e->extra);
+    }
+    fprintf(f, "--- DD regs ---\n");
+    if (g_trace_dd != NULL) {
+        for (i = 0; i < DD_ASIC_REGS_COUNT; ++i) {
+            fprintf(f, "reg[%02u] %08x\n", i, g_trace_dd->regs[i]);
+        }
+        fprintf(f, "c2s_addr=%08x\n", g_trace_dd->c2s_addr);
+    }
+    fflush(f);
+}
 
 #define M64P_CORE_PROTOTYPES 1
 #include "api/m64p_types.h"
@@ -117,16 +182,152 @@ static void update_rtc(struct dd_rtc* rtc)
     rtc->last_update_rtc = now;
 }
 
+/* DIAG: log every DD BM-interrupt raise with the CP0 CAUSE/STATUS state at
+   the moment of the raise.  The loader (F-Zero X EK) spins on `CAUSE & 0x7c`;
+   if IP3 is set-but-undelivered (lost raise while IE=0) vs never-set, this
+   line shows the exact CAUSE/STATUS/IE at each raise and whether the event
+   was queued. */
+static void dd_raise_diag(uint32_t bm_int)
+{
+    (void)bm_int;
+}
+
+/* DIAG: timeline markers for the DD_BM_INT event lifecycle (queue / fire) so
+   the raise log can be correlated with whether the scheduled event actually
+   ran.  Written to the same wd_dd_raise.txt file as dd_raise_diag. */
+static void dd_event_diag(const char* tag, uint32_t cycles)
+{
+    (void)tag; (void)cycles;
+}
+
 static void signal_dd_interrupt(struct dd_controller* dd, uint32_t bm_int)
 {
+    dd_trace_add(4, bm_int, dd->regs[DD_ASIC_CMD_STATUS] | bm_int, 0, 0);
+    dd_raise_diag(bm_int);
     dd->regs[DD_ASIC_CMD_STATUS] |= bm_int;
     r4300_check_interrupt(dd->r4300, CP0_CAUSE_IP3, 1);
 }
 
 static void clear_dd_interrupt(struct dd_controller* dd, uint32_t bm_int)
 {
+    dd_trace_add(4, bm_int | 0x80000000u, dd->regs[DD_ASIC_CMD_STATUS], 0, 0);
     dd->regs[DD_ASIC_CMD_STATUS] &= ~bm_int;
     r4300_check_interrupt(dd->r4300, CP0_CAUSE_IP3, 0);
+}
+
+void dd_mecha_int_handler(void* opaque)
+{
+    struct dd_controller* dd = (struct dd_controller*)opaque;
+    /* clear busy state flag */
+    dd->regs[DD_ASIC_CMD_STATUS] &= ~DD_STATUS_BUSY_STATE;
+    signal_dd_interrupt(dd, DD_STATUS_MECHA_INT);
+}
+
+void dd_bm_int_handler(void* opaque)
+{
+    struct dd_controller* dd = (struct dd_controller*)opaque;
+    dd_event_diag("BM_FIRE", 0);
+    dd_update_bm(dd);
+}
+
+void dd_dv_active(void* opaque)
+{
+    struct dd_controller* dd = (struct dd_controller*)opaque;
+    /* make motor active and prep standby */
+    dd->regs[DD_ASIC_CMD_STATUS] &= ~(DD_STATUS_MTR_N_SPIN | DD_STATUS_HEAD_RTRCT);
+    remove_event(&dd->r4300->cp0.q, DD_DV_INT);
+    if (dd->timer_standby >= 0) {
+        add_interrupt_event(&dd->r4300->cp0, DD_DV_INT, 46875000 * dd->timer_standby);
+    }
+}
+
+void dd_dv_standby(void* opaque)
+{
+    struct dd_controller* dd = (struct dd_controller*)opaque;
+    /* make motor standby and prep sleep */
+    dd->regs[DD_ASIC_CMD_STATUS] &= ~DD_STATUS_MTR_N_SPIN;
+    dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_HEAD_RTRCT;
+    remove_event(&dd->r4300->cp0.q, DD_DV_INT);
+    if (dd->timer_sleep >= 0) {
+        add_interrupt_event(&dd->r4300->cp0, DD_DV_INT, 46875000 * dd->timer_sleep);
+    }
+}
+
+void dd_dv_sleep(void* opaque)
+{
+    struct dd_controller* dd = (struct dd_controller*)opaque;
+    /* make motor sleep */
+    dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_MTR_N_SPIN | DD_STATUS_HEAD_RTRCT;
+    remove_event(&dd->r4300->cp0.q, DD_DV_INT);
+}
+
+void dd_dv_int_handler(void* opaque)
+{
+    struct dd_controller* dd = (struct dd_controller*)opaque;
+    /* manage drive motor modes (active, standby, sleep) */
+    int motorNotSpinning = (dd->regs[DD_ASIC_CMD_STATUS] & DD_STATUS_MTR_N_SPIN) != 0;
+    int headRetracted = (dd->regs[DD_ASIC_CMD_STATUS] & DD_STATUS_HEAD_RTRCT) != 0;
+
+    /* F-Zero X Expansion Kit (~ and other games) read the disk across many
+     * scattered block transfers.  The real drive keeps spinning for the whole
+     * read; the auto standby->sleep transition here fired between the game's
+     * BM ints, so the game saw the drive in MODE_SLEEP and waited for it to
+     * spin back up (which nothing did) -> the emulation thread blocked.
+     * Keep the motor active for the full duration of a running block
+     * transfer instead of letting it idle-sleep mid-read. */
+    if (dd->regs[DD_ASIC_BM_STATUS_CTL] & DD_BM_STATUS_RUNNING) {
+        dd_dv_active(dd);
+        return;
+    }
+
+    /* A game that touches the drive every frame spins the motor back up
+     * every frame, and each spin-up runs the whole active -> standby ->
+     * sleep sequence again.  The transitions are worth seeing once; at
+     * two lines a frame they bury the rest of the log, so say so and
+     * stop. */
+    static unsigned int auto_transitions;
+    enum { AUTO_TRANSITION_LOG_LIMIT = 8 };
+
+    if (!motorNotSpinning && headRetracted) {
+        /* standby to sleep */
+        dd_dv_sleep(dd);
+        if (auto_transitions < AUTO_TRANSITION_LOG_LIMIT)
+            DebugMessage(M64MSG_VERBOSE, "Disk drive motor put to sleep mode (auto)");
+        ++auto_transitions;
+    }
+
+    if (!motorNotSpinning && !headRetracted) {
+        /* active to standby, prep time to sleep */
+        dd_dv_standby(dd);
+        if (auto_transitions < AUTO_TRANSITION_LOG_LIMIT)
+            DebugMessage(M64MSG_VERBOSE, "Disk drive motor put to standby mode (auto)");
+        ++auto_transitions;
+    }
+
+    if (auto_transitions == AUTO_TRANSITION_LOG_LIMIT) {
+        DebugMessage(M64MSG_VERBOSE,
+            "Disk drive motor mode changes are routine; suppressing further reports");
+        ++auto_transitions;
+    }
+}
+
+/* System-area copy protection (mirrors real hardware / ares's disk error
+   table): libultra's libleo disk-init explicitly requires system LBA 12 to
+   READ-ERROR on retail media - "if expecting a retail disk, LBA 12 is
+   expected to do a read error, if not then freeze" (leoRead_system_area in
+   libleo). On real drives that sector sits in the unrecorded region: the
+   drive returns C1/C2 failures and libleo maps them to
+   LEO_SENSE_UNRECOVERED_READ_ERROR, which is exactly what the retail
+   system-area check tests for. Deliver a NON-ZERO C2 syndrome (with clear
+   C1 state) for the protected block so the game's per-sector C2 check
+   fails cleanly. Development disks keep the sector readable. */
+static int dd_protected_sector(const struct dd_controller* dd,
+    unsigned int head, unsigned int track, unsigned int block)
+{
+    if (dd->disk == NULL || dd->disk->development != 0) {
+        return 0;
+    }
+    return (PhysToLBA(dd->disk, head, track, block) == PROTECT_LBA);
 }
 
 static void read_C2(struct dd_controller* dd)
@@ -138,8 +339,18 @@ static void read_C2(struct dd_controller* dd)
     sector %= 90;
     size_t offset = 0x40 * (sector - SECTORS_PER_BLOCK);
 
-    DebugMessage(M64MSG_VERBOSE, "read C2: length=%08x, offset=%08x",
-            (uint32_t)length, (uint32_t)offset);
+    unsigned int head  = (dd->regs[DD_ASIC_CUR_TK] & 0x10000000) >> 28;
+    unsigned int track = (dd->regs[DD_ASIC_CUR_TK] & 0x0fff0000) >> 16;
+    unsigned int block = ((dd->regs[DD_ASIC_CUR_SECTOR] >> 16) & 0xff) / 90;
+
+    if (dd_protected_sector(dd, head, track, block)) {
+        /* protected/unrecorded block: non-zero C2 syndrome (whole 0x400
+           C2S buffer; the game DMA's sectorSize*4 = 0x3A0 bytes of it) */
+        for (i = 0; i < 0x400; ++i) {
+            dd->c2s_buf[i ^ 3] = 0xFF;
+        }
+        return;
+    }
 
     for (i = 0; i < length; ++i) {
         dd->c2s_buf[(offset + i) ^ 3] = 0;
@@ -166,7 +377,30 @@ static uint8_t* seek_sector(struct dd_controller* dd)
 static void read_sector(struct dd_controller* dd)
 {
     size_t i;
+    unsigned int head  = (dd->regs[DD_ASIC_CUR_TK] & 0x10000000) >> 28;
+    unsigned int track = (dd->regs[DD_ASIC_CUR_TK] & 0x0fff0000) >> 16;
+    unsigned int sector = ((dd->regs[DD_ASIC_CUR_SECTOR] >> 16) & 0xff) - dd->bm_write;
+    unsigned int block = sector / 90;
+    int prot = dd_protected_sector(dd, head, track, block);
+
+    /* DIAG sector-read LBA logger disabled (was the EK-load I/O slowdown). */
+
+    /* seek_sector sets DD_BM_STATUS_MICRO when get_sector_base() returns
+       NULL (which it now does for every sector of the protected block), so
+       the game's per-sector C1-error counter climbs as on real hardware. */
     const uint8_t* disk_sec = seek_sector(dd);
+
+    if (prot) {
+        /* protected/unrecorded block (retail system-area LBA 12): the drive
+           returns garbage user data AND a NON-ZERO C2 syndrome tail, so the
+           game's per-sector C2 check turns the read into an unrecoverable
+           error - matching real hardware and the libleo expectation. */
+        for (i = 0; i < sizeof(dd->ds_buf); ++i) {
+            dd->ds_buf[i ^ 3] = 0xFF;
+        }
+        return;
+    }
+
     if (disk_sec == NULL) {
         return;
     }
@@ -204,14 +438,24 @@ void dd_update_bm(void* opaque)
 		return;
     }
 
+    /* clear flags */
+    dd->regs[DD_ASIC_CMD_STATUS] &= ~(DD_STATUS_DATA_RQ | DD_STATUS_C2_XFER);
+
+    /* calculate sector and block info for use later */
     unsigned int sector = (dd->regs[DD_ASIC_CUR_SECTOR] >> 16) & 0xff;
     unsigned int block = sector / 90;
     sector %= 90;
 
     /* handle writes (BM mode 0) */
     if (dd->bm_write) {
+        /* do not write anything and stop BM if the track being written is write protected */
+        if (dd->regs[DD_ASIC_CMD_STATUS] & DD_STATUS_WR_PR_ERR) {
+            dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_BM_ERR;
+            dd->regs[DD_ASIC_BM_STATUS_CTL] |= DD_BM_STATUS_MICRO;
+            dd->regs[DD_ASIC_BM_STATUS_CTL] &= ~DD_BM_STATUS_RUNNING;
+        }
         /* first sector : just issue a BM interrupt to get things going */
-        if (sector == 0) {
+        else if (sector == 0) {
             dd->regs[DD_ASIC_CUR_SECTOR] += 0x10000;
             dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_DATA_RQ;
         }
@@ -244,27 +488,26 @@ void dd_update_bm(void* opaque)
     /* handle reads (BM mode 1) */
     else {
         uint8_t dev = dd->disk->development;
-        /* track 6 fails to read on retail units (XXX: retail test) */
-        if ((((dd->regs[DD_ASIC_CUR_TK] >> 16) & 0x1fff) == 6) && block == 0 && !dev) {
-            dd->regs[DD_ASIC_CMD_STATUS] &= ~DD_STATUS_DATA_RQ;
-            dd->regs[DD_ASIC_BM_STATUS_CTL] |= DD_BM_STATUS_MICRO;
-        }
+        /* NOTE: the parallel-n64 "retail units can't read track 6" workaround
+           is DISABLED for the emulator: the game's boot reads track 6 (the
+           disk system area) and the emulator's disk data is clean, so the
+           artificial failure only drags the game into its LEO retry/storm.
+           (Real-hardware quirk, not an emulator requirement.) */
         /* data sectors : read sector and signal BM interrupt */
-        else if (sector < SECTORS_PER_BLOCK) {
+        if (sector < SECTORS_PER_BLOCK) {
             read_sector(dd);
             dd->regs[DD_ASIC_CUR_SECTOR] += 0x10000;
             dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_DATA_RQ;
         }
         /* C2 sectors: do nothing since they're loaded with zeros */
-        else if (sector < SECTORS_PER_BLOCK + 4) {
+        else if (sector < SECTORS_PER_BLOCK + 3) {
             read_C2(dd);
             dd->regs[DD_ASIC_CUR_SECTOR] += 0x10000;
-            if ((sector + 1) == SECTORS_PER_BLOCK + 4) {
-                dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_C2_XFER;
-            }
         }
-        /* Gap sector: continue to next block, quit after second block */
-        else if (sector == SECTORS_PER_BLOCK + 4) {
+        /* Last C2 sector: continue to next block, quit after second block */
+        else if (sector == SECTORS_PER_BLOCK + 3) {
+            read_C2(dd);
+            dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_C2_XFER;
             if (dd->regs[DD_ASIC_BM_STATUS_CTL] & DD_BM_STATUS_BLOCK) {
                 // Start at next block sector 0.
                 dd->regs[DD_ASIC_CUR_SECTOR] = ((1 - block) * 90 + 0) << 16;
@@ -278,6 +521,9 @@ void dd_update_bm(void* opaque)
             DebugMessage(M64MSG_ERROR, "DD Read, sector overrun");
         }
     }
+
+    /* Make sure motor is still considered active */
+    dd_dv_active(dd);
 
     /* Signal a BM interrupt */
     signal_dd_interrupt(dd, DD_STATUS_BM_INT);
@@ -296,6 +542,11 @@ void init_dd(struct dd_controller* dd,
 
     dd->rom = rom;
     dd->rom_size = rom_size;
+
+    g_trace_dd = dd;
+    dd->cart_rom = NULL;
+    dd->cart_size = 0;
+    dd->c2s_addr = 0;
 
     dd->disk = disk;
     dd->idisk = idisk;
@@ -316,6 +567,10 @@ void poweron_dd(struct dd_controller* dd)
 
     dd->rtc.now = 0;
     dd->rtc.last_update_rtc = 0;
+
+    dd->timer_sleep = 1;
+    dd->timer_standby = 3;
+    dd_dv_sleep(dd);
 
     dd->regs[DD_ASIC_ID_REG] = 0x00030000;
     dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_RST_STATE;
@@ -349,18 +604,18 @@ void read_dd_regs(void* opaque, uint32_t address, uint32_t* value)
     }
 
     *value = dd->regs[reg];
-    DebugMessage(M64MSG_VERBOSE, "DD REG: %08X -> %08x", address, *value);
+    dd_trace_add(7, address, *value, dd->regs[DD_ASIC_CMD_STATUS], 0);
+    //DebugMessage(M64MSG_VERBOSE, "DD REG: %08X -> %08x", address, *value);
 
     /* post read update. Not part of the returned value */
     switch(reg)
     {
     case DD_ASIC_CMD_STATUS: {
-            /* clear BM interrupt when reading gap */
-            unsigned int sector = ((dd->regs[DD_ASIC_CUR_SECTOR] >> 16) & 0xff);
-            sector %= 90;
-            if ((dd->regs[DD_ASIC_CMD_STATUS] & DD_STATUS_BM_INT) && (sector > SECTORS_PER_BLOCK)) {
+            /* acknowledge BM interrupt */
+            if (dd->regs[DD_ASIC_CMD_STATUS] & DD_STATUS_BM_INT) {
                 clear_dd_interrupt(dd, DD_STATUS_BM_INT);
-                dd_update_bm(dd);
+                dd_event_diag("BM_QUEUE_ACK", 8020 + (((dd->regs[DD_ASIC_CUR_TK] & 0x0fff0000) >> 16) / 56));
+                add_interrupt_event(&dd->r4300->cp0, DD_BM_INT, 8020 + (((dd->regs[DD_ASIC_CUR_TK] & 0x0fff0000) >> 16) / 56));
             }
         } break;
     }
@@ -368,7 +623,8 @@ void read_dd_regs(void* opaque, uint32_t address, uint32_t* value)
 
 void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask)
 {
-    unsigned int head, track;
+    unsigned int head, track, old_track, cycles;
+    const uint16_t startTrackZones[9] = { 0x000, 0x09E, 0x13C, 0x1D1, 0x266, 0x2FB, 0x390, 0x425, 0x497 };
     struct dd_controller* dd = (struct dd_controller*)opaque;
 
     if (address < MM_DD_REGS || address >= MM_DD_MS_RAM) {
@@ -378,9 +634,13 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
 
     uint32_t reg = dd_reg(address);
 
+    /* trace ALL DD register writes (k=5) — the game's LEO ack sequence was
+       invisible; needed to pin the post-0x1b storm handshake. */
+    dd_trace_add(5, address, value, dd->regs[DD_ASIC_CMD_STATUS], 0);
+
     assert(mask == ~UINT32_C(0));
 
-    DebugMessage(M64MSG_VERBOSE, "DD REG: %08X <- %08x", address, value);
+    //DebugMessage(M64MSG_VERBOSE, "DD REG: %08X <- %08x", address, value);
 
     switch (reg)
     {
@@ -392,6 +652,16 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
         update_rtc(&dd->rtc);
         const struct tm* tm = localtime(&dd->rtc.now);
 
+        /* base cycle count */
+        cycles = 2000;
+
+        /* say the drive is busy while processing the command */
+        dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_BUSY_STATE;
+
+        /* DIAG: log the ASIC command + motor mode */
+        DebugMessage(M64MSG_WARNING, "DDCMD cmd=%02x data=%08x prestatus=%08x",
+                (unsigned)((value >> 16) & 0xff), dd->regs[DD_ASIC_DATA], dd->regs[DD_ASIC_CMD_STATUS]);
+
         switch ((value >> 16) & 0xff)
         {
         /* No-op */
@@ -401,6 +671,18 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
         /* Seek track */
         case 0x01:
         case 0x02:
+            /* base timing cycle count for Seek track CMD */
+            cycles = 248250;
+            /* check if motor is active or not, if not, add more cycles */
+            if ((dd->regs[DD_ASIC_CMD_STATUS] & (DD_STATUS_MTR_N_SPIN | DD_STATUS_HEAD_RTRCT)) != 0) {
+                //divided by 100 because F-Zero X Expansion Kit really dislikes anything higher
+                cycles += 501750;
+            }
+            /* make motor active */
+            dd_dv_active(dd);
+            /* get old track for calculating extra cycles */
+            old_track = (dd->regs[DD_ASIC_CUR_TK] & 0x0fff0000) >> 16;
+            /* update track */
             dd->regs[DD_ASIC_CUR_TK] = dd->regs[DD_ASIC_DATA];
             /* lock track */
             dd->regs[DD_ASIC_CUR_TK] |= DD_TRACK_LOCK;
@@ -409,6 +691,82 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
             head  = (dd->regs[DD_ASIC_CUR_TK] & 0x10000000) >> 28;
             track = (dd->regs[DD_ASIC_CUR_TK] & 0x0fff0000) >> 16;
             dd->bm_zone = (get_zone_from_head_track(head, track) - head) + 8*head;
+            /* calculate track to track head movement timing */
+            cycles += 4825 * abs(track - old_track);
+            /* if write seek command, check if the track is writable */
+            dd->regs[DD_ASIC_CMD_STATUS] &= ~DD_STATUS_WR_PR_ERR;
+            if (dd->bm_write) {
+                if (track < startTrackZones[(dd->disk_type & 0xf) - head + 3]) {
+                    dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_WR_PR_ERR;
+                }
+            }
+            break;
+
+        /* Rezero / Start (Seek to track 0) */
+        case 0x03:
+        case 0x05:
+            /* both commands do the exact same thing */
+            /* base timing cycle count for Seek track CMD */
+            cycles = 248250;
+            /* check if motor is active or not, if not, add more cycles */
+            if ((dd->regs[DD_ASIC_CMD_STATUS] & (DD_STATUS_MTR_N_SPIN | DD_STATUS_HEAD_RTRCT)) != 0) {
+                //divided by 100 because F-Zero X Expansion Kit really dislikes anything higher
+                cycles += 501750;
+            }
+            /* make motor active */
+            dd_dv_active(dd);
+            /* get old track for calculating extra cycles */
+            old_track = (dd->regs[DD_ASIC_CUR_TK] & 0x0fff0000) >> 16;
+            /* update track to 0 */
+            dd->regs[DD_ASIC_CUR_TK] = 0;
+            /* lock track */
+            dd->regs[DD_ASIC_CUR_TK] |= DD_TRACK_LOCK;
+            dd->bm_write = 1;
+            /* update bm_zone */
+            head = (dd->regs[DD_ASIC_CUR_TK] & 0x10000000) >> 28;
+            track = (dd->regs[DD_ASIC_CUR_TK] & 0x0fff0000) >> 16;
+            dd->bm_zone = (get_zone_from_head_track(head, track) - head) + 8 * head;
+            /* calculate track to track head movement timing */
+            cycles += 4825 * abs(track - old_track);
+            break;
+
+        /* Sleep / Brake */
+        case 0x04:
+            if ((dd->regs[DD_ASIC_CMD_STATUS] & (DD_STATUS_MTR_N_SPIN | DD_STATUS_HEAD_RTRCT)) != 0) {
+                //divided by 100 because F-Zero X Expansion Kit really dislikes anything higher
+                cycles = 207500;
+            }
+            dd_dv_sleep(dd);
+            if (dd->regs[DD_ASIC_DATA] == 0)
+            {
+                DebugMessage(M64MSG_VERBOSE, "Disk drive motor put to sleep mode");
+            }
+            else
+            {
+                DebugMessage(M64MSG_VERBOSE, "Disk drive motor put to brake mode");
+            }
+            break;
+
+        /* Set standby delay */
+        case 0x06:
+            if ((dd->regs[DD_ASIC_DATA] & 0x01000000) == 0) {
+                dd->timer_standby = (dd->regs[DD_ASIC_DATA] >> 16) & 0xff;
+                DebugMessage(M64MSG_VERBOSE, "Set disk drive standby delay to %u seconds", dd->timer_standby);
+            } else {
+                dd->timer_standby = -1;
+                DebugMessage(M64MSG_VERBOSE, "Disable disk drive standby delay");
+            }
+            break;
+
+        /* Set sleep delay */
+        case 0x07:
+            if ((dd->regs[DD_ASIC_DATA] & 0x01000000) == 0) {
+                dd->timer_sleep = (dd->regs[DD_ASIC_DATA] >> 16) & 0xff;
+                DebugMessage(M64MSG_VERBOSE, "Set disk drive sleep delay to %u seconds", dd->timer_sleep);
+            } else {
+                dd->timer_sleep = -1;
+                DebugMessage(M64MSG_VERBOSE, "Disable disk drive sleep delay");
+            }
             break;
 
         /* Clear Disk change flag */
@@ -422,9 +780,60 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
             dd->regs[DD_ASIC_CMD_STATUS] &= ~DD_STATUS_DISK_CHNG;
             break;
 
+        /* Read ASIC version */
+        case 0x0a:
+            if (dd->regs[DD_ASIC_DATA] == 0)
+            {
+                dd->regs[DD_ASIC_DATA] = 0x01140000;
+                if (dd->disk->development)
+                    dd->regs[DD_ASIC_DATA] |= 0x10000000;
+            }
+            else
+            {
+                dd->regs[DD_ASIC_DATA] = 0x53000000;
+            }
+            break;
+
         /* Set Disk type */
         case 0x0b:
-            DebugMessage(M64MSG_VERBOSE, "Setting disk type %u", (dd->regs[DD_ASIC_DATA] >> 16) & 0xf);
+            dd->disk_type = (dd->regs[DD_ASIC_DATA] >> 16) & 0xf;
+            if (dd->disk_type > 6) {
+                DebugMessage(M64MSG_VERBOSE, "Setting invalid disk type %u, set to fallback disk type 6", dd->disk_type);
+                dd->disk_type = 6;
+            } else {
+                DebugMessage(M64MSG_VERBOSE, "Setting disk type %u", dd->disk_type);
+            }
+            break;
+
+        /* Request controller status */
+        case 0x0c:
+            dd->regs[DD_ASIC_DATA] = 0;
+            break;
+
+        /* Standby */
+        case 0x0d:
+            if ((dd->regs[DD_ASIC_CMD_STATUS] & (DD_STATUS_MTR_N_SPIN | DD_STATUS_HEAD_RTRCT)) != 0) {
+                //divided by 100 because F-Zero X Expansion Kit really dislikes anything higher
+                cycles = 160000;
+            }
+            dd_dv_standby(dd);
+            DebugMessage(M64MSG_VERBOSE, "Disk drive motor put to standby mode");
+            break;
+
+        /* Retry index lock */
+        case 0x0e:
+            DebugMessage(M64MSG_VERBOSE, "Retry disk track lock");
+            break;
+
+        /* Write RTC from ASIC_DATA (BCD format) */
+        case 0x0f:
+            DebugMessage(M64MSG_VERBOSE, "Write 64DD RTC Year %02x, Month %02x", (dd->regs[DD_ASIC_DATA] & 0xff000000) >> 24, (dd->regs[DD_ASIC_DATA] & 0x00ff0000) >> 16);
+            break;
+        case 0x10:
+            DebugMessage(M64MSG_VERBOSE, "Write 64DD RTC Day %02x, Hour %02x", (dd->regs[DD_ASIC_DATA] & 0xff000000) >> 24, (dd->regs[DD_ASIC_DATA] & 0x00ff0000) >> 16);
+            break;
+        case 0x11:
+            DebugMessage(M64MSG_VERBOSE, "Write 64DD RTC Minute %02x, Second %02x", (dd->regs[DD_ASIC_DATA] & 0xff000000) >> 24, (dd->regs[DD_ASIC_DATA] & 0x00ff0000) >> 16);
             break;
 
         /* Read RTC in ASIC_DATA (BCD format) */
@@ -438,9 +847,14 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
             dd->regs[DD_ASIC_DATA] = time2data(tm->tm_min, tm->tm_sec);
             break;
 
+        /* LED On/Off Timing */
+        case 0x15:
+            DebugMessage(M64MSG_VERBOSE, "LED ON Time %02x, LED OFF Time %02x", (dd->regs[DD_ASIC_DATA] & 0xff000000) >> 24, (dd->regs[DD_ASIC_DATA] & 0x00ff0000) >> 16);
+            break;
+
         /* Feature inquiry */
         case 0x1b:
-            dd->regs[DD_ASIC_DATA] = 0x00000000;
+            dd->regs[DD_ASIC_DATA] = 0x00030000;
             break;
 
         default:
@@ -448,7 +862,14 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
         }
 
         /* Signal a MECHA interrupt */
-        signal_dd_interrupt(dd, DD_STATUS_MECHA_INT);
+        cp0_update_count(dd->r4300);
+        add_interrupt_event(&dd->r4300->cp0, DD_MC_INT, cycles);
+        /* DIAG: log resulting motor mode */
+        DebugMessage(M64MSG_WARNING, "DDCMD -> status=%08x motor=%s",
+                dd->regs[DD_ASIC_CMD_STATUS],
+                (dd->regs[DD_ASIC_CMD_STATUS] & DD_STATUS_MTR_N_SPIN) ? "SLEEP"
+              : (dd->regs[DD_ASIC_CMD_STATUS] & DD_STATUS_HEAD_RTRCT) ? "STANDBY"
+              : "ACTIVE");
         break;
 
     case DD_ASIC_BM_STATUS_CTL:
@@ -461,6 +882,7 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
         /* clear MECHA interrupt */
         if (value & DD_BM_CTL_MECHA_RST) {
             dd->regs[DD_ASIC_CMD_STATUS] &= ~DD_STATUS_MECHA_INT;
+            remove_event(&dd->r4300->cp0.q, DD_MC_INT);
         }
         /* start block transfer */
         if (value & DD_BM_CTL_BLK_TRANS) {
@@ -478,6 +900,7 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
                                             | DD_STATUS_BM_INT);
             dd->regs[DD_ASIC_BM_STATUS_CTL] = 0;
             dd->regs[DD_ASIC_CUR_SECTOR] = 0;
+            remove_event(&dd->r4300->cp0.q, DD_BM_INT);
         }
 
         /* clear DD interrupt if both MECHA and BM are cleared */
@@ -494,7 +917,8 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
                 DebugMessage(M64MSG_WARNING, "Attempt to read disk with BM mode 0");
             }
             dd->regs[DD_ASIC_BM_STATUS_CTL] |= DD_BM_STATUS_RUNNING;
-            dd_update_bm(dd);
+            dd_event_diag("BM_QUEUE_START", 12500);
+            add_interrupt_event(&dd->r4300->cp0, DD_BM_INT, 12500);
         }
         break;
 
@@ -502,6 +926,19 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
         if (value != 0xaaaa0000) {
             DebugMessage(M64MSG_WARNING, "Unexpected hard reset value %08x", value);
         }
+        remove_event(&dd->r4300->cp0.q, DD_MC_INT);
+        remove_event(&dd->r4300->cp0.q, DD_BM_INT);
+        dd->regs[DD_ASIC_CMD_STATUS] &= ~(DD_STATUS_DATA_RQ
+                                        | DD_STATUS_C2_XFER
+                                        | DD_STATUS_BM_ERR
+                                        | DD_STATUS_BM_INT
+                                        | DD_STATUS_BUSY_STATE);
+        dd->regs[DD_ASIC_BM_STATUS_CTL] = 0;
+        dd->regs[DD_ASIC_CUR_SECTOR] = 0;
+        dd->timer_sleep = 1;
+        dd->timer_standby = 3;
+        dd_dv_sleep(dd);
+        clear_dd_interrupt(dd, DD_STATUS_MECHA_INT);
         dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_RST_STATE;
         break;
 
@@ -539,12 +976,12 @@ void read_dd_rom(void* opaque, uint32_t address, uint32_t* value)
 
     *value = dd->rom[addr];
 
-    DebugMessage(M64MSG_VERBOSE, "DD ROM: %08X -> %08x", address, *value);
+    //DebugMessage(M64MSG_VERBOSE, "DD ROM: %08X -> %08x", address, *value);
 }
 
 void write_dd_rom(void* opaque, uint32_t address, uint32_t value, uint32_t mask)
 {
-    DebugMessage(M64MSG_VERBOSE, "DD ROM: %08X <- %08x & %08x", address, value, mask);
+    //DebugMessage(M64MSG_VERBOSE, "DD ROM: %08X <- %08x & %08x", address, value, mask);
 }
 
 unsigned int dd_dom_dma_read(void* opaque, const uint8_t* dram, uint32_t dram_addr, uint32_t cart_addr, uint32_t length)
@@ -553,21 +990,42 @@ unsigned int dd_dom_dma_read(void* opaque, const uint8_t* dram, uint32_t dram_ad
     uint8_t* mem;
     size_t i;
 
-    DebugMessage(M64MSG_VERBOSE, "DD DMA read dram=%08x  cart=%08x length=%08x",
-            dram_addr, cart_addr, length);
+    //DebugMessage(M64MSG_VERBOSE, "DD DMA read dram=%08x  cart=%08x length=%08x",
+    //        dram_addr, cart_addr, length);
 
     if (cart_addr == MM_DD_DS_BUFFER) {
+        dd_trace_add(1, cart_addr, dram_addr, length, 0);
         cart_addr = (cart_addr - MM_DD_DS_BUFFER) & 0x3fffff;
         mem = dd->ds_buf;
     }
     else if (cart_addr == MM_DD_MS_RAM) {
         /* MS is not emulated, we silence warnings for now */
+        dd_trace_add(1, cart_addr, dram_addr, length, 0);
+        /* Recommended Count Per Op = 1, this seems to break very easily */
+        return (length * 63) / 25;
+    }
+    else if (cart_addr >= MM_DD_ROM && cart_addr < MM_DD_ROM + dd->rom_size) {
+        /* DD ROM (e.g. the 64DD IPL font the game loads via osEPiStartDma) */
+        dd_trace_add(1, cart_addr, dram_addr, length, 1);
+        {
+            uint32_t ca = cart_addr - MM_DD_ROM;
+            uint8_t* dst = (uint8_t*)(uintptr_t)dram;
+            /* Plain byte-copy: the font data in the IPL ROM is already in the
+               correct row-sequential format; any ^S8 would permute the4bpp
+               pixel pairs within each byte, corrupting the glyph shapes. */
+            for (i = 0; i < length; ++i) {
+                dst[(dram_addr + i)] = ((const uint8_t*)dd->rom)[ca + i];
+            }
+        }
+        invalidate_r4300_cached_code(dd->r4300, R4300_KSEG0 + dram_addr, length);
+        invalidate_r4300_cached_code(dd->r4300, R4300_KSEG1 + dram_addr, length);
         /* Recommended Count Per Op = 1, this seems to break very easily */
         return (length * 63) / 25;
     }
     else {
         DebugMessage(M64MSG_ERROR, "Unknown DD dma read dram=%08x  cart=%08x length=%08x",
             dram_addr, cart_addr, length);
+        dd_trace_add(1, cart_addr, dram_addr, length, 0xDEAD);
 
         /* Recommended Count Per Op = 1, this seems to break very easily */
         return (length * 63) / 25;
@@ -588,23 +1046,26 @@ unsigned int dd_dom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr, u
     const uint8_t* mem;
     size_t i;
 
-    DebugMessage(M64MSG_VERBOSE, "DD DMA write dram=%08x  cart=%08x length=%08x",
-            dram_addr, cart_addr, length);
+    //DebugMessage(M64MSG_VERBOSE, "DD DMA write dram=%08x  cart=%08x length=%08x",
+    //        dram_addr, cart_addr, length);
 
     if (cart_addr < MM_DD_ROM) {
         if (cart_addr == MM_DD_C2S_BUFFER) {
             /* C2 sector buffer */
+            dd_trace_add(2, cart_addr, dram_addr, length, 0);
             cart_addr = (cart_addr - MM_DD_C2S_BUFFER);
             mem = (const uint8_t*)&dd->c2s_buf;
         }
         else if (cart_addr == MM_DD_DS_BUFFER) {
             /* Data sector buffer */
+            dd_trace_add(2, cart_addr, dram_addr, length, 0);
             cart_addr = (cart_addr - MM_DD_DS_BUFFER);
             mem = (const uint8_t*)&dd->ds_buf;
         }
         else {
             DebugMessage(M64MSG_ERROR, "Unknown DD dma write dram=%08x  cart=%08x length=%08x",
                 dram_addr, cart_addr, length);
+            dd_trace_add(2, cart_addr, dram_addr, length, 0xDEAD);
 
             /* Recommended Count Per Op = 1, this seems to break very easily */
             return (length * 63) / 25;
@@ -612,14 +1073,37 @@ unsigned int dd_dom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr, u
 
         /* Recommended Count Per Op = 1, this seems to break very easily */
         cycles = (length * 63) / 25;
+
+        /* DIAG: show the first bytes of the buffer being DMA'd + the state */
+        {
+            static volatile uint64_t dslog = 0;
+            if ((++dslog & 0x3F) == 1) {
+                DebugMessage(M64MSG_WARNING,
+                    "DSLOG cart=%08x dram=%06x len=%x tk=%08x sec=%08x data=%02x%02x%02x%02x%02x%02x%02x%02x",
+                    cart_addr, dram_addr, length,
+                    dd->regs[DD_ASIC_CUR_TK], dd->regs[DD_ASIC_CUR_SECTOR],
+                    mem[cart_addr], mem[cart_addr+1], mem[cart_addr+2], mem[cart_addr+3],
+                    mem[cart_addr+4], mem[cart_addr+5], mem[cart_addr+6], mem[cart_addr+7]);
+            }
+        }
     }
     else {
-        /* DD ROM */
-        cart_addr = (cart_addr - MM_DD_ROM);
-        mem = (const uint8_t*)dd->rom;
-
-        /* Recommended Count Per Op = 1, this seems to break very easily */
-        cycles = (length * 63) / 25;
+        /* DD ROM (e.g. the 64DD IPL font via osEPiStartDma OS_READ).
+           This is the DEVICE->RDRAM path. The IPL ROM bytes are linear
+           on host; RDRAM is word-swapped. Sector DS/C2S uses double ^S8
+           because the ds_buf/c2s_buf is also stored swizzled, but the
+           ROM image is not. So S8 only on the RDRAM side. */
+        uint32_t ca = cart_addr - MM_DD_ROM;
+        dd_trace_add(2, cart_addr, dram_addr, length, 1);
+        if (length == 0x80) {
+            DebugMessage(M64MSG_WARNING, "DDROM font DMA cart=%08x ca=%06x dram=%08x (plain-plain active)", cart_addr, ca, dram_addr);
+        }
+        for (i = 0; i < length; ++i) {
+            dram[dram_addr + i] = ((const uint8_t*)dd->rom)[ca + i];
+        }
+        invalidate_r4300_cached_code(dd->r4300, R4300_KSEG0 + dram_addr, length);
+        invalidate_r4300_cached_code(dd->r4300, R4300_KSEG1 + dram_addr, length);
+        return (length * 63) / 25;
     }
 
     for (i = 0; i < length; ++i) {
@@ -634,8 +1118,17 @@ unsigned int dd_dom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr, u
 
 void dd_on_pi_cart_addr_write(struct dd_controller* dd, uint32_t address)
 {
+    if (address < 0x08000000) {
+        dd_trace_add(3, address, dd->regs[DD_ASIC_CMD_STATUS], 0, 0);
+    }
     /* clear C2 xfer */
     if (address == MM_DD_C2S_BUFFER) {
+        dd->c2s_addr = address - MM_DD_C2S_BUFFER;
+        /* NOTE: The C2S buffer (0x05000000) is also used by the game as the
+           C2 error-correction codeword buffer. Do NOT fill it with cartridge
+           data here: the cart-first boot path never needs C2S cartridge reads,
+           and overwriting the buffer would corrupt the C2 data the game's
+           ECC engine checks (causing spurious disk read errors). */
         dd->regs[DD_ASIC_CMD_STATUS] &= ~(DD_STATUS_C2_XFER | DD_STATUS_BM_ERR);
         clear_dd_interrupt(dd, DD_STATUS_BM_INT);
     }
@@ -645,4 +1138,3 @@ void dd_on_pi_cart_addr_write(struct dd_controller* dd, uint32_t address)
         clear_dd_interrupt(dd, DD_STATUS_BM_INT);
     }
 }
-

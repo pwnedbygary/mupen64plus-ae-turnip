@@ -23,6 +23,7 @@
 
 #define M64P_CORE_PROTOTYPES 1
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "api/callbacks.h"
@@ -78,6 +79,17 @@ static void dma_pi_read(struct pi_controller* pi)
         length += 1;
     unsigned int cycles = handler->dma_read(opaque, dram, dram_addr, cart_addr, length);
 
+    /* 64DD domain transfers complete instantly in emulation; handle them
+       without setting PI_STATUS_DMA_BUSY to avoid deadlock in the game's
+       __osEPiRawStartDma / __osLeoInterrupt polling. */
+    if (pi->dd != NULL && cart_addr >= 0x05000000 && cart_addr < 0x06000000) {
+        pi->regs[PI_DRAM_ADDR_REG] = (pi->regs[PI_DRAM_ADDR_REG] + length + 7) & ~7;
+        pi->regs[PI_CART_ADDR_REG] = (pi->regs[PI_CART_ADDR_REG] + length + 1) & ~1;
+        cp0_update_count(pi->mi->r4300);
+        add_interrupt_event(&pi->mi->r4300->cp0, PI_INT, cycles);
+        return;
+    }
+
     /* Mark DMA as busy */
     pi->regs[PI_STATUS_REG] |= PI_STATUS_DMA_BUSY;
     /* Update PI_DRAM_ADDR_REG and PI_CART_ADDR_REG */
@@ -117,6 +129,17 @@ static void dma_pi_write(struct pi_controller* pi)
     unsigned int cycles = handler->dma_write(opaque, dram, dram_addr, cart_addr, length);
 
     post_framebuffer_write(&pi->dp->fb, dram_addr, length);
+
+    /* 64DD domain transfers complete instantly in emulation; handle them
+       without setting PI_STATUS_DMA_BUSY to avoid deadlock in the game's
+       __osEPiRawStartDma / __osLeoInterrupt polling. */
+    if (pi->dd != NULL && cart_addr >= 0x05000000 && cart_addr < 0x06000000) {
+        pi->regs[PI_DRAM_ADDR_REG] = (pi->regs[PI_DRAM_ADDR_REG] + length + 7) & ~7;
+        pi->regs[PI_CART_ADDR_REG] = (pi->regs[PI_CART_ADDR_REG] + length + 1) & ~1;
+        cp0_update_count(pi->mi->r4300);
+        add_interrupt_event(&pi->mi->r4300->cp0, PI_INT, cycles);
+        return;
+    }
 
     /* Mark DMA as busy */
     pi->regs[PI_STATUS_REG] |= PI_STATUS_DMA_BUSY;
@@ -227,12 +250,8 @@ void pi_end_of_dma_event(void* opaque)
     struct pi_controller* pi = (struct pi_controller*)opaque;
     pi->regs[PI_STATUS_REG] &= ~(PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY);
     pi->regs[PI_STATUS_REG] |= PI_STATUS_INTERRUPT;
-
     if (pi->dd != NULL) {
-        if (((pi->regs[PI_CART_ADDR_REG] >= MM_DD_C2S_BUFFER) && (pi->regs[PI_CART_ADDR_REG] < MM_DD_DS_BUFFER)) ||
-            ((pi->regs[PI_CART_ADDR_REG] >= MM_DD_DS_BUFFER) && (pi->regs[PI_CART_ADDR_REG] < MM_DD_REGS))) {
-            dd_update_bm(pi->dd);
-        }
+        dd_trace_add_ext(6, pi->regs[PI_CART_ADDR_REG], pi->regs[PI_STATUS_REG], 0, 0);
     }
 
     raise_rcp_interrupt(pi->mi, MI_INTR_PI);
