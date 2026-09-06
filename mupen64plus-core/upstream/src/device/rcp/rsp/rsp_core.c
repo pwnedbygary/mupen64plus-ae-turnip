@@ -307,6 +307,11 @@ void write_rsp_regs2(void* opaque, uint32_t address, uint32_t value, uint32_t ma
 void do_SP_Task(struct rsp_core* sp)
 {
     uint32_t save_pc = sp->regs2[SP_PC_REG] & ~0xfff;
+    /* Entry SP_STATUS — distinguish "ucode yielded during THIS run" (was
+       running at entry, HALT set by the plugin's poll-yield at exit) from
+       "ucode already halted before entry" (doRspCycles returns 0 without
+       running, so we must NOT re-deliver a stale interrupt). */
+    uint32_t wd_status_entry = sp->regs[SP_STATUS_REG];
 
     uint32_t sp_delay_time;
 
@@ -370,6 +375,40 @@ void do_SP_Task(struct rsp_core* sp)
     {
         sp->rsp_task_locked = 1;
         sp->mi->r4300->cp0.interrupt_unsafe_state |= INTR_UNSAFE_RSP;
+        sp->mi->regs[MI_INTR_REG] |= MI_INTR_SP;
+    }
+    /* ares-style SP_STATUS force-synchronize (ares n64/rsp/io.cpp: the RSP
+       yields on its SP_STATUS signal-poll by setting INTR_BREAK|HALT + irq).
+       That yield is the ucode asking the CPU to take over (post SIG0 / advance
+       the task).  In the synchronous model the CPU only gets a turn if we
+       RAISE the SP interrupt here.  Deliver it ONLY when the ucode actually
+       yielded during this run: running at entry (HALT clear) and now
+       HALT + INTR_BREAK (and NOT BROKE — a broken task is DONE, not a yield).
+       Set rsp_task_locked so rsp_interrupt_event does NOT set TASKDONE (the
+       ucode merely yielded, it did not finish). */
+    if ((wd_status_entry & (SP_STATUS_HALT | SP_STATUS_BROKE)) == 0
+        && !(sp->regs[SP_STATUS_REG] & SP_STATUS_BROKE)
+        && (sp->regs[SP_STATUS_REG] & SP_STATUS_INTR_BREAK)
+        && (sp->regs[SP_STATUS_REG] & SP_STATUS_HALT))
+    {
+        sp->rsp_task_locked = 1;
+        sp->mi->r4300->cp0.interrupt_unsafe_state |= INTR_UNSAFE_RSP;
+        sp->mi->regs[MI_INTR_REG] |= MI_INTR_SP;
+    }
+    /* ares-completion (F-Zero X EK audio task): a ucode that BROKE (not
+       yielded) is genuinely DONE.  A clean break sets only BROKE|HALT, not
+       INTR_BREAK, so rsp_interrupt_event's INTR_BREAK gate never fires and
+       the CPU is never interrupted -> the game's audio-completion handler
+       never runs and it never re-dispatches the next audio task (stall at the
+       64DD IPL splash).  Set INTR_BREAK (so the raise fires), keep
+       rsp_task_locked=0 (so rsp_interrupt_event sets TASKDONE for a genuinely
+       done task), and raise MI_INTR_SP to deliver the completion interrupt. */
+    if ((wd_status_entry & (SP_STATUS_HALT | SP_STATUS_BROKE)) == 0
+        && (sp->regs[SP_STATUS_REG] & SP_STATUS_BROKE))
+    {
+        sp->regs[SP_STATUS_REG] |= SP_STATUS_INTR_BREAK;
+        sp->rsp_task_locked = 0;
+        sp->mi->r4300->cp0.interrupt_unsafe_state &= ~INTR_UNSAFE_RSP;
         sp->mi->regs[MI_INTR_REG] |= MI_INTR_SP;
     }
     if (sp->mi->regs[MI_INTR_REG] & MI_INTR_SP)
