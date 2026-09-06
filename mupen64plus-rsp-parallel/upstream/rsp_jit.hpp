@@ -120,6 +120,11 @@ public:
 
 	Func get_jit_block(uint32_t pc);
 
+	Func get_return_thunk()
+	{
+		return thunks.return_thunk;
+	}
+
 private:
 	CPUState state;
 	Func blocks[IMEM_WORDS] = {};

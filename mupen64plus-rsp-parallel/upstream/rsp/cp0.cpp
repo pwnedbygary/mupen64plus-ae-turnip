@@ -1,5 +1,7 @@
 #include "../state.hpp"
 
+#include <cstdio>
+
 #ifdef PARALLEL_INTEGRATION
 #include "../rsp_1.1.h"
 #include "m64p_plugin.h"
@@ -36,10 +38,30 @@ extern "C"
 		if (rd == CP0_REGISTER_SP_STATUS)
 		{
 			RSP::MFC0_count[rt] += 1;
-			if (RSP::MFC0_count[rt] >= RSP::SP_STATUS_TIMEOUT)
+			/* ares-like RSP yield at the ucode's SP_STATUS read (ares
+			   force-synchronizes the CPU on this read): in the synchronous
+			   model the CPU only runs when the RSP yields, so a single
+			   fixed 0x7fff threshold makes the game's yield protocol turns
+			   too coarse and the loader stalls at ~6/8.  Give non-audio
+			   tasks a frequent turn (every 256 polls); audio (clean type 2)
+			   keeps the large threshold (its own DSP wait protocol). */
+			unsigned task_type = ((uint32_t*)RSP::rsp.DMEM)[0xfc0 / 4];
+			unsigned threshold = (task_type == 2) ? (unsigned)RSP::SP_STATUS_TIMEOUT : 256u;
+			if (RSP::MFC0_count[rt] >= threshold)
 			{
-				*RSP::rsp.SP_STATUS_REG |= SP_STATUS_HALT;
-				return MODE_CHECK_FLAGS;
+			// The ucode is polling SP_STATUS (typically waiting for the
+			// CPU to signal via INTR_BREAK / task-done).  On real hardware
+			// the RSP spins here while the CPU continues; in the
+			// synchronous emulation model we must terminate the wait or
+			// the emulation thread is stuck inside DoRspCycles forever.
+			// Set the bits the libultra ucode polls for (INTR_BREAK) PLUS
+			// HALT (so DoRspCycles exits) and raise the RSP interrupt so
+			// the CPU-side wait (osSpTaskStart / SP_STATUS poll at the
+			// game's side) completes.  This is the CXD4 "CPU host" model:
+			// the CPU took over the timeline.
+			*RSP::rsp.SP_STATUS_REG |= SP_STATUS_INTR_BREAK | SP_STATUS_HALT;
+			*rsp->cp0.irq |= 1;
+			return MODE_CHECK_FLAGS;
 			}
 		}
 #endif

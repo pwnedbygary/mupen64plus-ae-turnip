@@ -234,8 +234,50 @@ end:
 extern "C"
 {
 #define BYTE_ENDIAN_FIXUP(x, off) ((((x) + (off)) ^ 3) & 0xfffu)
+
+	/* Host-run budget (shared with DoRspCycles): the RSP ucode runs
+	   synchronously on the emulation thread and some libultra ucode loops
+	   (SP_STATUS / RDP-busy waits that never get their signal in the
+	   emulated environment) run indefinitely.  rsp_enter is invoked at
+	   EVERY JIT block boundary; when the budget expires it bails to the
+	   run() return path, which yields to the core ("task still running" ->
+	   rsp_task_locked + SP interrupt; RSP state preserved). */
+	static std::chrono::steady_clock::time_point s_rsp_budget_deadline = std::chrono::steady_clock::time_point::max();
+
+	extern "C" void rsp_set_budget_deadline_us(long long us)
+	{
+		if (us > 0)
+			s_rsp_budget_deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(us);
+		else
+			s_rsp_budget_deadline = std::chrono::steady_clock::time_point::max();
+	}
+
+	static bool rsp_budget_expired()
+	{
+		return std::chrono::steady_clock::now() > s_rsp_budget_deadline;
+	}
+
+	extern "C" int rsp_budget_expired_now(void)
+	{
+		return rsp_budget_expired();
+	}
+
+	/* Host-callable budget check used inside the JIT'd blocks (per-256
+	   instructions): returns true when the run budget expired. */
+	static jit_uword_t rsp_budget_check()
+	{
+		return rsp_budget_expired() ? 1 : 0;
+	}
+
+	/* DIAG: freeze heartbeat hook (defined in parallel.cpp). */
+	extern "C" void rsp_watchdog_tick(unsigned pc_lo);
+
 	static Func rsp_enter(void *cpu, unsigned pc)
 	{
+		if (rsp_budget_expired()) {
+			rsp_watchdog_tick(pc);
+			return static_cast<CPU *>(cpu)->get_return_thunk();
+		}
 		return static_cast<CPU *>(cpu)->get_jit_block(pc);
 	}
 
@@ -1821,6 +1863,28 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 			regs.flush_register_window(_jit);
 			regs.reset();
 			branch_targets[i] = jit_label();
+
+			/* DIAG: freeze heartbeat with the exact loop-top pc (rate-limited
+			   in host; no-op unless a task run exceeds 30ms). */
+			jit_prepare();
+			jit_pushargi((pc_word + i) << 2);
+			jit_finishi(reinterpret_cast<jit_pointer_t>(rsp_watchdog_tick));
+
+			/* Host-run budget at every intra-block label (loop top): a
+			   tight ucode loop branches only within its block, so it never
+			   crosses a block boundary and never executes the per-32-instr
+			   checks if the block is shorter than 32 instructions; the
+			   loader's vertex loop then runs forever and starves the CPU
+			   (watchdog freeze mid-RSP).  Check the budget on every loop
+			   iteration so the emulation thread always yields. */
+			jit_prepare();
+			jit_finishi(reinterpret_cast<jit_pointer_t>(rsp_budget_check));
+			jit_retval(JIT_REGISTER_MODE);
+			auto *loop_budget_ok = jit_beqi(JIT_REGISTER_MODE, 0);
+			regs.flush_register_window(_jit);
+			jit_movi(JIT_REGISTER_MODE, RSP::MODE_CHECK_FLAGS);
+			jit_patch_abs(jit_jmpi(), thunks.return_thunk);
+			jit_patch(loop_budget_ok);
 		}
 
 		uint32_t instr = state.imem[pc_word + i];
@@ -1845,6 +1909,21 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 		InstructionInfo inst_info = {};
 		jit_instruction(_jit, (pc_word + i) << 2, instr, inst_info, last_info, i == 0,
 		                (i + 1 < instruction_count) && block_entry[i + 1]);
+
+		/* Host-run budget (per 32 instructions): leave the JIT to the
+		   return thunk when the budget expired so CPU::run() yields to the
+		   core (the core's "task still running" path keeps the guest live). */
+		if ((i & 0x1F) == 0x1F)
+		{
+			jit_prepare();
+			jit_finishi(reinterpret_cast<jit_pointer_t>(rsp_budget_check));
+			jit_retval(JIT_REGISTER_MODE);
+			auto *budget_ok = jit_beqi(JIT_REGISTER_MODE, 0);
+			regs.flush_register_window(_jit);
+			jit_movi(JIT_REGISTER_MODE, RSP::MODE_CHECK_FLAGS);
+			jit_patch_abs(jit_jmpi(), thunks.return_thunk);
+			jit_patch(budget_ok);
+		}
 
 		// Handle all the fun cases with branch delay slots.
 		// Not sure if we really need to handle them, but IIRC CXD4 does it and the LLVM RSP as well.
@@ -1917,8 +1996,66 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 ReturnMode CPU::run()
 {
 	invalidate_code();
+	/* Host-run budget: the RSP JIT executes the ucode synchronously on the
+	   emulation thread, and some ucode loops (libultra SP_STATUS / RDP-busy
+	   waits that never get their signal in the emulated environment) run
+	   indefinitely.  Never hold the VM thread: after the budget expires,
+	   return MODE_CHECK_FLAGS so DoRspCycles yields to the core (the core's
+	   "task still running" path -> rsp_task_locked + SP interrupt keeps the
+	   guest moving; the RSP state is preserved for the next DoRspCycles). */
+
+	/* DIAG: one-shot live-RSP capture.  The F-Zero X EK audio (type 2) task
+	   hard-wedges: it enters a bare `beq z,z` wait-loop (no SP_STATUS MFC0
+	   poll, and type-2 has NO host budget) so DoRspCycles never returns and
+	   the CI-loop force-dump never fires.  Capture the live RSP state (all 32
+	   GPRs + DMEM window around sp + IMEM) at that wait-spin, plus at any
+	   ucode `break` (MODE_BREAK).  One dump per run to bound file size. */
+	static int wd_sp_dumped = 0;
+	auto wd_sp_capture = [&]() {
+		if (wd_sp_dumped) return;
+		wd_sp_dumped = 1;
+		const char* bp = "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_sp_break.bin";
+		FILE* bf = fopen(bp, "wb");
+		if (bf) {
+			uint32_t sp = state.sr[29];
+			fprintf(bf, "RSPCAP pc=%04x sp=%08x status=%08x ttype=%u imem0=%08x %08x\n",
+				state.pc & 0xfff, sp, *state.cp0.cr[CP0_REGISTER_SP_STATUS],
+				((uint32_t*)state.dmem)[0xfc0 / 4], state.imem[0], state.imem[1]);
+			for (unsigned i = 0; i < 32; i++)
+				fprintf(bf, "r%02u %08x\n", i, state.sr[i]);
+			/* DMEM window around the RSP stack pointer (the audio ucode reads
+			   the command word via `lw k0,0(sp)`).  Word-indexed DMEM. */
+			fprintf(bf, "sp_word=%08x\n", sp >> 2);
+			unsigned d0 = (sp >> 2) & 1023;
+			for (int k = -32; k <= 32; k++) {
+				unsigned idx = (d0 + k) & 1023;
+				fprintf(bf, "dmem[0x%03x] %08x\n", idx, state.dmem[idx]);
+			}
+			fputc('\n', bf);
+			fwrite(state.imem, 1, 0x1000, bf);
+			fwrite(state.dmem, 1, 0x1000, bf);
+			fclose(bf);
+		}
+	};
+
 	for (;;)
 	{
+		/* DIAG: wait-spin detector — if the ucode PC does not advance across
+		   many iterations it is in a tight wait-loop (the audio wedge).  The
+		   budget never fires for type-2 audio, so catch it here. */
+		{
+			static uint32_t wd_last_pc = 0xffffffff;
+			static unsigned wd_same = 0;
+			if ((state.pc & 0xfff) == wd_last_pc) {
+				if (++wd_same > 200000) {
+					wd_sp_capture();
+					wd_same = 0;
+				}
+			} else {
+				wd_last_pc = state.pc & 0xfff;
+				wd_same = 0;
+			}
+		}
 		int ret = enter(state.pc);
 		switch (ret)
 		{
@@ -1926,6 +2063,7 @@ ReturnMode CPU::run()
 			*state.cp0.cr[CP0_REGISTER_SP_STATUS] |= SP_STATUS_BROKE | SP_STATUS_HALT;
 			if (*state.cp0.cr[CP0_REGISTER_SP_STATUS] & SP_STATUS_INTR_BREAK)
 				*state.cp0.irq |= 1;
+			wd_sp_capture();
 #ifndef PARALLEL_INTEGRATION
 			print_registers();
 #endif
@@ -1937,6 +2075,26 @@ ReturnMode CPU::run()
 
 		default:
 			break;
+		}
+		if (rsp_budget_expired())
+		{
+#ifdef PARALLEL_INTEGRATION
+			static FILE* rf = NULL;
+			if (!rf) rf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_rsp.txt", "a");
+			if (rf)
+			{
+				/* dump IMEM words around the preempt pc so the ucode's wait
+				   loop can be identified offline (state.pc is byte-addressed,
+				   state.imem is word-indexed) */
+				unsigned w = (state.pc >> 2) & 0x3ff;
+				fprintf(rf, "RSPBUDGET pc=%04x status=%08x sr1=%08x imem=%08x %08x %08x %08x %08x %08x\n",
+					state.pc & 0xfff, *state.cp0.cr[CP0_REGISTER_SP_STATUS], state.sr[1],
+					state.imem[w], state.imem[w + 1], state.imem[w + 2],
+					state.imem[w + 3], state.imem[w + 4], state.imem[w + 5]);
+				fflush(rf);
+			}
+#endif
+			return MODE_CHECK_FLAGS;
 		}
 	}
 }
