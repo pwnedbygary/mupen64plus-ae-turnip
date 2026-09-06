@@ -1884,6 +1884,23 @@ void* ERET_new(void)
     state->pending_exception = 0;
     if (state->cycle_count >= 0) { gen_interrupt(r4300); }
 
+    /* Recompiler ERET lost-interrupt fix, GATED to 64DD.  An RCP/DD interrupt
+       raised while the guest was in an exception (IE=0 or EXL set) only latches
+       the CP0 CAUSE bit; r4300_check_interrupt queues no CHECK_INT because the
+       raise happened when not deliverable, and nothing re-consults CAUSE once
+       the guest ERETs with IE enabled.  The game then waits forever for that
+       interrupt (e.g. the EK boot's stage flag / loader PI/DD event).  Take the
+       pending interrupt right here when it is eligible (EXL just cleared by the
+       ERET, IE set, hardware CAUSE bit set). */
+    if (g_dev.dd.idisk != NULL   /* 64DD combo game only */
+        && state->pending_exception == 0
+        && get_event(&r4300->cp0.q, CHECK_INT) == NULL
+        && (state->cp0_regs[CP0_STATUS_REG] & state->cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00))
+        && (state->cp0_regs[CP0_STATUS_REG] & (CP0_STATUS_IE | CP0_STATUS_EXL | CP0_STATUS_ERL)) == CP0_STATUS_IE)
+    {
+        exception_general(r4300);
+    }
+
     if(state->stop)
         return NULL;
 
@@ -3046,6 +3063,20 @@ void dynarec_gen_interrupt(void)
     }
 
     gen_interrupt(r4300);
+
+    /* Recompiler DD-boot lost-interrupt fix, GATED to 64DD.  An RCP/DD interrupt
+       raised while the guest was not interrupt-deliverable (IE=0 or EXL set,
+       e.g. inside the DD boot critical section) leaves only the CP0 CAUSE bit(s)
+       set with NO CHECK_INT event queued.  Nothing re-consults CAUSE once the
+       guest re-enables interrupts, so the pending interrupt is lost forever and
+       the guest sleeps in its idle loop.  Re-check here and take it when
+       eligible (mirrors the cached-interpreter recheck in interrupt.c). */
+    if (g_dev.dd.idisk != NULL   /* 64DD combo game only */
+        && get_event(&r4300->cp0.q, CHECK_INT) == NULL
+        && (state->cp0_regs[CP0_STATUS_REG] & state->cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00))
+        && (state->cp0_regs[CP0_STATUS_REG] & (CP0_STATUS_IE | CP0_STATUS_EXL | CP0_STATUS_ERL)) == CP0_STATUS_IE) {
+        exception_general(r4300);
+    }
 }
 
 /**** Register allocation ****/

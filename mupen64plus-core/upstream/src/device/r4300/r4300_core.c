@@ -320,9 +320,17 @@ int r4300_read_aligned_dword(struct r4300_core* r4300, uint32_t address, uint64_
 
     /* XXX: unaligned dword accesses should trigger a address error,
      * but inaccurate timing of the core can lead to unaligned address on reset
-     * so just emit a warning and keep going */
+     * so just emit a warning and keep going.
+     * NOTE: rate-limited — each warning goes through the frontend JNA
+     * debug callback into ART; a guest loop doing thousands of unaligned
+     * dword reads (F-Zero X EK SP-MMIO scan) flooded the callback and
+     * deadlocked the emulation thread inside a Java monitor (recompiler
+     * boot black-screen). */
     if ((address & 0x7) != 0) {
-        DebugMessage(M64MSG_WARNING, "Unaligned dword read %08x", address);
+        static uint32_t unaligned_dword_cnt = 0;
+        if ((++unaligned_dword_cnt <= 8) || ((unaligned_dword_cnt & 0x3FF) == 0)) {
+            DebugMessage(M64MSG_WARNING, "Unaligned dword read %08x", address);
+        }
     }
 
     if ((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)) {
@@ -374,9 +382,13 @@ int r4300_write_aligned_dword(struct r4300_core* r4300, uint32_t address, uint64
 {
     /* XXX: unaligned dword accesses should trigger a address error,
      * but inaccurate timing of the core can lead to unaligned address on reset
-     * so just emit a warning and keep going */
+     * so just emit a warning and keep going (rate-limited to avoid a JNA
+     * debug-callback flood deadlock — see r4300_read_aligned_dword). */
     if ((address & 0x7) != 0) {
-        DebugMessage(M64MSG_WARNING, "Unaligned dword write %08x", address);
+        static uint32_t unaligned_dword_wcnt = 0;
+        if ((++unaligned_dword_wcnt <= 8) || ((unaligned_dword_wcnt & 0x3FF) == 0)) {
+            DebugMessage(M64MSG_WARNING, "Unaligned dword write %08x", address);
+        }
     }
 
     if ((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)) {
