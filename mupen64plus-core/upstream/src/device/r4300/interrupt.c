@@ -648,6 +648,32 @@ void gen_interrupt(struct r4300_core* r4300)
             break;
     }
 
+    /* Cached-interpreter lost-interrupt recheck, GATED TO 64DD games.
+     *
+     * An RCP interrupt (e.g. the RSP audio-task completion) raised while the
+     * guest was not interrupt-deliverable (IE=0, or EXL/ERL set) only latches
+     * the CP0 CAUSE bit(s) — raise_maskable_interrupt / r4300_check_interrupt
+     * return early without queueing a CHECK_INT, and nothing re-consults CAUSE
+     * once interrupts re-enable. The F-Zero X Expansion Kit (64DD) loader then
+     * spins forever in its kernel on the pending CAUSE bits (the
+     * "CP0 CAUSE & 0x7c" wait), so the BGM audio async load never completes
+     * (D_80771C88 stuck at 1, Game thread spins at sys_gfx.c:355).
+     *
+     * This mirrors the recompiler's pending-CAUSE recheck, but for the
+     * cached-interpreter path (emumode < 2) which has no equivalent. It is
+     * safe because it only takes an interrupt that is genuinely eligible
+     * (pending + unmasked + IE enabled + not in EXL/ERL). DD-gated via
+     * g_dev.dd.idisk != NULL so plain carts / cart-hack games are untouched.
+     */
+    if (r4300->emumode < 2
+        && g_dev.dd.idisk != NULL
+        && get_event(&r4300->cp0.q, CHECK_INT) == NULL
+        && (cp0_regs[CP0_STATUS_REG] & cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00))
+        && (cp0_regs[CP0_STATUS_REG] & (CP0_STATUS_IE | CP0_STATUS_EXL | CP0_STATUS_ERL)) == CP0_STATUS_IE)
+    {
+        exception_general(r4300);
+    }
+
     if (!r4300->cp0.interrupt_unsafe_state)
     {
         if (savestates_get_job() == savestates_job_save)
