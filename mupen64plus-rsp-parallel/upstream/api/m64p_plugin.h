@@ -68,6 +68,8 @@ typedef struct {
     void (*ProcessAlistList)(void);
     void (*ProcessRdpList)(void);
     void (*ShowCFB)(void);
+    /* ForceSynchronize: core callback (ares forceSynchronize equivalent). */
+    void (*ForceSynchronize)(void);
 } RSP_INFO;
 
 typedef struct {

@@ -101,6 +101,12 @@ typedef unsigned int RCPREG; /* ANSI approximation of 32-bit size */
 		void (*ProcessAList)(void);
 		void (*ProcessRdpList)(void);
 		void (*ShowCFB)(void);
+		/* ForceSynchronize: core-provided ares forceSynchronize() equivalent.
+		   The RSP ucode spinning on a DMA/peripheral completion poll must hand
+		   control back to the CPU; advances CP0 time to the next pending event
+		   so it fires once the RSP yields (mirrors ares n64/rsp/io.cpp
+		   cpu.forceSynchronize on the SP_STATUS read). */
+		void (*ForceSynchronize)(void);
 	} RSP_INFO;
 #endif
 

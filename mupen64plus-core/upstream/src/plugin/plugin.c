@@ -29,6 +29,9 @@
 #include "api/m64p_plugin.h"
 #include "api/m64p_types.h"
 #include "device/memory/memory.h"
+#include "device/r4300/cp0.h"
+#include "device/r4300/interrupt.h"
+#include "device/r4300/r4300_core.h"
 #include "device/rcp/ai/ai_controller.h"
 #include "device/rcp/mi/mi_controller.h"
 #include "device/rcp/rdp/rdp_core.h"
@@ -489,10 +492,39 @@ static m64p_error plugin_connect_rsp(m64p_dynlib_handle plugin_handle)
     return M64ERR_SUCCESS;
 }
 
+/* ForceSynchronize (ares forceSynchronize equivalent): the RSP microcode is
+   spinning on a poll that needs a peripheral DMA/interrupt event to fire.  In
+   the synchronous emulation model the CPU PC does not advance while the RSP
+   task runs (DoRspCycles), so cp0_update_count() advances 0 and the queued
+   event never becomes due.  Advance CP0 time to the next queued real
+   peripheral event (SP/PI/AI/SI/DP/DD) so it dispatches naturally once the
+   RSP yields.  VI/COMPARE re-queue themselves every dispatch, so skip pure
+   VI/COMPARE heads to avoid accelerating game-time during a post-load spin. */
+static void rsp_force_synchronize(void)
+{
+    struct r4300_core* r4300 = &g_dev.r4300;
+    struct cp0* cp0 = &r4300->cp0;
+    uint32_t* cp0_regs = r4300_cp0_regs(cp0);
+
+    struct node* n = cp0->q.first;
+    while (n != NULL && (n->data.type == VI_INT || n->data.type == COMPARE_INT))
+        n = n->next;
+
+    if (n == NULL)
+        return; /* only timer events pending: nothing to synchronize */
+
+    uint32_t target = n->data.count;
+    uint32_t cur = cp0_regs[CP0_COUNT_REG];
+    if (target > cur)
+    {
+        cp0_regs[CP0_COUNT_REG] = target;
+        *r4300_cp0_cycle_count(cp0) += (int)(target - cur);
+    }
+}
+
 static m64p_error plugin_start_rsp(void)
 {
-    /* fill in the RSP_INFO data structure */
-    rsp_info.RDRAM = (unsigned char *)mem_base_u32(g_mem_base, MM_RDRAM_DRAM);
+    /* fill in the RSP_INFO data structure */    rsp_info.RDRAM = (unsigned char *)mem_base_u32(g_mem_base, MM_RDRAM_DRAM);
     rsp_info.DMEM = (unsigned char *)mem_base_u32(g_mem_base, MM_RSP_MEM);
     rsp_info.IMEM = (unsigned char *)mem_base_u32(g_mem_base, MM_RSP_MEM + 0x1000);
     rsp_info.MI_INTR_REG = &g_dev.mi.regs[MI_INTR_REG];
@@ -518,6 +550,7 @@ static m64p_error plugin_start_rsp(void)
     rsp_info.ProcessAlistList = audio.processAList;
     rsp_info.ProcessRdpList = gfx.processRDPList;
     rsp_info.ShowCFB = gfx.showCFB;
+    rsp_info.ForceSynchronize = rsp_force_synchronize;
 
     /* call the RSP plugin  */
     rsp.initiateRSP(rsp_info, NULL);

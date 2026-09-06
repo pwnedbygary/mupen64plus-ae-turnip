@@ -69,6 +69,10 @@ typedef struct {
     void (*ProcessAlistList)(void);
     void (*ProcessRdpList)(void);
     void (*ShowCFB)(void);
+    /* ForceSynchronize: core callback the RSP plugin invokes when its ucode
+       is spinning on a DMA/peripheral completion poll; advances CP0 time to
+       the next pending event (ares forceSynchronize equivalent). */
+    void (*ForceSynchronize)(void);
 } RSP_INFO;
 
 typedef struct {

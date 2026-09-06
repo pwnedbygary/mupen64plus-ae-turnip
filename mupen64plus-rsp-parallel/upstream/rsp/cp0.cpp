@@ -37,6 +37,15 @@ extern "C"
 		// WAIT_FOR_CPU_HOST. From CXD4.
 		if (rd == CP0_REGISTER_SP_STATUS)
 		{
+			/* ares cpu.forceSynchronize() equivalent: on every SP_STATUS
+			   read, advance core CP0 time to the next pending peripheral event
+			   so a queued DMA/interrupt completes and the guest's wait wakes.
+			   On real HW the CPU keeps running while the RSP polls; in the
+			   synchronous model time is frozen during DoRspCycles, so the
+			   pending event would otherwise never become due. */
+			if (RSP::rsp.ForceSynchronize)
+				RSP::rsp.ForceSynchronize();
+
 			RSP::MFC0_count[rt] += 1;
 			/* ares-like RSP yield at the ucode's SP_STATUS read (ares
 			   force-synchronizes the CPU on this read): in the synchronous
