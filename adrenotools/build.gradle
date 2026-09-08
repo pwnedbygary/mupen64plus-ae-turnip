@@ -45,4 +45,12 @@ android {
             useLegacyPackaging = true
         }
     }
+    lint {
+        targetSdk 34
+        targetSdk 34
+    }
+    testOptions {
+        targetSdk 34
+        targetSdk 34
+    }
 }
