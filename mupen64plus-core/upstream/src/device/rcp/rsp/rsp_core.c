@@ -377,6 +377,10 @@ void do_SP_Task(struct rsp_core* sp)
         sp->mi->r4300->cp0.interrupt_unsafe_state |= INTR_UNSAFE_RSP;
         sp->mi->regs[MI_INTR_REG] |= MI_INTR_SP;
     }
+    /* DD-ONLY ares-derived completion/yield delivery (gated: plain cart
+       games must keep the pre-ares rsp_interrupt_event path exactly). */
+    if (g_dev.dd.idisk != NULL)
+    {
     /* ares-style SP_STATUS force-synchronize (ares n64/rsp/io.cpp: the RSP
        yields on its SP_STATUS signal-poll by setting INTR_BREAK|HALT + irq).
        That yield is the ucode asking the CPU to take over (post SIG0 / advance
@@ -410,6 +414,7 @@ void do_SP_Task(struct rsp_core* sp)
         sp->rsp_task_locked = 0;
         sp->mi->r4300->cp0.interrupt_unsafe_state &= ~INTR_UNSAFE_RSP;
         sp->mi->regs[MI_INTR_REG] |= MI_INTR_SP;
+    }
     }
     if (sp->mi->regs[MI_INTR_REG] & MI_INTR_SP)
     {

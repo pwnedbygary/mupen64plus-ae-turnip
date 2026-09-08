@@ -272,9 +272,14 @@ extern "C"
 	/* DIAG: freeze heartbeat hook (defined in parallel.cpp). */
 	extern "C" void rsp_watchdog_tick(unsigned pc_lo);
 
+	/* DD gate (defined in parallel.cpp): 1 when the core wired
+	   ForceSynchronize (64DD disk present).  Plain cart games keep
+	   stock behavior: budget never fires, JIT emits no budget checks. */
+	extern "C" int rsp_ares_budget_enabled(void);
+
 	static Func rsp_enter(void *cpu, unsigned pc)
 	{
-		if (rsp_budget_expired()) {
+		if (rsp_ares_budget_enabled() && rsp_budget_expired()) {
 			rsp_watchdog_tick(pc);
 			return static_cast<CPU *>(cpu)->get_return_thunk();
 		}
@@ -1864,6 +1869,10 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 			regs.reset();
 			branch_targets[i] = jit_label();
 
+			/* DD-ONLY emission: plain games get structurally-identical JIT
+			   code (no per-loop host calls), matching the baseline build. */
+			if (rsp_ares_budget_enabled())
+			{
 			/* DIAG: freeze heartbeat with the exact loop-top pc (rate-limited
 			   in host; no-op unless a task run exceeds 30ms). */
 			jit_prepare();
@@ -1885,6 +1894,7 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 			jit_movi(JIT_REGISTER_MODE, RSP::MODE_CHECK_FLAGS);
 			jit_patch_abs(jit_jmpi(), thunks.return_thunk);
 			jit_patch(loop_budget_ok);
+			}
 		}
 
 		uint32_t instr = state.imem[pc_word + i];
@@ -1912,8 +1922,9 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 
 		/* Host-run budget (per 32 instructions): leave the JIT to the
 		   return thunk when the budget expired so CPU::run() yields to the
-		   core (the core's "task still running" path keeps the guest live). */
-		if ((i & 0x1F) == 0x1F)
+		   core (the core's "task still running" path keeps the guest live).
+		   DD-ONLY: plain games emit no checks. */
+		if (rsp_ares_budget_enabled() && (i & 0x1F) == 0x1F)
 		{
 			jit_prepare();
 			jit_finishi(reinterpret_cast<jit_pointer_t>(rsp_budget_check));
@@ -2042,7 +2053,8 @@ ReturnMode CPU::run()
 	{
 		/* DIAG: wait-spin detector — if the ucode PC does not advance across
 		   many iterations it is in a tight wait-loop (the audio wedge).  The
-		   budget never fires for type-2 audio, so catch it here. */
+		   budget never fires for type-2 audio, so catch it here.  DD-only. */
+		if (rsp_ares_budget_enabled())
 		{
 			static uint32_t wd_last_pc = 0xffffffff;
 			static unsigned wd_same = 0;
@@ -2063,7 +2075,8 @@ ReturnMode CPU::run()
 			*state.cp0.cr[CP0_REGISTER_SP_STATUS] |= SP_STATUS_BROKE | SP_STATUS_HALT;
 			if (*state.cp0.cr[CP0_REGISTER_SP_STATUS] & SP_STATUS_INTR_BREAK)
 				*state.cp0.irq |= 1;
-			wd_sp_capture();
+			if (rsp_ares_budget_enabled())
+				wd_sp_capture();
 #ifndef PARALLEL_INTEGRATION
 			print_registers();
 #endif
@@ -2076,7 +2089,7 @@ ReturnMode CPU::run()
 		default:
 			break;
 		}
-		if (rsp_budget_expired())
+		if (rsp_ares_budget_enabled() && rsp_budget_expired())
 		{
 #ifdef PARALLEL_INTEGRATION
 			static FILE* rf = NULL;

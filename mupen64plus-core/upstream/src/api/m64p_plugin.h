@@ -73,6 +73,12 @@ typedef struct {
        is spinning on a DMA/peripheral completion poll; advances CP0 time to
        the next pending event (ares forceSynchronize equivalent). */
     void (*ForceSynchronize)(void);
+    /* IsDDPresent: RUNTIME query — returns non-zero when a 64DD disk image
+       is attached.  Unlike ForceSynchronize this is evaluated at task time:
+       plugin_start_rsp runs BEFORE init_device (which sets dd.idisk), so the
+       ares-derived RSP work (yield protocol, JIT budget, clean completion)
+       must be keyed off this callback, not a static wiring decision. */
+    int (*IsDDPresent)(void);
 } RSP_INFO;
 
 typedef struct {

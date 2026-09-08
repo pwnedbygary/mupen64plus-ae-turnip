@@ -107,6 +107,9 @@ typedef unsigned int RCPREG; /* ANSI approximation of 32-bit size */
 		   so it fires once the RSP yields (mirrors ares n64/rsp/io.cpp
 		   cpu.forceSynchronize on the SP_STATUS read). */
 		void (*ForceSynchronize)(void);
+		/* IsDDPresent: RUNTIME query — non-zero when a 64DD disk image is
+		   attached (evaluated at task time, after init_device). */
+		int (*IsDDPresent)(void);
 	} RSP_INFO;
 #endif
 

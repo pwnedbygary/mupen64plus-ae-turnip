@@ -37,16 +37,22 @@ extern "C"
 		// WAIT_FOR_CPU_HOST. From CXD4.
 		if (rd == CP0_REGISTER_SP_STATUS)
 		{
+			RSP::MFC0_count[rt] += 1;
+			/* RUNTIME DD gate: IsDDPresent() is evaluated at task time (after
+			   init_device set dd.idisk), so plain cart games fall through to
+			   the stock 0x7fff-HALT path below.  ForceSynchronize itself is
+			   wired for every game but no-ops without a disk attached. */
+			if (RSP::rsp.IsDDPresent && RSP::rsp.IsDDPresent())
+			{
+			/* DD-ONLY ares path. */
 			/* ares cpu.forceSynchronize() equivalent: on every SP_STATUS
 			   read, advance core CP0 time to the next pending peripheral event
 			   so a queued DMA/interrupt completes and the guest's wait wakes.
 			   On real HW the CPU keeps running while the RSP polls; in the
 			   synchronous model time is frozen during DoRspCycles, so the
 			   pending event would otherwise never become due. */
-			if (RSP::rsp.ForceSynchronize)
-				RSP::rsp.ForceSynchronize();
+			RSP::rsp.ForceSynchronize();
 
-			RSP::MFC0_count[rt] += 1;
 			/* ares-like RSP yield at the ucode's SP_STATUS read (ares
 			   force-synchronizes the CPU on this read): in the synchronous
 			   model the CPU only runs when the RSP yields, so a single
@@ -71,6 +77,12 @@ extern "C"
 			*RSP::rsp.SP_STATUS_REG |= SP_STATUS_INTR_BREAK | SP_STATUS_HALT;
 			*rsp->cp0.irq |= 1;
 			return MODE_CHECK_FLAGS;
+			}
+			}
+			else if (RSP::MFC0_count[rt] >= RSP::SP_STATUS_TIMEOUT)
+			{
+				*RSP::rsp.SP_STATUS_REG |= SP_STATUS_HALT;
+				return MODE_CHECK_FLAGS;
 			}
 		}
 #endif

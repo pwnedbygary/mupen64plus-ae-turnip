@@ -70,6 +70,10 @@ typedef struct {
     void (*ShowCFB)(void);
     /* ForceSynchronize: core callback (ares forceSynchronize equivalent). */
     void (*ForceSynchronize)(void);
+    /* IsDDPresent: RUNTIME query — non-zero when a 64DD disk image is
+       attached.  Evaluated at task time (after init_device), so the ares
+       yield/budget/completion work is keyed off this, not a static gate. */
+    int (*IsDDPresent)(void);
 } RSP_INFO;
 
 typedef struct {

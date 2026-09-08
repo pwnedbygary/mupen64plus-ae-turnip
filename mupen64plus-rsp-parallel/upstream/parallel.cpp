@@ -50,6 +50,15 @@ short MFC0_count[32];
 int SP_STATUS_TIMEOUT;
 } // namespace RSP
 
+/* DD gate for the JIT-side budget/watchdog emission (rsp_jit.cpp): the core
+   provides a RUNTIME IsDDPresent() query (evaluated at task time, after
+   init_device set dd.idisk), so plain cart games get structurally-identical
+   JIT code (no per-loop host calls). */
+extern "C" int rsp_ares_budget_enabled(void)
+{
+	return RSP::rsp.IsDDPresent && RSP::rsp.IsDDPresent();
+}
+
 extern "C"
 {
 	// Hack entry point to use when loading savestates when we're tracing.
@@ -108,7 +117,17 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 
 	EXPORT unsigned int CALL DoRspCycles(unsigned int cycles)
 	{
-		/* DIAG: task entry/exit trace (file) — identifies the freezing task */
+		/* DD-gate: the core provides a RUNTIME IsDDPresent() query (task
+		   time, after init_device set dd.idisk; plugin start runs before
+		   init_device so a static wiring check would always fail).  All
+		   ares-derived work below (budget, clean-yield protocol, DIAG
+		   traces) is keyed off this so plain cart games keep the stock
+		   parallel-RSP behavior exactly. */
+		const int dd_mode = RSP::rsp.IsDDPresent && RSP::rsp.IsDDPresent();
+
+		/* DIAG: task entry/exit trace (file) — identifies the freezing task.
+		   DD-only (plain games must have no tracing overhead). */
+		if (dd_mode)
 		{
 			static FILE* rf = NULL;
 			static unsigned task_seq = 0;
@@ -210,9 +229,12 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		if (*RSP::rsp.SP_STATUS_REG & (SP_STATUS_HALT | SP_STATUS_BROKE))
 			return 0;
 
-		/* DIAG: arm freeze heartbeat */
-		wd_task_start_ms = wd_now_ms();
-		wd_last_hb_ms = 0;
+		/* DIAG: arm freeze heartbeat (DD-only) */
+		if (dd_mode)
+		{
+			wd_task_start_ms = wd_now_ms();
+			wd_last_hb_ms = 0;
+		}
 
 		// We don't know if Mupen from the outside invalidated our IMEM.
 		RSP::cpu.invalidate_imem();
@@ -251,7 +273,7 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		   command list finish cleanly while bounding a wedged wait-spin.
 		   The budget-yield path below already emits a clean task boundary
 		   (HALT+INTR_BREAK+irq) for non-audio; this makes audio use it too. */
-		rsp_set_budget_deadline_us(dsp_task_type == 2 ? 100000 : 50000);
+		rsp_set_budget_deadline_us(dd_mode ? (dsp_task_type == 2 ? 100000 : 50000) : 0);
 
 		{
 			while (!(*RSP::rsp.SP_STATUS_REG & SP_STATUS_HALT))
@@ -265,6 +287,8 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 				   and let the core decide (rsp_task_locked / SP interrupt).
 				   CPU::run() itself enforces the host-run budget and returns
 				   MODE_CHECK_FLAGS on expiry, so this branch always yields. */
+				if (dd_mode)
+				{
 				if (mode == RSP::MODE_CHECK_FLAGS && !(*RSP::rsp.SP_STATUS_REG & SP_STATUS_HALT))
 				{
 					/* Budget/hard-wait expiry on a non-audio task: emit the SAME clean
@@ -278,10 +302,13 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 					*RSP::cpu.get_state().cp0.irq |= 1;
 					break;
 				}
+				}
+				else if (mode == RSP::MODE_CHECK_FLAGS && (*RSP::cpu.get_state().cp0.irq & 1))
+					break;
 			}
 		}
-	/* DIAG: disarm freeze heartbeat; note slow-but-recovered tasks */
-	if (wd_task_start_ms)
+	/* DIAG: disarm freeze heartbeat; note slow-but-recovered tasks (DD-only) */
+	if (dd_mode && wd_task_start_ms)
 	{
 		long long dur = wd_now_ms() - wd_task_start_ms;
 		wd_task_start_ms = 0;
@@ -291,7 +318,8 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 
 		*RSP::rsp.SP_PC_REG = 0x04001000 | (RSP::cpu.get_state().pc & 0xffc);
 
-		/* DIAG: exit log */
+		/* DIAG: exit log (DD-only) */
+		if (dd_mode)
 		{
 			static FILE* rf = NULL;
 			if (!rf) rf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_rsp.txt", "a");
@@ -315,7 +343,7 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		{
 		}
 		else
-			RSP::SP_STATUS_TIMEOUT = 0x7fff; // keep the long wait; the JIT budget handles the preemption
+			RSP::SP_STATUS_TIMEOUT = dd_mode ? 0x7fff : 16; // DD keeps the long wait (JIT budget handles preemption); plain games keep the stock 16-turn wait
 
 		// CPU restarts with the correct SIGs.
 		*RSP::rsp.SP_STATUS_REG &= ~SP_STATUS_HALT;
@@ -349,7 +377,8 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 
 	EXPORT void CALL InitiateRSP(RSP_INFO Rsp_Info, unsigned int *CycleCount)
 	{
-        DebugMessage(M64MSG_ERROR, "InitiateRSP");
+        DebugMessage(M64MSG_ERROR, "InitiateRSP IsDDPresent=%p ForceSynchronize=%p DMEM=%p IMEM=%p",
+			Rsp_Info.IsDDPresent, Rsp_Info.ForceSynchronize, Rsp_Info.DMEM, Rsp_Info.IMEM);
 
 		if (CycleCount)
 			*CycleCount = 0;

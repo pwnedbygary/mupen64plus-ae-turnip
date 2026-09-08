@@ -499,9 +499,13 @@ static m64p_error plugin_connect_rsp(m64p_dynlib_handle plugin_handle)
    event never becomes due.  Advance CP0 time to the next queued real
    peripheral event (SP/PI/AI/SI/DP/DD) so it dispatches naturally once the
    RSP yields.  VI/COMPARE re-queue themselves every dispatch, so skip pure
-   VI/COMPARE heads to avoid accelerating game-time during a post-load spin. */
+   VI/COMPARE heads to avoid accelerating game-time during a post-load spin.
+   Plain cart games MUST be unaffected: no-op unless a 64DD disk is attached. */
 static void rsp_force_synchronize(void)
 {
+    if (g_dev.dd.idisk == NULL)
+        return; /* plain cart game: keep the stock behavior exactly */
+
     struct r4300_core* r4300 = &g_dev.r4300;
     struct cp0* cp0 = &r4300->cp0;
     uint32_t* cp0_regs = r4300_cp0_regs(cp0);
@@ -520,6 +524,14 @@ static void rsp_force_synchronize(void)
         cp0_regs[CP0_COUNT_REG] = target;
         *r4300_cp0_cycle_count(cp0) += (int)(target - cur);
     }
+}
+
+/* Runtime DD query for the RSP plugin: plugin_start_rsp runs BEFORE
+   init_device, so a static wiring decision at that point would always see
+   dd.idisk == NULL.  Evaluate on every call instead. */
+static int rsp_is_dd_present(void)
+{
+    return (g_dev.dd.idisk != NULL) ? 1 : 0;
 }
 
 static m64p_error plugin_start_rsp(void)
@@ -550,7 +562,14 @@ static m64p_error plugin_start_rsp(void)
     rsp_info.ProcessAlistList = audio.processAList;
     rsp_info.ProcessRdpList = gfx.processRDPList;
     rsp_info.ShowCFB = gfx.showCFB;
+    /* ares forceSynchronize + runtime DD query, wired for every game:
+       the parallel-RSP plugin keys its ares-derived work (yield protocol,
+       JIT budget, clean completion) off IsDDPresent(), which is evaluated at
+       TASK time — after init_device has set dd.idisk — so plain cart games
+       get the stock path and 64DD games get the ares path.  rsp_force_synchronize
+       itself no-ops without a disk (belt-and-suspenders). */
     rsp_info.ForceSynchronize = rsp_force_synchronize;
+    rsp_info.IsDDPresent = rsp_is_dd_present;
 
     /* call the RSP plugin  */
     rsp.initiateRSP(rsp_info, NULL);
