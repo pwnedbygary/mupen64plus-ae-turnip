@@ -131,6 +131,202 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 	}
 }
 
+/* ======================================================================
+   ROUND 29 DIAG (DD route only): THE PC RING -- HOW DOES THE RSP GET TO pc 0?
+
+   Round 28's wd_rsp.txt (RSPTASK) says, for the F-Zero X EK gfx task:
+
+       3372 of 3530 slices ENTER at pc=0000 with imem0=0x09000419 (rspboot's
+       `j 0x1064` resident at IMEM 0x000), and 157 ENTER at pc=0x0fc8.
+       imem0 is rspboot for EVERY gfx slice.
+
+   SP_PC_REG is saved at every slice exit (`0x04001000 | (pc & 0xffc)`) and
+   restored at every slice entry, and the guest only writes 0x1000 into it
+   once per osSpTaskLoad (LOADGUARD set=200 == the 4 gfx + 196 audio loads).
+   So a slice cannot ENTER at pc 0 unless the ucode itself REACHED pc 0 --
+   which means rspboot runs again, re-DMAs the text, jumps to the F3DEX2
+   entry at pc 0x080, and the display-list walk restarts from scratch.  That
+   would explain every round-25..28 symptom at once (walk pointer never
+   advances past the first chunk, ring never written, ring stays zero).
+
+   WHAT THIS INSTRUMENT ANSWERS: which instruction jumped to pc 0, and with
+   what register state.  rsp_jit.cpp calls r29_pc_hook() from rsp_enter(),
+   i.e. at every JIT block boundary with the live pc, so the ring holds the
+   block-level path INTO the restart.  On the first 6 times the RSP reaches
+   pc 0 the tail of the ring plus the live registers, DMEM header words and
+   the handler-dispatch table are dumped, and IMEM||DMEM (8 KiB) is written
+   once so the code at the jumping pc can be disassembled offline.
+
+   Read it as: R29PC gives the state, R29TRACE is the pc path (oldest first,
+   the LAST entry is always 000).  dd-gated by rsp_ares_budget_enabled()
+   (runtime IsDDPresent()) at the call site, so plain carts are untouched. */
+#define R29_RING 512
+static uint32_t r29_ring[R29_RING];
+static uint32_t r29_seq = 0;       /* block entries recorded so far       */
+static uint32_t r29_zero_n = 0;    /* times pc==0 seen while the hook ran */
+static uint32_t r29_unfix_n = 0;   /* descriptor un-fixes applied         */
+
+static FILE* r29f = NULL;
+
+/* ---------------------------------------------------------------------
+   ROUND 29 FIX (DD route only): KEEP THE F3DEX2 OVERLAY-DESCRIPTOR FIX-UP
+   IDEMPOTENT.  THIS IS THE ROOT CAUSE OF THE WHOLE BLACK SCREEN.
+
+   The F3DEX2 text entry (IMEM pc 0x080..0x15C, disassembled this round from
+   the live ucode) does, on every entry that is not a libultra resume:
+
+       pc 0x12C  lw   at, 0xFD0(r0)      ; at = the ucode base (0x7505C0)
+       pc 0x130  lw   v0, 0x2E0(r0)      ; overlay descriptor A
+       pc 0x134  lw   v1, 0x2E8(r0)      ; overlay descriptor B
+       pc 0x138  lw   a0, 0x410(r0)
+       pc 0x13C  lw   a1, 0x418(r0)
+       pc 0x140  add  v0, v0, at         ; *** ADD THE BASE ***
+       ...       sw   back to 0x2E0/0x2E8/0x410/0x418
+
+   i.e. it converts {ucode_data-relative offsets} into {absolute RDRAM
+   addresses} exactly once per ucode_data load.  The four words live in DMEM
+   0x2E0..0x2EF / 0x410..0x41F and hold whatever the ucode_data DMA left.
+
+   MEASURED HERE (round-28 wd_k0.txt and this round's r28a/ram.bin): DMEM
+   0x2E0/0x2E8 end up holding 0x00EA1B00 / 0x00EA1B98, and
+
+       0x751540 + 0x7505C0 == 0xEA1B00      (descriptor A, fixed up twice)
+       0x7515D8 + 0x7505C0 == 0xEA1B98      (descriptor B, fixed up twice)
+
+   Neither value occurs anywhere in the 8 MB RDRAM dump, so they can only be
+   the fix-up's own output.  With the descriptors double-fixed the ucode's
+   overlay loader (pc 0x164 -> 0xFB4 -> the DMA primitive at 0xFD8) DMAs from
+   RDRAM 0xEA1B98: past the end of RDRAM, so the 24-bit mask makes it
+   0x6A1B98 -- the 64DD data area -- and copies 0x170 bytes of that over
+   IMEM 0x000..0x16F.  The FIFO ucode's own boot overlay is destroyed and the
+   RSP then executes data.  Every round-19..28 symptom (no write DMA ever
+   issued, the 336 KiB RDP ring all zero while DPC_END climbs, k0 =
+   0x152C03C0 inherited from the audio task rather than DMEM[0xFF0], the
+   `WILD dir=RD dram=00ea1b98` transfer) is downstream of this double-add.
+
+   THE FIX.  At the instant the text entry is about to run -- rspboot's
+   trampoline `jr a3` with a3 = 0x1080 lands on IMEM pc 0x080 -- put the four
+   descriptors back into the form the entry expects by repeatedly subtracting
+   the ucode base until the value is below it.  The true value is
+   `offset + k*base` with `offset < base` (the descriptors are ucode_data
+   offsets and the ucode is 0x1000 bytes), so the loop recovers the offset
+   exactly for any number of accidental adds, and it is a no-op on a genuine
+   fresh load (offsets 0xF80/0x1018/0x1188/0x250 are far below 0x7505C0).
+
+   GATED ON THE UCODE'S OWN BRANCH: the entry runs the fix-up only when
+   `DMEM[0xF0] == 0` (cold start) or `(DMEM[0xFC4] & 1) == 0` (not an
+   OS_TASK_YIELDED resume).  On a real resume the ucode SKIPS it (pc 0x0B8
+   `j 0x164`) and the restored yield image's already-absolute descriptors must
+   be left alone, so the un-fix is applied only when the fix-up is about to
+   run -- the exact complement of the ucode's `beq $11,$0,0x0C0` /
+   `beq $12,$0,0x12C` pair.
+
+   DD-only: r29_pc_hook is only reached from rsp_enter under
+   rsp_ares_budget_enabled() (the runtime IsDDPresent()), so plain carts and
+   the cart-hack route never execute any of this. */
+static void r29_unfix_descriptors(void)
+{
+	uint32_t* dm = (uint32_t*)RSP::rsp.DMEM;
+	static const unsigned off[4] = { 0x2e0u, 0x2e8u, 0x410u, 0x418u };
+	uint32_t base = dm[0xfd0 / 4];
+	uint32_t fifo = dm[0x0f0 / 4];
+	uint32_t yld  = dm[0xfc4 / 4] & 1u;
+	unsigned i;
+
+	if (!(fifo == 0u || yld == 0u)) return;     /* the entry will skip it   */
+	if (base < 0x1000u || base >= 0x800000u) return;
+	for (i = 0; i < 4u; i++)
+	{
+		uint32_t v = dm[off[i] / 4];
+		unsigned k = 0;
+		while (v >= base && k < 8u) { v -= base; k++; }
+		if (k) { dm[off[i] / 4] = v; r29_unfix_n++; }
+	}
+	/* Proof-of-fire file (the R29PC dump only exists on a pc==0 event, which
+	   may never happen once the fix works).  Capped so it cannot grow. */
+	if (r29_unfix_n != 0u && r29_unfix_n <= 40u)
+	{
+		FILE* ff = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r29fix.txt",
+		                 r29_unfix_n == 1u ? "w" : "a");
+		if (ff)
+		{
+			fprintf(ff, "R29FIX n=%u base=%08x f0=%08x fc4=%08x dm[2e0]=%08x dm[2e8]=%08x dm[410]=%08x dm[418]=%08x "
+			            "im0=%08x seq=%u\n",
+			        r29_unfix_n, base, fifo, dm[0xfc4 / 4],
+			        dm[0x2e0 / 4], dm[0x2e8 / 4], dm[0x410 / 4], dm[0x418 / 4],
+			        ((const uint32_t*)RSP::rsp.IMEM)[0], r29_seq);
+			fclose(ff);
+		}
+	}
+}
+
+extern "C" void r29_pc_hook(unsigned pc_lo)
+{
+	uint32_t p = pc_lo & 0xfffu;
+	uint32_t i, n;
+	const uint32_t* dm = (const uint32_t*)RSP::rsp.DMEM;
+	const uint32_t* im = (const uint32_t*)RSP::rsp.IMEM;
+	const uint32_t* sr = RSP::cpu.get_state().sr;
+
+	r29_ring[r29_seq & (R29_RING - 1u)] = p;
+	r29_seq++;
+
+	/* The F3DEX2 text entry is about to run: normalise the descriptors. */
+	if (p == 0x080u) { r29_unfix_descriptors(); return; }
+
+	if (p != 0u) return;
+	/* The AUDIO task's legitimate task-start entries (audio ucode resident at
+	   IMEM 0) consumed the round-29a dump budget and hid the gfx-side events
+	   that matter, so skip them. */
+	if (im[0] == 0x340a0fc0u) return;
+	if (r29_zero_n >= 6u) return;
+	r29_zero_n++;
+	if (r29f == NULL)
+		r29f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r29pc.txt", "w");
+	if (r29f == NULL) return;
+	{
+		/* Rewritten on EVERY dump, so the image left on disk is the one from
+		   the LAST pc==0 (the most interesting one, after the ucode has been
+		   running), not the trivial task-start entry.  Same layout as
+		   wd_ucode[123].bin minus the 32-byte header: 0x1000 IMEM then
+		   0x1000 DMEM.  The jumping pc is disassembled out of IMEM. */
+		FILE* sf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r29sp.bin", "wb");
+		if (sf) {
+			fwrite(RSP::rsp.IMEM, 1, 0x1000, sf);
+			fwrite(RSP::rsp.DMEM, 1, 0x1000, sf);
+			fclose(sf);
+		}
+	}
+	fprintf(r29f, "R29PC n=%u seq=%u pc=0 k0=%08x ra=%08x v0=%08x v1=%08x t8=%08x t9=%08x s3=%08x s4=%08x\n",
+	        r29_zero_n, r29_seq, (uint32_t)sr[26], (uint32_t)sr[31], (uint32_t)sr[2], (uint32_t)sr[3],
+	        (uint32_t)sr[24], (uint32_t)sr[25], (uint32_t)sr[19], (uint32_t)sr[20]);
+	fprintf(r29f, "R29DM fc0=%08x fc4=%08x fd0=%08x f0=%08x ff0=%08x ff4=%08x bf8=%08x 2e0=%08x 2e8=%08x 410=%08x 418=%08x st=%08x pc_reg=%08x\n",
+	        dm[0xfc0 / 4], dm[0xfc4 / 4], dm[0xfd0 / 4], dm[0x0f0 / 4],
+	        dm[0xff0 / 4], dm[0xff4 / 4], dm[0xbf8 / 4],
+	        dm[0x2e0 / 4], dm[0x2e8 / 4], dm[0x410 / 4], dm[0x418 / 4],
+	        *RSP::rsp.SP_STATUS_REG, *RSP::rsp.SP_PC_REG);
+	/* The F3DEX2/F-Zero X command dispatch table the main loop indexes with
+	   the command's top byte: pc = lhu DMEM[0x36e + 2*opcode] (the loop at
+	   IMEM 0x190..0x1b4 ends in `jr t3`).  All-zero entries there dispatch
+	   straight to pc 0, so print the head of it. */
+	fprintf(r29f, "R29TBL 36e:");
+	for (i = 0x36e / 2; i < (0x36e / 2) + 24; i++)
+		fprintf(r29f, " %04x", (uint32_t)(dm[i] & 0xffffu));
+	fprintf(r29f, " |370:");
+	for (i = 0x370 / 4; i < (0x370 / 4) + 12; i++)
+		fprintf(r29f, " %08x", dm[i]);
+	fprintf(r29f, "\n");
+	fprintf(r29f, "R29IM 000=%08x 004=%08x 080=%08x 160=%08x 170=%08x 178=%08x 1b0=%08x\n",
+	        im[0x000 / 4], im[0x004 / 4], im[0x080 / 4], im[0x160 / 4],
+	        im[0x170 / 4], im[0x178 / 4], im[0x1b0 / 4]);
+	n = r29_seq < R29_RING ? r29_seq : R29_RING;
+	fprintf(r29f, "R29TRACE:");
+	for (i = 0; i < n; i++)
+		fprintf(r29f, " %03x", r29_ring[(r29_seq - n + i) & (R29_RING - 1u)]);
+	fprintf(r29f, "\n");
+	fflush(r29f);
+}
+
 	EXPORT unsigned int CALL DoRspCycles(unsigned int cycles)
 	{
 		/* DD-gate: the core provides a RUNTIME IsDDPresent() query (task

@@ -33,12 +33,18 @@ CP0 = {0: 'SP_MEM_ADDR', 1: 'SP_DRAM_ADDR', 2: 'SP_RD_LEN', 3: 'SP_WR_LEN',
        8: 'DPC_START', 9: 'DPC_END', 10: 'DPC_CURRENT', 11: 'DPC_STATUS',
        12: 'DPC_CLOCK', 13: 'DPC_BUSY', 14: 'DPC_PIPE_BUSY', 15: 'DPC_TMEM'}
 
+# MIPS-I SPECIAL funct map.  NOTE: the arithmetic/bitwise block is 0x20..0x2B
+# (add=0x20 addu=0x21 sub=0x22 subu=0x23 and=0x24 or=0x25 xor=0x26 nor=0x27
+# slt=0x2A sltu=0x2B).  0x1C..0x1F are NOT add/addu/sub/subu -- an earlier
+# revision of this table had them shifted by 4, which printed every `add` as
+# `and` and every `and` as `?`.  Fixed in round 29; re-check any conclusion
+# drawn from this tool before then.
 SPECIAL = ['sll', '?', 'srl', 'sra', 'sllv', '?', 'srlv', 'srav',
            'jr', 'jalr', '?', '?', 'syscall', 'break', '?', 'sync',
            'mfhi', 'mthi', 'mflo', 'mtlo', '?', '?', '?', '?',
-           'mult', 'multu', 'div', 'divu', 'add', 'addu', 'sub', 'subu',
-           'and', 'or', 'xor', 'nor', '?', '?', 'slt', 'sltu',
-           '?', '?', '?', '?', '?', '?', '?', '?',
+           'mult', 'multu', 'div', 'divu', '?', '?', '?', '?',
+           'add', 'addu', 'sub', 'subu', 'and', 'or', 'xor', 'nor',
+           '?', '?', 'slt', 'sltu', '?', '?', '?', '?',
            '?', '?', '?', '?', '?', '?', '?', '?']
 
 REGIMM = {0: 'bltz', 1: 'bgez', 2: 'bltzl', 3: 'bgezl',

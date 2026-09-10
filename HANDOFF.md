@@ -5,9 +5,146 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
-**ROUND 28 — THE FIFO UCODE'S WHOLE DMA SURFACE IS NOW MAPPED, TWO MORE HYPOTHESES ARE
-KILLED WITH MEASUREMENTS, AND THE FAILURE IS RELOCATED *UPSTREAM* OF THE PUBLISH: THE RSP's
-OWN CODE IS OVERWRITTEN WITHIN THE FIRST TEN DISPLAY-LIST FETCHES. BLACK SCREEN UNCHANGED.**
+**ROUND 29 — ROOT CAUSE FOUND AND FIXED: THE F3DEX2 ENTRY'S OVERLAY-DESCRIPTOR FIX-UP RAN
+TWICE, TURNING THE DESCRIPTORS INTO OUT-OF-RANGE ADDRESSES (0x751540 -> 0xEA1B00) SO THE
+UCODE'S OWN OVERLAY LOAD COPIED GARBAGE OVER IMEM. THIS IS THE BLACK SCREEN.**
+
+**1. TOOL BUG FIXED FIRST — round 28's conclusions partly rested on a broken disassembler.**
+`tools/rspdis.py`'s `SPECIAL` funct table was shifted by 4 from 0x1C onward: it printed
+`add` as `and`, `and` as `?`, `or` as `?`, `slt` as `?`. Corrected (0x20 add / 0x21 addu /
+0x22 sub / 0x23 subu / 0x24 and / 0x25 or / 0x26 xor / 0x27 nor / 0x2A slt / 0x2B sltu).
+Two of round 28's claims change: pc 0x140..0x15C really is `add v0,v0,at` (round 25 was
+right), and the segment resolver at pc 0x234 really is `add t8,t8,t3` (round 28 had it as
+`and`). **Any conclusion drawn from rspdis.py before round 29 must be re-checked.**
+
+**2. `lhu` IS BIG-ENDIAN, AND THAT SETTLED THE DESCRIPTOR LAYOUT.** The loader at pc 0xFB4
+reads `lw t8,0(t3)` / `lhu s3,4(t3)` / `lhu s4,6(t3)` and the DMA primitive at pc 0xFD8 uses
+`s4 -> SP_MEM_ADDR`, `s3 -> SP_RD_LEN/SP_WR_LEN` (`bltz s4` selects WRITE). Because `lhu`
+loads the N64 **big-endian** halfword, address +4 yields the word's *high* half and +6 the
+*low* half. So for the descriptor word `0x016F1000` the loader gets **len-1 = 0x016F**
+(0x170 bytes) and **dest = 0x1000** (IMEM 0x000) — exactly right. **The descriptor layout is
+`{u32 src; (len-1)<<16 | dest}`** and every overlay load in the ucode is correct.
+
+**3. THE UCODE IS NOW FULLY DECODED FROM LIVE BYTES** (rspboot + F3DEX2 text, both from
+`r29a/ram.bin`; `pc = RDRAM - 0x750540`):
+* `rspboot` (RDRAM 0x7504F0, 0xD0 B → IMEM 0x000): `j 0x064` → DP_WAIT check → DMA
+  ucode_data (`DMEM[0xFD8]`, size `DMEM[0xFDC]`) to **DMEM 0x000** → `j 0x008` → DMA the
+  text (`DMEM[0xFD0]`, 0xF80 B) to **IMEM 0x080** → `jr a3` (a3 = 0x1080) → **pc 0x080**.
+  Its yield trap at pc 0x03C/0x080 sets SP_STATUS = 0x5200 and `break`.
+* F3DEX2 text entry pc 0x098..0x168: `lw t3,0xF0` / `lw t4,0xFC4` / `beq t3,r0,0x0C0`
+  (cold) / `andi t4,t4,1` / `beq t4,r0,0x12C` / `sw r0,0xFC4` / `j 0x164` + `lw k0,0xBF8`
+  (the libultra **resume** path, which **skips** the fix-up) — then 0x12C **the fix-up**,
+  0x160 `lw k0,0xFF0`, 0x164 `addi t3,r0,0x2E8`, 0x168 `jal 0xFB4` (load overlay B to
+  IMEM 0x000) → pc 0x170.
+* Main loop pc 0x170..0x1B4: fetch 0xA8 bytes from **k0** into DMEM 0x920 (`jal 0xFD8`),
+  `k0 += 0xA8`, then per 8-byte command: `lw t9,0x9C8(k1)`, `sra t4,t9,24`,
+  `lhu t3,0x36E(t3)` (**the command dispatch table, a big-endian u16 table at DMEM 0x36E**),
+  `bne at,r0,0xFAC` (SIG0 → yield), `lw t8,0x9CC(k1)`, **`jr t3`**. A zero table entry
+  dispatches to pc 0.
+* A second DMA caller at pc 0x1B8..0x1CC computes its destination as
+  `(lh DMEM[0x921+k1]) >> 2` — independent confirmation that `s4` is the SP address and `s3`
+  the length.
+
+**4. THE FAILURE, IN ONE EXACT ARITHMETIC IDENTITY.** The entry's fix-up adds the ucode base
+to four descriptors at DMEM 0x2E0/0x2E8/0x410/0x418. Round 28 measured them becoming
+`0x00EA1B00` / `0x00EA1B98`, and
+
+```
+0x751540 + 0x7505C0 == 0xEA1B00        (descriptor A, fixed up TWICE)
+0x7515D8 + 0x7505C0 == 0xEA1B98        (descriptor B, fixed up TWICE)
+```
+
+**Neither value occurs anywhere in the 8 MB RDRAM dump**, so they cannot have been DMA'd in —
+they are the fix-up's own output, applied twice. With the descriptors double-fixed the overlay
+loader reads RDRAM `0xEA1B98`, which is past the end of RDRAM, so the 24-bit mask makes it
+`0x6A1B98` — the 64DD data area — and copies 0x170 bytes of that over **IMEM 0x000..0x16F**,
+destroying the FIFO ucode's own overlay. The RSP then executes data. That is round 28's
+`WILD dir=RD pc=020 dram=00ea1b98 mem=00001000 len=0170`, round 28's "the ucode's state is
+destroyed within ten fetches", round 27's "no write DMA is ever issued", round 22's "the RDP
+is fed zeros", and k0 = 0x152C03C0 being *inherited from the audio ucode* instead of coming
+from `DMEM[0xFF0]` — **all one bug.**
+
+**5. A HYPOTHESIS KILLED ON THE WAY (worth keeping).** Round 28 read `wd_rsp.txt`'s
+`3372 / 3530` gfx slices ENTERing at `pc=0000` with rspboot at IMEM 0 as "the ucode restarts
+every slice". **It does not.** A pc ring added this round (`rsp_enter` → `r29_pc_hook`, DD-
+gated) recorded every JIT block entry for a whole 105 s run: the RSP reaches pc 0 **six**
+times, all of them the *audio* task's legitimate task-start entries. Those 3372 lines are
+`DoRspCycles` calls that read a stale `SP_PC_REG` (and mostly return at the HALT/BROKE check
+without running at all). Artefacts: `.fzxwork/r29a/wd_r29pc.txt` (R29PC/R29DM/R29TBL/R29TRACE)
+and `wd_r29sp.bin` (live IMEM||DMEM).
+
+**6. THE FIX (DD-gated, `parallel.cpp` `r29_unfix_descriptors()`).** At the instant the text
+entry is about to run — the rspboot trampoline's `jr a3` lands on IMEM pc 0x080, which is
+exactly the hook `rsp_enter` already provides — subtract the ucode base from those four
+descriptors until each value is below it. The true value is `offset + k*base` with
+`offset < base` (they are ucode_data offsets; the ucode is 0x1000 bytes), so the loop recovers
+the offset exactly for any number of accidental adds and is a **no-op on a genuine fresh
+load** (0xF80/0x1018/0x1188/0x250 are far below 0x7505C0). It is gated on the ucode's own
+branch (`DMEM[0xF0] == 0` **or** `!(DMEM[0xFC4] & 1)`), i.e. the exact complement of the
+entry's `beq $11,$0,0x0C0` / `beq $12,$0,0x12C` pair, so the libultra resume path — which
+*skips* the fix-up and must keep its already-absolute descriptors — is untouched. Proof of
+fire is `wd_r29fix.txt` (`R29FIX n= base= ...`), written from the same function.
+
+**7. RUN 29b — THE FIX DID NOT FIRE, AND *THAT* FOUND THE REAL ROOT CAUSE.** The un-fix is
+gated exactly as designed and `wd_r29fix.txt` was never written, i.e. at every block entry at
+pc 0x080 the descriptors were already *below* the ucode base — nothing to un-fix. Everything
+else is byte-identical to round 28 (`WR pc=fc` = 0, `R26W wild=` 20479, `R20P ring=0`,
+71226-byte screen). But the run finally produced the sequence that matters, from the existing
+`R25SW`/`hdr`/`dsc`/`dsc2` diagnostic in `wd_watch.txt` (it dumps the header and the
+descriptor slots whenever IMEM flips identity):
+
+```
+R25SW n=1 prev_pc=fd8 pc=fc4  im0=09000419 -> 900100de      <- the gfx task's FIRST entry
+  hdr  00000001 00000004 807504f0 000000d0 007505c0 00001000 00779860 00000800
+       0032e8d0 00000400 002d9cd0 0032dcd0 00284990 00000018 0032dcd0 00000c00
+  dsc  00751540 00971000 007515d8 016f1000 09d00000 09d00040 00e001f0 04200080
+  dsc2 00751748 020712d0 00750810 021f12d0
+R25SW n=2 prev_pc=180 pc=000  im0=900100de -> 340a0fc0      <- the AUDIO task runs
+  hdr  00000002 00000000 80768e60 ...
+  dsc  00010001 00010001 00010001 00010001 00010001 00010001 00010001 00010001
+  dsc2 00010001 020712d0 00010001 021f12d0
+R25SW n=3 prev_pc=08c pc=000  im0=340a0fc0 -> 09000419      <- the gfx task starts again
+  dsc  00010001 ... x8      dsc2 00010001 020712d0 00010001 021f12d0
+R25SW n=4 prev_pc=064 pc=000  im0=09000419 -> 340a0fc0
+  dsc  3543d541 00010001 3543d641 00010001 00010001 ...
+  dsc2 3285b6c1 020712d0 3459cec1 021f12d0
+```
+
+**At n=1 the state is PERFECT** — header `type=1 flags=4 ucode=007505c0 ucode_data=00779860
+size=800`, `data_ptr=00284990`, and the descriptors **correctly fixed up exactly once**
+(`0x751540/0x7515D8/0x751748/0x750810` = base + `0xF80/0x1018/0x1188/0x250`). **At n=2, after
+the audio task has run, every one of those words is the game's own `0x00010001` fill pattern.**
+
+**8. THE ACTUAL ROOT CAUSE: THE AUDIO TASK RUNS WHILE A GFX TASK IS LOADED BUT NOT YET
+STARTED, AND ITS DMEM IMAGE IS THE SAME 4 KiB.** The F3DEX2 overlay descriptors live at DMEM
+0x2E0/0x2E8/0x410/0x418, and the audio ucode owns those words too — the round-25 `R25W` watch
+in the same file shows `im0=340a0fc0` writing DMEM 0x2E0 continuously (`-> 08e00580`,
+`-> 05a003c0`, `-> 059c03c0`, …) and DMEM 0x410/0x418. So by the time the gfx entry reads them
+they hold the audio ucode's junk or the game's `0x00010001` fill instead of the F3DEX2
+ucode_data values (0x00000F80 / 0x00001018 / 0x00001188 / 0x00000250). The overlay loader then
+DMAs from a garbage RDRAM address and copies it over **IMEM 0x000..0x16F**, killing the FIFO
+ucode. Round 28's `WILD dir=RD dram=00ea1b98` is the *second* mutation of the same slot
+(`0x751540 + 0x7505C0`, the fix-up re-applied on a resume); `0x00010001` is the first.
+
+**On real hardware this is impossible**: libultra submits one RSP task at a time — `osSpTaskLoad`
+opens the load window and `osSpTaskStartGo` un-halts the RSP, and the next task cannot be loaded
+until this one yields. This integration's budget-preemption (the forced yield that lets the CPU
+run at all, rounds 9-21) lets the core start an audio task while a gfx task is loaded and
+pending. **So the remaining bug is a task-ownership/scheduling violation, not a ucode or a DMA
+detail** — which is exactly the class of defect the ares model in `/home/garyb/LLM-Projects/phobos/ares/n64`
+does not have, and it is now the single thing left.
+
+**9. ROUND 30 TARGET (one change, decisive).** Re-assert the pending task's `ucode_data` image
+into DMEM before its entry runs, using the same hook that already re-asserts the *header*
+(round 22c's `TaskHeaderLatch` machinery in `rsp_core.c` + the round-16 block in
+`parallel.cpp DoRspCycles`, which already fires on `(*SP_PC_REG & 0xfff) == 0`). Latch the
+0x800-byte `ucode_data` image at task-load time for a `type == 1` task and write it back at
+that slice entry. Accept criteria are the same list as §7 plus: `dsc`/`dsc2` in `wd_watch.txt`
+stay at the n=1 values across later `R25SW` flips. The alternative (and more hardware-faithful)
+shape is to refuse to start task B while task A is loaded-and-pending; either way the invariant
+to restore is **one loaded task owns DMEM 0x000..0x7FF until it is started and finished**.
+
+
 
 **1. THE RSP DISASSEMBLER EXISTS AGAIN.** `tools/rspdis.py <ram.bin> <rdram_off> <len>
 [imem_base]` — integer MIPS-I plus the vector unit, branch/jump targets printed as both the

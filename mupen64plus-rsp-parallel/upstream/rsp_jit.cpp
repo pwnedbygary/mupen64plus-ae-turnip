@@ -357,6 +357,15 @@ extern "C"
 	/* DIAG: freeze heartbeat hook (defined in parallel.cpp). */
 	extern "C" void rsp_watchdog_tick(unsigned pc_lo);
 
+	/* ROUND 29 DIAG (defined in parallel.cpp): pc ring at every JIT block
+	   boundary.  Round 28 measured that 3372 of the gfx task's 3530 DoRspCycles
+	   slices ENTER at pc 0x000 with rspboot resident at IMEM 0, i.e. the whole
+	   task restarts from osSpTaskLoad's state every 2 ms slice and never
+	   progresses past the first display-list fetch.  The ring records the block
+	   pcs leading INTO that restart, which names the instruction that jumped to
+	   pc 0.  DD-gated at the call site. */
+	extern "C" void r29_pc_hook(unsigned pc_lo);
+
 	/* DD gate (defined in parallel.cpp): 1 when the core wired
 	   ForceSynchronize (64DD disk present).  Plain cart games keep
 	   stock behavior: budget never fires, JIT emits no budget checks. */
@@ -557,8 +566,10 @@ extern "C"
 
 	static Func rsp_enter(void *cpu, unsigned pc)
 	{
-		if (rsp_ares_budget_enabled())
+		if (rsp_ares_budget_enabled()) {
+			r29_pc_hook(pc);
 			r25_dmem_watch(cpu, pc);
+		}
 		if (rsp_ares_budget_enabled() && rsp_budget_expired()) {
 			rsp_watchdog_tick(pc);
 			return static_cast<CPU *>(cpu)->get_return_thunk();
