@@ -260,6 +260,183 @@ static void r29_unfix_descriptors(void)
 	}
 }
 
+	/* =======================================================================
+	   ROUND 30 TRACE -- BLOCK-LEVEL EXECUTION TRACE OF THE FIRST GFX TASK.
+	   (DD route only: the only caller sits under rsp_ares_budget_enabled().)
+
+	   ROUND 29 left ONE hard contradiction.  wd_k0.txt / wd_watch.txt agree on
+	   every input the ucode's own entry uses:
+
+	     hdr 00000001 00000004 807504f0 000000d0 007505c0 00001000 00779860 ...
+	          ^type=1   ^flags=4  (OS_TASK_LOADABLE, bit0=0 -> NOT yielded)
+	     DMEM[0xFF0] = 0x00284990  (data_ptr, a VALID 24-byte display list at
+	                                 RDRAM 0x284990: G_MOVEWORD/G_RDPFULLSYNC/
+	                                 G_ENDDL -- verified against the live RDRAM
+	                                 dump), DMEM[0xF0] = 0x0032DCD0 (!= 0),
+	     DMEM[0x2E0]=0x00751540 DMEM[0x2E8]=0x007515D8 (already re-based)
+
+	   The text (ROM 0x61A60 == RDRAM 0x7505C0, disassembled this round) says
+	   that with those inputs the entry MUST execute
+
+	     IMEM 0x0AC andi t4,t4,1 / 0x0B0 beq t4,r0,0x12C   -> WARM
+	     IMEM 0x160 lw   k0,0xFF0(r0)                      -> k0 = 0x00284990
+	     IMEM 0x164 addi t3,r0,0x2E8 / 0x168 jal 0xFB4     -> load overlay B
+	     IMEM 0x170 (the fetch loop)                       -> first fetch at k0
+
+	   and yet the measured first fetch is k0=0x152C03C0 -- a value that exists
+	   in RDRAM at 0x411998/0x411A20/0x411AA8, i.e. inside the AUDIO task's
+	   command list, and that was already in $k0 BEFORE the gfx task ran
+	   (`R25SW n=0 ... sr26=152c03c0`, taken at the boot DMA).  So the ucode
+	   reached the fetch loop without ever loading k0 from DMEM.
+
+	   Only two of the paths into IMEM 0x170 load k0 (0x160 lw k0,0xFF0 and the
+	   yielded resume's delay slot 0x0BC lw k0,0xBF8), and a third one does
+	   not: overlay B's own entry, IMEM 0x000, which is `ori k0,t8,0` +
+	   `j 0x170` -- it CONTINUES the walk at $t8, and in the fetch loop
+	   $t8 = the command's argument word (`lw t8,0x9CC(k1)` at IMEM 0x1AC).
+	   So the trace below logs every block entry (pc + the registers that carry
+	   the walk: k0/k1/t8/t9/at/v0/v1/ra/s3/s4) together with the four DMEM
+	   witnesses, and every RSP-initiated DMA in order, from the instant the
+	   GFX task's header appears in DMEM.  Whatever the answer is, it is in
+	   that interleaving.
+	   ======================================================================= */
+	static unsigned r30_n = 0;
+	static unsigned r30_dma_n = 0;
+	static unsigned r30_170 = 0;
+	static int r30_armed = 0;
+	static int r30_stop = 0;
+	static int r30_im_done = 0;
+
+#define R30_FILE "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/"
+
+	static void r30_line(const char* s)
+	{
+		FILE* f = fopen(R30_FILE "wd_r30tr.txt", "a");
+		if (f == NULL)
+			return;
+		fputs(s, f);
+		fclose(f);
+	}
+
+	extern "C" void r30_pc_hook(unsigned pc_lo)
+	{
+		uint32_t p = pc_lo & 0xfffu;
+		const uint32_t* dm = (const uint32_t*)RSP::rsp.DMEM;
+		const uint32_t* sr;
+		char buf[320];
+		FILE* f;
+
+		if (r30_stop)
+			return;
+		if (!r30_armed)
+		{
+			if (dm[0xfc0 / 4] != 1u || dm[0xfd0 / 4] != 0x007505c0u)
+				return;
+			r30_armed = 1;
+			{
+				FILE* sf = fopen(R30_FILE "wd_r30dm.bin", "wb");
+				if (sf)
+				{
+					fwrite(RSP::rsp.IMEM, 1, 0x1000, sf);
+					fwrite(RSP::rsp.DMEM, 1, 0x1000, sf);
+					fclose(sf);
+				}
+			}
+			f = fopen(R30_FILE "wd_r30tr.txt", "w");
+			if (f)
+			{
+				fprintf(f, "R30ARM fc0=%08x fc4=%08x fd0=%08x fd8=%08x fdc=%08x ff0=%08x "
+				           "bf8=%08x f0=%08x im0=%08x\n",
+				        dm[0xfc0 / 4], dm[0xfc4 / 4], dm[0xfd0 / 4], dm[0xfd8 / 4],
+				        dm[0xfdc / 4], dm[0xff0 / 4], dm[0xbf8 / 4], dm[0x0f0 / 4],
+				        ((const uint32_t*)RSP::rsp.IMEM)[0]);
+				fclose(f);
+			}
+		}
+		/* THE LIVE TEXT.  At freeze, RDRAM 0x7505C0+0x2A0 differs from the ROM
+		   blob this ucode was disassembled from (567/992 words, first at
+		   +0x2A0; the entry at +0x000..+0x0F0 matches), so the live IMEM must
+		   be captured where it can still be read: the instant the fetch loop
+		   runs with overlay B resident (IMEM[0] = 0x900100de).  IMEM
+		   0x080..0x0FF is overlay-code by then, 0x170..0xFFF is the live
+		   text.  Overwritten on every such entry, so the image on disk is the
+		   last one. */
+		if (p == 0x170u && !r30_im_done &&
+		    ((const uint32_t*)RSP::rsp.IMEM)[0] == 0x900100deu)
+		{
+			FILE* sf;
+			r30_im_done = 1;
+			sf = fopen(R30_FILE "wd_r30im.bin", "wb");
+			if (sf)
+			{
+				fwrite(RSP::rsp.IMEM, 1, 0x1000, sf);
+				fwrite(RSP::rsp.DMEM, 1, 0x1000, sf);
+				fclose(sf);
+			}
+		}
+		if (p == 0x170u && ++r30_170 > 40u)
+		{
+			r30_stop = 1;
+			snprintf(buf, sizeof(buf), "R30END n=%u dma=%u\n", r30_n, r30_dma_n);
+			r30_line(buf);
+			return;
+		}
+		if (++r30_n > 6000u)
+		{
+			r30_stop = 1;
+			return;
+		}
+		sr = RSP::cpu.get_state().sr;
+		snprintf(buf, sizeof(buf),
+		         "R30T n=%u pc=%03x k0=%08x k1=%08x t8=%08x t9=%08x at=%08x v0=%08x "
+		         "v1=%08x ra=%08x s3=%08x s4=%08x st=%08x f0=%08x fc4=%08x bf8=%08x "
+		         "ff0=%08x fd0=%08x im0=%08x\n",
+		         r30_n, p, (uint32_t)sr[26], (uint32_t)sr[27], (uint32_t)sr[24],
+		         (uint32_t)sr[25], (uint32_t)sr[1], (uint32_t)sr[2], (uint32_t)sr[3],
+		         (uint32_t)sr[31], (uint32_t)sr[19], (uint32_t)sr[20],
+		         *RSP::rsp.SP_STATUS_REG, dm[0x0f0 / 4], dm[0xfc4 / 4],
+		         dm[0xbf8 / 4], dm[0xff0 / 4], dm[0xfd0 / 4],
+		         ((const uint32_t*)RSP::rsp.IMEM)[0]);
+		r30_line(buf);
+	}
+
+	static void r30_dma_note(RSP::CPUState* rsp, unsigned dir, uint32_t dst, uint32_t src,
+	                         uint32_t len)
+	{
+		char buf[192];
+		if (!r30_armed || r30_stop || r30_dma_n >= 600u)
+			return;
+		r30_dma_n++;
+		snprintf(buf, sizeof(buf), "R30DMA n=%u dir=%s pc=%03x dram=%08x mem=%04x len=%05x\n",
+		         r30_dma_n, dir ? "WR" : "RD", rsp->pc & 0xfffu,
+		         dir ? dst : src, (unsigned)(dir ? src : dst) & 0x1fffu, len);
+		r30_line(buf);
+	}
+
+
+	extern "C" void r30_dma_line(unsigned dir, uint32_t dst, uint32_t src, uint32_t len,
+	                             unsigned pc)
+	{
+		char buf[192];
+		if (!r30_armed || r30_stop || r30_dma_n >= 600u)
+			return;
+		r30_dma_n++;
+		/* The guest registers here are ACCURATE: the JIT flushes its register
+		   window before every mtc0 call into this handler, so $k0/$at/$ra read
+		   post-flush.  This is what localises the round-30 clobber: the F3DEX2
+		   entry loads k0 = DMEM[0xFF0] = 0x284990 at pc 0x160 and the first
+		   fetch (pc 0x174, `ori t8,k0,0`) must use it. */
+		{
+			const uint32_t* srt = RSP::cpu.get_state().sr;
+			snprintf(buf, sizeof(buf),
+			         "R30DMA n=%u dir=%s pc=%03x dram=%08x mem=%04x len=%05x k0=%08x at=%08x ra=%08x t8=%08x\n",
+			         r30_dma_n, dir ? "WR" : "RD", pc, dir ? dst : src,
+			         (unsigned)(dir ? src : dst) & 0x1fffu, len,
+			         (uint32_t)srt[26], (uint32_t)srt[1], (uint32_t)srt[31], (uint32_t)srt[24]);
+		}
+		r30_line(buf);
+	}
+
 extern "C" void r29_pc_hook(unsigned pc_lo)
 {
 	uint32_t p = pc_lo & 0xfffu;

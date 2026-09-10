@@ -366,6 +366,16 @@ extern "C"
 	   pc 0.  DD-gated at the call site. */
 	extern "C" void r29_pc_hook(unsigned pc_lo);
 
+	/* ROUND 30 DIAG (defined in rsp/cp0.cpp): block-level execution trace of the
+	   first gfx task.  Round 29 left a hard contradiction -- every input the
+	   ucode's entry reads is correct (header type=1/flags=4, data_ptr 0x284990
+	   is a real display list, descriptors already re-based) and yet the first
+	   fetch runs with k0 = 0x152C03C0, a value that lives inside the AUDIO
+	   task's command list.  This trace records the pc path and the walk
+	   registers from the instant the gfx header appears, so the path that
+	   reaches IMEM 0x170 without loading k0 from DMEM is visible. */
+	extern "C" void r30_pc_hook(unsigned pc_lo);
+
 	/* DD gate (defined in parallel.cpp): 1 when the core wired
 	   ForceSynchronize (64DD disk present).  Plain cart games keep
 	   stock behavior: budget never fires, JIT emits no budget checks. */
@@ -568,6 +578,7 @@ extern "C"
 	{
 		if (rsp_ares_budget_enabled()) {
 			r29_pc_hook(pc);
+			r30_pc_hook(pc);
 			r25_dmem_watch(cpu, pc);
 		}
 		if (rsp_ares_budget_enabled() && rsp_budget_expired()) {

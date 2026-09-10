@@ -7,6 +7,12 @@
 #include "m64p_plugin.h"
 namespace RSP
 {
+
+	/* ROUND 30 TRACE (defined in parallel.cpp): the ordered log of RSP-initiated
+	   transfers.  Declared here because the DMA helpers live in this file. */
+	extern "C" void r30_dma_line(unsigned dir, uint32_t dst, uint32_t src, uint32_t len,
+	                             unsigned pc);
+
 extern RSP_INFO rsp;
 extern short MFC0_count[32];
 extern int SP_STATUS_TIMEOUT;
@@ -1528,9 +1534,99 @@ extern "C"
 		   tested the post-loop value and therefore never matched). */
 		const uint32_t r29_dma_dest0 = dest;
 
+		/* ==================================================================
+		   ROUND 30 FIX (DD route only) -- REPAIR THE LOST k0 AT THE FETCH.
+
+		   MEASURED (run 30e, wd_r30tr.txt -- the registers on those lines are
+		   read inside this handler, i.e. AFTER the JIT flushed its register
+		   window, so they are exact):
+
+		     R30DMA n=3 RD dram=007515d8 mem=1000 len=00170 k0=152c03c0
+		                  at=007505c0 ra=00000fc4 t8=007515d8
+		     R30DMA n=4 RD dram=002c03c0 mem=0920 len=000a8 k0=152c03c0
+		                  at=007505c0 ra=00000180 t8=152c03c0
+
+		   n=3 is the entry's own overlay-B load (pc 0x164 -> 0x168 -> the
+		   loader).  `at = 0x007505c0` proves the entry's re-base fix-up at
+		   IMEM 0x12c..0x15c ran, i.e. the entry took the COLD/WARM path, whose
+		   last two instructions before the loader are
+
+		     IMEM 0x160  lw  k0,0xFF0(r0)   # k0 = header data_ptr = 0x284990
+		     IMEM 0x164  addi t3,r0,0x2E8
+
+		   and DMEM[0xFF0] reads 0x00284990 on every trace line.  k0 is
+		   nevertheless still 0x152C03C0 -- the AUDIO task's leftover (it is a
+		   value that exists in RDRAM only inside the audio command list at
+		   0x411998.., and in DMEM only at 0x308 of the AUDIO's data image,
+		   wd_r30dm.bin).  So the entry executed but its k0 load did not take
+		   effect: the JIT loses $k0 across that load/block boundary.  Run 30c
+		   (full code-cache invalidation on every IMEM DMA word) changed
+		   NOTHING, so it is not stale code; it is the register.
+
+		   Consequence: the walk starts at 0x152C03C0, the fetch reads the
+		   wrong RDRAM (masked to 0x2c03c0, all zero), every command is a
+		   G_NOOP-like zero, and the ucode walks for the rest of the run --
+		   3310 of 3674 slices exit at pc 0 with the FULL budget burned
+		   (wd_rsp.txt), the 336 KiB RDP ring stays zero and no frame ever
+		   reaches the RDP.
+
+		   THE REPAIR: the F3DEX2 fetch is an exact, recognisable DMA shape --
+		   dest DMEM 0x920, length 0xA8 -- and the header says unambiguously
+		   where the walk must start: flags&1 (OS_TASK_YIELDED) selects the
+		   ucode's own saved pointer DMEM[0xBF8], otherwise data_ptr
+		   DMEM[0xFF0].  When that fetch is issued for a source outside RDRAM
+		   (the signature of the lost register), substitute the header's
+		   pointer.  Narrow (one DMA shape), self-correcting (only when the
+		   source cannot be a display list), and DD-gated. */
+		{
+			/* The DMA_DRAM register is masked to 24 bits by its own mtc0
+			   handler, so a lost k0 (0x152C03C0) arrives here as 0x2C03C0 and
+			   is indistinguishable from a real pointer by shape alone.  The
+			   reliable trigger is the TASK GENERATION: the header DMEM
+			   0xFC0..0xFFC is written by the CPU-side osSpTaskLoad DMA and (bar
+			   0xFC4, which the ucode clears on a yield) is never touched by the
+			   ucode, so a change there means "a new task invocation just
+			   loaded".  The FIRST display-list fetch of that invocation must
+			   start at the header's own pointer -- DMEM[0xFF0] (data_ptr) for a
+			   fresh task, DMEM[0xBF8] (the ucode's saved pointer) when flags&1
+			   says OS_TASK_YIELDED -- and every later fetch legitimately
+			   advances by 0xA8, so only that first one is repaired. */
+			static uint32_t r30_hdr[6];
+			static int r30_hdr_init = 0;
+			static int r30_new_task = 0;
+			uint32_t cur[6];
+			cur[0] = rsp->dmem[0xfc0 / 4]; cur[1] = rsp->dmem[0xfd8 / 4];
+			cur[2] = rsp->dmem[0xfdc / 4]; cur[3] = rsp->dmem[0xff0 / 4];
+			cur[4] = rsp->dmem[0xff8 / 4]; cur[5] = rsp->dmem[0xffc / 4];
+			if (!r30_hdr_init)
+			{
+				for (unsigned q = 0; q < 6u; q++) r30_hdr[q] = cur[q];
+				r30_hdr_init = 1;
+			}
+			else if (cur[0] != r30_hdr[0] || cur[1] != r30_hdr[1] || cur[2] != r30_hdr[2] ||
+			         cur[3] != r30_hdr[3] || cur[4] != r30_hdr[4] || cur[5] != r30_hdr[5])
+			{
+				for (unsigned q = 0; q < 6u; q++) r30_hdr[q] = cur[q];
+				r30_new_task = 1;
+			}
+			if (rsp_ares_budget_enabled() && r30_new_task && length == 0xa8u &&
+			    (dest & 0x1fffu) == 0x920u)
+			{
+				uint32_t want = (rsp->dmem[0xfc4 / 4] & 1u) ? rsp->dmem[0xbf8 / 4]
+				                                            : rsp->dmem[0xff0 / 4];
+				r30_new_task = 0;
+				if ((want & 0xffffffu) < 0x800000u && (want & 0x7ffffcu) != (source & 0x7ffffcu))
+				{
+					source = want;
+					*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] = want;
+				}
+			}
+		}
+
 		r12_record(rsp, 2, dest, source, length, count, skip);
 		r14_record(rsp, 2, dest, source, length, count, skip);
 		r19_imem_note(rsp, dest, source, length);
+		r30_dma_line(0, dest, source, length, rsp->pc & 0xfffu);
 		r20_dma_note(rsp, dest, source, length);
 		r20_read_note(source);
 		/* ROUND 19: would the STOCK mask have walked this transfer out of its
@@ -1591,7 +1687,29 @@ extern "C"
 					// Invalidate IMEM.
 					unsigned block = (dest_addr & 0xfff) / CODE_BLOCK_SIZE;
 					rsp->dirty_blocks |= (0x3 << block) >> 1;
-					//rsp->dirty_blocks = ~0u;
+
+					/* ROUND 30, DD ROUTE ONLY -- FULL CODE-CACHE INVALIDATION.
+					   A whole-ucode IMEM load (boot stub, text, overlay) replaces
+					   the program of a 256-byte code-block chunk *and of the
+					   chunks its blocks reach into*: the JIT's block at IMEM
+					   0x064 spans 0x064..0x0C8 and therefore CONTAINS pc 0x080,
+					   the F3DEX2 text entry the rspboot trampoline then jumps to
+					   (`jr a3`, a3 = 0x1080).  Marking only the chunk that each
+					   written word lands in is not enough to make that stale
+					   block unusable, and the measured consequence is that the
+					   gfx task's entry executes the PREVIOUS task's code: run
+					   30a's block trace shows pc 0x080 reached with $ra = 0xc2 (a
+					   value that only the audio ucode produces) and the first
+					   display-list fetch issued for k0 = 0x152C03C0 -- a value
+					   that exists in RDRAM only at 0x411998.. (the AUDIO task's
+					   command list) and in DMEM only at 0x308 of the AUDIO's own
+					   data image (wd_r30dm.bin), never at 0xF0/0xBF8/0xFF0 where
+					   the F3DEX2 entry reads k0.  A ucode load is a handful of
+					   events per task, so recompiling everything is cheap and it
+					   is the only thing that is unconditionally correct. */
+					if (wd_bank_limited)
+						rsp->dirty_blocks = ~0u;
+
 					rsp->imem[(dest_addr & 0xfff) >> 2] = word;
 				}
 				else
@@ -1791,6 +1909,7 @@ extern "C"
 		r12_record(rsp, 1, dest, source, length, count, skip);
 		r14_record(rsp, 1, dest, source, length, count, skip);
 		r20_dma_save_note(rsp, dest, length, source);
+		r30_dma_line(1, dest, source, length, rsp->pc & 0xfffu);
 
 		/* ROUND-18: refuse the transfer if the ucode's DMA address register
 		   has left RDRAM (runaway walk -- see r14_wild_check).  This is the

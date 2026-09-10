@@ -3670,3 +3670,106 @@ and an unchanged 22-byte `wd_smc.txt`.  Evidence `.fzxwork/r19plain/`.
    `MI_INTR_DP`.
 3. Frame protocol: after (2), `DPC_START` must be `output_buff` (0x2D9CD0) for
    the *first* kick; the 0x32DCD0 first-kick value is the symptom to re-check.
+
+---
+
+# ROUND 30 — THE DD ROUTE'S UCODE IS THE **DISK'S**, NOT THE ROM'S — AND k0 IS LOST IN THE JIT
+
+## 1. The discovery that reframes rounds 20-29: the live ucode comes from the .ndd
+
+`ram.bin` (freeze dump) at RDRAM 0x7505C0 differs from the ROM blob all previous rounds
+disassembled (567/992 words, first mismatch at +0x2A0), but matches **`F-Zero X.ndd` offset
+0xAF88C0 word for word (0/992)** — and the boot stub at 0x7504F0 matches the disk's
+0xAF87F0 (0/52) *and* ROM 0x61990 (they are identical there).  Live IMEM confirms it: a
+one-shot IMEM+DMEM dump taken at the first fetch (`wd_r30im.bin`) is **0/992** different
+from the disk's text at IMEM 0x170..0xFFF and **0/0x5C** from the disk's overlay B at
+IMEM 0x000..0x16F.  So with a disk attached the game runs the **Expansion Kit's patched
+F3DEX2**, and every "the ucode does X" conclusion drawn from ROM 0x61990+ is suspect from
++0x314 (pc 0x394) on.  The whole blob is now extracted and disassembled:
+
+| part | disk offset | RDRAM | IMEM |
+|---|---|---|---|
+| rspboot (0xD0) | 0xAF87F0 | 0x7504F0 | 0x000 |
+| text (0xF80) | 0xAF88C0 | 0x7505C0 | 0x080 |
+| overlay A (0x98) | 0xAF9840 | 0x751540 | 0x000 |
+| overlay B (0x170) | 0xAF98D8 | 0x7515D8 | 0x000 |
+| data segment (0x800) | 0xB21B60 | — | DMEM 0x000 |
+
+Independent confirmation of the data segment: its +0x2E0/0x2E4 = `00000f80 00971000` and
++0x410..+0x41C = `00001188 020712d0 00000250 021f12d0` are exactly the values the live
+DMEM holds at those offsets (`wd_cmd.txt`, `wd_watch.txt` dsc/dsc2).
+
+## 2. The clock, decoded (disk bytes)
+
+    rspboot 0000 `j 0x1064` ; delay slot `addi at,r0,0xFC0`   <- at is set by the DELAY SLOT
+            0064 lw v0,4(at)  (flags) / 006C beq -> 0x08C (skip DPC wait when flags&2==0)
+            08C  DMA DMEM[0xFD8]/[0xFDC] (ucode_data) -> DMEM 0
+            0C4  j 0x008 ; 008 lw v0,16(at) (ucode = text) -> DMA 0xF80 B -> IMEM 0x080
+            034  jr a3 (a3=0x1080) -> the text entry at pc 0x080
+    text    098 lw t3,0xF0 / 09C lw t4,0xFC4 / 0A4 beq t3,r0,0xC0 (COLD)
+            0AC andi t4,t4,1 / 0B0 beq t4,r0,0x12C (WARM) / 0B4 sw r0,0xFC4
+            0B8 j 0x164 ; delay `lw k0,0xBF8`   <- YIELDED RESUME, k0 = the ucode's own saved ptr
+            12C..15C re-base DMEM 0x2E0/0x2E8/0x410/0x418 by DMEM[0xFD0]
+            160 lw k0,0xFF0 (data_ptr)          <- COLD/WARM, k0 = the header's display list
+            164 addi t3,r0,0x2E8 / 168 jal 0xFB4 (load overlay B, 0x170 B -> IMEM 0) / 16C ori t4,ra
+            170..1B4 the fetch loop: DMA 0xA8 B RDRAM[k0] -> DMEM 0x920, k0 += 0xA8,
+                      table dispatch `lhu t3,0x36E(2*opcode)` / `jr t3`, SIG0 -> 0xFAC (yield)
+    text    0FAC the yield handler: t4=0x1000, t3=0x2E0 (overlay A) -> load -> pc 0
+            0FB4 the loader: lw t8,0(t3) / lhu s3,4 / lhu s4,6 / jal 0xFD8 / ori ra,t4
+            0FD8 the DMA primitive: SP_MEM_ADDR=s4, SP_DRAM_ADDR=t8, SP_RD_LEN=s3 (bltz s4 -> WR)
+    dispatch table (data +0x36E) entry for EVERY opcode >= 0xD7 (G_MOVEWORD, G_ENDDL,
+    G_RDPFULLSYNC, ...) is 0x1000 -> pc 0 = overlay B's entry = "k0 = t8, j 0x170", where
+    t8 = the command's own second word (`lw t8,0x9CC(k1)` at 0x1AC).
+
+## 3. The measured root cause: k0 never arrives
+
+Run 30a's block trace (`wd_r30tr.txt`) and, decisively, run 30e's DMA log -- whose register
+columns are read **inside the mtc0 handler, after the JIT flushes its register window**:
+
+    R30DMA n=3 RD dram=007515d8 mem=1000 len=00170 k0=152c03c0 at=007505c0 ra=00000fc4
+    R30DMA n=4 RD dram=002c03c0 mem=0920 len=000a8 k0=152c03c0 at=007505c0 ra=00000180
+
+`at = 0x7505C0` proves the entry ran the re-base fix-up (the COLD/WARM path, whose last
+instructions before the loader are exactly `0x160 lw k0,0xFF0` and `0x164 addi t3,r0,0x2E8`)
+and `DMEM[0xFF0]` reads 0x00284990 on every trace line -- yet k0 is still **0x152C03C0**,
+the AUDIO task's leftover (that value exists in RDRAM only at 0x411998.. inside the audio
+command list and in DMEM only at 0x308 of the AUDIO's data image, `wd_r30dm.bin`).  So the
+entry executes and its k0 load does not take effect: **the JIT loses `$k0` across that
+load/block boundary.**  Run 30c (force a FULL code-cache invalidation on every IMEM DMA
+word -- kept, it is unconditionally correct) changed nothing, so it is the *register*, not
+stale code.  Downstream: the walk starts at 0x152C03C0, every fetch reads RDRAM 0x2C03C0
+(all zero), every command is a zero/G_NOOP, and **3310 of 3674 slices exit at pc 0 with the
+full 20480-unit budget burned** (`wd_rsp.txt`), the 336 KiB ring stays zero and no frame
+ever reaches the RDP.
+
+## 4. The fix (DD route only, cp0.cpp `rsp_dma_read`)
+
+The display-list fetch is an exactly recognisable DMA shape (dest DMEM 0x920, length 0xA8)
+and the header says unambiguously where the walk must start: `flags&1` (OS_TASK_YIELDED)
+selects the ucode's own DMEM[0xBF8], otherwise `data_ptr` DMEM[0xFF0].  A change in DMEM
+0xFC0..0xFFC (written only by the CPU-side osSpTaskLoad DMA) marks a new task invocation;
+the **first** matching fetch of that invocation is re-pointed at the header's pointer;
+later fetches legitimately advance by 0xA8 and are never touched.
+
+MEASURED (run 30g, same ROM, same 105 s):
+
+| metric | r30a (before) | **r30g (with the repair)** |
+|---|---|---|
+| first fetch source | 0x2C03C0 (junk) | **0x284990 -- the real display list** |
+| `dir=WR` DMA lines in the first task | 0 | **229** |
+| first write into the RDP ring | none | **0x2D9CD0** |
+| ring 0x2D9CD0..0x32DCD0 | all zero | **`00 00 00 e9 d2 ff d2 ff` = G_RDPFULLSYNC + pointers** |
+| `grep -c 'WR pc=fc' wd_dmatr.txt` | 0/1 | **2** |
+| screen | 71226 B | 71272 B (still ~black) |
+
+## 5. What is still broken (round 31)
+
+The gfx walk now starts correctly but ends almost immediately: the very next transfers are
+overlay A (the SIG0 yield handler) and then the *audio* task's ucode_data (0x794E90) and
+command list (0x411910) -- i.e. the task yields after ~one command, so the ring gets one
+command and the frame protocol still never completes.  Next: (a) count how many DL commands
+are consumed before the SIG0 yield and whether it is the host's SIG0 request or the ucode's
+own `g_ENDDL` that ends the walk; (b) confirm that the G_ENDDL/link entries in the dispatch
+table really are the "continue at t8" primitive for the *disk* ucode (they may be patched
+at runtime by the game's ucode-patch table, which would change the whole picture);
+(c) `wd_watch.txt`/`wd_cmd.txt` again for DPC_START/END once real commands reach the ring.
