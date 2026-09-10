@@ -148,14 +148,36 @@ is now razor-sharp: **who writes `DMEM 0xFF0` (or `0xBF8`) with the audio ucode'
 gfx header DMA and the gfx entry logic's `lw $26`, given that both ends are outside the window
 §4 guards?**  (a) Put the CPU-side header DMA into the *same* log as the DMEM watch — one line
 per header load carrying the words it wrote (0xFC0/0xFC4/0xFD0/0xFF0/0xFF8) — and log every
-change of 0xFF0/0xBF8/0xFD0 with the live ucode id (`IMEM[0]`), `$26` and the block pc.  The
-audio-filtered $26 watch already exists (`wd_k0.txt`); this adds the writer's identity to it.
-(b) Then test the targeted fix the measurements point at: **re-assert the 64 header bytes into
-DMEM from the header latch the core already takes at task-load time (round 22c,
-`RSP_INFO.TaskHeaderLatch`) when the guest starts a task** — hardware gets that invariant for
-free, and it is exactly what makes the incoming ucode immune to whatever the outgoing one
-scribbled.  (c) Keep the §4 guard and re-check the plain-cart baseline (`emumode=1`, Mario
-Tennis) after the change.
+change of 0xFF0/0xBF8/0xFD0/0xFC4 with the live ucode id (`IMEM[0]`), `$26` and the block pc.
+**The existing `R25W` watch already covers those words but its budget was eaten by the audio
+ucode's scratch writes (it fills 400 lines in the first seconds), so it must be filtered exactly
+like `R25K0` is: skip while `IMEM[0] == 0x340a0fc0`.**  (b) Then test the targeted fix the
+measurements point at: **re-assert the 64 header bytes into DMEM from the header latch the core
+already takes at task-load time (round 22c, `RSP_INFO.TaskHeaderLatch`) when the guest starts a
+task** — hardware gets that invariant for free, and it is exactly what makes the incoming ucode
+immune to whatever the outgoing one scribbled.  (c) Keep the §4 guard and re-check the
+plain-cart baseline (`emumode=1`, Mario Tennis) after the change.
+
+**6. THE ONE CONTRADICTION TO RESOLVE FIRST (do not skip it).** The k0 log's first gfx-live line
+says `fc4=00000004` (flags = OS_TASK_LOADABLE, YIELDED **clear**), the entry logic's 0x12C
+fix-up provably ran (`$2 = 0x751540` — though inheritance cannot be excluded here, because the
+*register file persists across tasks* in this emulator), and `ff0 = 0x00284990` both immediately
+before and immediately after — yet `$26 = 0x152C03C0`.  `lw $26,0xFF0($0)` at IMEM 0x160 cannot
+produce that.  Two readings survive, and one measurement separates them:
+
+* *Reading A (the code is not what r22a says).* Ruled **out for IMEM ≥ 0x170**: the live IMEM in
+  `r25c/wd_bad1.txt` matches r22a's text word for word at 0x180, 0x1C0 and 0x200.  IMEM
+  0x160..0x16F is shadowed by overlay B at that dump's instant, so it is *not* yet verified —
+  dump the live IMEM at the text load (`r19_imem_note` already fires there; add the window
+  0x080..0x200) and compare.
+* *Reading B (the entry ran before the header DMA).* Then flags/`data_ptr` in DMEM were still
+  the outgoing task's when `0x09C`/`0x160` read them, and the guest's header DMA landed right
+  after — which is exactly what `fc4 = 4` and `ff0 = 0x284990` (both *fresh* values) would look
+  like afterwards.  This is the same class of race §4 guards, one step earlier: **the RSP
+  starting at all before `osSpTaskLoad` has finished.**  The discriminator is the *time order*
+  of the header DMA against the first gfx-live block: log the header DMA (with the 8 header
+  words it wrote) into the same file as the `R25W`/`R25K0` watches and read the interleaving
+  off one file.
 
 **ROUND 24 — ROUND 23's "ROOT CAUSE" IS RETRACTED. The IMEM image is not corrupt; it is a
 deliberate swap cycle. The real lead is that the ucode reloads its own text from an OSTask
