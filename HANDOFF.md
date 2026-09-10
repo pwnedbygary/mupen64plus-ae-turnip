@@ -1019,3 +1019,153 @@ to fb0 after the `osViSwapBuffer(gFrameBuffers[1])`, so the two waits fight.
 The next step is to instrument `osViSwapBuffer`/`__osViSwapContext`
 (DD-gated: log guest pc, the requested framep and the resulting
 `__osViCurr->framep`) and see which thread wins.
+
+---
+
+## UPDATE 2026-09-10 (goal round 10) — **the RDP/DP interrupt now fires; the DD loading bar COMPLETES**
+
+Commit: `217490766` (rsp+dd: deliver the RDP (DP) interrupt on the 64DD route).
+
+### 1. The whole post-load stall was the EK's DP-interrupt frame protocol
+
+The Expansion Kit's frame loop is (`src/sys/sys_gfx.c`):
+
+```c
+void func_80067D64(void) {
+    osRecvMesg(&D_800DCAB0, &D_800DCD10, OS_MESG_BLOCK);   /* 0x29 token from VI */
+    ... build display list ...  Gfx_FullSync();
+    osRecvMesg(&D_800DCAC8, &D_800DCD10, OS_MESG_BLOCK);   /* waits for 0x2A  */
+    while (osDpGetStatus() & (DMA|CMD|PIPE|TMEM_BUSY)) {}
+    osViSwapBuffer(gFrameBuffers[D_800DCD00]);
+    while (osViGetCurrentFramebuffer() != gFrameBuffers[D_800DCD00]) {}
+    Gfx_SetTask(sGfxTask);                                  /* next gfx task  */
+}
+```
+
+and `D_800DCAC8` is written **only** by `Main_ThreadEntry`'s
+`EVENT_MESG_DP` case — i.e. only by a real `MI_INTR_DP`. Two independent
+pieces of evidence pinned the hang to that interrupt:
+
+* `wd_stall.txt`: `raise_bits ... DP=0` for a **whole run** (SP=193, VI=2945,
+  PI=12220 all fired);
+* the guest's message variable `D_800DCD10` (`0x8079A370`) still held **0x29**
+  — the last `D_800DCAB0` handoff — so the gfx thread had never completed the
+  `D_800DCAC8` receive.
+
+Where `MI_INTR_DP` comes from: `parallel_rdp` raises it itself
+(`mupen64plus-video-parallel/upstream/parallel_imp.cpp`:
+`*gfx.MI_INTR_REG |= DP_INTERRUPT` when it reaches the guest's `gDPFullSync`),
+and it is reached from the RSP's `mtc0 CMD_END` → `ProcessRdpList()` —
+`PARALLEL_INTEGRATION` **is** defined for this build
+(`upstream/CMakeLists.txt:11`), so that path is live.  The core then has to
+turn the bit into a CP0 event; it only did so inside one branch.
+
+### 2. The three DD-gated defects fixed
+
+1. **DP consumption was unreachable for a sliced task.**  The stock
+   consumption in `do_SP_Task` sits INSIDE `if (sp->mem[0xfc0/4] == 1)`, and
+   that branch is chosen from `DMEM[0xFC0]` at **entry** — but F3DEX clobbers
+   the task header as soon as it runs.  Harmless on the plain route (one
+   `DoRspCycles` call runs the task to completion, so the branch that entered
+   is the one that sees the kick); fatal on the 64DD route, where the task is
+   executed in bounded slices fed by `rsp_dd_background_pump()`: the slice that
+   finally reaches `DPC_END` reads a clobbered `0xFC0` and takes the
+   audio/other branch, leaving `MI_INTR_DP` set and never turned into a
+   `add_interrupt_event(DP_INT)` event.  → consume it after the branch
+   dispatch (no-op when the gfx branch already handled it).
+
+2. **A forced handover never acknowledged a pending libultra YIELD.**
+   `osSpTaskYield()` asks with SIG0 (`SP_STATUS_YIELD`) and
+   `osSpTaskYielded()` reports `OS_TASK_YIELDED` only when the ucode answers
+   with SIG1 (`SP_STATUS_YIELDED`).  The DD force-yield in
+   `rsp_status_read` (cp0.cpp) set `INTR_BREAK|HALT` + irq but never SIG1, so
+   `osSpTaskYielded()` returned 0, the game never set `sGfxTaskYielded`, never
+   called `Sched_SpTaskResumeGfx()`, and the interrupted GFX task was
+   **abandoned** (measured in round 8: 193 audio task entries vs 28 gfx).
+   → set SIG1 when SIG0 is pending, as real F3DEX2 does at its yield point.
+
+3. **Defensive: re-publish the RSP memory base when a session MOVED it.**
+   The RSP plugin is handed host pointers once (`RSP_INFO` at
+   `plugin_start_rsp`) and keeps them for the process lifetime; the register
+   pointers stay valid (they point into `g_dev`, a static global) but the
+   memory base comes from `init_mem_base()` in `CoreStartup` and is
+   per-session.  A second session in the same process would leave the plugin
+   on the previous session's buffer — silently (`SP_STATUS` reads live, DMEM
+   0xFC0 reads 0, IMEM reads all-zero).  New
+   `plugin_refresh_rsp_memory_if_moved()` (called after `init_device`,
+   self-gating: it acts only when the base moved, so plain carts take the
+   early return).  **A pointer probe proved it does NOT fire on the current
+   64DD flow** — `pimem=0x7930581000 pdmem=0x7930580000 pram=0x792c580000`
+   matched the `plugin_start_rsp` log exactly and `cur_dmem == published`, i.e.
+   the plugin's memory was correct all along and the "all-zero IMEM" seen in
+   the RSPTASK log was simply the **background pump re-entering `do_SP_Task`
+   with no task loaded** (`ttype=0`, empty IMEM).  Kept as a safety net.
+
+### 3. Measured effect (FZX+EK, emumode=2, parallel-RDP Vulkan, RP6)
+
+| | round 9 | round 10 |
+|---|---|---|
+| `raise_bits DP` | **0** | **≥1 (first DP interrupt ever)** |
+| DD LOADING bar | 6.5/8 | **complete, then cleared** |
+| guest `viCurr/viNext.framep` | `801d9800` (fb[0]) | `80200000` (**fb[1]**) |
+| SP DMAs | 42 | 264 |
+| task header loads | 21 | 132 |
+| SP interrupts | 193 | 210 |
+| gfx task entries | 0–28 | 7 (with valid F3DEX IMEM) |
+| audio task entries | 193 | 208 |
+
+The bar completing and clearing is the visible milestone of this round:
+the DD LOADING screen finished.
+
+### 4. Remaining blocker — only ONE DP interrupt per run
+
+The EK's frame protocol still stalls after a single frame: the gfx thread is
+back in `osRecvMesg(&D_800DCAC8)` (its `D_800DCD10` is still `0x29`, and
+`__osViNext->framep` is untouched at fb[1], so it never reached the
+`osViSwapBuffer` wait).  The run queue is EMPTY with the prio-0 idle thread at
+`0x806f32ec` (`b .`, `sys_main+0xa8c` = `Idle_ThreadEntry` after
+`osSetThreadPri(NULL, OS_PRIORITY_IDLE)`); Main_ThreadEntry is prio 99 and
+waiting normally on `gMainThreadMesgQueue` (`0x8079A120`), VI still 60/s.
+
+Bootstrap analysis: a gfx task is started only by
+`Sched_SpTaskClearStartGfx()` (from `EVENT_MESG_GFX_TASK_SET`, which
+`Gfx_SetTask` sends) or by `Sched_SpTaskResumeGfx()` (from `sGfxTaskYielded`,
+set only by a successful `osSpTaskYielded()`).  `Gfx_SetTask` is the LAST line
+of `func_80067D64`, past the DP wait — so the loop is closed by the DP
+interrupt, which is why one DP bootstrap ran and then stopped.
+
+**Prime suspect for the next round:** `Sched_SpTaskResumeGfx()` calls
+`osSpTaskStart(gCurGfxTask)` = `osSpTaskLoad` + `osSpTaskStartGo`, i.e. the gfx
+task **restarts**, and it only continues rather than restarts if the ucode
+actually saved its yield state through the `yield_data` protocol.  Our
+force-yield at the SP_STATUS poll is a *fabricated* handover — the ucode never
+runs its own yield sequence — so each resume may restart the display list from
+the beginning, and the task then never reaches `gDPFullSync` (only 1 of the 7
+gfx entries produced a DP).  The DD-gated experiment to run: make that
+force-yield **transparent** like the round-9 budget yield (exit `DoRspCycles`
+without setting `INTR_BREAK|HALT` and without raising the irq, letting
+`rsp_dd_background_pump()` resume the RSP exactly where it stopped and letting
+the CPU service pending DMA/interrupts in between) and see whether DP reaches
+~60/s and the frame loop starts turning.
+
+Secondary instrument still worth adding: log `DPC_START/END/CURRENT` at the
+RSP's `mtc0 CMD_END` and at `write_dpc_regs` — `parallel_imp.cpp` bails out of
+`processRDPList` entirely when `DP_END > 0x7ffffff || DP_CURRENT > 0x7ffffff`
+(physical-address expectation), which would also suppress every `SyncFull`.
+
+### 5. Plain-cart regression — VERIFIED CLEAN (round 10)
+
+Mario Kart 64 Amped Up v3.21, emumode=1 baseline: renders the "ARE YOU PLAYING
+ON A REAL N64 CONSOLE?" screen at **60 FPS**, and the files dir contains only
+the harmless 22-byte `wd_smc.txt` — no `wd_stall`/`wd_freeze`/`wd_crash`, i.e.
+every DD path (including the new DP consumption and the SIG1 yield ack) stays
+inert.  Evidence: `.fzxwork/r10/plain_mk64.png`.
+
+### 6. Evidence (round 10)
+
+`.fzxwork/r10/`: `run60.png` (bar present, near full), `now2.png`/`late1.png`
+**(bar gone)**, `plain_mk64.png`, `stall_run1.txt` (DP=0 baseline),
+`stall_run3.txt` (**DP=1**), `spw_run1.txt` (last write = `osSpTaskYield`
+0x400), `spw_*.txt`, `rsp_run1.txt`, `rsp_run3.txt` (ttype histogram:
+5267×0x10001, 208×2, 7×1), `ram_run3.bin` (guest thread/queue state),
+`dma_run1.txt` (the 21 repeated audio loads).
