@@ -60,3 +60,6 @@ tx.exe
 # Release signing
 keystore.properties
 *.keystore
+
+# Local bring-up scratch (dumps, traces, disassembly helpers) - never commit
+.fzxwork/
