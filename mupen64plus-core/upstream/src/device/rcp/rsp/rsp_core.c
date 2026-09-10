@@ -117,6 +117,16 @@ uint32_t wd_rdp_ring[16][6];
 volatile uint32_t wd_rdp_first_n = 0;
 uint32_t wd_rdp_first[16][6];
 
+/* ROUND 25, 64DD ROUTE ONLY.  How often the guest took the RSP over for a
+   task load (__osSpSetPc(SP_IMEM_START)), and how many background-pump slices
+   were refused because of it.  Printed by the watchdog so one device run
+   proves the guard engaged (a plain cart never touches either counter).
+   `wd_pump_call` marks the slices the pump itself issues, so do_SP_Task can
+   tell "the guest is starting a task" from "we are feeding the RSP behind the
+   guest's back". */
+volatile uint32_t wd_c_loadguard_set = 0, wd_c_loadguard_skip = 0;
+static int wd_pump_call = 0;
+
 /* ROUND 11 DD DIAG: CPU writes into SP memory (write_rsp_mem), counted and
    latched in memory only; and the first moment the RSP's IMEM is observed to
    hold the game's cleared-buffer fill pattern.  All of it is printed by the
@@ -503,6 +513,18 @@ static void update_sp_status(struct rsp_core* sp, uint32_t w)
     if (w & 0x1) sp->regs[SP_STATUS_REG] &= ~SP_STATUS_HALT;
     if (w & 0x2) sp->regs[SP_STATUS_REG] |= SP_STATUS_HALT;
 
+    /* ROUND 25, 64DD ROUTE ONLY: clearing HALT is what libultra's
+       osSpTaskStartGo() does (SP_SET_INTR_BREAK|SP_CLR_SSTEP|SP_CLR_BROKE|
+       SP_CLR_HALT), so it ends the task-load window opened by
+       __osSpSetPc(SP_IMEM_START) -- clear the guard here as well as in
+       do_SP_Task, because the early returns below (a locked task with an
+       SP_INT event already queued) can skip do_SP_Task entirely and the flag
+       would then only expire on the pump's 250 ms backstop.  The guest has
+       finished loading either way: whoever runs the RSP next is running the
+       task the guest just started. */
+    if ((w & 0x1) && g_dev.dd.idisk != NULL)
+        sp->rsp_task_load_pending = 0;
+
     /* clear broke */
     if (w & 0x4) sp->regs[SP_STATUS_REG] &= ~SP_STATUS_BROKE;
 
@@ -585,6 +607,8 @@ void poweron_rsp(struct rsp_core* sp)
     memset(sp->fifo, 0, SP_DMA_FIFO_SIZE*sizeof(struct sp_dma));
 
     sp->rsp_task_locked = 0;
+    sp->rsp_task_load_pending = 0;   /* ROUND 25 task-load guard */
+    sp->rsp_task_load_since_ms = 0;
     sp->mi->r4300->cp0.interrupt_unsafe_state &= ~INTR_UNSAFE_RSP;
     sp->regs[SP_STATUS_REG] = 1;
 }
@@ -717,6 +741,61 @@ void write_rsp_regs2(void* opaque, uint32_t address, uint32_t value, uint32_t ma
     uint32_t reg = rsp_reg2(address);
 
     masked_write(&sp->regs2[reg], value, mask);
+
+    /* ROUND 25, 64DD ROUTE ONLY — the guest is loading a task, so the RSP is
+       NOT ours to run until the guest starts it.
+
+       libultra's osSpTaskLoad() (decomp src/libultra/io/sptask.c, read this
+       round) is, in order:
+
+           __osSpSetStatus(SP_CLR_YIELD|SP_CLR_YIELDED|SP_CLR_TASKDONE|SP_SET_INTR_BREAK);
+           while (__osSpSetPc(SP_IMEM_START) == -1) {}          <-- HALT must be set
+           while (__osSpRawStartDma(1, SP_IMEM_START - 0x40, tp, 0x40) == -1) {}  <-- header -> DMEM 0xFC0
+           while (__osSpDeviceBusy()) {}
+           while (__osSpRawStartDma(1, SP_IMEM_START, tp->t.ucode_boot, ...) == -1) {} <-- boot ucode -> IMEM 0x000
+
+       and osSpTaskStartGo() only then writes SP_STATUS to start it.  In that
+       window the *outgoing* ucode must not execute: on hardware it cannot
+       (the RSP is halted and its PC was just set), but rsp_dd_background_pump()
+       below clears SP_STATUS_HALT unconditionally and calls do_SP_Task -- so
+       between the boot-ucode DMA and StartGo the previous ucode was free to
+       run with IMEM 0x000 already replaced by the boot ucode, i.e. to execute
+       rspboot's bytes with its own pc and registers, and to keep rewriting
+       DMEM 0xFC0..0xFFF (measured this round: the audio ucode at 0x768E60
+       owns DMEM 0x2E0/0xFD0/0xFF0 as scratch while it runs).
+
+       Both consequences are exactly the failures this session has chased:
+
+         * rspboot reads the ucode base from DMEM 0xFD0 (IMEM 008 `lw $2,16($1)`)
+           and loads the text from it -- a clobbered 0xFD0 is the measured
+           `R19IMEM n=5 dst=1080 src=6f0000`;
+         * a yielded task's base comes from the GUEST side too:
+           osSpTaskLoad does, for flags&OS_TASK_YIELDED,
+               t.ucode_data = t.yield_data_ptr;
+               t.ucode = IO_READ(yield_data_ptr + OS_YIELD_DATA_SIZE - 4);
+           i.e. from the LAST WORD of the yield buffer, which the ucode's own
+           yield handler wrote from DMEM 0xBFC -- which it had loaded from
+           DMEM 0xFD0.  A clobbered header therefore poisons the yield buffer
+           and every later resume, permanently (the round-18 runaway DMA).
+
+       Setting the flag here is safe: SP_PC_REG is only ever written through
+       this handler by the guest (do_SP_Task pokes regs2[SP_PC_REG] directly,
+       and savestates write the field), and the only guest means of writing
+       0x1000|0 is __osSpSetPc(SP_IMEM_START).  Plain carts never set it:
+       g_dev.dd.idisk is NULL off the DD route. */
+    if (reg == SP_PC_REG && g_dev.dd.idisk != NULL && (sp->regs2[reg] & 0x1fffu) == 0x1000u)
+    {
+        if (!sp->rsp_task_load_pending)
+        {
+            extern volatile uint32_t wd_c_loadguard_set;
+            struct timespec now;
+            wd_c_loadguard_set++;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            sp->rsp_task_load_since_ms =
+                (uint64_t)now.tv_sec * 1000ull + (uint64_t)(now.tv_nsec / 1000000);
+        }
+        sp->rsp_task_load_pending = 1;
+    }
 }
 
 extern volatile uint32_t wd_c_do_sp_task;
@@ -725,6 +804,29 @@ extern volatile uint32_t wd_c_sp_int_evt;
 void do_SP_Task(struct rsp_core* sp)
 {
     if (g_dev.dd.idisk != NULL) wd_c_do_sp_task++;
+
+    /* ROUND 25, 64DD ROUTE ONLY — enforce the task-load window (see
+       write_rsp_regs2 above for the whole argument).
+
+       * Called by the background pump while the guest is mid-osSpTaskLoad:
+         the RSP is the guest's until StartGo, so refuse the slice outright and
+         leave SP_STATUS.HALT alone (the guest's `while (__osSpSetPc(...) == -1)`
+         loop depends on it).
+       * Called by the guest (update_sp_status, i.e. osSpTaskStartGo or an SP
+         handler ack): the load is over, clear the flag and run normally.
+
+       The pump's caller has already checked the flag, so the refusal here is
+       belt-and-braces for the one path that does not go through it. */
+    if (g_dev.dd.idisk != NULL)
+    {
+        if (wd_pump_call && sp->rsp_task_load_pending)
+        {
+            wd_c_loadguard_skip++;
+            return;
+        }
+        sp->rsp_task_load_pending = 0;
+    }
+
     if (g_dev.dd.idisk != NULL)
     {
         /* ROUND 13: which task type the core *thinks* it is running.  The
@@ -1019,6 +1121,36 @@ void rsp_dd_background_pump(void)
     wd_check_imem_sane(&g_dev.sp);
     if (!g_dev.sp.rsp_task_locked) return;            /* no task in flight   */
     if (g_dev.sp.regs[SP_STATUS_REG] & SP_STATUS_BROKE) return;
+
+    /* ROUND 25, 64DD ROUTE ONLY — THE TASK-LOAD WINDOW IS THE GUEST'S.
+
+       While the guest is inside osSpTaskLoad() the RSP must not run: the guest
+       has already DMAd the new boot ucode over IMEM 0x000 and the new OSTask
+       header over DMEM 0xFC0, and its `while (__osSpSetPc(SP_IMEM_START) == -1)`
+       loop depends on HALT staying set.  Running the *outgoing* ucode here
+       (which is what clearing HALT unconditionally below did) executes the
+       freshly written boot ucode's bytes with the old ucode's pc and registers
+       and lets it keep rewriting the new task's header -- see write_rsp_regs2
+       for the two measured consequences (rspboot loading the text from a
+       clobbered DMEM 0xFD0; the yield buffer's last word, which IS the resumed
+       task's ucode base, being saved from that same word).
+
+       The 250 ms backstop means a flag lost to an unusual guest sequence can
+       never stall the route -- worst case this behaves exactly as before. */
+    if (g_dev.sp.rsp_task_load_pending)
+    {
+        struct timespec ls;
+        uint64_t now_ms;
+        clock_gettime(CLOCK_MONOTONIC, &ls);
+        now_ms = (uint64_t)ls.tv_sec * 1000ull + (uint64_t)(ls.tv_nsec / 1000000);
+        if (now_ms - g_dev.sp.rsp_task_load_since_ms < 250ull)
+        {
+            wd_c_loadguard_skip++;
+            return;
+        }
+        g_dev.sp.rsp_task_load_pending = 0;
+    }
+
     /* ROUND 13: a task that do_SP_Task left suspended (HALT set, not BROKE,
        still locked) is resumable -- that HALT is what keeps the guest's
        osSpTaskLoad() from deadlocking.  Clear it for this slice only: the
@@ -1037,7 +1169,9 @@ void rsp_dd_background_pump(void)
     cp0_regs = r4300_cp0_regs(&g_dev.r4300.cp0);
     cp0_update_count(&g_dev.r4300);
     if (cp0_regs[CP0_COUNT_REG] != 0) { /* keep the compiler honest */ }
+    wd_pump_call = 1;
     do_SP_Task(&g_dev.sp);
+    wd_pump_call = 0;
 }
 
 void rsp_interrupt_event(void* opaque)

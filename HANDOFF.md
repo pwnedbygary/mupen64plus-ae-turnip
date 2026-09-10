@@ -5,6 +5,158 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 25 — THE UCODE LAYOUT IS NOW GROUND TRUTH (rspboot decoded, the descriptor mechanism
+proved on-device), AND THE FAILURE IS PINNED TO ONE NUMBER: the gfx walk runs with
+`k0 = 0x152C03C0`, which is the AUDIO ucode's display-list pointer, while the header's
+`data_ptr` reads `0x00284990` in the very same transfers.** Round 24's retraction of round 23's
+rspboot decode is itself withdrawn: **rspboot IS at RDRAM 0x7504F0, 0xD0 bytes** — the live
+OSTask header in DMEM says so (`ucode_boot = 0x807504F0`, `size = 0xD0`) and the CPU-side DMA
+trace shows `dram=007504f0` being loaded to IMEM 0x000 for exactly the two gfx tasks.
+
+**1. THE UCODE, DECODED FROM ONE RUN'S RDRAM (r22a) AND THEN VERIFIED ON-DEVICE (r25a/r25c).**
+
+```
+rspboot    RDRAM 0x7504F0, 0xD0 B, loaded to IMEM 0x000 by osSpTaskLoad
+  000  j 0x064                  (+ delay 004: $1 = 0xFC0 = the OSTask header base)
+  008  lw  $2,16($1)            $2 = DMEM[0xFD0] = t.ucode
+  00C  addi $3,$0,0xF7F         len-1 = 0xF80 = the text size
+  010  addi $7,$0,0x1080        SP_MEM_ADDR = IMEM 0x080
+  014..01C  DMA t.ucode -> IMEM 0x080, 0xF80 bytes
+  034  jr $7                    -> PC 0x080 = the F3DEX2 text entry
+  064  lw $2,4($1) / andi 2     t.flags & OS_TASK_DP_WAIT -> drain the DPC pipe
+  08C  lw $2,24($1) / 090 lw $3,28($1)   t.ucode_data / t.ucode_data_size
+  0A4..0AC  DMA ucode_data -> DMEM 0x000
+  0C4  j 0x002                  -> falls into 008 (the text load)
+text       RDRAM 0x7505C0, 0xF80 B -> IMEM 0x080..0xFFF
+  098  lw $11,0xF0($0) / 09C lw $12,0xFC4($0)
+  0A4  beq $11,$0,0x0C0         FIFO ptr == 0 -> the RDP-state block at 0x0C0
+  0AC  andi $12,$12,1 / 0B0 beq $12,$0,0x12C   YIELDED clear -> 0x12C
+  0B4  sw $0,0xFC4($0) / 0B8 j 0x164 / 0BC lw $26,0xBF8($0)   resumed: k0 = saved k0
+  0C0..0x128  (the $11==0 path) mfc0 DPC_*; 10C lw $2,0xFEC (header output_buff);
+              110/114 mtc0 DPC_START/END; 118 sw $2,0xF0 (the FIFO ptr);
+              124 lw $11,0xFE0 (dram_stack); 128 sw $11,0xF4; then falls into 0x12C
+  12C  lw $1,0xFD0($0)          $1 = the ucode base
+  130..13C  lw $2,0x2E0 / $3,0x2E8 / $4,0x410 / $5,0x418
+  140..15C  each += $1 and stored back   <- the overlay descriptors become ABSOLUTE
+  160  lw $26,0xFF0($0)         k0 = t.data_ptr      <- THE POINTER THE WALK USES
+  164  addi $11,$0,0x2E8 / 168 jal 0xFB4 (+ delay 16C ori $12,$31,0)
+  FAC/0xFB4  the loader: lw $24,0($11) / lhu $19,4($11) / lhu $20,6($11)
+             = the descriptor {u32 src; u16 len-1; u16 dest}; DMAs it; 0xFAC enters it
+             (via $12 = 0x1000 -> jr -> IMEM 0x000), 0xFB4 returns to $12 (= 0x170)
+  170  addi $19,$0,167 / 174 ori $24,$26,0 / 178 jal 0xFD8 (DMA) / 17C addiu $20,$0,0x920
+  180  addiu $26,$26,168        <- the main display-list loop
+overlays   A: RDRAM 0x751540, 0x98 B   B: RDRAM 0x7515D8, 0x170 B
+           both are loaded over IMEM 0x000.. (A also does, at IMEM 0x02C/0x030,
+           `sw $26,0xFF0($0)` and `sw $24,0xFD0($0)` -- the ucode REWRITES the header's
+           data_ptr/ucode fields when it swaps itself)
+```
+
+**The descriptors live in the ucode DATA segment** (r22a: RDRAM 0x779860, 0x800 B, DMA'd to DMEM
+0x000 by rspboot) at **+0x2E0 = {00000F80, 00971000}**, **+0x2E8 = {00001018, 016F1000}**,
+**+0x410 = {00001188, 020712D0}**, **+0x418 = {00000250, 021F12D0}** — i.e. `{t.ucode offset,
+(len-1)<<0 | dest<<16}`.  On-device confirmation (`r25c/wd_imem.txt`): at the text load the
+descriptors still read the **offsets** (`00000f80 00971000 00001018`), and one transfer later
+they read the **absolutes** (`00751540 00971000 007515d8`) = `0x7505C0 + 0xF80` / `+ 0x1018`.
+So the 0x12C fix-up runs exactly once and is correct — round 24's "double-add" worry is dead.
+
+**2. THE YIELD CONTRACT, FROM THE ACTUAL LIBULTRA SOURCE (decomp
+`src/libultra/io/sptask.c`, read this round — this is the piece every earlier round guessed at).**
+
+```c
+void osSpTaskLoad(OSTask *intp) {
+    tp = _VirtualToPhysicalTask(intp);
+    if (tp->t.flags & OS_TASK_YIELDED) {
+        tp->t.ucode_data      = tp->t.yield_data_ptr;
+        tp->t.ucode_data_size = tp->t.yield_data_size;
+        intp->t.flags &= ~OS_TASK_YIELDED;
+        if (tp->t.flags & OS_TASK_LOADABLE)
+            tp->t.ucode = (u64*) IO_READ((u32) intp->t.yield_data_ptr + OS_YIELD_DATA_SIZE - 4);
+    }
+    __osSpSetStatus(SP_CLR_YIELD|SP_CLR_YIELDED|SP_CLR_TASKDONE|SP_SET_INTR_BREAK);
+    while (__osSpSetPc(SP_IMEM_START) == -1) {}
+    while (__osSpRawStartDma(1, SP_IMEM_START - sizeof(*tp), tp, sizeof(OSTask)) == -1) {}
+    while (__osSpDeviceBusy()) {}
+    while (__osSpRawStartDma(1, SP_IMEM_START, tp->t.ucode_boot, tp->t.ucode_boot_size) == -1) {}
+}
+```
+
+Three consequences that reframe the whole search:
+
+* **A resumed task's ucode base is read from RDRAM, out of the LAST WORD of the yield buffer**
+  (`yield_data_ptr + 0xBFC`).  The F3DEX2 yield handler writes that word itself
+  (`overlay A: lw t3,0xFD0; sw k0,0xBF8; sw t3,0xBFC`) — i.e. **from DMEM 0xFD0**.  So *one*
+  clobbered header propagates into the yield buffer and then into every later resume: the
+  corruption is permanent and self-propagating.  That is the mechanism behind the round-18
+  runaway and the "not reproducible" character of this route.
+* The header DMA goes to `SP_IMEM_START - 0x40` = **DMEM 0xFC0** (`mem=04000fc0` in
+  `wd_dma.txt`), and the boot-ucode DMA right after it, so the header is loaded the transfer
+  *before* the boot ucode — neither is a stale copy.
+* The load window is opened by `__osSpSetPc(SP_IMEM_START)` and closed by
+  `osSpTaskStartGo`'s `__osSpSetStatus(...|SP_CLR_HALT)`.  On hardware the RSP cannot execute
+  in between (it is halted and its PC was just set).  **In this tree it could**:
+  `rsp_dd_background_pump()` cleared `SP_STATUS_HALT` unconditionally and called `do_SP_Task`,
+  so the *outgoing* ucode was free to run with IMEM 0x000 already replaced by the incoming
+  boot ucode, and to keep rewriting DMEM 0xFC0..0xFFF.
+
+**3. WHAT WAS MEASURED THIS ROUND ON THE RP6** (three runs: r25a instrument-only, r25c + the
+load guard, r25d/r25e + the $26 watch; builds verified with `strings` on the packaged .so per
+round 19's rule):
+
+* The two gfx task loads are visible end to end in the CPU-side DMA trace
+  (`wd_dma2.txt` n=387 `src=00000001 00000004` flags=4 fresh, n=391 `src=00000001 00000005`
+  flags=5 resume; 194 audio loads carry `src=00000002`; the boot-ucode loads are
+  `dram=007504f0` twice and `dram=00768e60` 194 times).
+* **The header the guest supplies is correct**: `wd_imem.txt` prints it word for word —
+  `type=1 flags=4 ucode_boot=807504f0 bootsz=d0 ucode=007505c0 ucode_size=1000
+  ucode_data=00779860 udsz=800 stack=2e8d0 stacksz=400 obuf=2d9cd0 obufsz=32dcd0
+  data=284990 dsz=18 yield=32dcd0 ysz=c00`.  (`output_buff_size` = 0x32DCD0 is *the end
+  pointer*, because libultra declares that field `u64 *` — not a size.  Round 19's "the first
+  DPC kick writes the yield pointer" is therefore a misreading: 0x32DCD0 is
+  `output_buff + 0x54000`, and the empty `START = END = the end` first kick is by design.)
+* **The failure, in one line** (`r25e/wd_k0.txt`, first gfx-live entry):
+  `sr26=152c03c0 -> 152c0468 ff0=00284990 bf8=00080008 sr2=00751540 sr12=00000170
+  sr19=000000a7 sr20=00000920 sr24=152c03c0 im0=900100de fc4=00000004 f0=0032dcd0
+  2e0=00751540 2e8=007515d8` — i.e. the entry logic **did** run the 0x12C fix-up
+  (`$2 = 0x751540` proves it, `$12 = 0x170` proves the loader ran), flags were 4 (not
+  yielded), the header's `data_ptr` reads 0x284990 — and yet the walk's `k0` is
+  **0x152C03C0**.  The trace's `src=2c03c0` is the same value printed with `%06x`.
+* **0x152C03C0 is the AUDIO ucode's $26.** `r25d/wd_k0.txt` (unfiltered) shows the audio
+  ucode's walk pointer ending at exactly `sr26 = 152c03c0`, and its values
+  (`0d1703c0`, `152e03c0`, `152c03c0`) share the low half `03c0` with the DMEM words the audio
+  ucode stores at 0x2E0 (`059c03c0`, `058603c0`, `058203c0`).  So the gfx walk starts from a
+  value the **audio** task left behind.
+* **Both ucodes own DMEM 0xFC0..0xFFF while they run**: the audio ucode (RDRAM 0x768E60, 4 KiB,
+  self-booting — `ucode_boot == ucode`) writes `DMEM 0xFC0 = 2` and `0xFD0 = 0x768E60` at its
+  entry and `0xFF0` = its AList pointer, and its 32-byte fetch lands at **DMEM 0xFB0**, which
+  overlaps the header's first 16 bytes; the gfx yield handler writes 0xFD0/0xFF0 as shown
+  above.  The DMEM "header" is therefore a **shared, rewritable hand-off area**, not a
+  read-only copy — on hardware that is safe only because the guest re-DMAs it per task *and*
+  the RSP cannot be running while it does.
+
+**4. THE FIX ATTEMPTED (kept; DD-gated; necessary but not sufficient).** `rsp_core.c` now opens
+the task-load window on the guest's `__osSpSetPc(SP_IMEM_START)` write (the only guest write of
+`0x1000|0` to `SP_PC_REG`) and closes it on `SP_CLR_HALT` / the guest's `do_SP_Task`, and
+`rsp_dd_background_pump()` refuses to run a slice inside the window (250 ms backstop so a lost
+flag can never stall the route).  Measured: **`LOADGUARD set=196 skip=2`** — the guard engages,
+but it only had **two** opportunities in 100 s, so it cannot be the whole story and the r25c run
+still ends in the runaway (`RDPKICK 7518`, `raise_bits DP=0`, `t1gfx=2`, guest faulting at
+`epc=0x80010664` with a COP1-unusable exception — the round-18 death).  Plain carts never set
+the flag (`g_dev.dd.idisk == NULL`), so the stock path is untouched.
+
+**5. NEXT ROUND (round 26) — one build, one run, and it should be decisive.** The open question
+is now razor-sharp: **who writes `DMEM 0xFF0` (or `0xBF8`) with the audio ucode's k0 between the
+gfx header DMA and the gfx entry logic's `lw $26`, given that both ends are outside the window
+§4 guards?**  (a) Put the CPU-side header DMA into the *same* log as the DMEM watch — one line
+per header load carrying the words it wrote (0xFC0/0xFC4/0xFD0/0xFF0/0xFF8) — and log every
+change of 0xFF0/0xBF8/0xFD0 with the live ucode id (`IMEM[0]`), `$26` and the block pc.  The
+audio-filtered $26 watch already exists (`wd_k0.txt`); this adds the writer's identity to it.
+(b) Then test the targeted fix the measurements point at: **re-assert the 64 header bytes into
+DMEM from the header latch the core already takes at task-load time (round 22c,
+`RSP_INFO.TaskHeaderLatch`) when the guest starts a task** — hardware gets that invariant for
+free, and it is exactly what makes the incoming ucode immune to whatever the outgoing one
+scribbled.  (c) Keep the §4 guard and re-check the plain-cart baseline (`emumode=1`, Mario
+Tennis) after the change.
+
 **ROUND 24 — ROUND 23's "ROOT CAUSE" IS RETRACTED. The IMEM image is not corrupt; it is a
 deliberate swap cycle. The real lead is that the ucode reloads its own text from an OSTask
 header field that this tree corrupts.** Read this section before round 23's.

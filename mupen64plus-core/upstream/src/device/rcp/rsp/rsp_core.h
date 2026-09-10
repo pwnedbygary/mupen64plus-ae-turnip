@@ -98,6 +98,16 @@ struct rsp_core
     uint32_t regs2[SP_REGS2_COUNT];
     uint32_t rsp_task_locked;
 
+    /* ROUND 25, 64DD ROUTE ONLY (see rsp_core.c: write_rsp_regs2 /
+       do_SP_Task / rsp_dd_background_pump).  Set by the guest's
+       __osSpSetPc(SP_IMEM_START) -- the first thing libultra's
+       osSpTaskLoad() does -- and cleared when the guest's own
+       osSpTaskStartGo() re-enters do_SP_Task.  While it is set the guest
+       owns the RSP (it is DMAing the boot ucode into IMEM and the OSTask
+       header into DMEM 0xFC0) and the background pump must not run it. */
+    uint32_t rsp_task_load_pending;
+    uint64_t rsp_task_load_since_ms;
+
     struct mi_controller* mi;
     struct rdp_core* dp;
     struct ri_controller* ri;

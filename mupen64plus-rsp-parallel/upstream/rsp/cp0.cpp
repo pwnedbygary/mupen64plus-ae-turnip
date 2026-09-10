@@ -299,6 +299,34 @@ static void r19_imem_note(RSP::CPUState* rsp, uint32_t dst, uint32_t src, uint32
 	        rsp->dmem[0xfc0 / 4], rsp->dmem[0x0f0 / 4], rsp->dmem[0xff0 / 4], rsp->dmem[0xbf8 / 4],
 	        rsp->dmem[0x2e0 / 4], rsp->dmem[0x2e4 / 4], rsp->dmem[0x2e8 / 4],
 	        rsp->dmem[0xfdc / 4], rsp->dmem[0xfe0 / 4]);
+	/* ROUND 25: the whole OSTask header as the ucode sees it, plus the low
+	   DMEM page (the boot ucode's opcode-dispatch table lives in the first
+	   0x100 bytes of the ucode DATA segment, which is DMA'd to DMEM 0x000 --
+	   see HANDOFF.md round 25), plus the descriptor area.  This fires at
+	   most 8 times per run, at the exact instant an IMEM-writing DMA is
+	   issued, i.e. the one moment at which "what the loader read" and "what
+	   the ucode had left in DMEM" can both be seen. */
+	{
+		unsigned k;
+		fprintf(f, "  hdr  fc0:");
+		for (k = 0; k < 16; k++)
+			fprintf(f, " %08x", rsp->dmem[0xfc0 / 4 + k]);
+		fprintf(f, "\n");
+		fprintf(f, "  desc 2e0:");
+		for (k = 0; k < 8; k++)
+			fprintf(f, " %08x", rsp->dmem[0x2e0 / 4 + k]);
+		fprintf(f, "\n  desc 410:");
+		for (k = 0; k < 4; k++)
+			fprintf(f, " %08x", rsp->dmem[0x410 / 4 + k]);
+		fprintf(f, "\n  low");
+		for (k = 0; k < 0x100 / 4; k++)
+		{
+			if ((k & 7) == 0)
+				fprintf(f, "\n   %03x:", k * 4);
+			fprintf(f, " %08x", rsp->dmem[k]);
+		}
+		fprintf(f, "\n");
+	}
 	fclose(f);
 }
 

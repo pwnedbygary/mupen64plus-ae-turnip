@@ -1499,6 +1499,15 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
         fprintf(f, "%s FRAME loads t0=%u t1gfx=%u t2aud=%u t3=%u entrytype t0=%u t1=%u t2=%u t3=%u\n",
             tag, wd_hdr_type_n[0], wd_hdr_type_n[1], wd_hdr_type_n[2], wd_hdr_type_n[3],
             wd_c_task_etype[0], wd_c_task_etype[1], wd_c_task_etype[2], wd_c_task_etype[3]);
+        /* ROUND 25: did the task-load guard engage?  `set` counts the guest's
+           __osSpSetPc(SP_IMEM_START) (i.e. osSpTaskLoad entries) and `skip` the
+           background-pump slices refused because the guest still owns the RSP.
+           Both must be 0 on a plain cart run. */
+        {
+            extern volatile uint32_t wd_c_loadguard_set, wd_c_loadguard_skip;
+            fprintf(f, "%s LOADGUARD set=%u skip=%u\n",
+                tag, wd_c_loadguard_set, wd_c_loadguard_skip);
+        }
         fprintf(f, "%s RDPKICK n=%u last start=%08x end=%08x mi=%08x sp_status=%08x spwr=%u sigwr=%u\n",
             tag, wd_c_rdp_kick, wd_rdp_last_start, wd_rdp_last_end, wd_rdp_last_mi,
             wd_rdp_last_sp, wd_c_sp_status_wr, wd_c_sp_sig_wr);

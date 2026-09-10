@@ -362,8 +362,203 @@ extern "C"
 	   stock behavior: budget never fires, JIT emits no budget checks. */
 	extern "C" int rsp_ares_budget_enabled(void);
 
+	/* ------------------------------------------------------------------
+	   ROUND 25 DIAG (DD route only -- the call site is gated on
+	   rsp_ares_budget_enabled(), i.e. the core's runtime IsDDPresent()).
+
+	   WHO WRITES THE TASK HEADER AND THE OVERLAY DESCRIPTORS?
+
+	   Round 25 fixed the layout offline, from ONE run's RDRAM dump
+	   (.fzxwork/r22a/ram.bin) plus that run's traces, so the addresses below
+	   are all in that run's coordinates:
+
+	     rspboot   RDRAM 0x7504F0, 0xD0 B, loaded to IMEM 0x000.
+	       000  j 0x064                 (+ delay 004 addi $1,$0,0xFC0 = header base)
+	       008  lw  $2,16($1)           $2 = DMEM[0xFD0] = t.ucode
+	       00C  addi $3,$0,0xF7F        len-1 = 0xF80 = the text size
+	       010  addi $7,$0,0x1080       SP_MEM_ADDR = IMEM 0x080
+	       014..01C  DMA  t.ucode -> IMEM 0x080, 0xF80 bytes
+	       034  jr $7                   -> PC = 0x080 = the F3DEX2 text entry
+	       064  ... (reads t.flags bit1 = OS_TASK_DP_WAIT, then DMAs
+	                 t.ucode_data[0x18]/size[0x1C] -> DMEM 0x000)
+	       0C4  j 0x002                 -> falls into 008 (the text load)
+	     So the ONE reader of DMEM 0xFD0 that matters is rspboot, and it is
+	     also the code that loads the main text: n=1/n=3 (and n=4/n=5) of
+	     wd_imem.txt are rspboot's own transfer.  Nothing else in the ucode
+	     DMAs from DMEM 0xFD0.
+
+	     text      RDRAM 0x7505C0, 0xF80 B, loaded to IMEM 0x080.
+	       098  lw  $11,0xF0($0)   / 09C lw $12,0xFC4($0)  = FIFO ptr, t.flags
+	       0A4  beq $11,$0,0xC0    (cold) / 0B0 beq $12&1,$0,0x12C (warm init)
+	       0B4  sw  $0,0xFC4($0)   CONSUMES the OS_TASK_YIELDED bit
+	       0B8  j 0x164 -> 160 lw $26,0xFF0($0) = k0 = t.data_ptr
+	       12C  lw  $1,0xFD0($0)   = ucode base
+	       130..15C  $2 += $1; $3 += $1; $4 += $1; $5 += $1
+	                 and store back to DMEM 0x2E0 / 0x2E8 / 0x410 / 0x418
+	       15C  (this is an ADD, so running this path TWICE double-offsets
+	             every descriptor -- see wd_watch.txt below)
+	       FAC  addi $12,$0,0x1000 / FB0 addi $11,$0,0x2E0
+	       FB4  lw  $24,0($11)  / FB8 lhu $19,4($11) / FC0 lhu $20,6($11)
+	            = the descriptor {u32 src; u16 len-1; u16 dest} at DMEM 0x2E0
+	       FBC  jal 0xFD8 (DMA it), FC4 ori $31,$12,0 = 0x1000
+	       FD4  jr $31           -> IMEM 0x000: run the freshly loaded overlay
+	     overlay A RDRAM 0x751540, 0x98 B  (= data-segment descriptor 0x2E0)
+	     overlay B RDRAM 0x7515D8, 0x170 B (= data-segment descriptor 0x2E8)
+	       The descriptors come from the ucode DATA segment (r22a: RDRAM
+	       0x779860 DMA'd to DMEM 0x000) at +0x2E0 = {00000F80, 00971000} and
+	       +0x2E8 = {00001018, 016F1000} -- i.e. OFFSETS, made absolute by the
+	       0x12C path above.  Overlay A at IMEM 0x030 then does
+	       `sw $24,0xFD0($0)` and at 0x02C `sw $26,0xFF0($0)`: the ucode
+	       REWRITES the header's ucode/data_ptr fields when it swaps itself.
+
+	   Consequence: DMEM 0xFC0..0xFFF is not a read-only copy of the OSTask.
+	   F3DEX2 owns it (it clears 0xFC4 and rewrites 0xFD0/0xFF0), so "the
+	   header is garbage at a preemption point" is not by itself a fault --
+	   but a n=5-style rspboot reload from src=0x6F0000 means DMEM 0xFD0 had
+	   been left at a non-ucode value when the next task started, and the
+	   descriptor at 0x2E0 being a DOUBLE-offset would send the 0xFAC loader
+	   to a wild source.  Both are one instruction away from identification if
+	   the change is caught as it happens.
+
+	   This hook runs at EVERY JIT block boundary, so a change is attributed
+	   to the block that just ran (prev_pc) and the block being entered (pc):
+	   disassembling that block names the `sw`.  DD-gated, bounded (160
+	   lines), and it only ever reads host memory -- no emulation effect on
+	   plain carts. */
+	static void r25_dmem_watch(void *cpu, unsigned pc)
+	{
+		/* Tier A: the task header (0xFC0..0xFFF), the two overlay descriptor
+		   pairs the data segment supplies (0x2E0.., 0x410..) and the ucode's
+		   saved display-list pointer pair (0xBF8/0xBFC).  These change only a
+		   handful of times per task, so every change is logged -- the first
+		   run of this instrument capped each word at 12 and lost exactly the
+		   F3DEX2 task load it was built to see. */
+		static const unsigned offa[26] = {
+			0xFC0, 0xFC4, 0xFC8, 0xFCC, 0xFD0, 0xFD4, 0xFD8, 0xFDC,
+			0xFE0, 0xFE4, 0xFE8, 0xFEC, 0xFF0, 0xFF4, 0xFF8, 0xFFC,
+			0x2E0, 0x2E4, 0x2E8, 0x2EC,
+			0x410, 0x414, 0x418, 0x41C,
+			0xBF8, 0xBFC,
+		};
+		static uint32_t last[26];
+		static unsigned last_im0 = 0, last_im1 = 0;
+		static unsigned prev_pc = 0;
+		static int init = 0;
+		static int n = 0, nsw = 0;
+		auto &st = static_cast<CPU *>(cpu)->get_state();
+		unsigned i;
+
+		if (n >= 400 && nsw >= 60)
+			return;
+
+		/* Event B: the live ucode changed (a task load or an in-ucode swap).
+		   Logged as one block so the whole visible state travels together. */
+		if (init && (st.imem[0] != last_im0 || st.imem[1] != last_im1) && nsw < 60) {
+			static FILE *f = NULL;
+			if (!f)
+				f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_watch.txt", "a");
+			if (f) {
+				fprintf(f, "R25SW n=%d prev_pc=%03x pc=%03x im0=%08x -> %08x im1=%08x "
+				           "st=%08x sr1=%08x sr2=%08x sr26=%08x sr27=%08x\n  hdr",
+				        nsw, prev_pc, pc & 0xfff, last_im0, st.imem[0], st.imem[1],
+				        *st.cp0.cr[CP0_REGISTER_SP_STATUS],
+				        st.sr[1], st.sr[2], st.sr[26], st.sr[27]);
+				for (i = 0; i < 16; i++)
+					fprintf(f, " %08x", st.dmem[0xfc0 / 4 + i]);
+				fprintf(f, "\n  dsc");
+				for (i = 0; i < 8; i++)
+					fprintf(f, " %08x", st.dmem[0x2e0 / 4 + i]);
+				fprintf(f, "\n  dsc2");
+				for (i = 0; i < 4; i++)
+					fprintf(f, " %08x", st.dmem[0x410 / 4 + i]);
+				fprintf(f, "\n");
+				fflush(f);
+			}
+			nsw++;
+		}
+		last_im0 = st.imem[0];
+		last_im1 = st.imem[1];
+
+		/* Event C: the display-list pointer k0 ($26).  This is the one that
+		   decides whether the walk reads the guest's real list.
+		   .fzxwork/r25c/dmatr.txt (RSP DMA trace) shows the gfx task's walk
+		   starting at RDRAM 0x2C03C0 while DMEM 0xFF0 -- the header's
+		   data_ptr, which IMEM 0x160 `lw $26,0xFF0($0)` is supposed to load
+		   it from -- reads 0x00284990 in the very same transfers.  So $26 was
+		   either not loaded from there or overwritten afterwards; logging
+		   every change of $26 with the block that made it names the
+		   instruction.  Bounded, DD-gated. */
+		{
+			static unsigned last26 = 0;
+			static int n26 = 0;
+			/* Skip the audio ucode (IMEM[0] = 0x340a0fc0, the 4 KiB blob at
+			   RDRAM 0x768E60): it churns $26 thousands of times per second
+			   and filled the whole budget in the first run of this
+			   instrument, so the gfx task -- the one that matters -- never
+			   got logged. */
+			if (init && st.imem[0] != 0x340a0fc0u &&
+			    st.sr[26] != last26 && n26 < 400) {
+				static FILE *f = NULL;
+				if (!f)
+					f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_k0.txt", "a");
+				if (f) {
+					fprintf(f,
+					        "R25K0 n=%d prev_pc=%03x pc=%03x sr26=%08x -> %08x ff0=%08x bf8=%08x "
+					        "sr1=%08x sr2=%08x sr11=%08x sr12=%08x sr19=%08x sr20=%08x sr24=%08x sr27=%08x "
+					        "sr31=%08x im0=%08x fc4=%08x f0=%08x 2e0=%08x 2e8=%08x st=%08x\n",
+					        n26, prev_pc, pc & 0xfff, last26, st.sr[26],
+					        st.dmem[0xff0 / 4], st.dmem[0xbf8 / 4],
+					        st.sr[1], st.sr[2], st.sr[11], st.sr[12],
+					        st.sr[19], st.sr[20], st.sr[24], st.sr[27], st.sr[31],
+					        st.imem[0], st.dmem[0xfc4 / 4], st.dmem[0x0f0 / 4],
+					        st.dmem[0x2e0 / 4], st.dmem[0x2e8 / 4],
+					        *st.cp0.cr[CP0_REGISTER_SP_STATUS]);
+					fflush(f);
+				}
+				n26++;
+			}
+			last26 = st.sr[26];
+		}
+
+		for (i = 0; i < 26; i++) {
+			uint32_t v = st.dmem[offa[i] >> 2];
+			if (!init) {
+				last[i] = v;
+				continue;
+			}
+			if (v == last[i])
+				continue;
+			if (n < 400) {
+				static FILE *f = NULL;
+				if (!f)
+					f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_watch.txt", "a");
+				if (f) {
+					fprintf(f,
+					        "R25W n=%d prev_pc=%03x pc=%03x dmem[%03x] %08x -> %08x st=%08x "
+					        "sr1=%08x sr2=%08x sr11=%08x sr12=%08x sr24=%08x sr26=%08x sr27=%08x "
+					        "im0=%08x im1=%08x fd0=%08x ff0=%08x 2e0=%08x 2e8=%08x bf8=%08x\n",
+					        n, prev_pc, pc & 0xfff, offa[i], last[i], v,
+					        *st.cp0.cr[CP0_REGISTER_SP_STATUS],
+					        st.sr[1], st.sr[2], st.sr[11], st.sr[12],
+					        st.sr[24], st.sr[26], st.sr[27],
+					        st.imem[0], st.imem[1],
+					        st.dmem[0xfd0 / 4], st.dmem[0xff0 / 4],
+					        st.dmem[0x2e0 / 4], st.dmem[0x2e8 / 4],
+					        st.dmem[0xbf8 / 4]);
+					fflush(f);
+				}
+				n++;
+			}
+			last[i] = v;
+		}
+		init = 1;
+		prev_pc = pc & 0xfff;
+	}
+
 	static Func rsp_enter(void *cpu, unsigned pc)
 	{
+		if (rsp_ares_budget_enabled())
+			r25_dmem_watch(cpu, pc);
 		if (rsp_ares_budget_enabled() && rsp_budget_expired()) {
 			rsp_watchdog_tick(pc);
 			return static_cast<CPU *>(cpu)->get_return_thunk();
