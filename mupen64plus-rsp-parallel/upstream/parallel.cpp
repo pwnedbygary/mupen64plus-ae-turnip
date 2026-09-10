@@ -291,6 +291,85 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		if (*RSP::rsp.SP_STATUS_REG & (SP_STATUS_HALT | SP_STATUS_BROKE))
 			return 0;
 
+		/* ROUND 16, 64DD ROUTE ONLY (g_dev.dd.idisk != NULL, i.e. dd_mode):
+		   HONOUR LIBULTRA'S YIELD-RESUME CONTRACT.
+
+		   osSpTaskYielded() (decomp src/libultra/io/sptaskyielded.c) does
+		   `tp->t.flags |= OS_TASK_YIELDED; tp->t.flags &= ~OS_TASK_DP_WAIT;`
+		   the moment SIG1 (YIELDED) is set while SIG0 (YIELD) is still set,
+		   and osSpTaskLoad() then maps `ucode_data = yield_data_ptr` for that
+		   task -- i.e. the RSP is meant to be restarted from the DMEM image
+		   the ucode saved in its yield buffer.
+
+		   The game's boot ucode (this ROM, RDRAM 0x7504F0; disassembled):
+		     1064 lw  v0,4(at)      # header flags
+		     1068 andi v0,v0,2      # OS_TASK_DP_WAIT only
+		     106c beq v0,r0,0x108c  # not DP_WAIT -> SKIP the DATA DMA
+		     ... 108c..10ac: DMA ucode_data -> DMEM 0 ...
+		   so a *resumed* task -- which by construction has DP_WAIT cleared --
+		   never gets its saved state back: DMEM keeps whatever the intervening
+		   AUDIO task left behind.  Measured on the RP6 (round 15/16): the gfx
+		   resume at wd_hdr15 seq=201 (flags=00000005, bf4=00ae00b0 = a leftover
+		   EK audio command word) ran with DMEM[0xBF8]=0, and the F3DEX2 entry
+		   takes k0 = DMEM[0xBF8] as its display-list pointer on the resume path
+		   -> it parses RDRAM 0 as GBI -> issues the length-underflow DMA
+		   (SP_RD_LEN=0xFFFFFFFF -> 4096 bytes, wrapping through IMEM) that wipes
+		   the task header and ALL of IMEM, after which every later task reads a
+		   0x00010001 header (wd_bad3, imem_bad=1).
+
+		   Loading the yield buffer here is exactly what osSpTaskLoad's
+		   `ucode_data = yield_data_ptr` assignment means, and it is what makes
+		   the resume land on the saved DL pointer instead of on zeroed DMEM.
+		   Gates (all required, so nothing else in the tree can match):
+		     * DD route only (Runtime IsDDPresent()); plain carts unchanged.
+		     * SP_PC == 0x1000 & 0xfff == 0: a FRESH task start (osSpTaskSetPc
+		       set 0x1000); slice re-entries carry the running ucode's pc, so a
+		       2ms budget slice can never re-run this and clobber live DMEM.
+		     * header type <= 2 (the poisoned 0x00010001 headers fail this).
+		     * flags & OS_TASK_YIELDED, !(flags & OS_TASK_DP_WAIT)  -- the exact
+		       combination libultra produces for a yielded task.
+		     * yield ptr/size sane; size is 0xC00 (whole DMEM 0..0xBFF) and the
+		       header at 0xFC0.. is deliberately NOT touched. */
+		if (dd_mode && (*RSP::rsp.SP_PC_REG & 0xfff) == 0)
+		{
+			uint32_t* hdr = (uint32_t*)RSP::rsp.DMEM;
+			uint32_t r16_type  = hdr[0xfc0 / 4];
+			uint32_t r16_flags = hdr[0xfc4 / 4];
+			uint32_t r16_yptr  = hdr[0xff8 / 4];
+			uint32_t r16_ysz   = hdr[0xffc / 4];
+			if (r16_type <= 2u && (r16_flags & 0x1u) && !(r16_flags & 0x2u) &&
+			    r16_ysz >= 0x40u && r16_ysz <= 0x1000u &&
+			    r16_yptr >= 0x100u && (r16_yptr & 0x3u) == 0 &&
+			    r16_yptr + r16_ysz <= 0x800000u)
+			{
+				uint32_t r16_n = (r16_ysz + 3u) & ~3u;
+				uint32_t r16_i;
+				uint32_t r16_before_f0  = hdr[0x0f0 / 4];
+				uint32_t r16_before_bf8 = hdr[0xbf8 / 4];
+				/* NOTE: RSP::rsp.RDRAM is an `unsigned char *` (RSP_INFO is
+				   byte-typed); the word view is state.rdram (uint32_t*). */
+				for (r16_i = 0; r16_i < (r16_n >> 2); r16_i++)
+					hdr[r16_i] = RSP::cpu.get_state().rdram[((r16_yptr & 0x7ffffcu) >> 2) + r16_i];
+				/* DIAG (DD-gated, a handful of events per run): what the stale
+				   DMEM held vs. what the saved image restored.  This is the
+				   line that proves the resume now starts from the ucode's own
+				   saved k0 instead of from the audio task's leftovers. */
+				{
+					static FILE* yf = NULL;
+					if (!yf) yf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_yld.txt", "a");
+					if (yf)
+					{
+						fprintf(yf, "YLD ms=%lld type=%u flags=%08x yptr=%06x ysz=%04x stale_f0=%08x stale_bf8=%08x rest_f0=%08x rest_bf8=%08x rest_bfc=%08x st=%08x\n",
+						        wd_now_ms(), r16_type, r16_flags, r16_yptr, r16_ysz,
+						        r16_before_f0, r16_before_bf8,
+						        hdr[0x0f0 / 4], hdr[0xbf8 / 4], hdr[0xbfc / 4],
+						        *RSP::rsp.SP_STATUS_REG);
+						fflush(yf);
+					}
+				}
+			}
+		}
+
 		/* DIAG: arm freeze heartbeat (DD-only) */
 		if (dd_mode)
 		{

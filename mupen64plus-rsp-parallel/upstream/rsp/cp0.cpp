@@ -297,9 +297,24 @@ extern "C"
 			   never fires (measured on the RP6: 193 audio tasks vs 28 gfx
 			   tasks, the gfx thread parked in osRecvMesg on D_800DCAC8, and
 			   raise_bits DP=0 for the entire run).  Answer the request the
-			   way a real F3DEX2 ucode does at its yield point. */
+			   way a real F3DEX2 ucode does at its yield point.
+
+			   ROUND 16: answer it with the SAME bit pattern the ucode uses.
+			   The game's boot ucode (this ROM, RDRAM 0x7504F0) acks a yield
+			   with `ori t0,r0,0x5200; mtc0 t0,SP_STATUS; break`, i.e.
+			   SP_CLR_SIG0 | SP_SET_SIG1 | SP_SET_SIG2: it CLEARS the YIELD
+			   request while setting YIELDED + TASKDONE.  The round-10 form
+			   (OR in SIG1, leave SIG0 set) is not reachable in the ucode and
+			   is actively harmful: libultra's osSpTaskYielded() only does
+			   `tp->t.flags |= OS_TASK_YIELDED; tp->t.flags &= ~OS_TASK_DP_WAIT;`
+			   while SIG0 is STILL set, and the boot ucode gates its
+			   ucode_data -> DMEM DMA on the DP_WAIT bit -- so that
+			   combination makes the next resume of the task run on stale
+			   DMEM (round 16 also defends against the consequence in
+			   parallel.cpp; this removes the cause). */
 			if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_SIG0)
-				*RSP::rsp.SP_STATUS_REG |= SP_STATUS_SIG1;
+				*RSP::rsp.SP_STATUS_REG =
+				    (*RSP::rsp.SP_STATUS_REG | SP_STATUS_SIG1 | SP_STATUS_SIG2) & ~SP_STATUS_SIG0;
 			*rsp->cp0.irq |= 1;
 			/* ROUND-14 DIAG: count the synthetic yields this block
 			   fabricates (RAM only -- no file I/O in the RSP path). */
