@@ -5,6 +5,73 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 14 (goal round 14) — the frame stall decoded: the gfx ucode runs a
+YIELD/RESUME handshake the DD route fakes, and the resumed task parses low RDRAM.**
+Branch `dd-eos-watchdog-checkpoint`, base `0fec82230` (instrumentation) over `baea19d80`.
+
+**How this was measured.** Round 13 left "why is the gfx task stuck?" open; the answer needed
+the ucode's own transfer stream. New DD-gated instrumentation (commit `0fec82230`): every
+ucode-issued DMA (pc, dst/src/len/count/skip, first source word, SP_STATUS, the DMEM 0xFC0
+word) in a 256-entry RAM ring flushed 64 at a time to `wd_dmatr.txt`, plus nonzero-word counts
+for IMEM/DMEM on each DoRspCycles entry (`nzi`/`nzd` in `wd_rsp.txt`). Round-14 run:
+`ram_40s.bin`, `ram_85s.bin`, `stall_40s/85s.txt`, `wd_dmatr.txt`, `wd_ucode_inv*.bin` in
+`.fzxwork/r14/`.
+
+**The gfx task's real shape** (from the DMA trace, addresses = this build):
+`RD DMEM0 <- 0x80779860 len 0x800` (ucode DATA) -> `RD IMEM0x1080 <- 0x807505C0 len 0xF80` (TEXT,
+linked at 0x1000) -> `RD IMEM0x1000 <- 0x807515D8 len 0x170` and `<- 0x80751540 len 0x98`
+(**OVERLAYS**: the ucode copies pieces of its own blob into IMEM 0x1000, which is what the
+`j 0x1008/0x1020/0x1040` targets in its text are) -> `RD DMEM0x920 <- 0x284990 len 0xA8`
+(**display list**, = `G_MOVEWORD/G_DPFULLSYNC/G_ENDDL`, 24 bytes, and the header's +0x30 field)
+-> `WR RDRAM0x2D9CD0 <- DMEM0xBA8 len 8` (**the RDP command flush**; +0x28/+0x2C are the RDP
+FIFO bounds 0x2D9CD0/0x32DCD0, +0x38/+0x3C the yield data 0x32DCD0/0xC00).
+**The first gfx task does all of this correctly** — round 13 had 1 RDP kick in 95s; round 14
+measures **69 kicks, 3 gfx-task loads** (`FRAME loads t1gfx=3 t2aud=209`).
+
+**The regression after the first task.** From `wd_ucode_inv*.bin` (DMEM snapshots): after a
+resume the ucode streams **low RDRAM** into DMEM — `RD dst=0x09B0 src=0x00000000 len=0x210`,
+then src advancing with a GROWING length (528, 536, 544 ... 1024) — i.e. it is parsing
+RDRAM from address 0 as a display list: first the exception vector (`s0=3c1a8074`), then the
+game's `0x00010001` fill. Every DMEM structure it needs is destroyed by that stream
+(0x2E0/0x36E/0x410/0x920/0xBA8/0xFC0 all end up `00010001`), the ucode's own DPC end pointer
+becomes `0xC118`, and the RDP kicks turn into empty/garbage ranges — so parallel-RDP never
+processes a SYNC_FULL and **MI_INTR_DP is never raised**. Guest side (decoded from
+`ram_85s.bin`): the gfx thread (`sGameThread` 0x80799B80, prio 10) waits on the 0x2A message
+from `D_800DCAC8`, which `sys_main.c:396` sends ONLY on `EVENT_MESG_DP`; `sResetThread` waits
+on PRENMI (normal, 0x1B `gResetMesgQueue`); the event queue is empty; VI runs at 60/s and is
+acked; the machine is otherwise idle. `RDPKICK n=69 last start=002d9cd8 end=0000c118`,
+`mi_rd_dp=1 dp_ack=3`.
+
+**Conclusion (next round's target):** the ucode's *yield/resume* handshake is what the DD route
+fakes. `osSpTaskYield()` sets SIG0; the ucode's dispatch loop polls SP_STATUS and, on SIG0,
+jumps to its own save-state path (0x80750F2C region) which writes the yield data at +0x38 and
+answers SIG1. The DD route instead **injects** `HALT|INTR_BREAK` on an SP_STATUS poll
+threshold (`rsp/cp0.cpp` RSP_MFC0) and **fabricates SIG1** (round-10 block), so the guest
+believes the task yielded and later calls `Sched_SpTaskResumeGfx()` — while the ucode never
+saved anything. The resumed task therefore starts from a zero/garbage DL pointer. Fix = let
+the ucode run its own yield protocol and stop synthesising the status bits (the poll-threshold
+injection measured `fake_n=0` in this run, so it is not even firing; the SIG1 fake is).
+
+**Two side findings worth keeping.** (1) The `0x00010001` fill in RDRAM 0x400-0x25800 is the
+GAME's own boot code: `sys_main.c:259` fills all three framebuffers
+(`*var_v1-- = 0x0001000100010001`) while `gFrameBuffers[]` is still NULL, so it writes from
+`offsetof(buffer)+19199*8` downwards — the fill's size (0x25800) matches exactly. It is
+static, present at 40s and 85s, and predates the frame stall. (2) Instrumentation on the RSP
+hot path is not free: with per-SP_STATUS-write file I/O the emulation process died with
+`SIGILL` in the RSP JIT (`pc` in an anon .bss mapping, pid 28133 `:EmulationProcess`) about 4s
+in, at the gfx task; the same tree with RAM-only rings ran to 85s. Keep the RSP path file-I/O
+free.
+
+**ROUND 14 NEXT STEPS (in order):**
+1. Make the yield real: remove the fabricated SIG1/HALT injection, let the ucode see SIG0 and
+   run its save-state path, and give it the slices it needs to reach that point (the DL loop
+   polls SP_STATUS once per command, so a short slice suffices).
+2. Verify with `wd_dmatr.txt`: the resumed task must read its DL from 0x284990 (not RDRAM 0),
+   and the RDP flush must write 8 real bytes (not `00010001`) so parallel-RDP raises DP.
+3. If the synthetic-yield removal regresses the audio path (193 clean audio tasks today),
+   compare against ares's model (RSP/CPU interleaved per instruction) — the user has already
+   authorised porting `phobos/ares/n64/{rsp,dd,mi}` wholesale.
+
 **ROUND 12 (goal round 12) — the fault decoded end-to-end: the RSP is fed its OWN corrupted memory
 (the "`0x00010001` fill" is audio-ucode data, not a fill), and round 11's death spiral is one extra
 step — a ucode-issued DMA that writes RSP memory over the exception vectors.** Branch
