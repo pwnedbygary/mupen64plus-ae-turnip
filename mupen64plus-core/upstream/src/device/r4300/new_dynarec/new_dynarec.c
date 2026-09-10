@@ -72,6 +72,35 @@ void recomp_dbg_block(int addr);
 #error Unsupported dynarec architecture
 #endif
 
+/* ---------------------------------------------------------------------------
+   DD-ROUTE SMC TRACE (diagnostic, 2026-09-10 goal round 5).
+
+   F-Zero X EK executes the STILL-SCRAMBLED __LeoBootGame2 at 0x800bb67c even
+   though RDRAM holds the descrambled words by then: a translation compiled
+   from the scrambled image survived the guest's descramble stores.  This
+   records every event that can create, resolve or kill a translation on that
+   4K page, so the exact surviving path is identifiable from one run.
+
+   Doubly gated: 64DD route only (g_dev.dd.idisk != NULL) and a page window.
+   Plain carts never enter this code path.
+   --------------------------------------------------------------------------- */
+#define WD_SMC_DIR "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/"
+#define WD_SMC_PAGE(a) ((a) >= 0x800bb000u && (a) < 0x800bc000u)
+
+static int wd_smc_events = 0;
+
+static void wd_smc(const char* what, u_int a, u_int b, u_int c)
+{
+  FILE* f;
+  if (g_dev.dd.idisk == NULL) return;
+  if (wd_smc_events > 2000) return;
+  wd_smc_events++;
+  f = fopen(WD_SMC_DIR "wd_smc.txt", "a");
+  if (f == NULL) return;
+  fprintf(f, "%s a=%08x b=%08x c=%08x\n", what, a, b, c);
+  fclose(f);
+}
+
 /* debug */
 #define ASSEM_DEBUG 0
 #define INV_DEBUG 0
@@ -2532,9 +2561,11 @@ static struct ll_entry *get_dirty(struct r4300_core* r4300,u_int vaddr,u_int fla
   head=jump_dirty[vpage];
   while(head!=NULL) {
     if(head->vaddr==vaddr&&(head->reg32&flags)==0) {
+      int wd_v = verify_dirty(head);
+      if(WD_SMC_PAGE(vaddr)) wd_smc("GA_DIRTY_TRY", vaddr, (u_int)(intptr_t)head->clean_addr, (u_int)wd_v);
       // Don't restore blocks which are about to expire from the cache
       if((((uintptr_t)head->addr-(uintptr_t)out)<<(32-TARGET_SIZE_2))>0x60000000+(MAX_OUTPUT_BLOCK_SIZE<<(32-TARGET_SIZE_2))) {
-        if(verify_dirty(head)==0) {
+        if(wd_v==0) {
           r4300->cached_interp.invalid_code[vaddr>>12]=0;
           r4300->new_dynarec_hot_state.memory_map[vaddr>>12]|=WRITE_PROTECT;
           if(vpage<2048) {
@@ -2681,6 +2712,7 @@ void *get_addr(u_int vaddr)
 
   head=get_clean(r4300,vaddr,~0);
   if(head!=NULL){
+    if(WD_SMC_PAGE(vaddr)) wd_smc("GA_CLEAN", vaddr, (u_int)(intptr_t)head->addr, head->reg32);
     ht_bin[1]=ht_bin[0];
     ht_bin[0]=head;
     return (void*)(((intptr_t)head->addr-(intptr_t)base_addr)+(intptr_t)base_addr_rx);
@@ -2688,6 +2720,7 @@ void *get_addr(u_int vaddr)
 
   head=get_dirty(r4300,vaddr,~0);
   if(head!=NULL){
+    if(WD_SMC_PAGE(vaddr)) wd_smc("GA_DIRTY", vaddr, (u_int)(intptr_t)head->clean_addr, head->reg32);
     if(ht_bin[0]&&ht_bin[0]->vaddr==vaddr) {
       ht_bin[0]=head; // Replace existing entry
     }
@@ -2698,6 +2731,7 @@ void *get_addr(u_int vaddr)
     }
     return (void*)(((intptr_t)head->clean_addr-(intptr_t)base_addr)+(intptr_t)base_addr_rx);
   }
+  if(WD_SMC_PAGE(vaddr)) wd_smc("GA_RECOMPILE", vaddr, 0, 0);
 
   int r=new_recompile_block(vaddr);
   if(r==0) return get_addr(vaddr);
@@ -2709,15 +2743,22 @@ void *get_addr(u_int vaddr)
   return get_addr_ht(r4300->new_dynarec_hot_state.pcaddr);
 }
 
-// Look up address in hash table first
+/* Look up address in hash table first */
 extern void wd_pc_record(uint32_t vaddr);
 
 void *get_addr_ht(u_int vaddr)
 {
   wd_pc_record(vaddr);
   struct ll_entry **ht_bin=hash_table[((vaddr>>16)^vaddr)&0xFFFF];
-  if(ht_bin[0]&&ht_bin[0]->vaddr==vaddr) return (void *)(((intptr_t)ht_bin[0]->addr-(intptr_t)base_addr)+(intptr_t)base_addr_rx);
-  if(ht_bin[1]&&ht_bin[1]->vaddr==vaddr) return (void *)(((intptr_t)ht_bin[1]->addr-(intptr_t)base_addr)+(intptr_t)base_addr_rx);
+  if(ht_bin[0]&&ht_bin[0]->vaddr==vaddr) {
+    if(WD_SMC_PAGE(vaddr)) wd_smc("HT0", vaddr, (u_int)(intptr_t)ht_bin[0]->addr, (u_int)(intptr_t)ht_bin[0]->clean_addr);
+    return (void *)(((intptr_t)ht_bin[0]->addr-(intptr_t)base_addr)+(intptr_t)base_addr_rx);
+  }
+  if(ht_bin[1]&&ht_bin[1]->vaddr==vaddr) {
+    if(WD_SMC_PAGE(vaddr)) wd_smc("HT1", vaddr, (u_int)(intptr_t)ht_bin[1]->addr, (u_int)(intptr_t)ht_bin[1]->clean_addr);
+    return (void *)(((intptr_t)ht_bin[1]->addr-(intptr_t)base_addr)+(intptr_t)base_addr_rx);
+  }
+  if(WD_SMC_PAGE(vaddr)) wd_smc("HT_MISS", vaddr, 0, 0);
   return get_addr(vaddr);
 }
 
@@ -2771,12 +2812,19 @@ static void *check_addr(u_int vaddr)
 
   if(ht_bin[0]&&ht_bin[0]->vaddr==vaddr) {
     if((((uintptr_t)ht_bin[0]->addr-MAX_OUTPUT_BLOCK_SIZE-(uintptr_t)out)<<(32-TARGET_SIZE_2))>0x60000000+(MAX_OUTPUT_BLOCK_SIZE<<(32-TARGET_SIZE_2)))
-      if(ht_bin[0]->addr==ht_bin[0]->clean_addr) return ht_bin[0]->addr; //jump_in
+      if(ht_bin[0]->addr==ht_bin[0]->clean_addr) {
+        if(WD_SMC_PAGE(vaddr)) wd_smc("CHK_HT0_HIT", vaddr, (u_int)(intptr_t)ht_bin[0]->addr, 0);
+        return ht_bin[0]->addr; //jump_in
+      }
   }
   if(ht_bin[1]&&ht_bin[1]->vaddr==vaddr) {
     if((((uintptr_t)ht_bin[1]->addr-MAX_OUTPUT_BLOCK_SIZE-(uintptr_t)out)<<(32-TARGET_SIZE_2))>0x60000000+(MAX_OUTPUT_BLOCK_SIZE<<(32-TARGET_SIZE_2)))
-      if(ht_bin[1]->addr==ht_bin[1]->clean_addr) return ht_bin[1]->addr; //jump_in
+      if(ht_bin[1]->addr==ht_bin[1]->clean_addr) {
+        if(WD_SMC_PAGE(vaddr)) wd_smc("CHK_HT1_HIT", vaddr, (u_int)(intptr_t)ht_bin[1]->addr, 0);
+        return ht_bin[1]->addr; //jump_in
+      }
   }
+  if(WD_SMC_PAGE(vaddr)) wd_smc("CHK_ENTRY", vaddr, (u_int)(intptr_t)ht_bin[0], (u_int)(intptr_t)ht_bin[1]);
 
   struct r4300_core* r4300 = &g_dev.r4300;
   struct ll_entry *head;
@@ -2840,6 +2888,8 @@ static void invalidate_page(u_int page)
 void invalidate_block(u_int block)
 {
   u_int page;
+  if (g_dev.dd.idisk != NULL && (block & 0xFFFFFu) == 0x800bbu)
+    wd_smc("INVAL_BLOCK", block, 0, 0);
   page=block^0x80000;
   if(page>262143&&g_dev.r4300.cp0.tlb.LUT_r[block]) page=(g_dev.r4300.cp0.tlb.LUT_r[block]^0x80000000)>>12;
   if(page>2048) page=2048+(page&2047);
@@ -8773,6 +8823,11 @@ void new_dynarec_init(void)
   g_dev.r4300.new_dynarec_hot_state.invc_ptr=g_dev.r4300.cached_interp.invalid_code;
 #endif
   stop_after_jal=0;
+  { /* DIAGNOSTIC: start the DD SMC trace fresh for this session */
+    FILE* wd_f = fopen(WD_SMC_DIR "wd_smc.txt", "w");
+    if (wd_f != NULL) { fprintf(wd_f, "WD_SMC start=%08x\n", (u_int)start); fclose(wd_f); }
+    wd_smc_events = 0;
+  }
   // TLB
   using_tlb=0;
   for(n=0;n<524288;n++) // 0 .. 0x7FFFFFFF
@@ -8823,6 +8878,37 @@ int new_recompile_block(int addr)
   DebugMessage(M64MSG_VERBOSE, "notcompiledCount=%i", notcompiledCount );
 #endif
   start = (u_int)addr&~3;
+
+  /* ---------------------------------------------------------------------
+     64DD ROUTE ONLY: never compile speculatively past a JAL.
+
+     F-Zero X EK's libleo boot stub (LeoBootGame @ 0x800bb540) descrambles
+     __LeoBootGame2 (0x800bb67c) and __LeoBootGame3 (0x800bb9a0) IN PLACE and
+     then CALLS the freshly written code.  The dynarec's default "speculative
+     precompilation" keeps scanning past a JAL and, when the JAL's target also
+     matches the fall-through address of a `jr ra` later in the same scan
+     (ba[j] == start+i*4+4), the block keeps growing straight through the call
+     target -- so __LeoBootGame2 is translated INLINE as part of LeoBootGame's
+     own host block (measured: BLOCK start=800bb540 slen=0x133 end=800bba0c).
+
+     The JAL then resolves as an INTERNAL branch and the descrambler's stores
+     run in the same host block that is about to execute the stale, still
+     scrambled translation.  Page invalidation cannot help: invalidate_addr()
+     kills the block's *entry points*, but the already-running block body keeps
+     going to its internal target.  Result: addiu sp,sp,-17661 (the scrambled
+     form), jal 0x800ac01c, and the odd-$sp / COP1-unusable fault chain.
+
+     Forcing stop_after_jal ends every block at its JAL, so the call target is
+     resolved through get_addr_ht() at run time -- which recompiles it from the
+     descrambled bytes.  Gated to the 64DD route (runtime IsDDPresent);
+     plain carts keep the faster speculative blocks unchanged.
+     --------------------------------------------------------------------- */
+  if (g_dev.dd.idisk != NULL) stop_after_jal = 1;
+  if (g_dev.dd.idisk != NULL && WD_SMC_PAGE(start)) {
+    u_int* wd_d = (u_int*)g_dev.rdram.dram;
+    wd_smc("COMPILE", start, wd_d[(start & 0x7FFFFF) >> 2],
+           wd_d[(0x800bb67c & 0x7FFFFF) >> 2]);
+  }
   //assert(((u_int)addr&1)==0);
   if ((int)addr >= 0xa4000000 && (int)addr < 0xa4001000) {
     source = (u_int *)((uintptr_t)g_dev.sp.mem+start-0xa4000000);
@@ -9410,6 +9496,8 @@ int new_recompile_block(int addr)
     }
   }
   slen=i;
+  if (g_dev.dd.idisk != NULL && WD_SMC_PAGE(start))
+    wd_smc("BLOCK", start, slen, start+slen*4);
   if(itype[i-1]==UJUMP||itype[i-1]==CJUMP||itype[i-1]==SJUMP||itype[i-1]==RJUMP||itype[i-1]==FJUMP) {
     if(start+i*4==pagelimit) {
       itype[i-1]=SPAN;
@@ -11760,6 +11848,8 @@ int new_recompile_block(int addr)
     {
       void *stub=out;
       void *addr=check_addr(link_addr[i][1]);
+      if (g_dev.dd.idisk != NULL && WD_SMC_PAGE(link_addr[i][1]))
+        wd_smc("LINK", link_addr[i][1], (u_int)(intptr_t)addr, link_addr[i][2]);
       emit_extjump(link_addr[i][0],link_addr[i][1]);
 #ifndef DISABLE_BLOCK_LINKING
 #if NEW_DYNAREC==NEW_DYNAREC_ARM64
