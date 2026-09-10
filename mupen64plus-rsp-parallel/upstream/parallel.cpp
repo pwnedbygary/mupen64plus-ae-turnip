@@ -219,6 +219,34 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 				}
 				fprintf(f, "R21EMU n=%u k0=%08x f0=%08x\n",
 				        r21_emu_save_n(), r21_emu_save_k0(), r21_emu_save_f0());
+				{
+					/* ROUND 28: reads of SP_READ_LENGTH/SP_WRITE_LENGTH and
+					   how many of them came back NON-ZERO.  A ucode uses this
+					   pair as the "did my DMA finish?" poll (ares:
+					   n64/rsp/io.cpp answers it with dma.current.length, i.e.
+					   0 between transfers); this integration echoed the last
+					   written length instead.  MEASURED: the F-Zero X FIFO
+					   ucode reads this pair ZERO times (`reads=0`) -- it polls
+					   SP_DMA_FULL/SP_DMA_BUSY instead -- so R28_LEN_READBACK is
+					   0 and this line is the record of the A/B.
+
+					   R28D is the fix that IS under test: the gfx ucode's saved
+					   display-list pointer (DMEM 0xBF8) was 0x152C03C0, which
+					   is not a physical RDRAM address, so its RDL walk ran in
+					   the all-zero region 0x2C03C0.. and it never published.
+					   `n` counts the task starts at which it was replaced by
+					   the header's data_ptr, `saved` the offending value and
+					   `new` the replacement. */
+					extern unsigned r28_len_reads(void), r28_len_reads_nz(void);
+					extern uint32_t r28_len_read_last(void), r28_len_read_pc(void);
+					extern unsigned r28_restart_count(void);
+					extern uint32_t r28_restart_saved(void), r28_restart_new(void);
+					fprintf(f, "R28L reads=%u nz=%u last=%08x pc=%03x\n",
+					        r28_len_reads(), r28_len_reads_nz(),
+					        r28_len_read_last(), r28_len_read_pc());
+					fprintf(f, "R28D n=%u saved=%08x new=%08x\n",
+					        r28_restart_count(), r28_restart_saved(), r28_restart_new());
+				}
 				fprintf(f, "R20W wr=%u outbuf=%u datalist=%u\n",
 				        r20_wr_total(), r20_wr_outbuf(), r20_wr_datalist());
 				fprintf(f, "R20P pub=%u ring=%u stale=%u\n",

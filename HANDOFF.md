@@ -5,6 +5,125 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 28 — THE FIFO UCODE'S WHOLE DMA SURFACE IS NOW MAPPED, TWO MORE HYPOTHESES ARE
+KILLED WITH MEASUREMENTS, AND THE FAILURE IS RELOCATED *UPSTREAM* OF THE PUBLISH: THE RSP's
+OWN CODE IS OVERWRITTEN WITHIN THE FIRST TEN DISPLAY-LIST FETCHES. BLACK SCREEN UNCHANGED.**
+
+**1. THE RSP DISASSEMBLER EXISTS AGAIN.** `tools/rspdis.py <ram.bin> <rdram_off> <len>
+[imem_base]` — integer MIPS-I plus the vector unit, branch/jump targets printed as both the
+IMEM address and the pc the plugin reports.  It was missing from the tree; the whole round
+depends on it.  Note the file's byte convention: file offset A read as `<I` yields the N64
+**word value** at RDRAM address A (the dumps byteswap), which is what round 27's DL reading
+already assumed.
+
+**2. THE FIFO UCODE'S ENTIRE DMA SURFACE IS TWO INSTRUCTIONS.**  Disassembling the task's
+real text (RDRAM 0x7505C0, 0xF80 bytes; `ucode` is loaded to IMEM 0x080 and `ucode_boot` —
+RDRAM 0x7515D8, 0x170 bytes — to IMEM 0x000, where it **overwrites** text pc 0x080..0x170):
+
+```
+pc 0xFD8  mfc0 t3,SP_DMA_FULL(5) / bne spin      <- the shared DMA primitive
+pc 0xFE4  mtc0 s4,SP_MEM_ADDR(0)
+pc 0xFE8  bltz s4, 0xFF8                         <- s4 < 0 selects WRITE
+pc 0xFEC  mtc0 t8,SP_DRAM_ADDR(1)                  (branch delay slot, always)
+pc 0xFF0  jr ra
+pc 0xFF4  mtc0 s3,SP_RD_LEN(2)                   <- READ branch
+pc 0xFF8  jr ra
+pc 0xFFC  mtc0 s3,SP_WR_LEN(3)                   <- WRITE branch
+```
+
+`grep SP_WR_LEN` / `grep SP_RD_LEN` over the whole text return **exactly one site each** — both
+in that primitive.  Its callers are the RDL chunk fetcher at pc 0x170 (`addi s3,r0,167`
+= 0xA8 bytes into DMEM 0x920, `addiu k0,k0,168`) and the kick/publish at pc 0x270..0x2C8
+(`mtc0 t8,DPC_END(9)` where `t8 = DMEM[0xF0]`, then `addi s4,s6,-8536` = `s6 - 0x2158`
+< 0 -> WRITE).  **The whole FIFO architecture is therefore: fetch 0xA8-byte RDL chunks into
+DMEM 0x920, convert them into the two 344-byte DMEM command buffers at 0xBA8/0xDB0, and
+write each buffer out to the ring at the RDP end pointer.**
+
+**3. THE GFX UCODE ISSUES EXACTLY ONE WRITE DMA PER RUN — AND IT IS NOT THE PUBLISH.**
+On-device (`wd_dmatr.txt` is ~100 MB; count it on the device, never pull it):
+`grep -c 'WR pc=fc'` == **1** against **87421** `RD pc=fc` (r28a).  That one write is the
+ucode's own yield save:
+
+```
+D7321 WR pc=fc4 dst=32dcd0 src=000000 len=0c00 cnt=0 skip=0 ...
+      (sr19=00000bff sr20=ffff8000 sr24=0032dcd0)
+```
+
+(s4 = 0xFFFF8000 < 0 -> WRITE, s3 = 0xBFF -> 0xC00 bytes, DRAM = the header's
+`yield_data_ptr`.)  **The publish write at pc 0x2C8 never executes.**  Consequently the whole
+336 KiB ring 0x2D9CD0..0x32DCD0 is ZERO in `ram.bin` while the ucode still programmes
+DPC_START/END up to 0x2DAF60, and `mi_rd_dp` stays 0.
+
+**4. HYPOTHESIS KILLED — THE ares DMA-LENGTH READBACK.  `R28_LEN_READBACK` IS 0.**  ares
+answers `mfc0` of SP_READ_LENGTH/SP_WRITE_LENGTH with `dma.current.length` (0 between
+transfers — `n64/rsp/io.cpp`, `interpreter-scc.cpp` routes `rd<8` to `ioRead`); this
+integration echoed the last written length instead.  That divergence is real, but the F-Zero X
+FIFO never reads the pair: **`R28L reads=0 nz=0` for a full 105 s run** against 91683
+transfers.  Its two polls are on SP_DMA_FULL(5) (pc 0xFDC) and SP_DMA_BUSY(6) (pc 0xFCC),
+both already 0 here.  A/B recorded at the `#define`; kept off because an inert change does not
+belong in the shipped path.
+
+**5. HYPOTHESIS KILLED — "THE WARM RESUME LOADS k0 FROM DMEM 0xBF8".  `R28_RESTART_DL` IS 0.**
+The walker's k0 is 0x152C03C0 in *every* arm, including r28c, where DMEM 0xBF8 **and**
+DMEM 0xFF0 were both forced to the header's `data_ptr` 0x284990 at every gfx task start
+(`R28D n=3` — it fired three times):
+
+```
+r28c wd_k0.txt n=0: sr26(k0)=152c03c0  bf8=00284990  ff0=00284990  im0=900100de
+```
+
+So k0 comes from neither header slot.  **The warm/cold dispatch at pc 0x098/0x0BC/0x160 is
+dead code** — it lives in the text that `ucode_boot` overwrites (`imem[0]` reads 0x900100de,
+the overlay's first word, not the text's 0x4a00002c).  The **executable entry is the
+overlay**, and it does:
+
+```
+pc 0x008  jal 0x21C          # SEGMENT RESOLUTION
+pc 0x014  ori k0,t8,0        # k0 := the RESOLVED pointer
+pc 0x21C  srl t3,t8,22 / andi t3,t3,0x3C / lw t3,0xF8(t3)   # 16-entry table at DMEM 0x0F8
+pc 0x228  sll t8,t8,8 / srl t8,t8,8                         # 24-bit offset
+pc 0x234  and t8,t8,t3                                      # (jr ra delay slot)
+```
+
+k0 = 0x152C03C0 is a **segment-resolved** value whose low 24 bits are 0x2C03C0.  SP_DRAM_ADDR
+is 24-bit on real hardware too, so hardware lands on 0x2C03C0 as well — and **RDRAM
+0x2C03C0..0x2C07FF is ALL ZEROS**: the ucode decodes G_NOOP out of empty memory, forever.
+**This integration is not at fault for the pointer, and no header rewrite can fix it.**
+
+**6. THE FAILURE IS RELOCATED: THE RSP'S OWN CODE AND STATE ARE DESTROYED EARLY.**
+`wd_k0.txt` over the first sixteen fetches:
+
+```
+n=0   im0=900100de  2e0=00751540  2e8=007515d8  ff0=00284990  fc4=00000004  k0=152c03c0
+n=1   im0=02f65822  2e0=00751540  2e8=007515d8  ff0=00284990  fc4=00000004   (the yield save)
+n=10  im0=00000000  2e0=00ea1b00  2e8=00ea1b98  ff0=00284990  fc4=00000000
+n=16  im0=00000000  2e0=00010001  2e8=00010001  ff0=00010001  fc4=00010001
+```
+
+`2e0`/`2e8` are the ucode's OWN overlay descriptors.  Clobbered to 0xEA1B00/0xEA1B98, the
+descriptor-driven load then copies the 64DD image area straight over the ucode's entry code:
+
+```
+WILD dir=RD pc=020 dram=00ea1b98 mem=00001000 len=0170    (0xEA1B98 masks to RDRAM 0x6A1B98)
+```
+
+**After that the RSP is executing zeros, so "the FIFO never publishes" is downstream of "the
+FIFO's code has been overwritten".**  The 0x00010001 pattern is the same one round 12 found in
+the DMEM header.
+
+**7. NEXT (round 29).**  Two concrete questions, both answerable from artefacts already on
+disk:
+   1. **Whatever writes 0xEA1B00 into DMEM 0x2E0 is the trigger** — it is the value that makes
+      the ucode load disk data over itself.  Find the store (`sw ..., 0x2E0(r0)` sites in the
+      disassembly) and what feeds it.
+   2. **The segment table at DMEM 0x0F8 is the input to k0.**  Why does resolving the guest's
+      display-list pointer land on an all-zero RDRAM region?  Either the guest's list genuinely
+      lives at 0x2C03C0 and the RSP is being run *before* the guest fills it (a guest/RSP
+      ordering bug — the guest must build the list, then submit), or the resolution uses a
+      stale segment base.  Check `g_MOVEWORD G_MW_SEGMENT` handling (the guest's list at
+      `data_ptr` = 0x284990 opens with `DB060000 00000000` = segment 0 := 0).
+   3. Do **not** re-run the header-rewrite family of fixes; it is measured ineffective.
+
 **ROUND 27 — TWO HYPOTHESES KILLED WITH CLEAN A/B RUNS, ONE METHODOLOGY BUG FOUND, AND A
 CLEAN BASELINE ESTABLISHED. THE BLACK SCREEN IS UNCHANGED: `R20W outbuf=0`, `R20P ring=0`,
 `R26W wild=20479`, screen 96.5% black.**

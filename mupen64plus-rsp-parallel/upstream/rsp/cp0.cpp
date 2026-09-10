@@ -449,6 +449,20 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
    carts, cart-hack and Mario Tennis keep the stock path bit for bit. */
 #define R20_SIG0_YIELD 0
 
+/* ROUND 28: answer a read of SP_READ_LENGTH / SP_WRITE_LENGTH with the length
+   of the transfer still in flight (0, because this integration completes every
+   transfer synchronously inside RSP_MTC0) instead of echoing the last written
+   value.  This is what ares does -- see the long note at RSP_MFC0.
+
+   MEASURED AND KEPT OFF (r28a).  The divergence from ares is real, but the
+   F-Zero X FIFO ucode never reads either register: `R28L reads=0 nz=0` in
+   wd_r20.txt for a full 105 s run, against 91683 transfers.  Its two DMA
+   polls are on SP_DMA_FULL(5) (pc 0xFDC) and SP_DMA_BUSY(6) (pc 0x1FCC /
+   0xFCC), both of which already read 0 here.  Setting the switch to 1 is
+   therefore inert on this route, and an inert change does not belong in the
+   shipped path.  Kept as a recorded A/B. */
+#define R28_LEN_READBACK 0
+
 #if R20_SIG0_YIELD
 /* ROUND 27 A/B RESULT -- MEASURED, KEPT OFF.  The switch was flipped to 1,
    built (marker `R27SIG0YIELD-ON` verified in the packaged
@@ -506,6 +520,142 @@ static uint32_t r20_save_k0 = 0, r20_save_ptr = 0;
 static unsigned r20_yreq = 0, r20_ytimeout = 0, r20_ystage = 0;
 static unsigned r20_ystage_poll = 0;
 
+/* ---------------------------------------------------------------------------
+   ROUND 28: THE GFX UCODE'S SAVED DISPLAY-LIST POINTER IS GARBAGE, SO ITS
+   DISPLAY-LIST WALK RUNS IN A ZERO REGION AND IT NEVER PUBLISHES ANYTHING.
+
+   Ground truth gathered in r28a (and reproducible from r27b):
+
+   * The DD run's gfx task is a FIFO-style ucode whose whole text carries
+     exactly ONE SP_RD_LEN site and ONE SP_WR_LEN site -- both in the shared
+     DMA primitive at pc 0xFD8..0xFFC:
+         pc 0xFD8  mfc0 t3,SP_DMA_FULL(5)  /  bne spin
+         pc 0xFE4  mtc0 s4,SP_MEM_ADDR(0)
+         pc 0xFE8  bltz s4, 0xFF8                 <- s4 < 0 selects the WRITE
+         pc 0xFEC  mtc0 t8,SP_DRAM_ADDR(1)           (branch delay slot)
+         pc 0xFF0  jr ra
+         pc 0xFF4  mtc0 s3,SP_RD_LEN(2)           <- READ  branch
+         pc 0xFF8  jr ra
+         pc 0xFFC  mtc0 s3,SP_WR_LEN(3)           <- WRITE branch
+     Its DMA callers pass s4 = the SP-memory address, so the WRITE branch is
+     reachable only when the caller hands it a NEGATIVE address.
+
+   * On-device counts for the whole run (`wd_dmatr.txt`, ~100 MB, counted on
+     the device and never pulled): `grep -c 'WR pc=fc'` == 1 against 87421
+     `RD pc=fc`.  That single write is the ucode's own yield save
+       D7321 WR pc=fc4 dst=32dcd0 src=000000 len=0c00 ... sr19=00000bff
+             sr20=ffff8000 sr24=0032dcd0
+     (s4 = 0xFFFF8000 < 0 -> WRITE, s3 = 0xBFF -> 0xC00 bytes, DRAM = the
+     header's yield_data_ptr).  The PUBLISH write -- the kick code at
+     pc 0x270 (`mtc0 t8,DPC_END`, `addi s4,s6,-8536` at pc 0x2C0, `j 0xFD8`
+     at pc 0x2C8) -- NEVER EXECUTES.
+
+   * Consequently the whole 336 KiB RDP command ring 0x2D9CD0..0x32DCD0 is
+     ZERO in ram.bin while the ucode still programmes DPC_START/END up to
+     0x2DAF60, and mi_rd_dp stays 0.
+
+   * WHY: the display-list walker (pc 0x170) fetches 0xA8-byte chunks from k0
+     into DMEM 0x920 and advances k0 by 0xA8.  wd_k0.txt latches k0 at every
+     one of those fetches:
+         R25K0 n=0 prev_pc=180 pc=fc8 sr26=152c03c0 -> 152c0468
+               sr19=000000a7 sr20=00000920 sr24=152c03c0 ...
+     k0 = 0x152C03C0.  SP_DRAM_ADDR is 24-bit, so the fetch lands at
+     0x2C03C0 -- and RDRAM 0x2C03C0..0x2C07FF is ALL ZEROS in ram.bin.  The
+     ucode walks 0x2C03C0, 0x2C0468, 0x2C0510 ... decoding G_NOOP after
+     G_NOOP out of empty memory, forever.
+
+   * 0x152C03C0 is not a physical RDRAM address at all, and it is not the
+     guest's task pointer either (`data_ptr` in the very same header reads
+     0x284990, whose 0x18 bytes are a real display list:
+     [G_MOVEWORD seg0=0, G_RDPFULLSYNC, G_ENDDL]).  It is the value the
+     ucode reloads from its own resume slot DMEM 0xBF8 on the WARM path
+     (pc 0x0BC: `lw k0,0xBF8(r0)`), which the COLD path (pc 0x160:
+     `lw k0,0xFF0(r0)` = data_ptr) would have replaced.  The yield the host
+     has been fabricating since round 10 keeps the guest re-submitting the
+     same task with the header's OS_TASK_YIELDED bit set (flg=00000005 in
+     wd_r21.txt), so the ucode keeps taking the warm path and keeps walking
+     the stale pointer.
+
+   THE FIX (DD-gated, and strictly a repair, not a policy change): when a gfx
+   task starts and the ucode's saved display-list pointer is NOT a usable
+   physical RDRAM address, restart the walk from the guest's data_ptr.  A
+   saved pointer that IS usable is left alone, so a legitimate mid-list resume
+   is untouched.  Setting the header's OS_TASK_YIELDED bit back to 0 makes the
+   ======================================================================
+   R28 MEASUREMENT -- KEPT OFF.  THE PREMISE ABOVE IS WRONG.
+   ======================================================================
+   r28b (guarded) and r28c (R28_FORCE=1, unconditional) were built and run on
+   the RP6.  Both arms: `R20W outbuf=0`, `ring=0`, `WR pc=fc` == 1, screen black.
+
+   r28c forced DMEM 0xBF8 := DMEM 0xFF0 AND cleared OS_TASK_YIELDED at every
+   gfx task start (`R28D n=3` -- it fired three times, with the header's
+   data_ptr == 0x284990 at the moment it did).  The walker's k0 at the FIRST
+   fetch was still 0x152C03C0:
+
+     r28c wd_k0.txt n=0: sr26=152c03c0 bf8=00284990 ff0=00284990
+                         im0=900100de 2e0=00751540 fc4=00000004
+
+   So k0 does not come from DMEM 0xBF8, nor from DMEM 0xFF0, and the warm/cold
+   dispatch at pc 0x098/0x0BC/0x160 is not what runs: that code lives in the
+   part of the text (IMEM 0x080..0x170) that the ucode_boot overlay OVERWRITES
+   when the core loads it to IMEM 0x000 (imem[0] reads 0x900100de, the
+   overlay's first word, not the text's 0x4a00002c).
+
+   The executable entry is the overlay, and it sets
+     pc 0x008  jal 0x21C                 # SEGMENT RESOLUTION
+     pc 0x014  ori k0,t8,0              # k0 := the RESOLVED pointer
+   with the resolver at pc 0x21C reading a 16-entry segment table at DMEM 0x0F8:
+     pc 0x21C  srl  t3,t8,22 / andi t3,t3,0x3C / lw t3,0xF8(t3)
+     pc 0x228  sll  t8,t8,8  / srl  t8,t8,8            # 24-bit offset
+     pc 0x234  and  t8,t8,t3                            # (branch delay)
+   k0 = 0x152C03C0 is therefore a RESOLVED, segment-prefixed value whose low 24
+   bits are 0x2C03C0 -- and SP_DRAM_ADDR is 24-bit on real hardware too, so the
+   fetch would land on 0x2C03C0 there as well.  RDRAM 0x2C03C0..0x2C07FF is ALL
+   ZEROS in ram.bin: the ucode decodes G_NOOP after G_NOOP out of empty memory.
+   THIS INTEGRATION IS NOT AT FAULT FOR THE POINTER, and rewriting the header
+   cannot fix it.
+
+   What the header rewrite also did not fix is the real damage, which is
+   downstream and is round 29's target.  Over the first ~10 fetches the ucode's
+   own DMEM state is destroyed (wd_k0.txt):
+
+     n=0   im0=900100de  2e0=00751540  2e8=007515d8  ff0=00284990  fc4=00000004
+     n=1   im0=02f65822  2e0=00751540  2e8=007515d8  ff0=00284990  fc4=00000004
+     n=10  im0=00000000  2e0=00ea1b00  2e8=00ea1b98  ff0=00284990  fc4=00000000
+     n=16  im0=00000000  2e0=00010001  2e8=00010001  ff0=00010001  fc4=00010001
+
+   and the descriptor-driven overlay load then copies the 64DD image area over
+   the ucode's own code:
+
+     `WILD dir=RD pc=020 dram=00ea1b98 mem=00001000 len=0170`
+     (0xEA1B98 masks to RDRAM 0x6A1B98; IMEM 0x000..0x170 is zeroed)
+
+   After that the RSP executes zeros, so "the FIFO never publishes" is
+   downstream of "the FIFO's code has been overwritten". */
+#define R28_RESTART_DL 0
+
+/* R28_FORCE=1 (r28c) drops the "only when the saved pointer is unusable" guard,
+   because r28b measured that guard to be too weak: at the run's FIRST
+   display-list fetch the saved slot DMEM 0xBF8 held 0x00080008 -- word-aligned,
+   inside RDRAM, and therefore "usable" by the guard -- while the walker's k0 was
+   0x152C03C0 (wd_k0.txt n=0: sr26=152c03c0 bf8=00080008 ff0=00284990).  So the
+   guard let the bad walk through, and within ten fetches DMEM 0x2E0/0x2E8 (the
+   ucode's OWN overlay descriptors) had been overwritten with 0xEA1B00/0xEA1B98
+   and the descriptor-driven DMA then loaded RDRAM 0xEA1B98 over the ucode's own
+   entry code (WILD dir=RD pc=020 dram=00ea1b98 mem=00001000 len=0170; wd_k0.txt
+   im0 goes 900100de -> 02f65822 -> 00000000).  After that the RSP is executing
+   zeros and nothing downstream can matter.
+
+   With R28_FORCE=1 every gfx task start resets the resume slot to the guest's
+   data_ptr and clears OS_TASK_YIELDED, so the ucode's own dispatch
+   (pc 0x160: `lw k0,0xFF0(r0)`) starts the walk on the display list the guest
+   actually submitted.  Restarting a display list from its head is idempotent,
+   so this cannot lose a frame. */
+#define R28_FORCE 1
+
+static volatile unsigned r28_restart_n = 0, r28_restart_bad = 0;
+static volatile uint32_t r28_restart_bf8 = 0, r28_restart_dptr = 0;
+
 /* Called by DoRspCycles for every fresh task entry. */
 extern "C" void r20_task_begin(void)
 {
@@ -526,7 +676,39 @@ extern "C" void r20_task_begin(void)
 #else
 		fprintf(stderr, "R27C-SIG0OFF-BUSYPRINT\n");
 #endif
+#if !R28_RESTART_DL
+		fprintf(stderr, "R28D-NORESTART-DL\n");
+#elif R28_FORCE
+		fprintf(stderr, "R28C-FORCE-DL\n");
+#else
+		fprintf(stderr, "R28B-GUARDED-DL\n");
+#endif
 	}
+#if R28_RESTART_DL
+	/* See the long note above.  Gfx tasks only (DMEM 0xFC0 != 2 == M_AUDTASK);
+	   DD route only. */
+	if (rsp_ares_budget_enabled())
+	{
+		uint32_t* dm = (uint32_t*)RSP::rsp.DMEM;
+		if (dm[0xfc0 / 4] != 2u)
+		{
+			uint32_t bf8 = dm[0xbf8 / 4];
+			uint32_t dptr = dm[0xff0 / 4];
+			r28_restart_bad = bf8;
+			r28_restart_dptr = dptr;
+			/* "usable" == word-aligned and inside the 8 MiB RDRAM window */
+			if (R28_FORCE || (bf8 & 3u) || bf8 >= 0x800000u)
+			{
+				if (dptr && !(dptr & 3u) && dptr < 0x800000u)
+				{
+					dm[0xbf8 / 4] = dptr;          /* k0's resume slot := data_ptr */
+					dm[0xfc4 / 4] &= ~1u;          /* clear OS_TASK_YIELDED       */
+					r28_restart_n++;
+				}
+			}
+		}
+	}
+#endif
 	r20_ystage = 0;
 	r20_ystage_poll = 0;
 }
@@ -692,10 +874,74 @@ extern "C"
 	void log_rsp_mem_parallel(void);
 #endif
 
+	/* ---------------------------------------------------------------------
+	   ROUND 28: SP_READ_LENGTH / SP_WRITE_LENGTH ARE DMA TRIGGERS, AND A READ
+	   MUST REPORT THE TRANSFER STILL IN FLIGHT -- 0 ONCE IT HAS FINISHED.
+
+	   ares is the reference: n64/rsp/interpreter-scc.cpp routes MFC0 with
+	   rd<8 straight into RSP::ioRead, and n64/rsp/io.cpp answers the length
+	   register pair with
+
+	       if(address == 2 || address == 3)      // SP_READ_LENGTH / SP_WRITE_LENGTH
+	         data.bit(0,11) = dma.current.length;   // 0 between transfers
+
+	   so a read of that pair is the canonical "has the transfer I just
+	   started completed?" poll.
+
+	   This integration instead stores the written value into cr[2]/cr[3] in
+	   RSP_MTC0 (completing the transfer synchronously inside that same
+	   handler) and then reads it back, so the value stays non-zero for the
+	   rest of the process.
+
+	   MEASURED CONSEQUENCE (r27b, DD route, F-Zero X): the FIFO gfx ucode's
+	   DMA stub at IMEM 0x1FAC..0x1FFF ends in
+
+	     IMEM 1FC8  400b3000  mfc0 t3, $3          # SP_WR_LEN readback
+	     IMEM 1FCC  1560ffff  bne  t3, r0, 1FCC    # spin while non-zero
+	     IMEM 1FD0  400b3000  mfc0 t3, $3          # (delay slot)
+
+	   and the RSP parks there for the whole run: 172 of every round-27 run's
+	   gfx slices END and ENTER at pc=0x0FC8, the FIFO never issues a single
+	   write DMA (on-device `grep -c 'WR pc=fc' wd_dmatr.txt` == 0 against
+	   87421 reads at the same pc), the entire 336 KiB RDP command ring
+	   0x2D9CD0..0x32DCD0 reads back ZERO in ram.bin while the ucode
+	   programmes DPC_START/END up to 0x2DAF60, and mi_rd_dp stays 0 -- a
+	   black screen with clean audio.
+
+	   DD-gated (rsp_ares_budget_enabled() == IsDDPresent()): plain carts keep
+	   the stock readback byte for byte.  The raw readback is still counted
+	   and latched so the divergence stays measurable in wd_r20.txt.
+
+	   R28_LEN_READBACK=0 restores the round-27 behaviour for A/B. */
+	static volatile unsigned r28_len_n = 0, r28_len_nz = 0;
+	static volatile uint32_t r28_len_raw = 0, r28_len_pc = 0;
+
+	extern "C" unsigned r28_len_reads(void)     { return r28_len_n; }
+	extern "C" unsigned r28_len_reads_nz(void)  { return r28_len_nz; }
+	extern "C" uint32_t r28_len_read_last(void) { return r28_len_raw; }
+	extern "C" uint32_t r28_len_read_pc(void)   { return r28_len_pc; }
+	extern "C" unsigned r28_restart_count(void) { return r28_restart_n; }
+	extern "C" uint32_t r28_restart_saved(void) { return r28_restart_bad; }
+	extern "C" uint32_t r28_restart_new(void)   { return r28_restart_dptr; }
+
 	int RSP_MFC0(RSP::CPUState *rsp, unsigned rt, unsigned rd)
 	{
 		rd &= 15;
 		uint32_t res = *rsp->cp0.cr[rd];
+#ifdef PARALLEL_INTEGRATION
+		if (rd == CP0_REGISTER_DMA_READ_LENGTH || rd == CP0_REGISTER_DMA_WRITE_LENGTH)
+		{
+			r28_len_n++;
+			r28_len_raw = res;
+			r28_len_pc = rsp->pc & 0xfff;
+			if (res != 0)
+				r28_len_nz++;
+#if R28_LEN_READBACK
+			if (rsp_ares_budget_enabled())
+				res = 0;
+#endif
+		}
+#endif
 		if (rt)
 			rsp->sr[rt] = res;
 
