@@ -1,14 +1,137 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
 > Auto-generated checkpoint. Read top-to-bottom. The single biggest concrete progress this
-> session: **round 35 found, reproduced and fixed the root cause of the frozen frame — an RSP
-> write-DMA whose per-word address wrap deposits its tail on RDRAM 0x0 and destroys the guest's
-> exception vector, livelocking the CPU (see ROUND 35 below).** Earlier: **the missing-DD-ROM root
-> cause is fixed and verified** — the DD ROM and disk now load, so the remaining fault is a
-> *different, later* problem that needs fresh
-> diagnosis rather than the prior MI-interrupt fix. **Round 34 corrects the oldest shared
-> assumption: the "black screen" is not empty — the guest is drawing a static "…64DD…" screen and
-> the display path works (see ROUND 34 below).**
+> session: **round 36 named the post-load deadlock end-to-end — the guest's GAME thread is blocked
+> in `osRecvMesg(&D_800DCAC8)` waiting for the `0x2A` that only the DP (RDP-done) interrupt
+> produces, and the RSP's flush loop is livelocked because the OSTask copy in DMEM has been replaced
+> by the game's `0x00010001` fill (see ROUND 36 below).** Round 35 found, reproduced and fixed the
+> root cause of the *previous* frozen frame — an RSP write-DMA whose per-word address wrap deposits
+> its tail on RDRAM 0x0 and destroys the guest's exception vector, livelocking the CPU. Earlier: the
+> missing-DD-ROM root cause is fixed and verified, so the remaining fault is a *different, later*
+> problem. **Round 34 corrects the oldest shared assumption: the "black screen" is not empty — the
+> guest is drawing a static "…64DD…" screen and the display path works (see ROUND 34 below).**
+
+**ROUND 36 — THE POST-LOAD DEADLOCK, NAMED IN THE GUEST'S OWN CODE AND IN THE UCODE'S OWN FLUSH
+ROUTINE. USER-VISIBLE SYMPTOM: "the game opens up and the loading bar progresses, then it goes away
+and we're left at just the 64DD screen with no loading bar."**
+
+**0. The symbol set was wrong for 35 rounds.** `fzx_state.py` decodes DD dumps with
+`linker_scripts/jp/rev0`, but the running image is the **DISK** program (`jp/ek`). Proof is exact:
+the task headers the core logs carry `ucode_boot=0x807504F0`, `ucode=0x807505C0`,
+`audio=0x80768E60`, and `jp/ek`'s linker script puts `rspbootTextStart=0x807504F0`,
+`gspF3DEX2_fifoTextStart=0x807505C0`, `aspMainTextStart=0x80768E60` — while `jp/rev0` has them at
+`0x800C7A60`/`0x800CC2D0`, i.e. 0x8000_0000 lower, because the EK links its own libultra and ucode
+blobs as a second image that the 64DD IPL loads. **New tool `.fzxwork/ek_state.py`** decodes with
+`jp/ek`. With it the freeze dump's scheduler state is unambiguous:
+
+```
+__osRunningThread = AUDIO (prio 20)
+__osActiveQueue   = sGameThread   id=5 GAME prio=10, blocked in
+                    osRecvMesg+0x68 on queue 0x8079A108 == D_800DCAC8,
+                    whose message buffer still holds 0x2A
+```
+
+**1. That block is the game's per-frame handshake, read out of the decomp.**
+`fzerox-decomp src/sys/sys_gfx.c:189` and `:214` are exactly that call —
+`osRecvMesg(&D_800DCAC8, &D_800DCD10, OS_MESG_BLOCK)` inside `func_80067D64` / `func_80067E98`,
+after `Gfx_FullSync()` and before `Gfx_SetTask(sGfxTask)`. The `0x2A` is posted at
+`src/sys/sys_main.c:396`, and that line is reachable **only** from
+`else if (msg == EVENT_MESG_DP)` at `src/sys/sys_main.c:352`, fed by
+`osSetEventMesg(OS_EVENT_DP, &gMainThreadMesgQueue, EVENT_MESG_DP)` at `src/sys/sys_main.c:171`.
+**So the game advances exactly one frame per DP (RDP-done) interrupt, and no more.** Measured on the
+stalled run: `raise_bits DP=1` for the entire 150 s, `dp_ack=3`, `mi_rd_dp=1`, `t1gfx=3` gfx task
+loads, while VI=7742 / PI=13249 / AI=7676 / SP=211 climbed normally. The game thread processed
+exactly one `0x2A` (the logo frame) and never got another.
+
+**2. Why the DP stops: the RSP's flush routine reads the RDP ring base and end out of the OSTask
+copy in DMEM — and that copy is garbage.** Disassembled from the round-36 capture:
+
+```
+IMEM 0260  lw    t8,0xF0(r0)     ; ring pointer
+IMEM 0264  addiu s3,t3,512       ; s3 = (s7-s6) + 0x200
+IMEM 026C  lw    t4,0xFEC(r0)    ; RING END   <- OSTask.output_buff_size
+IMEM 0270  mtc0  t8, DPC_END     ; *** the RDP kick ***
+IMEM 0274  add   t3,t8,s3
+IMEM 0278  sub   t4,t4,t3
+IMEM 027C  bgez  t4,0x02A0       ; still inside the ring -> no wrap
+IMEM 028C  lw    t8,0xFE8(r0)    ; RING BASE  <- OSTask.output_buff
+IMEM 0290  mfc0  t3, DPC_CURRENT
+IMEM 0294  beq   t3,t8,0x0290    ; spin until the RDP has drained to the base
+IMEM 029C  mtc0  t8, DPC_START
+IMEM 02B8  sw    t3,0xF0(r0)     ; DMEM[0xF0] = ringBase + s3
+```
+
+`wd_r36.txt` (new instrument) captures the RSP at the first out-of-RDRAM kick: `fc0=00010001`, and
+`fe8`/`fec` (the OSTask's `output_buff` / `output_buff_size`, i.e. the ring base and end) both
+replaced by the game's `0x00010001` fill. With the end clobbered, `ringEnd - (ptr+s3)` is negative
+for every real pointer, so **every** flush takes the wrap path; with the base clobbered,
+`DMEM[0xF0]` becomes `garbage + s3`. Measured, that is
+
+```
+last twelve good kicks: DPC_END = 0x002F7B48 .. 0x002FC9B0   (~0x5E0-byte steps)
+then:                   DPC_START/END = 00000000 / FC000640
+                        DPC_START/END = FC000640 / FC000C88
+                        DPC_START/END = FC000C88 / FC0012D8
+```
+
+i.e. nothing more mysterious than an ordinary `0x640` offset carrying a garbage top byte. And
+`parallel-RDP` **silently discards** a window it cannot read — `parallel_imp.cpp:178`,
+`if (DP_END > 0x7ffffff || DP_CURRENT > 0x7ffffff) return;` — **without advancing `DPC_CURRENT`**.
+The ucode's spin at IMEM 0x290 therefore never returns, no further `DPC_END` is written, no
+`RDP::Op::SyncFull` is ever executed, `*gfx.MI_INTR_REG |= DP_INTERRUPT` never fires, and the guest
+never sees `EVENT_MESG_DP`. Measured: `RDPDP dp_seen=136 dp_hot=134 empty=5 ring_n=144 noadv=139
+bad=0` — 139 of 144 kicks left `DPC_CURRENT` behind.
+
+**3. Negative results that close leads (each measured — do not re-chase these).**
+* **The 19 MB/s diagnostic trace was NOT a timing confound.** r36b (all per-transfer traces off)
+  reproduced r36a **bit for bit**: `wd_r36.txt` byte-identical (`n=1 ring_n=147`, `n=2 ring_n=148`,
+  `n=3 ring_n=149`), `wd_lowsp.txt` identical, `R20W wr=3120` vs `3124` out of ~19M DMAs. Removing it
+  is still right for the *device*: `wd_dmatr.txt` had reached **2.9 GB** in the app's files dir
+  (`du` = 2.8 GB) in a single 150 s run.
+* **The yielded-resume OSTask fields are correct libultra behaviour, not corruption.**
+  `fzerox-decomp src/libultra/io/sptask.c:58-64`: for an `OS_TASK_YIELDED` task,
+  `tp->t.ucode_data = tp->t.yield_data_ptr; tp->t.ucode_data_size = tp->t.yield_data_size;` and
+  `flags &= ~OS_TASK_YIELDED`. The live task at RDRAM `0x7C1C00`
+  (`type=1 flags=5 ucode_boot=0x807504F0 ucode=0x00752AE0 ucode_data=0x0032DCD0 data_size=0x00000C00
+  dram_stack=0x0032E8D0 out=0x002D9CD0..0x0032DCD0 data_ptr=0x0024E260 yield=0x0032DCD0/0xC00`) is
+  exactly what `osSpTaskLoad` builds.
+* **`ucode = 0x752AE0` is legitimate.** The game keeps two gfx ucode sets in its own task table:
+  RDRAM `0x2BB0C0` → ucode `0x80752AE0` / data `0x8077A090`; RDRAM `0x2BB100` → ucode `0x807505C0` /
+  data `0x80779860`.
+* **The RSP DMA bank convention is right in both directions.** `SP_MEM_ADDR` bit 12 set = IMEM
+  (`rsp_core.c:232` `sp->mem + (dma->memaddr & 0x1000)`, and `plugin_start_rsp` sets
+  `DMEM = MM_RSP_MEM`, `IMEM = MM_RSP_MEM + 0x1000`). So the ucode's `addiu s4,r0,0x9B0` chunk
+  fetch really does land in **DMEM** 0x9B0, which is what its own `lw t9,0xA58(k1)` reads.
+* **The EK uses SIG0/SIG1/SIG2 for the yield handshake** — `include/PR/rcp.h:243-251`:
+  `SP_SET_YIELD = SP_SET_SIG0`, `SP_STATUS_YIELDED = SP_STATUS_SIG1`,
+  `SP_SET_TASKDONE = SP_SET_SIG2`. That is exactly the SIG0/SIG1 behaviour round 33 measured.
+
+**4. Environment/measurement fix (overdue).** Every per-transfer trace is now opt-in behind
+`files/wd_trace.flag`; absent the flag only the once-per-second summaries run. `rsp_diag_trace()` in
+`parallel.cpp` gates `wd_dmatr` (the 2.9 GB one), the round-30/32/33 flush traces and the round-25
+`$k0` log. The DD route's budget/yield model is **time** based (`rsp_budget_expired_now()`), so
+19 MB/s of `fprintf` in the RSP path moved every preemption point — earlier rounds' "the ucode is
+preempted at pc X" numbers cannot be trusted.
+
+**5. New instruments (all DD-gated).** `r36_cmd_note` in `rsp/cp0.cpp`: a 16-entry CMD_START/CMD_END
+ring plus a full capture (32 GPRs + all 4096 bytes of DMEM + all 4096 bytes of IMEM + the ring) at
+the first four out-of-RDRAM RDP windows — the disassembly above comes from it, offline, via
+`.fzxwork/r36_dump.py`. `r36_hdr_canary`: at the head of both DMA paths, latches the transfer in
+flight plus the previous 128 transfers when the DMEM OSTask copy stops looking like a gfx task.
+Runs: `.fzxwork/r36a_run.sh` (with traces), `r36b_run.sh` (traces off — the A/B), `r36c_run.sh`
+(canary). Outputs in `.fzxwork/r36a/`, `r36b/`, `r36c/`.
+
+**6. ROUND-37 TARGET: who replaces the OSTask copy at DMEM 0xF80..0xFFF with the game's `0x00010001`
+fill?** Everything above is downstream of that one write. Instruments already in place for it: the
+canary's predicate is too loose (it also fires on legitimate gfx→audio task transitions, where the
+header legitimately holds a type-2 OSTask — see `wd_r36hdr.txt` n=1/n=2, `imem0=340a0fc0`), so
+tighten it to gfx-task-in-flight only (require the chunk loop live at IMEM 0x170 or `pc` in the
+ucode's range) and dump the r14 ring at the transition. The `0x00010001` fill's longest run in RDRAM
+is 16423 words at **0x015B64**, so the source is a wild read-DMA out of that region (round 13 already
+measured a suspicious `dst=1000 src=000f80 len=152`, i.e. an RDRAM→RSP read out of the low page).
+The fix must keep the DMEM OSTask copy intact — that alone releases both the wrap-path livelock and
+the `EVENT_MESG_DP` starvation. If the in-tree route stalls, the goal explicitly authorises porting
+ares's N64DD + RSP + interrupt-delivery model from `/home/garyb/LLM-Projects/phobos/ares/n64`.
 
 **ROUND 35 — ROOT CAUSE FOUND, REPRODUCED, AND FIXED: AN RSP WRITE-DMA WHOSE PER-WORD ADDRESS
 WRAP CARRIES ITS TAIL ONTO RDRAM 0x0 AND DESTROYS THE GUEST'S EXCEPTION VECTOR, WHICH LIVELOCKS THE
