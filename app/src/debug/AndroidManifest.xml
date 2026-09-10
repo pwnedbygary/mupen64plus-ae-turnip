@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only overlay (round 21 instrumented testing).
+
+  The RP6 used for DD bring-up has a secure keyguard and there is no root/credential
+  path over adb, so a locked device freezes the emulator: the frontend goes STOPPED
+  and the core thread stops being scheduled (measured: /proc/<pid>/stat utime flat).
+
+  showWhenLocked makes the frontend occlude the keyguard (mKeyguardOccluded=true)
+  instead of being parked behind it, which is what the device-run scripts need to be
+  able to run a DD test without a human unlocking the screen. turnScreenOn keeps the
+  display awake for the duration of the run.
+
+  This overlay is applied to the DEBUG build type only. It is not part of the
+  release manifest and changes no emulator behaviour.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="paulscode.android.mupen64plusae.SplashActivity"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
+        <activity
+            android:name="paulscode.android.mupen64plusae.GalleryActivity"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
+        <activity
+            android:name="paulscode.android.mupen64plusae.game.GameActivity"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
+    </application>
+</manifest>
