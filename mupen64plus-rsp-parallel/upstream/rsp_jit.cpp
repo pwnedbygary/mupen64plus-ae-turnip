@@ -487,6 +487,10 @@ extern "C"
 	   stock behavior: budget never fires, JIT emits no budget checks. */
 	extern "C" int rsp_ares_budget_enabled(void);
 
+	/* ROUND 36: per-block-entry traces are opt-in (files/wd_trace.flag);
+	   on a normal DD run nothing below fires. */
+	extern "C" int rsp_diag_trace(void);
+
 	/* ------------------------------------------------------------------
 	   ROUND 25 DIAG (DD route only -- the call site is gated on
 	   rsp_ares_budget_enabled(), i.e. the core's runtime IsDDPresent()).
@@ -621,7 +625,7 @@ extern "C"
 			   and filled the whole budget in the first run of this
 			   instrument, so the gfx task -- the one that matters -- never
 			   got logged. */
-			if (init && st.imem[0] != 0x340a0fc0u &&
+			if (rsp_diag_trace() && init && st.imem[0] != 0x340a0fc0u &&
 			    st.sr[26] != last26 && n26 < 400) {
 				static FILE *f = NULL;
 				if (!f)

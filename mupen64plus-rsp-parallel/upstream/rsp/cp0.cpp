@@ -23,6 +23,10 @@ extern int SP_STATUS_TIMEOUT;
 /* DD-route gate (runtime IsDDPresent()); defined in parallel.cpp. */
 extern "C" int rsp_ares_budget_enabled(void);
 
+/* ROUND 36: opt-in gate for the per-transfer traces (also in parallel.cpp).
+   Absent `files/wd_trace.flag` -> every heavy trace returns immediately. */
+extern "C" int rsp_diag_trace(void);
+
 /* ROUND-12 DIAG (DD route only).  The post-load failure writes a WORD-ALIGNED
    copy of the audio ucode's data table -- a long run of 0x00010001 at
    RDRAM 0x8076b268, i.e. ucode+0x2408 -- over live RSP memory (IMEM[0] and the
@@ -141,6 +145,10 @@ static void r14_record(RSP::CPUState* rsp, unsigned dir, uint32_t dst, uint32_t 
 {
 	struct r14_ent* e;
 	if (!rsp_ares_budget_enabled())
+		return;
+	/* ROUND 36: opt-in only -- this single trace wrote 2.9 GB per DD run.
+	   See rsp_diag_trace()'s comment in ../parallel.cpp. */
+	if (!rsp_diag_trace())
 		return;
 	e = &r14_ring[r14_idx & 255];
 	e->dir = dir; e->pc = rsp->pc & 0xfff; e->dst = dst; e->src = src;
@@ -334,6 +342,96 @@ static void r19_imem_note(RSP::CPUState* rsp, uint32_t dst, uint32_t src, uint32
 		fprintf(f, "\n");
 	}
 	fclose(f);
+}
+
+/* ===========================================================================
+   ROUND 36: NAME THE STORE THAT HANDS THE RDP A WINDOW OUTSIDE RDRAM.
+
+   Rounds 19..35 measured the *consequence*: the last DPC_END the FIFO ucode
+   programmes is 0xFC0012D8 (and 0xFC000640 / 0xFC000C88 before it), i.e. the
+   top byte is 0xFC and the low 24 bits are a small offset -- while the twelve
+   good kicks immediately before it walk 0x2F7B48 -> 0x2FC9B0 in ~0x5E0-byte
+   steps inside the RDP output region [output_buff 0x2D9CD0, output_buff_end
+   0x32DCD0).  parallel-RDP drops any window with END > 0x7FFFFFF (one of its
+   three silent early returns), so DPC_CURRENT never catches up, the ucode's
+   flush loop -- which spins on DPC_CURRENT before publishing the next 344-byte
+   DMEM block -- hangs forever, no further DPC_END is ever written, the DP
+   interrupt stops, and the guest's game thread stays blocked in
+   osRecvMesg(&D_DD_CAC8) waiting for the 0x2A that EVENT_MESG_DP produces.
+
+   The value itself is the only thing left to explain, so this records the RSP
+   at the write instead of guessing: a 16-entry ring of the last CMD writes,
+   and, on the first few out-of-RDRAM ones, the ENTIRE machine state -- all 32
+   GPRs, all of DMEM and IMEM -- so the offending store and the DMEM word it
+   loaded from can both be read off offline.  DD-gated: rsp_ares_budget_enabled()
+   is the core's runtime IsDDPresent(), so plain carts only pay the ring push
+   (16 words) and never take a dump.
+   ======================================================================== */
+#define R36_FILE "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r36"
+static uint32_t r36_ring[16][3];        /* val, pc, what (0=START 1=END) */
+static unsigned r36_ring_n = 0;
+static unsigned r36_bad_n = 0;
+
+static void r36_cmd_note(RSP::CPUState* rsp, unsigned what, uint32_t val)
+{
+	r36_ring[r36_ring_n & 15u][0] = val;
+	r36_ring[r36_ring_n & 15u][1] = (uint32_t)(rsp->pc & 0xfffu);
+	r36_ring[r36_ring_n & 15u][2] = what;
+	r36_ring_n++;
+
+	if (!rsp_ares_budget_enabled())      /* DD route only */
+		return;
+	if (val < 0x00800000u)               /* inside RDRAM: fine */
+		return;
+	if (r36_bad_n >= 4u)
+		return;
+	r36_bad_n++;
+
+	{
+		FILE* f = fopen(R36_FILE ".txt", (r36_bad_n == 1u) ? "w" : "a");
+		if (f)
+		{
+			fprintf(f, "R36CMD n=%u what=%s val=%08x pc=%03x ring_n=%u "
+			           "st=%08x dm=%08x cache=%08x d0=%08x dstart=%08x dend=%08x "
+			           "f0=%08x fc0=%08x bf8=%08x 2e0=%08x 2e4=%08x ff0=%08x\n",
+			        r36_bad_n, what ? "END" : "START", val, rsp->pc & 0xfffu, r36_ring_n,
+			        *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS],
+			        *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_DRAM],
+			        *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_CACHE],
+			        *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_DRAM],
+			        *rsp->cp0.cr[RSP::CP0_REGISTER_CMD_START],
+			        *rsp->cp0.cr[RSP::CP0_REGISTER_CMD_END],
+			        rsp->dmem[0x0f0 / 4], rsp->dmem[0x0fc0 / 4],
+			        rsp->dmem[0x0bf8 / 4], rsp->dmem[0x02e0 / 4],
+			        rsp->dmem[0x02e4 / 4], rsp->dmem[0x0ff0 / 4]);
+			fclose(f);
+		}
+	}
+
+	/* The full machine, binary: header + 32 GPRs + DMEM + IMEM + the ring. */
+	if (r36_bad_n <= 4u)
+	{
+		FILE* f = fopen(R36_FILE ".bin", (r36_bad_n == 1u) ? "wb" : "ab");
+		if (f)
+		{
+			uint32_t hdr[8], i;
+			hdr[0] = 0x42363352u;               /* 'R36B' */
+			hdr[1] = r36_bad_n;
+			hdr[2] = what;
+			hdr[3] = val;
+			hdr[4] = (uint32_t)(rsp->pc & 0xfffu);
+			hdr[5] = *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS];
+			hdr[6] = *rsp->cp0.cr[RSP::CP0_REGISTER_CMD_START];
+			hdr[7] = *rsp->cp0.cr[RSP::CP0_REGISTER_CMD_END];
+			fwrite(hdr, 4, 8, f);
+			fwrite(rsp->sr, 4, 32, f);
+			fwrite(rsp->dmem, 4, 1024, f);
+			fwrite(rsp->imem, 4, 1024, f);
+			for (i = 0; i < 16u; i++)
+				fwrite(r36_ring[i], 4, 3, f);
+			fclose(f);
+		}
+	}
 }
 
 /* The first CMD_START/CMD_END the ucode programmes.  CMD_START is the one that
@@ -1515,6 +1613,135 @@ void r31_arm_k0_repair(unsigned want);
 	}
 	extern "C" unsigned r14_wild_count(void) { return r14_wild_n; }
 
+	/* =======================================================================
+	   ROUND 36: WHO DESTROYS THE OSTask COPY AT DMEM 0xFC0..0xFFF?
+
+	   The gfx ucode reads its OSTask out of DMEM, and every pointer it uses
+	   comes from it: DMEM 0xFD0 = ucode, 0xFE8 = output_buff (the RDP RING
+	   BASE), 0xFEC = output_buff_size (the RING END), 0xFF0 = data_ptr.  Live
+	   IMEM disassembly of this ROM's ucode (captured in wd_r36.bin, round 36)
+	   shows all three uses in the flush routine:
+
+	     IMEM 0260  lw   t8,0xF0(r0)     ; t8 = DMEM[0xF0] = ring pointer
+	     IMEM 0264  addiu s3,t3,512      ; s3 = (s7-s6) + 0x200
+	     IMEM 026C  lw   t4,0xFEC(r0)    ; t4 = RING END   <- from the OSTask
+	     IMEM 0270  mtc0 t8, DPC_END     ; *** the RDP kick ***
+	     IMEM 0274  add  t3,t8,s3
+	     IMEM 0278  sub  t4,t4,t3
+	     IMEM 027C  bgez t4,0x2A0        ; still inside the ring -> no wrap
+	     -- wrap path --
+	     IMEM 028C  lw   t8,0xFE8(r0)    ; t8 = RING BASE <- from the OSTask
+	     IMEM 0290  mfc0 t3, DPC_CURRENT
+	     IMEM 0294  beq  t3,t8,0x290     ; wait until the RDP has drained
+	     IMEM 029C  mtc0 t8, DPC_START
+	     IMEM 02B8  sw   t3,0xF0(r0)     ; DMEM[0xF0] = ringBase + s3
+
+	   When the OSTask copy has been replaced by the game's 0x00010001 fill,
+	   0xFEC reads 0x00010001, so `ringEnd - (ptr + s3)` is negative for every
+	   real pointer and the wrap path runs on EVERY flush; 0xFE8 reads the same
+	   garbage, so DMEM[0xF0] becomes `garbage + s3` -- measured, the last three
+	   kicks are DPC_START/END = 0x00000000 / 0xFC000640 / 0xFC000C88 /
+	   0xFC0012D8, i.e. the 0xFC-prefixed value of a perfectly ordinary 0x640
+	   offset.  parallel-RDP silently discards a window it cannot read (its
+	   `DP_END > 0x7ffffff` early return in parallel_imp.cpp:178), leaving
+	   DPC_CURRENT behind, so the ucode spins forever at IMEM 0x290 waiting for
+	   DPC_CURRENT to reach the ring base.  No DPC_END => no FullSync => no
+	   MI_INTR_DP => the guest's GAME thread stays blocked in
+	   osRecvMesg(&D_800DCAC8) for the 0x2A that EVENT_MESG_DP produces
+	   (fzerox-decomp src/sys/sys_main.c:352,396 and src/sys/sys_gfx.c:189) =>
+	   the frozen 64DD logo.  The same clobber explains round 13's
+	   `dst=1000 src=000f80 len=152`: the overlay fetch is `ucode + 0xF80`, and
+	   with 0xFD0 zeroed the source becomes 0xF80 -- low RDRAM, i.e. the fill.
+
+	   So: latch the two writes the ucode depends on.  A few word compares at
+	   the head of both DMA paths, armed by the first plausible gfx OSTask and
+	   dumped ONCE per clobber, with the 128 transfers that precede it (the
+	   r14 ring, which is kept in RAM regardless of the opt-in trace gate).
+	   ==================================================================== */
+	static unsigned r36_clob_n = 0;
+	static int r36_gfx_armed = 0;
+	static unsigned r36_prev_dir = 0, r36_prev_cnt = 0;
+	static uint32_t r36_prev_dst = 0, r36_prev_src = 0, r36_prev_len = 0;
+
+	static void r36_hdr_canary(RSP::CPUState* rsp, unsigned dir, uint32_t dst,
+	                           uint32_t src, uint32_t len, unsigned count)
+	{
+		uint32_t type = rsp->dmem[0x0fc0 / 4];
+		uint32_t ob   = rsp->dmem[0x0fe8 / 4];
+		uint32_t obe  = rsp->dmem[0x0fec / 4];
+		uint32_t dp   = rsp->dmem[0x0ff0 / 4];
+		int ok;
+
+		if (!rsp_ares_budget_enabled())
+			return;
+
+		ok = (type == 1u) && (ob >= 0x1000u) && (ob < 0x800000u) &&
+		     (obe > ob) && (obe < 0x800000u) && (dp >= 0x1000u) && (dp < 0x800000u);
+
+		if (!r36_gfx_armed)
+		{
+			if (ok) r36_gfx_armed = 1;      /* a real gfx OSTask is in DMEM */
+			goto remember;
+		}
+		if (ok)
+			goto remember;                   /* still intact */
+		if (r36_clob_n >= 4u)
+			goto remember;
+
+		r36_clob_n++;
+		{
+			FILE* f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r36hdr.txt",
+			                (r36_clob_n == 1u) ? "w" : "a");
+			unsigned k;
+			if (f == NULL)
+				return;
+			fprintf(f, "R36HDR n=%u pc=%03x in_flight=%s dst=%08x src=%08x len=%04x cnt=%u\n",
+			        r36_clob_n, rsp->pc & 0xfffu, dir ? "WR" : "RD", dst, src, len, count);
+			fprintf(f, "  prev=%s dst=%08x src=%08x len=%04x cnt=%u\n",
+			        r36_prev_dir ? "WR" : "RD", r36_prev_dst, r36_prev_src,
+			        r36_prev_len, r36_prev_cnt);
+			fprintf(f, "  OSTask DMEM fc0=%08x fc4=%08x fc8=%08x fcc=%08x fd0=%08x fd4=%08x "
+			           "fd8=%08x fdc=%08x fe0=%08x fe4=%08x fe8=%08x fec=%08x ff0=%08x ff4=%08x "
+			           "ff8=%08x ffc=%08x\n",
+			        type, rsp->dmem[0x0fc4 / 4], rsp->dmem[0x0fc8 / 4], rsp->dmem[0x0fcc / 4],
+			        rsp->dmem[0x0fd0 / 4], rsp->dmem[0x0fd4 / 4], rsp->dmem[0x0fd8 / 4],
+			        rsp->dmem[0x0fdc / 4], rsp->dmem[0x0fe0 / 4], rsp->dmem[0x0fe4 / 4],
+			        ob, obe, dp, rsp->dmem[0x0ff4 / 4], rsp->dmem[0x0ff8 / 4],
+			        rsp->dmem[0x0ffc / 4]);
+			fprintf(f, "  live pc=%03x st=%08x dma=%08x cache=%08x ring0=%08x ringmagic=%08x\n",
+			        rsp->pc & 0xfffu, *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS],
+			        *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_DRAM],
+			        *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_CACHE],
+			        rsp->dmem[0x0f0 / 4], rsp->dmem[0x0ff0 / 4]);
+			fprintf(f, "  gpr s0=%08x s1=%08x s2=%08x s3=%08x s4=%08x s5=%08x s6=%08x s7=%08x "
+			           "t8=%08x t9=%08x k0=%08x k1=%08x ra=%08x sp=%08x\n",
+			        rsp->sr[16], rsp->sr[17], rsp->sr[18], rsp->sr[19], rsp->sr[20],
+			        rsp->sr[21], rsp->sr[22], rsp->sr[23], rsp->sr[24], rsp->sr[25],
+			        rsp->sr[26], rsp->sr[27], rsp->sr[31], rsp->sr[29]);
+			fprintf(f, "  imem0=%08x %08x %08x %08x  imem[0x170/4]=%08x  imem_zero=%d\n",
+			        rsp->imem[0], rsp->imem[1], rsp->imem[2], rsp->imem[3],
+			        rsp->imem[0x170 / 4],
+			        (rsp->imem[0] == 0 && rsp->imem[1] == 0 && rsp->imem[2] == 0) ? 1 : 0);
+			for (k = 0; k < 128u; k++)
+			{
+				struct r14_ent* q = &r14_ring[(r14_idx + k) & 255u];
+				if (q->len == 0 && q->dst == 0 && q->src == 0) continue;
+				fprintf(f, "  %s dst=%08x src=%08x len=%04x cnt=%u skip=%u s0=%08x st=%08x "
+				           "fc0=%08x f0=%08x ff0=%08x\n",
+				        (q->dir == 2) ? "RD" : "WR", q->dst, q->src, (unsigned)q->len,
+				        (unsigned)q->cnt, (unsigned)q->skip, q->s0, q->st, q->fc0,
+				        q->f0, q->ff0);
+			}
+			fclose(f);
+		}
+		/* re-arm so a second, different clobber is also caught */
+		r36_gfx_armed = 0;
+
+	remember:
+		r36_prev_dir = dir; r36_prev_cnt = count;
+		r36_prev_dst = dst; r36_prev_src = src; r36_prev_len = len;
+	}
+
 	static int rsp_dma_read(RSP::CPUState *rsp)
 	{
 		uint32_t length_reg = *rsp->cp0.cr[CP0_REGISTER_DMA_READ_LENGTH];
@@ -1659,6 +1886,7 @@ void r31_arm_k0_repair(unsigned want);
 			}
 		}
 
+		r36_hdr_canary(rsp, 0u, dest, source, length, count);
 		r12_record(rsp, 2, dest, source, length, count, skip);
 		r14_record(rsp, 2, dest, source, length, count, skip);
 		r19_imem_note(rsp, dest, source, length);
@@ -2091,6 +2319,7 @@ void r31_arm_k0_repair(unsigned want);
 		uint32_t source = *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE];
 
 		r12_record(rsp, 1, dest, source, length, count, skip);
+		r36_hdr_canary(rsp, 1u, dest, source, length, count);
 		r14_record(rsp, 1, dest, source, length, count, skip);
 		r20_dma_save_note(rsp, dest, length, source);
 		r30_dma_line(1, dest, source, length, rsp->pc & 0xfffu);
@@ -2198,6 +2427,7 @@ void r31_arm_k0_repair(unsigned want);
 			*rsp->cp0.cr[CP0_REGISTER_CMD_START] = *rsp->cp0.cr[CP0_REGISTER_CMD_CURRENT] =
 			    *rsp->cp0.cr[CP0_REGISTER_CMD_END] = val & 0xfffffff8u;
 #ifdef PARALLEL_INTEGRATION
+			r36_cmd_note(rsp, 0u, val & 0xfffffff8u);
 			r19_cmd_latch(rsp, "START", val & 0xfffffff8u);
 #endif
 			break;
@@ -2209,6 +2439,7 @@ void r31_arm_k0_repair(unsigned want);
 			*rsp->cp0.cr[CP0_REGISTER_CMD_END] = val & 0xfffffff8u;
 
 #ifdef PARALLEL_INTEGRATION
+			r36_cmd_note(rsp, 1u, val & 0xfffffff8u);
 			r19_cmd_latch(rsp, "END", val & 0xfffffff8u);
 			RSP::rsp.ProcessRdpList();
 #endif

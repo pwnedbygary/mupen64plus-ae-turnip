@@ -5,6 +5,7 @@
 #endif
 #include <stdint.h>
 #include <chrono>
+#include <unistd.h>   /* access(), for rsp_diag_trace()'s opt-in flag */
 
 #include "m64p_plugin.h"
 #include "rsp_1.1.h"
@@ -69,6 +70,36 @@ static unsigned long wd_rsp_log_n = 0;
 extern "C" int rsp_ares_budget_enabled(void)
 {
 	return RSP::rsp.IsDDPresent && RSP::rsp.IsDDPresent();
+}
+
+/* ===========================================================================
+   ROUND 36: THE PER-TRANSFER TRACES ARE NOW OPT-IN, BECAUSE THEY WERE A
+   FIRST-ORDER TIMING CONFOUND -- AND A DEVICE HAZARD.
+
+   The diagnostics accumulated over rounds 14..33 fire on every RSP DMA and
+   every block entry.  Measured cost on the RP6: `wd_dmatr.txt` reached
+   **2.9 GB** during a single 150 s DD run (the plugin flushes a 64-line batch
+   every 64 transfers, ~9.6 KB per flush, ~2000 flushes/s => ~19 MB/s of
+   fprintf), and `du` on the app's files dir read 2.8 GB.  Two consequences,
+   both bad:
+     * the DD route's RSP budget/yield model is TIME based
+       (`rsp_budget_expired_now()`), so 19 MB/s of snprintf moves every
+       preemption point -- the measurement changed what was measured, and
+       earlier rounds' "the ucode is preempted at pc X" numbers cannot be
+       trusted;
+     * it filled the device (2.8 GB in one directory).
+   So every per-transfer trace is gated behind the presence of
+   `files/wd_trace.flag`, which is absent by default.  The cheap once-per-second
+   summaries (`wd_r20.txt`, the `wd_stall.txt` watchdog snapshot, the r36 CMD
+   capture, which is bounded to 4 records) stay unconditional.
+   ======================================================================== */
+extern "C" int rsp_diag_trace(void)
+{
+	static int cached = -1;
+	if (cached < 0)
+		cached = (access("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_trace.flag",
+		                 F_OK) == 0) ? 1 : 0;
+	return cached;
 }
 
 extern "C"
@@ -523,6 +554,9 @@ static void r29_unfix_descriptors(void)
 		if (!r30_armed)
 		{
 			if (dm[0xfc0 / 4] != 1u || dm[0xfd0 / 4] != 0x007505c0u)
+				return;
+			/* ROUND 36: opt-in (see rsp_diag_trace()). */
+			if (!rsp_diag_trace())
 				return;
 			r30_armed = 1;
 			r31_arm_blocks();
