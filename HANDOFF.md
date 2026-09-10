@@ -134,17 +134,57 @@ pending. **So the remaining bug is a task-ownership/scheduling violation, not a 
 detail** — which is exactly the class of defect the ares model in `/home/garyb/LLM-Projects/phobos/ares/n64`
 does not have, and it is now the single thing left.
 
-**9. ROUND 30 TARGET (one change, decisive).** Re-assert the pending task's `ucode_data` image
-into DMEM before its entry runs, using the same hook that already re-asserts the *header*
-(round 22c's `TaskHeaderLatch` machinery in `rsp_core.c` + the round-16 block in
-`parallel.cpp DoRspCycles`, which already fires on `(*SP_PC_REG & 0xfff) == 0`). Latch the
-0x800-byte `ucode_data` image at task-load time for a `type == 1` task and write it back at
-that slice entry. Accept criteria are the same list as §7 plus: `dsc`/`dsc2` in `wd_watch.txt`
-stay at the n=1 values across later `R25SW` flips. The alternative (and more hardware-faithful)
-shape is to refuse to start task B while task A is loaded-and-pending; either way the invariant
-to restore is **one loaded task owns DMEM 0x000..0x7FF until it is started and finished**.
+**9. RUNS 29c-29g — THE FIX LANDED AND IT WORKS, BUT THE MACHINE STILL DOES NOT RENDER.**
+The pc-0x080 hook never fired (29b), so the repair was moved to the SP-DMA path. Runs 29c/29d
+did not fire either; 29e made the hook **log unconditionally** and that one line answered
+everything. **Over a whole 105 s run there are exactly TWO ucode_data-size READs into DMEM 0:**
 
-**10. DO NOT PUT THE FIX AT THE pc-0x080 HOOK (measured).** `r29_unfix_descriptors` is wired
+```
+R29FIX n=1 base=007505c0 dest=0000 src=779860 len=00800  2e0=00000f80 2e8=00001018 410=00001188 418=00000250
+R29FIX n=2 base=007505c0 dest=0000 src=32dcd0 len=00c00  2e0=00010001 2e8=00010001 410=00010001 418=00010001
+```
+
+(`src` is printed post-loop, hence 0x77A060/0x32E8D0 = source + length.) So n=2 is the resume
+and **the yield buffer itself carries the game's `0x00010001` fill in the overlay slots** —
+the audio task had already overwritten DMEM 0x2E0/0x410/0x418 before the gfx ucode saved DMEM.
+The entry's fix-up then adds the ucode base to `0x00010001`, the overlay load reads the wrong
+RDRAM, and IMEM is destroyed.
+
+**THE FIX (cp0.cpp `rsp_dma_read`, DD-gated): latch the four overlay-descriptor words from the
+FIRST ucode_data-size READ into DMEM 0 for a given ucode base, and put them back on every later
+such read of the same base.** The first load is the fresh one and carries the real constants
+(0xF80/0x1018/0x1188/0x250, measured); every later one is a resume whose slots must be restored.
+**Run 29f got this wrong and is worth remembering:** you *cannot* tell fresh from resume by
+comparing the DMA source with the header's `ucode_data`, because `osSpTaskLoad` sets
+`tp->t.ucode_data = tp->t.yield_data_ptr` for a yielded task — both loads look "fresh" and the
+fix re-latched the corrupted values (`fired=0`). The only sound rule is first-load-per-base.
+
+**MEASURED EFFECT (29g vs 29a/29b, same ROM, same 105 s, `wd_r29fix.txt` `fired=4`):**
+
+| metric | before | after the fix |
+|---|---|---|
+| `R26W wild=` (transfers off the end of RDRAM) | 20479 / 21447 | **6** |
+| `grep -c 'WR pc=fc' wd_dmatr.txt` | 0 | **1** |
+| `R20W wr` | 2880-97246 | 2877 |
+| screen | 71226 B PNG | 71226 B PNG (still ~black) |
+| ring 0x2D9CD0..0x32DCD0 | all zero | **all zero** |
+| `R20P ring=` | 0 | 0 |
+
+So the descriptor corruption is genuinely fixed — the ucode no longer DMAs from outside RDRAM —
+but the machine still does not publish: the one write DMA is still the yield save, the ring is
+still zero, and `wd_cmd.txt` now shows `imem0=00010001` at the 4th DPC kick, i.e. **IMEM 0x000
+is now filled with the game's own fill pattern.** `wd_wild.txt` agrees (`imem=00010001 ...`).
+That is the next (and now much narrower) failure: something still DMAs the game's fill pattern
+over IMEM after the overlays load. `wd_wrap.txt`'s `R19WRAP DMEM->IMEM dst=0920 len=06e8
+end=01008` is the shape to chase — a DMEM-destined read whose length carries it past 0x1000 —
+and `R25K0 n=0` still shows the walk starting at `k0 = 0x152C03C0` (the audio ucode's leftover)
+instead of `DMEM[0xFF0] = 0x00284990`.
+
+**10. PLAIN-CART GATE: untouched.** Every line added this round is inside
+`rsp_ares_budget_enabled()` (the core's runtime `IsDDPresent()`) in `cp0.cpp`/`parallel.cpp`,
+and the pc ring is called from `rsp_enter` under the same gate; the stock DMA handler path is
+byte-for-byte unchanged for plain carts and the cart-hack route.
+ `r29_unfix_descriptors` is wired
 to the JIT block entry at pc 0x080 and never ran, so `rsp_enter()` did not observe a block
 entry at 0x080 even though rspboot's trampoline (`jr a3`, a3 = 0x1080) must land there. Put the
 repair in the **DMA path** instead: `cp0.cpp`'s SP-DMA handler is where the ucode_data / yield
@@ -153,8 +193,17 @@ transfer* (READ into SP 0x000 with len 0x7FF or 0xBFF) — same arithmetic, same
 point that is guaranteed to be observed. Keep `r29_pc_hook` (the pc ring is the only way the
 "restart every slice" reading was ever falsified) but stop relying on it as a hook point.
 
-**11. THE COMPLETE YIELD CYCLE (this is what makes the double-add reachable; keep it in mind
-for round 30).** (a) the gfx task loads fresh: descriptors are ucode_data-relative, the entry's
+**11. DO NOT PUT THE FIX AT THE pc-0x080 HOOK (measured).** `r29_unfix_descriptors` is wired
+to the JIT block entry at pc 0x080 and never ran, so `rsp_enter()` did not observe a block
+entry at 0x080 even though rspboot's trampoline (`jr a3`, a3 = 0x1080) must land there. Put the
+repair in the **DMA path** instead: `cp0.cpp`'s SP-DMA handler is where the ucode_data / yield
+image actually lands, so normalise the four descriptor words *in the destination of that
+transfer* (READ into SP 0x000 with len 0x7FF or 0xBFF) — same arithmetic, same gate, but at a
+point that is guaranteed to be observed. Keep `r29_pc_hook` (the pc ring is the only way the
+"restart every slice" reading was ever falsified) but stop relying on it as a hook point.
+
+
+**12. THE COMPLETE YIELD CYCLE (this is what makes the double-add reachable).** (a) the gfx task loads fresh: descriptors are ucode_data-relative, the entry's
 fix-up makes them absolute — `R25SW n=1` shows the correct state. (b) the ucode yields; the
 guest's `osSpTaskYielded()` sets `OS_TASK_YIELDED`; the resume restores the saved DMEM, which
 contains the descriptors **already absolute**, and the entry takes its resume path — `flags&1`
@@ -164,7 +213,20 @@ path, and applies the fix-up to the already-absolute descriptors → 0xEA1B00. O
 cannot happen because after a resume the task runs to completion; here the forced-yield
 preemption manufactures the extra start.
 
-
+**13. ROUND 30 TARGET (the descriptor corruption is fixed; this is the next failure).** Re-assert the pending task's `ucode_data` image
+into DMEM before its entry runs, using the same hook that already re-asserts the *header*
+(round 22c's `TaskHeaderLatch` machinery in `rsp_core.c` + the round-16 block in
+`parallel.cpp DoRspCycles`, which already fires on `(*SP_PC_REG & 0xfff) == 0`). Latch the
+0x800-byte `ucode_data` image at task-load time for a `type == 1` task and write it back at
+that slice entry. **The descriptor half of this landed this round and is measured working** (see §9). **The next
+failure is IMEM**: `wd_cmd.txt` shows `imem0=00010001` at the 4th DPC kick and `wd_wild.txt`
+shows IMEM 0x000..0x00F holding the game's own fill pattern, so after the overlays load
+something still DMAs the fill over IMEM. `wd_wrap.txt`'s `R19WRAP DMEM->IMEM dst=0920 len=06e8
+end=01008` (a DMEM-destined read whose length carries it past 0x1000) is the shape to chase, and
+`R25K0 n=0`'s `k0 = 0x152C03C0` (the audio ucode's leftover instead of `DMEM[0xFF0] =
+0x00284990`) is the second thing to fix. The more hardware-faithful alternative remains: refuse
+to start task B while task A is loaded-and-pending — **one loaded task owns DMEM 0x000..0x7FF
+until it is started and finished**.
 
 
 **1. THE RSP DISASSEMBLER EXISTS AGAIN.** `tools/rspdis.py <ram.bin> <rdram_off> <len>

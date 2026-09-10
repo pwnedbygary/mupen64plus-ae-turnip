@@ -1523,6 +1523,10 @@ extern "C"
 		unsigned i = 0;
 		uint32_t source = *rsp->cp0.cr[CP0_REGISTER_DMA_DRAM];
 		uint32_t dest = *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE];
+		/* ROUND 29: `dest` is advanced by the transfer loop below, so keep the
+		   START address for the descriptor normalisation (the first attempt
+		   tested the post-loop value and therefore never matched). */
+		const uint32_t r29_dma_dest0 = dest;
 
 		r12_record(rsp, 2, dest, source, length, count, skip);
 		r14_record(rsp, 2, dest, source, length, count, skip);
@@ -1602,6 +1606,161 @@ extern "C"
 
 		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] = source;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] = dest;
+
+		/* ==================================================================
+		   ROUND 29 FIX (DD route only) -- KEEP THE F3DEX2 OVERLAY-DESCRIPTOR
+		   FIX-UP IDEMPOTENT.  THIS IS THE BLACK SCREEN.
+
+		   The F3DEX2 text entry (IMEM pc 0x12C..0x15C) converts four
+		   ucode_data-relative overlay descriptors into absolute RDRAM
+		   addresses by ADDING the ucode base:
+
+		       pc 0x12C  lw  at, 0xFD0(r0)     ; at = DMEM[0xFD0] = t.ucode
+		       pc 0x130  lw  v0, 0x2E0(r0)     ; overlay descriptor A
+		       pc 0x134  lw  v1, 0x2E8(r0)     ; overlay descriptor B
+		       pc 0x138  lw  a0, 0x410(r0)
+		       pc 0x13C  lw  a1, 0x418(r0)
+		       pc 0x140  add v0, v0, at        ; *** ADD THE BASE ***
+		       pc 0x148..0x15C  sw back to 0x2E0/0x2E8/0x410/0x418
+
+		   It is correct exactly once per ucode_data load.  Those four words
+		   live in DMEM 0x2E0..0x2EF / 0x410..0x41F and hold whatever the
+		   ucode_data DMA left there.
+
+		   WHY IT RUNS MORE THAN ONCE (decomp src/libultra/io/sptask.c):
+		   osSpTaskLoad does `tp = osVirtualToPhysical(intp)` and then, for a
+		   yielded task, BOTH `tp->t.ucode_data = tp->t.yield_data_ptr` AND
+		   `intp->t.flags &= ~OS_TASK_YIELDED`.  Because tp == intp that clear
+		   lands in the very OSTask that is DMA'd to DMEM 0xFC0 -- so the
+		   header the ucode sees NEVER has OS_TASK_YIELDED set, and therefore
+		   the entry NEVER takes its resume path (pc 0x0B8 `j 0x164`, which is
+		   the branch that would skip the fix-up).  On a resume the DMA source
+		   is the yield buffer, which holds the SAVED DMEM -- and the saved
+		   descriptors are ALREADY ABSOLUTE -- so the fix-up is applied to
+		   absolute values.
+
+		   MEASURED (round-28 wd_k0.txt and the r28a/ram.bin dump): DMEM
+		   0x2E0/0x2E8 end up holding 0x00EA1B00 / 0x00EA1B98, and
+
+		       0x751540 + 0x7505C0 == 0xEA1B00    (descriptor A, base added twice)
+		       0x7515D8 + 0x7505C0 == 0xEA1B98    (descriptor B, base added twice)
+
+		   Neither value occurs anywhere in the 8 MB RDRAM dump, so they can
+		   only be the fix-up's own output.  The overlay loader (pc 0x164 ->
+		   0xFB4) then DMAs from RDRAM 0xEA1B98 -- past the end of RDRAM, so
+		   the 24-bit mask makes it 0x6A1B98, the 64DD data area -- and copies
+		   0x170 bytes of that over IMEM 0x000..0x16F, destroying the FIFO
+		   ucode's own overlay.  The RSP then executes data, which is round
+		   28's `WILD dir=RD dram=00ea1b98`, round 27's zero write-DMAs, round
+		   22's "the RDP is fed zeros", and k0 = 0x152C03C0 being INHERITED
+		   from the audio ucode instead of read from DMEM[0xFF0].
+
+		   THE FIX.  Normalise the four descriptors in the DESTINATION of every
+		   ucode_data-size READ into DMEM 0, i.e. at the exact moment they
+		   arrive and immediately before the entry reads them.  Repeatedly
+		   subtract the ucode base until each value is below it: the true value
+		   is `offset + k*base` with `offset < base` (they are ucode_data
+		   offsets and the ucode is 0x1000 bytes), so the loop recovers the
+		   offset exactly for ANY number of accidental adds, and it is a no-op
+		   on a genuine fresh load (0xF80/0x1018/0x1188/0x250 are far below
+		   0x7505C0).
+
+		   DD-gated by rsp_ares_budget_enabled() (the core's runtime
+		   IsDDPresent()), so plain carts and the cart-hack route keep the
+		   stock DMA handler byte for byte (user rule 2026-09-05). */
+		if (rsp_ares_budget_enabled() && (r29_dma_dest0 & 0x1000u) == 0u &&
+		    (r29_dma_dest0 & 0xFFFu) == 0u && (length + skip) >= 0x420u)
+		{
+			static const unsigned r29_off[4] = { 0x2e0u, 0x2e8u, 0x410u, 0x418u };
+			uint32_t r29_base = rsp->dmem[0xfd0 / 4];
+			if (r29_base >= 0x1000u && r29_base < 0x800000u)
+			{
+				/* ROUND 29 FIX + DIAG (see the block comment above).
+				   MEASURED (run 29e, the only two ucode_data-size READs into
+				   DMEM 0 in a whole 105 s run):
+
+				     n=1 src=779860 len=00800  2e0=00000f80 2e8=00001018
+				                              410=00001188 418=00000250  <- FRESH
+				     n=2 src=32dcd0 len=00c00  2e0=00010001 2e8=00010001
+				                              410=00010001 418=00010001  <- RESUME
+
+				   The resume source is the yield buffer, and the overlay slots
+				   in it hold the game's own 0x00010001 fill: by the time the gfx
+				   ucode saved DMEM, the AUDIO ucode had already overwritten them
+				   (the round-25 R25W watch shows im0=340a0fc0 rewriting DMEM
+				   0x2E0/0x410/0x418 continuously).  The entry's fix-up then adds
+				   the ucode base to 0x00010001, producing an out-of-range
+				   descriptor, and the overlay load copies garbage over IMEM.
+
+				   So the canonical values must come from the FRESH load: latch
+				   them there and put them back whenever a later load of the same
+				   task delivers anything else.  This is exact (they are the
+				   ucode_data constants 0x00000F80/0x00001018/0x00001188/0x00000250)
+				   and it is keyed on the ucode base, so a different task's load
+				   re-latches rather than being corrupted. */
+				static uint32_t r29_good[4];
+				static uint32_t r29_good_base = 0;
+				static int r29_have_good = 0;
+				unsigned r29_i, r29_fired = 0;
+
+				/* NOTE (run 29f got this wrong): you CANNOT tell a fresh load
+				   from a resume by comparing the DMA source with the header's
+				   `ucode_data` field -- libultra's osSpTaskLoad sets
+				   `tp->t.ucode_data = tp->t.yield_data_ptr` for a yielded task,
+				   so on a resume the header points AT the yield buffer and both
+				   loads look "fresh", which re-latched the corrupted values.
+				   The only sound rule is: the FIRST load seen for a given ucode
+				   base is the fresh one (it is the one that restored the real
+				   constants 0xF80/0x1018/0x1188/0x250, measured as run 29e's
+				   n=1), and every later load of the same base is a resume whose
+				   overlay slots must be put back. */
+				if (!r29_have_good || r29_good_base != r29_base)
+				{
+					for (r29_i = 0; r29_i < 4u; r29_i++)
+						r29_good[r29_i] = rsp->dmem[r29_off[r29_i] / 4];
+					r29_good_base = r29_base;
+					r29_have_good = 1;
+				}
+				else
+				{
+					/* A resume (or any later load of the same task): restore. */
+					for (r29_i = 0; r29_i < 4u; r29_i++)
+					{
+						if (rsp->dmem[r29_off[r29_i] / 4] != r29_good[r29_i])
+						{
+							rsp->dmem[r29_off[r29_i] / 4] = r29_good[r29_i];
+							r29_fired++;
+						}
+					}
+				}
+				if (r29_fired || r29_base > 0x1000u)
+				{
+					/* ROUND 29 DIAG: log EVERY ucode_data-size READ into DMEM 0
+					   together with the descriptor words it left behind -- not
+					   only the ones that needed normalising.  Runs 29c/29d never
+					   fired, so the open question is exactly WHAT such a transfer
+					   delivers; this line answers it (`fired=0` with relative
+					   descriptors means no resume image ever carries absolute
+					   ones; `2e0=00751540 fired=1` proves the fix).  Capped. */
+					static unsigned r29_n = 0;
+					if (++r29_n <= 40u)
+					{
+						FILE* ff = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r29fix.txt",
+						                 r29_n == 1u ? "w" : "a");
+						if (ff)
+						{
+							fprintf(ff, "R29FIX n=%u base=%08x dest=%04x src=%06x len=%05x skip=%05x count=%u fired=%u "
+							            "2e0=%08x 2e8=%08x 410=%08x 418=%08x im0=%08x\n",
+							        r29_n, r29_base, r29_dma_dest0, source & 0xFFFFFFu, length, skip, count, r29_fired,
+							        rsp->dmem[0x2e0 / 4], rsp->dmem[0x2e8 / 4],
+							        rsp->dmem[0x410 / 4], rsp->dmem[0x418 / 4],
+							        rsp->imem[0]);
+							fclose(ff);
+						}
+					}
+				}
+			}
+		}
 
 #ifdef INTENSE_DEBUG
 		log_rsp_mem_parallel();
