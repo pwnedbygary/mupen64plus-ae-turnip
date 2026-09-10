@@ -5,9 +5,99 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
-**ROUND 23 — ROOT CAUSE FOUND: THE F3DEX2 UCODE'S DL-WALK PROLOGUE IS *NOT IN IMEM* AT
-RUNTIME. IMEM 0x000..0x17F HOLDS THE WRONG RDRAM REGION, SO THE WALK NEVER READS THE GUEST'S
-DISPLAY LIST AND THE RDP IS NEVER FED.** Everything below is measured against the r22a RAM
+**ROUND 24 — ROUND 23's "ROOT CAUSE" IS RETRACTED. The IMEM image is not corrupt; it is a
+deliberate swap cycle. The real lead is that the ucode reloads its own text from an OSTask
+header field that this tree corrupts.** Read this section before round 23's.
+
+**1. WHAT ROUND 23 GOT WRONG.** Round 23 saw IMEM 0x000..0x17F holding RDRAM 0x7515D8.. and
+called it corruption, because it assumed the rspboot's text load should have put text[0x00..0xFF]
+at IMEM 0x080..0x17F. Two things refute that:
+
+* **The load is traced, in order, by an existing instrument.** `wd_imem.txt` (from
+  `r19_imem_note`, which logs every DMA whose `dst & 0x1000`) is the whole story:
+  ```
+  R19IMEM n=1 pc=000 dst=1080 src=7505c0 len=0f80    text  -> IMEM 0x080  (3968 B)
+  R19IMEM n=2 pc=000 dst=1000 src=7515d8 len=0170    segment -> IMEM 0x000 (368 B)
+  R19IMEM n=3 pc=000 dst=1080 src=7505c0 len=0f80    text  -> IMEM 0x080  again
+  R19IMEM n=4 pc=fc8 dst=1080 src=7505c0 len=0f80    text  reload, issued by the ucode itself
+  R19IMEM n=5 pc=fc4 dst=1080 src=6f0000 len=0f80    text  reload FROM A BOGUS SOURCE
+  ```
+  So IMEM 0x080..0x16F is **shared** between the F3DEX2 text and a 0x170-byte segment taken from
+  ucode+0x1018, and the text is loaded back afterwards. This is a swap, and round 20's own comment
+  in `cp0.cpp` already described it ("its two overlays follow the text at ucode+0xF80 (0x98 bytes)
+  and ucode+0x1018 (0x170 bytes)").
+* **The bytes actually executed at IMEM 0x160..0x16F are legitimate code**: they are the tail of the
+  F3DEX2 *texture* segment (COP2 TMEM/texel loops, ending `jr $31` at IMEM 0x0E8, then
+  `sw/lw/j 0x482/lw` at 0x160). Round 23 called these "the tail of an unrelated DMEM save/restore
+  routine" and inferred a chimera; they are simply the second half of the swap.
+
+So: **nothing about the IMEM image is provably corrupt**, and the round-23 "root cause" must not be
+built on. What survives from it, and is still true, is narrower: at the moment of the runaway walk
+the machine was sitting in the *swapped-in segment* state, i.e. IMEM 0x080..0x16F held the segment
+rather than the text — and the text's **only** load of `t.data_ptr` is in that shared window.
+
+**2. THE METHODOLOGY ERROR THAT MADE ROUND 23 LOOK RIGHT — do not repeat it.** `.fzxwork/r22a/`
+(`ram.bin`) and `.fzxwork/r22b/` (`wd_imem.txt`, `wd_bad1.txt`, `wd_dma*.txt`, `wd_spw.txt`) are
+**two different device runs**, and they were being cross-read as if they were one machine state.
+They disagree in exactly the way that misleads: e.g. `wd_dma.txt` (r22b) says the boot ucode is
+`dram=00768e60 len=00000fff` and shows IMEM[0] becoming `340a0fc0` after it, while r22a's `ram.bin`
+has `340a0fc0 8d420018` at 0x768E60 but `09000419 20010fc0` at 0x7504F0 — and the wd_imem/wd_bad1
+captures (r22b) show `imem0=09000419 20010fc0`, i.e. the *other* blob. RDRAM is not stable across
+these runs (round 18 measured a runaway DMA that fills all 8 MB with one repeated block), so
+**every address-level cross-check must name its run**, and any dump pulled off the device must be
+paired with traces taken in the same session. Round 23's rspboot decode is void for this reason:
+`t.ucode_boot` for the ROM as configured is **0x80768E60** with size **0x1000** (measured in
+`wd_dma.txt`/`wd_dma2.txt`: `mem=04001000 dram=00768e60 len=00000fff`), and the 0xD0 bytes at
+0x807504F0 that round 23 disassembled are a different, rspboot-shaped blob (the symbol
+`rspbootTextStart = 0x807504F0` in `symbol_addrs_nlib_vars.txt` does **not** match this build's
+submitted value — do not trust it).
+
+**3. DECODED THIS ROUND, WITHIN ONE RUN, AND WORTH KEEPING.** The boot ucode at 0x768E60 (4096 B,
+loaded to IMEM 0x000 by the *core*, not by an RSP DMA) is a **generic loader + display-list
+pre-scan**, not a two-load stub:
+
+* It reads exactly four OSTask fields from the header at DMEM 0xFC0 (`$10`): `ucode_data` (0x18),
+  `ucode_data_size` (0x1C), `data_ptr` (0x30), `data_size` (0x34). **It never reads `t.ucode`
+  (0x10) or `ucode_size` (0x14)** — the main-ucode text load is issued by something else.
+* It DMAs `ucode_data` to **DMEM 0x000** (`addi $1,$0,0` -> `jal` the DMA helper at IMEM 0x0AD4),
+  and sets up descriptor areas at DMEM 0x2E0 (`addi $24,$0,0x2e0`) and DMEM 0xFB0
+  (`addi $23,$0,0xfb0`) — the same addresses the F3DEX2 text's own DMA routine reads.
+* **It walks the display list**: `lw $28,48($10)` = `t.data_ptr`, `lw $27,52($10)` = `data_size`,
+  then per command `lw $26,0($29)` / `lw $25,4($29)`, `srl $1,$26,23`, `andi $1,$1,0xfe`,
+  `addi $28,$28,8`, `addi $27,$27,-8`, `lh $2,16($2)`, `jr $2`. The 16-bit offset table is at
+  **DMEM 0x10, indexed by the GBI opcode** — i.e. the first 0x100 bytes of the ucode *data*
+  segment are a per-opcode dispatch table. **If that table is empty, every DL command jumps to
+  offset 0.** `wd_bad1.txt`'s DMEM dump shows DMEM 0x000..0x0FF **all zeros** (only DMEM 0x0FC =
+  0x550) while the data segment's later content is present (DMEM 0x110.. holds the "ucode ..."
+  string). That is the single most promising thread left, and it is testable in one run: dump the
+  data segment as the guest submits it and compare DMEM 0x10..0x8F against it.
+
+**4. THE LIVE LEAD (from §1's n=5, which is within-run and unambiguous).** The ucode reloads its
+own 3968-byte text region from a pointer it reads out of the OSTask header copy in DMEM, and on
+that transfer the pointer had become **0x6F0000** — not an RDRAM address for any ucode in this ROM
+(the five gfx ucodes are at 0x7505C0/0x751950/0x752AE0/0x753C70/0x754E00, f3dex2 first). So the
+ucode ends up running with an IMEM image loaded from garbage, which is precisely the state in which
+the runaway walk is found. This ties directly to the round-21/22 findings that DMEM 0xFC0 (the
+header) is already garbage at any preemption point (`typ=0xDEF3FFFF`, `flg=0x00010001`) and that
+`ff0`/`data_ptr` reads `0x0C1D1868` in the same window. **So the productive question is no longer
+"why is IMEM wrong" but "who clobbers the DMEM 0xFC0 header copy that the ucode's reload path reads
+its source from".**
+
+**5. NEXT ROUND (all one build, one run — see §2).** (a) Log, at every `dst=1080` and `dst=1000`
+transfer, the full OSTask header at DMEM 0xFC0..0xFFF and the pointer each reload used, so the
+`src=6f0000` class is caught at its source rather than after the fact. (b) Dump DMEM 0x000..0x8F at
+that instant and check the opcode dispatch table against `t.ucode_data` — if it is empty at the
+first gfx task, the pre-scan never worked and §3 explains the frame protocol failing from task one.
+(c) Re-check the gating rule: everything stays behind `g_dev.dd.idisk != NULL`, and the plain-cart
+CI baseline is re-verified after any change.
+
+**ROUND 23 — [RETRACTED, SEE ROUND 24 ABOVE] ROOT CAUSE FOUND: THE F3DEX2 UCODE'S DL-WALK
+PROLOGUE IS *NOT IN IMEM* AT RUNTIME. IMEM 0x000..0x17F HOLDS THE WRONG RDRAM REGION, SO THE WALK
+NEVER READS THE GUEST'S DISPLAY LIST AND THE RDP IS NEVER FED.** The *observations* below
+(§0 endianness, §1 the verified task/DL, §2 the kick protocol, §3 the `$20` sites) still stand and
+are worth keeping. The *conclusion* in §4-§7 is withdrawn: round 24 shows the IMEM content is a
+traced, deliberate swap (§1) and that this section cross-read two different runs (§2).
+Everything below is measured against the r22a RAM
 dump, the r22a/r22b traces, and the F-Zero X EK decomp source that is in the workspace.
 
 **0. READ-ENDIANNESS TRAP (applies to every earlier read of `ram.bin`).** `.fzxwork/r22a/ram.bin`
@@ -104,7 +194,9 @@ lengths, `s0=00000000` on every sample, no write DMA to `gTaskOutputBuffer`, all
 `gTaskOutputBuffer`, `DPC` windows that only ever take the empty-kick form, `mia=00000000`,
 `raise_bits DP=0`, no FULLSYNC, and the guest parked forever on `osRecvMesg(&D_800DCAC8)`.
 
-**5. THE RSPBOOT IS FULLY DECODED, AND IT LENGTHENS THE CORRECT LOAD (a long-standing note is
+**5. [RETRACTED — see ROUND 24 §2: this is the wrong blob. `t.ucode_boot` is 0x80768E60 with
+size 0x1000, not 0x807504F0; the decode below is of an unused rspboot-shaped blob and must not be
+used.] THE RSPBOOT IS FULLY DECODED, AND IT LENGTHENS THE CORRECT LOAD (a long-standing note is
 wrong).** RDRAM 0x7504F0..0x7505C0 (`rspbootTextStart = 0x807504F0`, 0xD0 bytes):
 
 ```

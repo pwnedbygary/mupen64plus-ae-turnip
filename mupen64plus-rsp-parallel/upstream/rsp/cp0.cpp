@@ -1129,23 +1129,19 @@ extern "C"
 
 		/* DMA length.  Upstream parallel-RSP CLAMPS a transfer that runs off
 		   the end of DMEM/IMEM; real hardware WRAPS (the per-word address is
-		   masked with 0x1FFC, which is what the inner loop below does).  The
-		   64DD boot ucode depends on the wrap: it issues
-		   SP_MEM_ADDR=0x1080 / SP_RD_LEN=0xF7F.
+		   masked with 0x1FFC, which is what the inner loop below does).
 
-		   ROUND 23 CORRECTION (the premise above was miscounted, and it is
-		   the premise, not the code, that was wrong): SP_RD_LEN holds
-		   LENGTH-1, so 0xF7F means **0xF80 = 3968 bytes, not 4096**.  The
-		   rspboot's load therefore ends exactly on the IMEM bank boundary
-		   (0x1080+0xF80 == 0x2000, last word 0x1FFC) and does NOT wrap.
-		   Decoded from RDRAM 0x7504F0 (rspboot, 0xD0 bytes): `lw $2,16($1)`
-		   (t.ucode) -> DRAM_ADDR, `addi $3,$0,0xf7f` -> RD_LEN,
-		   `addi $7,$0,0x1080` -> MEM_ADDR, then `jr $7`.  No clamp can
-		   truncate this transfer, so the DD-route bank-limited wrap is not
-		   needed *for this load* and must be justified by something else
-		   before it is trusted -- and it is now a prime suspect for the
-		   round-23 finding that IMEM 0x000..0x17F holds RDRAM 0x7515D8
-		   instead of 0x750540 (see HANDOFF.md ROUND 23 sections 4-7).
+		   ROUND 24 CORRECTION (the premise above is miscounted): SP_RD_LEN
+		   holds LENGTH-1.  Every F3DEX2 text load measured in this tree is
+		   `len=0f80`, i.e. 3968 bytes, and 0x1080+0xF80 == 0x2000 lands
+		   exactly on the IMEM bank boundary (last word 0x1FFC), so THAT
+		   transfer does not wrap and no clamp can truncate it.  Whether the
+		   DD route needs the bank-limited wrap at all therefore rests on some
+		   other transfer -- do not cite this one.  (Round 23 additionally
+		   mis-attributed the constant 0xF7F to `t.ucode_boot`: the boot ucode
+		   this ROM actually submits is 0x80768E60 with size 0x1000, and
+		   0x807504F0 is a different, rspboot-shaped blob.  See HANDOFF.md
+		   ROUND 24.)
 		   DD route only: plain games keep the stock clamp exactly
 		   (user rule 2026-09-05). */
 		if (!rsp_ares_budget_enabled() &&
