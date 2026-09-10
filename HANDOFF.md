@@ -891,3 +891,101 @@ counters (`cached_interp.c`, `interrupt.c`, `dd_controller.c`, `pi_controller.c`
 `RSPHDR` task-header log (`parallel.cpp`), plugin DMA wrap (`cp0.cpp`), core DMA wrap
 (`rsp_core.c`). Watch out: `.fzxwork/build*.log` and the `.fzxwork/r6/` evidence dir are
 untracked — the raw evidence for this round lives in `.fzxwork/r6/`.
+
+## UPDATE 2026-09-10 (goal round 9) — **CPU now runs at full hardware speed; the stall is no longer "the RSP owns the thread"**
+
+Commit `e205bfc7a`. Two coupled bugs in the 64DD host-run-budget model, both
+found from live RP6 measurements, both DD-gated.
+
+### 1. The sticky RSP-side `irq` flag — a 524k fake-completion/s livelock
+`rsp/cp0.cpp:171` returns `MODE_CHECK_FLAGS` from **any** `mtc0 SP_STATUS` while
+`(cp0.irq & 1) || (status & HALT)`. `parallel.cpp`'s DD branch treated *any*
+`MODE_CHECK_FLAGS` as a task yield, and the yield path did
+`*cp0.irq |= 1` and then `break` — skipping the `CheckInterrupts()` call that is
+the only thing that consumes that flag (the guest's `SP_CLR_INTR` write clears
+`MI_INTR_SP` in the core, not the plugin's flag). So from the first yield on,
+**every** `cpu.run()` returned immediately and the RSP never executed another
+instruction.
+
+Live proof, `files/wd_rsp.txt`: 13406 "task completions" inside **one
+millisecond**, every one `ttype=1048576` with a garbage OSTask
+(`boot=00100010 ucode=7ffffffc ucosz=2fd0f8f0`), driving `c_exc_int` at 524k/s.
+A second, quieter consequence: the guest's libultra SP handler ran 500x/s
+(`wd_spw.txt`: 414 writes of `SP_STATUS=0x8008` at `pc=80746afc`, the MI
+dispatch in `__osException`), and each ack re-entered `do_SP_Task`.
+
+Fix: only a genuine `rsp_budget_expired_now()` is a yield, and the irq flag is
+cleared both on a false alarm (`continue`) and on the yield.
+
+### 2. A budget yield must not fabricate a task completion
+The yield set `HALT|INTR_BREAK`, which `do_SP_Task` reports as a finished task;
+the guest acks, and `update_sp_status` re-enters `do_SP_Task` for a locked,
+un-halted task — handing the RSP another full 2 ms slice. **The guest's entire
+CPU share was its own SP handler while the RSP still owned the emulation
+thread.** Measured with `files/wd_stall.txt`:
+
+| | before (round 8 model) | after |
+|---|---|---|
+| CP0 COUNT advance | 40 184 / 300 ms (134 k/s = **0.3 %**) | 14 588 142 / 300 ms (**48.6 M/s, ~real speed**) |
+| VI interrupts | **0** | 18 / 300 ms (60/s) |
+| AI interrupts | 0 | 18 / 300 ms |
+| `c_task` | 500/s | 30/s (background slices only) |
+| guest exceptions | 150 (100 % SP handler) | 40 (AI/VI — real work) |
+| guest run queue | **EMPTY**, run thread = prio-0 idle spinning `b .` at 0x806f32ec | prio-20 thread RUNNABLE, executing the frame sync |
+
+A yield is now **silent**: `SP_STATUS` is left exactly as the ucode left it
+(unfinished, resumable), `do_SP_Task` marks the task `rsp_task_locked` **without**
+raising `MI_INTR_SP` on the DD route, and a new `rsp_dd_background_pump()`
+(`rsp_core.c`, called from `dynarec_gen_interrupt` — the recompiler's
+`cc_interrupt` hook — with a coarse 3 ms time gate) feeds the RSP bounded slices
+from the CPU side. `do_SP_Task` is used for the slice so a slice that finally
+reaches the ucode's `BREAK` delivers the stock completion
+(`SP_INT` → `rsp_interrupt_event` → `MI_INTR_SP`), which is what wakes the guest.
+
+### 3. New instruments (all DD-gated, inert on plain carts)
+* `wd_ht_ring` — a dispatch ring written **only** by `get_addr_ht`. `wd_pc_ring`
+  is polluted by `dynarec_sample_hook`, so 2048 identical `0x80000180` entries
+  in round 8 could not distinguish "the guest is executing the exception
+  vector" from "the dispatcher keeps re-entering the vector block without it
+  ever running". `DELTA3 c_ht=/c_cop1=` are in `wd_stall.txt`.
+* `cop1_unusable()`: fault counter + last-16 pc ring + a 4-deep full-GPR
+  snapshot (`COP1SNAP`). Total COP1 faults on a whole run: **2**.
+* `HTVEC`: the hash-table entry (`vaddr/start/length/addr`) for `0x80000180`
+  and for the `0x80000400` fill block — exposes a stale/overlapping entry.
+* A SIGILL/SIGSEGV/SIGBUS handler writing `files/wd_crash.txt` with the host pc
+  /lr and the guest pcaddr/GPRs/CP0: a JIT SIGILL leaves no C backtrace.
+  (Runs with the round-9 *probe* build did crash with `SIGILL` inside
+  `anon:.bss` — the JIT arena — but the crash did not reproduce with the plain
+  round-8/round-9 fix builds, so it is a probe-timing artefact until proven
+  otherwise.)
+
+### 4. Where the machine stands now (DD LOADING screen, 59-60 FPS, bar ~6.5/8)
+The guest is **alive and executing**: the PC ring shows the EK's DD-loader
+message loop (`0x806f2f6c`: `osRecvMesg(0x8079A120)` + dispatch on
+`msg == 0x18` (SP event) / `0x1a`), the libultra exception handler, the VI
+manager and `__osViSwapContext` (`0x8074cf24`), and the prio-20 thread in
+`osViGetCurrentFramebuffer`-based frame sync.
+
+Remaining blocker: **the DD loader never issues another DD ASIC command**
+(`c_asic` frozen at 10604, `c_pi` +4/300 ms). `__osViCurr`/`__osViNext` both
+hold `framep=0x801d9800` with `state=0x0001` — that is the post-swap invariant
+of `__osViSwapContext` (`__osViNext = __osViCurr; __osViCurr = vc;
+*__osViNext = *__osViCurr;`), so the last completed swap was for
+`gFrameBuffers[0]`; the frame-index variable the loader compares against needs
+to be pinned down (`D_800DCD00` per the decomp vs `0x8079A360` per round 8 —
+check both). Next round: trace which of the `sys_gfx.c:198` /
+`sys_main.c:190/268/291/302` framebuffer waits the prio-20 thread is in, and
+what the loader state machine is waiting on at `0x806f2f88+`.
+
+### 5. Plain-cart regression — VERIFIED CLEAN
+Mario Kart 64 Amped Up v3.21, emumode=1 baseline: renders the "A REAL N64
+CONSOLE?" screen at **59 FPS**, no crash, and only the harmless 22-byte
+`wd_smc.txt` header exists (`wd_stall/wd_dma/wd_freeze/wd_crash` all absent),
+i.e. every DD path is inert.
+
+### 6. Evidence
+`.fzxwork/r9/`: `stall_head.txt` (round-8 build: SP-interrupt storm),
+`stall_fix1.txt` (fix 1 only: 500 tasks/s, CPU 0.3 %), `stall_pump1.txt`
+(fix 2: CPU 48.6 M/s, VI 60/s), `ram_pump1.bin` + `freeze_state.py` output
+(guest OS thread/queue dump), `spw_fix1.txt`, `rsp_head.txt`, `bar1-3.png`,
+`plain_r9.png`.
