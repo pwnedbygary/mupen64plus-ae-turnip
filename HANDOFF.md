@@ -72,8 +72,10 @@ is gated by a *host-time* budget, so this run's softer terminal state cannot be 
 * **The EK data load is real:** `RDRAM 0x8076a000..0x8076c000` holds packed EK data (runs of
   `0x00010001` interleaved with `0x22894553/0x45134513/0x39e131e1`-style words) in the r11/r12 runs and
   is **all zeros** in the round-10 stalled run — the DD read path is delivering data.
-* **Plain-game regression: CLEAN** — MK64 Amped Up (CI emumode=1 path) renders and plays with the
-  instrumented build; the only watchdog file is the harmless `wd_smc.txt`, no `wd_pdma.txt`.
+* **Plain-game regression: CLEAN** — `Mario Kart 64 - Amped Up [v3.21]` (the CI emumode=1 path) renders
+  its "ARE YOU PLAYING ON A REAL N64 CONSOLE?" screen at 60 FPS with the instrumented build, the app
+  process stays alive, and the DD-gated instrumentation stays silent (no `wd_pdma.txt` / `wd_stall.txt`
+  written by that run — mtimes unchanged, only the known harmless 22-byte `wd_smc.txt`).
 
 **ROUND 13 NEXT STEPS (in order):**
 1. **Latch the DMA-register writes** (`RSP_MTC0` for `CP0_REGISTER_DMA_DRAM/DMA_CACHE/
