@@ -146,10 +146,24 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 			{
 				long long now_ms = wd_now_ms();
 				wd_rsp_log_n++;
-				fprintf(rf, "RSPTASK ms=%lld seq=%u ENTER pc=%04x status=%08x ttype=%u exp=%d imem0=%08x %08x pimem=%p pdmem=%p pram=%p cimem=%p\n",
+				/* ROUND-14 DIAG: how much of RSP memory is live right now
+				   (nonzero words in IMEM and DMEM).  The frozen machine's
+				   terminal state is ALL ZERO -- both banks, 2048 words --
+				   with the RSP executing NOPs forever and never breaking, so
+				   the exact entry where the counts collapse names the step
+				   that destroys the task.  2048 word compares per call is
+				   noise next to the fprintf it accompanies. */
+				unsigned r14_nzi = 0, r14_nzd = 0, r14_i;
+				for (r14_i = 0; r14_i < 0x1000 / 4; r14_i++)
+				{
+					if (((const uint32_t*)RSP::rsp.IMEM)[r14_i]) r14_nzi++;
+					if (((const uint32_t*)RSP::rsp.DMEM)[r14_i]) r14_nzd++;
+				}
+				fprintf(rf, "RSPTASK ms=%lld seq=%u ENTER pc=%04x status=%08x ttype=%u exp=%d imem0=%08x %08x nzi=%u nzd=%u pimem=%p pdmem=%p pram=%p cimem=%p\n",
 					now_ms, task_seq, *RSP::rsp.SP_PC_REG & 0xfff, *RSP::rsp.SP_STATUS_REG,
 					ttype, expired,
 					((uint32_t*)RSP::rsp.IMEM)[0], ((uint32_t*)RSP::rsp.IMEM)[1],
+					r14_nzi, r14_nzd,
 					(void*)RSP::rsp.IMEM, (void*)RSP::rsp.DMEM, (void*)RSP::rsp.RDRAM,
 					(void*)RSP::cpu.get_state().imem);
 				/* DIAG (round 6): log the DMEM task header the guest submitted.

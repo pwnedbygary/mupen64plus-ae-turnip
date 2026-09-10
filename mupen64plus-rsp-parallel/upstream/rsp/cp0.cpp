@@ -73,6 +73,88 @@ static void r12_record(RSP::CPUState* rsp, unsigned dir, uint32_t dst, uint32_t 
 	        rsp->imem[0], rsp->imem[1], rsp->dmem[0], rsp->dmem[0xfc0 / 4]);
 	fclose(f);
 }
+
+/* ---------------------------------------------------------------------------
+   ROUND-14 DIAG (DD route only): the COMPLETE ucode-issued DMA trace.
+
+   Round 13 left two open questions that need the transfer stream in order:
+   (a) which instruction issues the transfer that lands 0x00010001 over IMEM
+   (measuring `dst=1000 src=000f80 len=152`, i.e. a 152-byte read out of the
+   guest's low-RDRAM fill), and (b) what takes RSP memory from "IMEM full of
+   ucode text, DMEM full of tables" to ALL ZERO -- the state the machine is
+   frozen in (every ENTER afterwards reports imem0=0 and the RSP runs NOPs).
+
+   A ring of the last 256 transfers is kept in RAM and flushed to the file in
+   batches of 64, so the RSP's hot path pays a few stores per transfer and no
+   per-transfer file I/O (user rule: never put file I/O in the RSP path).
+   Each line carries the RSP pc, the four DMA registers, the first source
+   word, SP_STATUS and the task-header word, which is what identifies both
+   halves: the issuing instruction and the memory state it acted on. */
+struct r14_ent {
+	unsigned dir; uint32_t pc, dst, src, len, cnt, skip, s0, st, fc0;
+};
+static struct r14_ent r14_ring[256];
+static unsigned r14_idx = 0;
+static void r14_note(FILE* f);
+
+static void r14_flush(void)
+{
+	unsigned i, start;
+	FILE* f;
+	if (!rsp_ares_budget_enabled() || r14_idx == 0)
+		return;
+	start = r14_idx - (r14_idx < 64 ? r14_idx : 64);
+	f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_dmatr.txt",
+	          r14_idx > 64 ? "a" : "w");
+	if (f == NULL)
+		return;
+	for (i = start; i < r14_idx; i++) {
+		const struct r14_ent* e = &r14_ring[i & 255];
+		fprintf(f, "D%u %s pc=%03x dst=%04x src=%06x len=%04x cnt=%u skip=%u s0=%08x st=%08x fc0=%08x\n",
+		        i + 1, e->dir == 2 ? "RD" : "WR", e->pc, e->dst, e->src,
+		        (unsigned)e->len, (unsigned)e->cnt, (unsigned)e->skip,
+		        (unsigned)e->s0, (unsigned)e->st, (unsigned)e->fc0);
+	}
+	r14_note(f);
+	fclose(f);
+}
+
+static void r14_record(RSP::CPUState* rsp, unsigned dir, uint32_t dst, uint32_t src,
+                       uint32_t len, unsigned count, uint32_t skip)
+{
+	struct r14_ent* e;
+	if (!rsp_ares_budget_enabled())
+		return;
+	e = &r14_ring[r14_idx & 255];
+	e->dir = dir; e->pc = rsp->pc & 0xfff; e->dst = dst; e->src = src;
+	e->len = len; e->cnt = count; e->skip = skip;
+	e->s0 = rsp->rdram[(src & 0x7ffffc) >> 2];
+	e->st = *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS];
+	e->fc0 = ((uint32_t*)RSP::rsp.DMEM)[0xfc0 / 4];
+	r14_idx++;
+	if ((r14_idx & 63) == 0)
+		r14_flush();
+}
+
+/* ROUND-14 DIAG: RSP-side SP_STATUS writes, RAM ring only (see above). */
+static uint32_t r14_spw_ring[16][2];
+static unsigned r14_spw_n = 0;
+static unsigned r14_fake_n = 0;
+static uint32_t r14_fake_last_pc = 0, r14_fake_last_st = 0;
+
+/* Called from r14_flush(): one line per batch naming the RSP-side SP_STATUS
+   conversation (the last write's raw value + resulting status) and the count
+   of synthetic yields the DD route injected, so the two halves of the task
+   protocol can be lined up with the transfer stream. */
+static void r14_note(FILE* f)
+{
+	unsigned i = (r14_spw_n - 1u) & 15u;
+	fprintf(f, "X sw_n=%u sw_last=%08x sw_after=%08x fake_n=%u fake_pc=%03x fake_st=%08x\n",
+	        r14_spw_n, r14_spw_n ? r14_spw_ring[i][0] : 0,
+	        r14_spw_n ? r14_spw_ring[i][1] : 0,
+	        r14_fake_n, r14_fake_last_pc, r14_fake_last_st);
+}
+
 #endif
 
 using namespace RSP;
@@ -156,6 +238,11 @@ extern "C"
 			if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_SIG0)
 				*RSP::rsp.SP_STATUS_REG |= SP_STATUS_SIG1;
 			*rsp->cp0.irq |= 1;
+			/* ROUND-14 DIAG: count the synthetic yields this block
+			   fabricates (RAM only -- no file I/O in the RSP path). */
+			r14_fake_n++;
+			r14_fake_last_pc = rsp->pc & 0xfff;
+			r14_fake_last_st = *RSP::rsp.SP_STATUS_REG;
 			return MODE_CHECK_FLAGS;
 			}
 			}
@@ -243,6 +330,15 @@ extern "C"
 			status |= SP_STATUS_SIG7;
 
 		*rsp->cp0.cr[CP0_REGISTER_SP_STATUS] = status;
+		/* ROUND-14: no file I/O here.  The ucode writes SP_STATUS from its
+		   inner loops, and round 14 measured that per-write file I/O on
+		   this path changes the run (the emulation process died with
+		   SIGILL in the RSP JIT ~4s in, a state round 13's tree never
+		   reached).  Keep a RAM-only ring of the last 16 writes for the
+		   dump instead. */
+		r14_spw_ring[r14_spw_n & 15u][0] = rt;
+		r14_spw_ring[r14_spw_n & 15u][1] = status;
+		r14_spw_n++;
 		return ((*rsp->cp0.irq & 1) || (status & SP_STATUS_HALT)) ? MODE_CHECK_FLAGS : MODE_CONTINUE;
 	}
 
@@ -279,6 +375,7 @@ extern "C"
 		uint32_t dest = *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE];
 
 		r12_record(rsp, 2, dest, source, length, count, skip);
+		r14_record(rsp, 2, dest, source, length, count, skip);
 
 #ifdef INTENSE_DEBUG
 		fprintf(stderr, "DMA READ: (0x%x <- 0x%x) len %u, count %u, skip %u\n", dest & 0x1ffc, source & 0x7ffffc,
@@ -342,6 +439,7 @@ extern "C"
 		uint32_t source = *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE];
 
 		r12_record(rsp, 1, dest, source, length, count, skip);
+		r14_record(rsp, 1, dest, source, length, count, skip);
 
 #ifdef INTENSE_DEBUG
 		fprintf(stderr, "DMA WRITE: (0x%x <- 0x%x) len %u, count %u, skip %u\n", dest & 0x7ffffc, source & 0x1ffc,
