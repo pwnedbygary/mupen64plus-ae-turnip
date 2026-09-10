@@ -532,8 +532,11 @@ static void call_interrupt_handler(const struct cp0* cp0, size_t index)
     handler->callback(handler->opaque);
 }
 
+extern volatile uint32_t wd_c_gen_int;
+
 void gen_interrupt(struct r4300_core* r4300)
 {
+    if (g_dev.dd.idisk != NULL) wd_c_gen_int++;
     uint32_t* cp0_regs = r4300_cp0_regs(&r4300->cp0);
     unsigned int* cp0_next_interrupt = r4300_cp0_next_interrupt(&r4300->cp0);
     int* cp0_cycle_count = r4300_cp0_cycle_count(&r4300->cp0);

@@ -251,6 +251,8 @@ void pi_end_of_dma_event(void* opaque)
     pi->regs[PI_STATUS_REG] &= ~(PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY);
     pi->regs[PI_STATUS_REG] |= PI_STATUS_INTERRUPT;
     if (pi->dd != NULL) {
+        extern volatile uint32_t wd_c_pi_dma;
+        wd_c_pi_dma++;
         dd_trace_add_ext(6, pi->regs[PI_CART_ADDR_REG], pi->regs[PI_STATUS_REG], 0, 0);
     }
 

@@ -49,14 +49,30 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
     unsigned int memaddr = dma->memaddr & 0xff8;
     unsigned int dramaddr = dma->dramaddr & 0xfffff8;
 
-    unsigned char *spmem = (unsigned char*)sp->mem + (dma->memaddr & 0x1000);
+    /* 64DD ROUTE ONLY (runtime gate; plain carts keep the original code path
+       byte-for-byte).  The SP DMA address counter must WRAP inside DMEM/IMEM
+       (4 KiB each): upstream indexes from a fixed base, so
+       SP_MEM_ADDR=0x1080 + SP_RD_LEN=0xF7F (a 4096-byte transfer, which is
+       exactly how the 64DD boot ucode loads the whole main ucode into IMEM
+       starting at 0x080 and wrapping into 0x000..0x07F -- measured live:
+       imem[(0x80+k)&1023] == ucode[k] holds for k=0..0xF7F and fails for the
+       last 0x80 bytes) walks 0x80 bytes PAST the end of the 8 KiB RSP memory:
+       the wrapped tail is lost and 128 bytes of the neighbouring arena are
+       clobbered.  Masking each access reproduces the hardware wrap. */
+    unsigned char *spmem;
+    if (g_dev.dd.idisk != NULL)
+        spmem = (unsigned char*)sp->mem;
+    else
+        spmem = (unsigned char*)sp->mem + (dma->memaddr & 0x1000);
     unsigned char *dram = (unsigned char*)sp->ri->rdram->dram;
-
     if (dma->dir == SP_DMA_READ)
     {
         for(j=0; j<count; j++) {
             for(i=0; i<length; i++) {
-                dram[dramaddr^S8] = spmem[memaddr^S8];
+                if (g_dev.dd.idisk != NULL)
+                    dram[(dramaddr & 0x7fffff)^S8] = spmem[(memaddr & 0x1fff)^S8];
+                else
+                    dram[dramaddr^S8] = spmem[memaddr^S8];
                 memaddr++;
                 dramaddr++;
             }
@@ -71,7 +87,10 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
             pre_framebuffer_read(&sp->dp->fb, dramaddr);
 
             for(i=0; i<length; i++) {
-                spmem[memaddr^S8] = dram[dramaddr^S8];
+                if (g_dev.dd.idisk != NULL)
+                    spmem[(memaddr & 0x1fff)^S8] = dram[(dramaddr & 0x7fffff)^S8];
+                else
+                    spmem[memaddr^S8] = dram[dramaddr^S8];
                 memaddr++;
                 dramaddr++;
             }
@@ -304,8 +323,12 @@ void write_rsp_regs2(void* opaque, uint32_t address, uint32_t value, uint32_t ma
     masked_write(&sp->regs2[reg], value, mask);
 }
 
+extern volatile uint32_t wd_c_do_sp_task;
+extern volatile uint32_t wd_c_sp_int_evt;
+
 void do_SP_Task(struct rsp_core* sp)
 {
+    if (g_dev.dd.idisk != NULL) wd_c_do_sp_task++;
     uint32_t save_pc = sp->regs2[SP_PC_REG] & ~0xfff;
     /* Entry SP_STATUS — distinguish "ucode yielded during THIS run" (was
        running at entry, HALT set by the plugin's poll-yield at exit) from
@@ -429,6 +452,7 @@ void do_SP_Task(struct rsp_core* sp)
 
 void rsp_interrupt_event(void* opaque)
 {
+    if (g_dev.dd.idisk != NULL) wd_c_sp_int_evt++;
     struct rsp_core* sp = (struct rsp_core*)opaque;
 
     if (!sp->rsp_task_locked)

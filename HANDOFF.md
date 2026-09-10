@@ -652,3 +652,116 @@ guest game queue `0x800dca40` empty) is the place to look, and the `wd_force.fla
 mechanism needs a wider trigger (`dynarec_sample_hook` needs `(d_sample & 0x1FFF)==0`,
 which never comes when the CPU takes no interrupts — consider also arming the dump from the
 RSP hook, which runs ~60×/s).
+
+---
+
+## UPDATE 2026-09-10 (goal round 6) — the watchdog was lying; the real stall is an RSP livelock on a 0x00010001-filled DMA
+
+### 0. The instrument was broken (this invalidated every previous "stall dump")
+The stall thread fires when `wd_hb` has not advanced for 4 s, but `wd_hb` was only
+incremented every `1<<20` `dynarec_sample_hook` calls — at the observed 10–300 calls/s that
+is **never**. So `iplram_wd.bin` was written **~4 s after emulation start, every run**, and
+all round-3/4/5 "stall" dumps were really early-boot dumps. Fixed: on the 64DD route
+`wd_hb++` on every sample (plain carts keep the old rule).
+
+New probe `files/wd_stall.txt` (written by `wd_full_dump`, DD-gated) samples the machine
+**twice 300 ms apart** plus a host-PC ring, the dynarec block ring, the live RSP
+IMEM+DMEM and per-thread `/proc/self/task/<tid>/stat`:
+```
+A/B  cause status epc badvaddr count | mi_intr mi_mask sp_status sp_pc …
+A/B  c_task c_spint c_genint c_sample c_asic c_pi vi_cur …
+DELTA …        ← what is still moving
+RING  <2048 last dynarec block entries: vaddr sp ra>
+SPMEM <8192 bytes: DMEM then IMEM, same buffers the plugin gets>
+THREADS/HOSTPC …
+```
+HOSTPC is a `SIGPROF`/`ITIMER_PROF` sampler (armed by the watchdog thread once `dd.idisk`
+is set) that grabs host pc/lr/fp **on whichever thread is burning CPU**. Note: it stores
+64-bit values now — the first version truncated to 32-bit and every PC classified as
+UNMAPPED.
+
+### 1. Measured state at the real stall (F-Zero X (Japan).z64 + F-Zero X.ndd, emumode=2)
+* **Not a hard freeze.** `DELTA c_task=+6 c_spint=+6 c_genint=+6 c_sample=+0 c_asic=0 c_pi=0`
+  over 300 ms → the RSP completes **20 tasks/s**, and `c_asic`/`c_pi` are frozen.
+* `SP_STATUS = 0x243` (TASKDONE|INTR_BREAK|BROKE|HALT) or `0xc0` (INTR_BREAK|SIG0=yield),
+  `SP_PC=0x98`, `MI_INTR=0`, `CAUSE=0x10000000` (no IP bits), `STATUS=0xff00` (**IE=0**),
+  `EPC` = the guest's `b .` idle loop.
+* `wd_rsp.txt`: **every** RSP task exits with the *same* pc `0x00b8`, status `0x243`, and
+  `wd_freeze.txt` shows `dur=50` — i.e. each task burns its **entire 50 ms host budget**.
+  20 × 50 ms = 100 % of the emulation thread. **That is the throttle.**
+* `ps`/`/proc`: exactly one thread (16001, the emulation thread) is in state **R** with
+  `utime` +451 jiffies per 4 s = 100 % of a core.
+
+### 2. Root cause found: the guest submits an RSP task header of `0x00010001`
+New `RSPHDR` log in `parallel.cpp` prints the DMEM task header the guest submitted:
+```
+RSPHDR … type=65537 flags=65537 boot=00010001 bootsz=00010001 ucode=00010001
+        ucosz=00010001 udata=00010001 udsz=00010001 stack=00010001 stksz=00010001
+        obuf=00010001 obsz=00010001
+```
+`0x00010001` is **this emulator's uninitialised-RDRAM fill** — it is what lives at
+`0x80000400` upwards (RDRAM runs of it: `0x80000400..0x8000432c`, `0x800067d0..0x80010158`, …).
+So `do_SP_Task` reads `ttype = 0x00010001` (neither 1 nor 2), the RSP's boot ucode reads
+`ucode = 0x00010001` from `DMEM[0xFD0]` and DMA-reads **4 KiB of fill from RDRAM
+`0x00010000`** into IMEM, and the RSP then executes `0x00010001` no-ops until the 50 ms
+budget expires — 20×/s, forever. **The loading bar can never advance in that state.**
+`DMEM[0xFC0..0xFFF]` is entirely `0x00010001` and `IMEM` is entirely `0x00010001`.
+
+### 3. Two genuine emulation bugs found on the way (both DD-gated, both hardware-accurate)
+**(a) plugin SP DMA clamped instead of wrapping** — `mupen64plus-rsp-parallel/upstream/rsp/cp0.cpp`
+```c
+if (((*cr[CP0_REGISTER_DMA_CACHE] & 0xFFF) + length) > 0x1000)
+    length = 0x1000 - (*cr[CP0_REGISTER_DMA_CACHE] & 0xFFF);
+```
+The 64DD boot ucode issues `SP_MEM_ADDR=0x1080 / SP_RD_LEN=0xF7F` — a **4096-byte wrap
+transfer** that loads the whole main ucode into IMEM starting at 0x80 and wrapping into
+0x000..0x07F. Clamping truncated it to 3968 bytes. Proven live: in the stall IMEM,
+`imem[(0x80+k)&1023] == ucode[k]` for 890/1024 words, the 134 mismatches being exactly
+`imem[0x000..0x217] = 0x00010001`. Now wraps on the DD route (`!rsp_ares_budget_enabled()`).
+
+**(b) core SP DMA ran off the end of the RSP memory** — `device/rcp/rsp/rsp_core.c:do_sp_dma`
+indexes `spmem[memaddr^S8]` from a base fixed by the *initial* `SP_MEM_ADDR & 0x1000` and
+**increments `memaddr` without masking**. For the same 0x1080/0xF7F transfer the counter
+runs 0x080..0x107F, i.e. **128 bytes past the end of the 8 KiB `sp->mem`**: the wrapped tail
+(`IMEM[0x000..0x07F]`, which is the ucode's last 0x80 bytes) is never written and 128 bytes
+of the neighbouring arena are clobbered. Now masks each access (`memaddr & 0x1fff`,
+`dramaddr & 0x7fffff`) on the DD route.
+
+### 4. Measured effect of the fixes
+| | before | after |
+|---|---|---|
+| RSP task exits | **all** `pc=00b8 status=243` (identical) | varying pcs `0x180..0xfe6`, status `0x41` (clean budget yield) |
+| `SP_PC` across the 300 ms probe | frozen | moving (`0x98` → `0xf94`) |
+| IMEM | 134 words of `0x00010001` | no fill (`(b)` alone) |
+| screen | "DD LOADING", bar at **7/8**, 59 FPS | "DD LOADING", bar **reset to 0**, 96 FPS |
+
+**The bar reset came specifically from the core `do_sp_dma` wrap (`(b)`)** — the plugin-only
+fix `(a)` still showed the bar at 7/8. The RSP is unambiguously executing the ucode now
+instead of walking fill, but the game is still stuck because the task header it submits is
+still all `0x00010001` (§2) and it still burns 50 ms per task.
+
+### 5. Next step (round 7) — who fills the guest's OSTask with `0x00010001`?
+The guest's `OSTask` (and everything it points at) reads as uninitialised RDRAM fill. That is
+the single remaining blocker. Concretely:
+1. **Log the CPU-side SP DMA** (`do_sp_dma`, DD-gated): memaddr/dramaddr/length/dir for every
+   transfer, correlated with the `RSPHDR` lines. That will show whether the guest ever DMAs a
+   *real* OSTask into `DMEM[0xFC0]`, or whether a later DMA from a fill region overwrites it.
+2. Find the guest's OSTask in RDRAM (the region that should hold it) and check whether the
+   game ever wrote it — i.e. whether the game's task struct is at a RDRAM address the EK data
+   load should have filled (⇒ DD load incomplete) or whether an unrelated DMA clobbered it.
+3. Only then reconsider the 50 ms non-audio budget: with a fill task it is pure waste
+   (20 × 50 ms = 100 % of the thread), but lowering it does not fix the fill header.
+4. If the answer is "the game never received that data", go back to the DD read path
+   (round 13's seek→BM stall) with the new `c_asic`/`c_pi`/DD-trace instruments.
+
+**Regression status: NOT YET VERIFIED for this round.** Both fixes are runtime-gated
+(`g_dev.dd.idisk != NULL` / `!rsp_ares_budget_enabled()`), so plain carts take the original
+code paths byte-for-byte — but a Mario Tennis (`support64dd=false`) run must still be done
+before round 7 ends, per the standing rule.
+
+### 6. Committed in round 6
+`wd_stall.txt` probe + fixed heartbeat + SIGPROF host-PC ring + progress counters + DD/PI
+counters (`cached_interp.c`, `interrupt.c`, `dd_controller.c`, `pi_controller.c`),
+`RSPHDR` task-header log (`parallel.cpp`), plugin DMA wrap (`cp0.cpp`), core DMA wrap
+(`rsp_core.c`). Watch out: `.fzxwork/build*.log` and the `.fzxwork/r6/` evidence dir are
+untracked — the raw evidence for this round lives in `.fzxwork/r6/`.

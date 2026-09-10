@@ -150,6 +150,18 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 					now_ms, task_seq, *RSP::rsp.SP_PC_REG & 0xfff, *RSP::rsp.SP_STATUS_REG,
 					ttype, expired,
 					((uint32_t*)RSP::rsp.IMEM)[0], ((uint32_t*)RSP::rsp.IMEM)[1]);
+				/* DIAG (round 6): log the DMEM task header the guest submitted.
+				   A zeroed header means the guest re-started the RSP without an
+				   __osSpTaskLoad (or with an uninitialised OSTask), which makes
+				   the ucode DMA from a null pointer and leaves the RSP executing
+				   zeroed IMEM until the host budget expires. */
+				if (ttype != 1 && ttype != 2 && wd_rsp_log_n < WD_RSP_LOG_MAX)
+				{
+					uint32_t* h = (uint32_t*)RSP::rsp.DMEM + (0xfc0 / 4);
+					wd_rsp_log_n++;
+					fprintf(rf, "RSPHDR ms=%lld seq=%u type=%u flags=%u boot=%08x bootsz=%08x ucode=%08x ucosz=%08x udata=%08x udsz=%08x stack=%08x stksz=%08x obuf=%08x obsz=%08x\n",
+						now_ms, task_seq, h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8], h[9], h[10], h[11]);
+				}
 				/* dump: any entry whose task header looks wrong (invalid type) or
 				   matches the classic pc 0x18C stall — live IMEM+DMEM so the stuck
 				   ucode can be disassembled offline. Up to 3 captures per run. */

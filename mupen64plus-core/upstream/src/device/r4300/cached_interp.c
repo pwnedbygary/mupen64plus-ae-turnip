@@ -26,7 +26,10 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <time.h>
+#include <signal.h>
+#include <sys/time.h>
 #include <fcntl.h>
 
 #define __STDC_FORMAT_MACROS
@@ -1016,6 +1019,76 @@ static volatile uint64_t wd_hb = 0;
 static volatile int wd_dumped = 0;
 static struct r4300_core* wd_r4300 = NULL;
 
+/* Progress counters (2026-09-10 round 6).  The round-5 stall analysis could not
+   tell "the emulation thread is wedged inside the RSP" apart from "the CPU runs
+   but nothing is delivered", because every existing signal was a file trace that
+   either saturated its cap or was written from only one side of the machine.
+   These counters are cheap (monotonic increments on the emulation thread) and
+   are sampled twice 300ms apart by the stall dump, so the dump itself answers
+   "what is still moving".  Written only on the 64DD route so plain carts pay at
+   most one predictable branch. */
+volatile uint32_t wd_c_do_sp_task = 0;   /* core: do_SP_Task entries            */
+volatile uint32_t wd_c_sp_int_evt = 0;   /* core: rsp_interrupt_event fires     */
+volatile uint32_t wd_c_gen_int    = 0;   /* core: gen_interrupt entries         */
+volatile uint32_t wd_c_sample     = 0;   /* dynarec: do_interrupt (sample hook) */
+volatile uint32_t wd_c_dd_asic    = 0;   /* DD: ASIC commands issued by the guest */
+volatile uint32_t wd_c_pi_dma     = 0;   /* PI: completed cart DMAs                */
+
+/* Host-PC sampler (2026-09-10 round 6).  Every other signal says the emulation
+   thread is burning 100% of a core with ZERO progress in gen_interrupt,
+   do_SP_Task, rsp_interrupt_event and the dynarec's do_interrupt -- so it is
+   spinning inside generated code, and only a host backtrace can say which
+   generator produced it.  ITIMER_PROF delivers SIGPROF to whichever thread is
+   consuming CPU, so the handler samples the spinning thread directly; the raw
+   host pc/lr are classified offline against /proc/<pid>/maps.  Armed by the
+   stall thread only after dd.idisk is set (DD route only). */
+#define WD_PCS_N 128
+static volatile uint64_t wd_pcs[WD_PCS_N][4]; /* host pc, host lr, host fp, RSP SP_PC */
+static volatile uint32_t wd_pcs_idx = 0;
+static volatile int wd_pcs_armed = 0;
+static struct sigaction wd_sigprof_old;
+static int wd_sigprof_saved = 0;
+
+static void wd_sigprof(int sig, siginfo_t* si, void* uc_)
+{
+    ucontext_t* uc = (ucontext_t*)uc_;
+    uint32_t i = wd_pcs_idx++ & (WD_PCS_N - 1);
+    uintptr_t pc = 0, lr = 0, fp = 0;
+    (void)sig; (void)si;
+#if defined(__aarch64__)
+    pc = (uintptr_t)uc->uc_mcontext.pc;
+    lr = (uintptr_t)uc->uc_mcontext.regs[30];
+    fp = (uintptr_t)uc->uc_mcontext.regs[29];
+#elif defined(__arm__)
+    pc = (uintptr_t)uc->uc_mcontext.arm_pc;
+    lr = (uintptr_t)uc->uc_mcontext.arm_lr;
+    fp = (uintptr_t)uc->uc_mcontext.arm_fp;
+#endif
+    wd_pcs[i][0] = (uint64_t)pc;
+    wd_pcs[i][1] = (uint64_t)lr;
+    wd_pcs[i][2] = (uint64_t)fp;
+    wd_pcs[i][3] = (uint64_t)g_dev.sp.regs2[SP_PC_REG];
+    if (wd_sigprof_saved && (wd_sigprof_old.sa_flags & SA_SIGINFO)
+        && wd_sigprof_old.sa_sigaction != NULL)
+        wd_sigprof_old.sa_sigaction(sig, si, uc_);
+}
+
+static void wd_pcs_arm(void)
+{
+    struct sigaction sa;
+    struct itimerval it;
+    if (wd_pcs_armed) return;
+    wd_pcs_armed = 1;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = wd_sigprof;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGPROF, &sa, &wd_sigprof_old) == 0) wd_sigprof_saved = 1;
+    it.it_interval.tv_sec = 0; it.it_interval.tv_usec = 10000; /* 10ms of CPU */
+    it.it_value = it.it_interval;
+    setitimer(ITIMER_PROF, &it, NULL);
+}
+
 /* Recent-PC ring buffer: sampled in dynarec_sample_hook (do_interrupt), dumped
    on the FIRST guest fault (TLB miss / address error).  The 64DD route only --
    the guest fault is what parks F-Zero X's main thread. */
@@ -1126,10 +1199,140 @@ static void wd_state_dump(const char* path, const char* tag, struct r4300_core* 
         tag, vaddr, w, pc, sp, path);
 }
 
+/* ---------------------------------------------------------------------------
+   Round-6 stall probe.  Samples the whole machine twice, 300ms apart, and
+   writes one small text file: device state, the four progress counters, the
+   dynarec's recent-block ring, the live RSP IMEM+DMEM, and the kernel state
+   (S/R/D + utime/stime) of every thread in the process.  Together those answer
+   the question the round-5 traces could not: is the emulation thread wedged
+   inside the RSP, spinning in the dynarec, or idle waiting for a delivery that
+   never comes?  DD route only (caller is DD-gated); fopen here runs on the
+   already-stalled watchdog thread, never in a hot path. */
+struct wd_snap {
+    uint32_t cause, status, epc, badvaddr, count;
+    uint32_t mi_intr, mi_mask;
+    uint32_t sp_status, sp_pc, sp_busy, sp_full, sp_sem;
+    uint32_t c_task, c_spint, c_genint, c_sample, c_asic, c_pi;
+    uint32_t vi_current, vi_field, vi_delay;
+};
+
+static void wd_take_snap(struct wd_snap* s)
+{
+    uint32_t* cp0_regs = r4300_cp0_regs(&wd_r4300->cp0);
+    s->cause = cp0_regs[CP0_CAUSE_REG];
+    s->status = cp0_regs[CP0_STATUS_REG];
+    s->epc = cp0_regs[CP0_EPC_REG];
+    s->badvaddr = cp0_regs[CP0_BADVADDR_REG];
+    s->count = cp0_regs[CP0_COUNT_REG];
+    s->mi_intr = g_dev.mi.regs[MI_INTR_REG];
+    s->mi_mask = g_dev.mi.regs[MI_INTR_MASK_REG];
+    s->sp_status = g_dev.sp.regs[SP_STATUS_REG];
+    s->sp_pc = g_dev.sp.regs2[SP_PC_REG];
+    s->sp_busy = g_dev.sp.regs[SP_DMA_BUSY_REG];
+    s->sp_full = g_dev.sp.regs[SP_DMA_FULL_REG];
+    s->sp_sem = g_dev.sp.regs[SP_SEMAPHORE_REG];
+    s->c_task = wd_c_do_sp_task;
+    s->c_spint = wd_c_sp_int_evt;
+    s->c_genint = wd_c_gen_int;
+    s->c_sample = wd_c_sample;
+    s->c_asic = wd_c_dd_asic;
+    s->c_pi = wd_c_pi_dma;
+    s->vi_current = g_dev.vi.regs[VI_CURRENT_REG];
+    s->vi_field = g_dev.vi.field;
+    s->vi_delay = g_dev.vi.delay;
+}
+
+static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
+{
+    fprintf(f, "%s cause=%08x status=%08x epc=%08x badvaddr=%08x count=%08x\n",
+        tag, s->cause, s->status, s->epc, s->badvaddr, s->count);
+    fprintf(f, "%s mi_intr=%08x mi_mask=%08x sp_status=%08x sp_pc=%08x sp_busy=%08x sp_full=%08x sp_sem=%08x\n",
+        tag, s->mi_intr, s->mi_mask, s->sp_status, s->sp_pc, s->sp_busy, s->sp_full, s->sp_sem);
+    fprintf(f, "%s c_task=%u c_spint=%u c_genint=%u c_sample=%u c_asic=%u c_pi=%u vi_cur=%08x field=%u delay=%u\n",
+        tag, s->c_task, s->c_spint, s->c_genint, s->c_sample, s->c_asic, s->c_pi,
+        s->vi_current, s->vi_field, s->vi_delay);
+}
+
+/* One line per /proc/self/task/<tid>: tid comm <full stat line>.  The stat line
+   carries the kernel state and utime/stime, which is what distinguishes a
+   spinning thread from a sleeping one. */
+static void wd_dump_threads(FILE* f)
+{
+    DIR* d = opendir("/proc/self/task");
+    if (d == NULL) { fprintf(f, "THR opendir failed\n"); return; }
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL)
+    {
+        char path[128], buf[1024];
+        FILE* g;
+        int n;
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        snprintf(path, sizeof(path), "/proc/self/task/%s/comm", e->d_name);
+        buf[0] = 0;
+        g = fopen(path, "r");
+        if (g) { if (fgets(buf, sizeof(buf), g) == NULL) buf[0] = 0; fclose(g); }
+        for (n = 0; buf[n]; n++) if (buf[n] == '\n') buf[n] = 0;
+        fprintf(f, "THR tid=%s comm=%s ", e->d_name, buf);
+        snprintf(path, sizeof(path), "/proc/self/task/%s/stat", e->d_name);
+        g = fopen(path, "r");
+        if (g) {
+            if (fgets(buf, sizeof(buf), g) != NULL) fprintf(f, "stat=%s", buf);
+            fclose(g);
+        } else fprintf(f, "stat=?\n");
+    }
+    closedir(d);
+}
+
+static void wd_stall_probe(const char* path)
+{
+    FILE* f;
+    struct wd_snap a, b;
+    if (g_dev.dd.idisk == NULL || wd_r4300 == NULL) return;
+    wd_take_snap(&a);
+    usleep(300 * 1000);
+    wd_take_snap(&b);
+    f = fopen(path, "wb");
+    if (f == NULL) return;
+    fprintf(f, "WDSTALL v1\n");
+    wd_print_snap(f, "A", &a);
+    wd_print_snap(f, "B", &b);
+    fprintf(f, "DELTA c_task=%d c_spint=%d c_genint=%d c_sample=%d c_asic=%d c_pi=%d sp_pc=%08x\n",
+        (int)(b.c_task - a.c_task), (int)(b.c_spint - a.c_spint),
+        (int)(b.c_genint - a.c_genint), (int)(b.c_sample - a.c_sample),
+        (int)(b.c_asic - a.c_asic), (int)(b.c_pi - a.c_pi), b.sp_pc ^ a.sp_pc);
+    /* dynarec recent-block ring, oldest first */
+    {
+        uint32_t i, start = wd_pc_idx;
+        fprintf(f, "RING n=%u\n", (unsigned)WD_PC_RING);
+        for (i = 0; i < WD_PC_RING; i++) {
+            uint32_t idx = (start + i) & (WD_PC_RING - 1);
+            fprintf(f, "%08x %08x %08x\n", (uint32_t)wd_pc_ring[idx],
+                (uint32_t)wd_reg_ring[idx][0], (uint32_t)wd_reg_ring[idx][1]);
+        }
+    }
+    /* live RSP memory: DMEM then IMEM (sp.mem layout: DMEM 0, IMEM 0x1000) */
+    fprintf(f, "SPMEM\n");
+    fwrite(g_dev.sp.mem, 1, SP_MEM_SIZE, f);
+    fprintf(f, "THREADS\n");
+    wd_dump_threads(f);
+    fprintf(f, "HOSTPC n=%u armed=%d\n", (unsigned)wd_pcs_idx, wd_pcs_armed);
+    {
+        uint32_t i, start = wd_pcs_idx;
+        for (i = 0; i < WD_PCS_N; i++) {
+            uint32_t k = (start + i) & (WD_PCS_N - 1);
+            fprintf(f, "HPC %016llx %016llx %016llx %08x\n",
+                (unsigned long long)wd_pcs[k][0], (unsigned long long)wd_pcs[k][1],
+                (unsigned long long)wd_pcs[k][2], (unsigned)wd_pcs[k][3]);
+        }
+    }
+    fprintf(f, "WDSTALL_END\n");
+    fclose(f);
+    DebugMessage(M64MSG_WARNING, "WDSTALL -> %s", path);
+}
+
 /* Dump the full 8MB RDRAM + "WD pc=" header + CPU/CP0/SP/VI/MI state + DD
    trace to `path`. */
-static void wd_full_dump(const char* path, uint32_t pc)
-{
+static void wd_full_dump(const char* path, uint32_t pc){
     FILE* f;
     /* DD route only: the watchdog exists for the 64DD/EK boot bringsup and
        must stay invisible to plain carts (user rule 2026-09-05). Checked at
@@ -1158,6 +1361,10 @@ static void wd_full_dump(const char* path, uint32_t pc)
         g_dev.vi.regs[VI_CURRENT_REG], g_dev.vi.regs[VI_ORIGIN_REG]);
     dd_trace_dump(f);
     fclose(f);
+    /* Round 6: also write the small "what is still moving" probe.  The 8MB
+       image above proves the guest state; this proves which side of the
+       machine is alive. */
+    wd_stall_probe(WD_FILES_DIR "wd_stall.txt");
     DebugMessage(M64MSG_WARNING, "WDDUMP pc=%08x -> %s", pc, path);
 }
 
@@ -1170,6 +1377,9 @@ static void* wd_thread(void* arg)
     for (;;)
     {
         clock_gettime(CLOCK_MONOTONIC, &t);
+        /* Arm the host-PC sampler once the 64DD route is actually live
+           (dd.idisk is only valid after init_device). */
+        if (!wd_pcs_armed && g_dev.dd.idisk != NULL) wd_pcs_arm();
         uint64_t cur = wd_hb;
         if (cur != last) { last = cur; t0 = t; }
         else if ((t.tv_sec - t0.tv_sec) > WD_STALL_SECS) {
@@ -1249,8 +1459,15 @@ void dynarec_sample_hook(uint32_t pc)
     static int d_stall_count = 0;
     static int d_stall_dumped = 0;
     static int wd_force_dumped = 0;
+    wd_c_sample++;
     wd_pc_ring[wd_pc_idx++ & (WD_PC_RING - 1)] = pc;
-    if ((d_sample & 0xFFFFF) == 0) wd_hb++;
+    /* Heartbeat: on the 64DD route advance it on EVERY sample.  The old
+       `(d_sample & 0xFFFFF)==0` fired once per million calls, i.e. never
+       at the observed 10-300 calls/s, so the stall thread always fired 4s
+       after emulation start and every "stall" dump was really a boot
+       dump.  Plain carts keep the old behaviour (they never dump). */
+    if (g_dev.dd.idisk != NULL) wd_hb++;
+    else if ((d_sample & 0xFFFFF) == 0) wd_hb++;
     d_sample++;
     if (!wd_force_dumped && (d_sample & 0x1FFF) == 0 &&
         access(WD_FORCE_FLAG, F_OK) == 0 && g_mem_base != NULL && wd_r4300 != NULL) {

@@ -13,6 +13,11 @@ extern int SP_STATUS_TIMEOUT;
 } // namespace RSP
 #endif
 
+#ifdef PARALLEL_INTEGRATION
+/* DD-route gate (runtime IsDDPresent()); defined in parallel.cpp. */
+extern "C" int rsp_ares_budget_enabled(void);
+#endif
+
 using namespace RSP;
 
 extern "C"
@@ -179,8 +184,19 @@ extern "C"
 		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] &= ~0x3;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] &= ~0x7;
 
-		// Check length.
-		if (((*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0xFFF) + length) > 0x1000)
+		/* DMA length.  Upstream parallel-RSP CLAMPS a transfer that runs off
+		   the end of DMEM/IMEM; real hardware WRAPS (the per-word address is
+		   masked with 0x1FFC, which is what the inner loop below does).  The
+		   64DD boot ucode depends on the wrap: it issues
+		   SP_MEM_ADDR=0x1080 / SP_RD_LEN=0xF7F, i.e. a 4096-byte load of the
+		   whole main ucode into IMEM starting at 0x80 and wrapping into
+		   0x00..0x7F.  Clamping truncates it to 3968 bytes and leaves the
+		   ucode's first 128 bytes (IMEM 0x000..0x07F) holding whatever was
+		   there before, so the RSP resumes into garbage and burns its whole
+		   host budget instead of running the ucode.  DD route only: plain
+		   games keep the stock clamp exactly (user rule 2026-09-05). */
+		if (!rsp_ares_budget_enabled() &&
+		    ((*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0xFFF) + length) > 0x1000)
 			length = 0x1000 - (*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0xFFF);
 
 		unsigned i = 0;
@@ -240,8 +256,9 @@ extern "C"
 		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] &= ~0x3;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] &= ~0x7;
 
-		// Check length.
-		if (((*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0xFFF) + length) > 0x1000)
+		/* Same hardware-wrap fix as rsp_dma_read (DD route only). */
+		if (!rsp_ares_budget_enabled() &&
+		    ((*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0xFFF) + length) > 0x1000)
 			length = 0x1000 - (*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0xFFF);
 
 		uint32_t dest = *rsp->cp0.cr[CP0_REGISTER_DMA_DRAM];

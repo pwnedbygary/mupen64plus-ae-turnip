@@ -1119,6 +1119,8 @@ unsigned int dd_dom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr, u
 void dd_on_pi_cart_addr_write(struct dd_controller* dd, uint32_t address)
 {
     if (address < 0x08000000) {
+        extern volatile uint32_t wd_c_dd_asic;
+        wd_c_dd_asic++;
         dd_trace_add(3, address, dd->regs[DD_ASIC_CMD_STATUS], 0, 0);
     }
     /* clear C2 xfer */
