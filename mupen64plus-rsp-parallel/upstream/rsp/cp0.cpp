@@ -1945,6 +1945,46 @@ void r31_arm_k0_repair(unsigned want);
 		return rsp->dirty_blocks ? MODE_CHECK_FLAGS : MODE_CONTINUE;
 	}
 
+	/* =======================================================================
+	   ROUND 32: catch the RDP output-buffer flush wherever it goes.
+
+	   The F3DEX2 flush (pc 0x250..0x2CC) DMAs DMEM [s6-0x2158] (0xBA8 or 0xDB0
+	   masked) to RDRAM [DMEM[0x0F0]] and then advances DMEM[0x0F0].  The whole
+	   run's write-DMA census shows only TWO writes from the gfx ucode (the
+	   ring flush of 8 bytes at task end and the 0xC00-byte yield save), so log
+	   every write whose DMEM source is that buffer, plus every write that
+	   lands in the ring, with the first 8 source words.
+	   ======================================================================= */
+	static unsigned r32_wrn = 0;
+	/* build marker: verify the packaged .so really carries round 32 */
+	static const char r32_marker[] __attribute__((used)) = "R32FLUSH";
+	static void r32_wr_note(RSP::CPUState* rsp, uint32_t dest, uint32_t source,
+	                        uint32_t length, unsigned count, uint32_t skip)
+	{
+		unsigned so = source & 0x1fffu;
+		FILE* f;
+		unsigned i;
+		if (r32_wrn >= 300u)
+			return;
+		if (!((so >= 0xba8u && so < 0xf08u) ||
+		      (dest >= 0x2d9cd0u && dest < 0x32dcd0u)))
+			return;
+		r32_wrn++;
+		f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r32wr.txt",
+		          r32_wrn == 1u ? "w" : "a");
+		if (f == NULL)
+			return;
+		fprintf(f, "R32WR n=%u pc=%03x dst=%08x src=%04x len=%05x cnt=%u skip=%u f0=%08x "
+		           "d2e0=%08x words:", r32_wrn, rsp->pc & 0xfffu, dest, so, length,
+		        count, skip, ((const uint32_t*)RSP::rsp.DMEM)[0x0f0 / 4],
+		        ((const uint32_t*)RSP::rsp.DMEM)[0x2e0 / 4]);
+		for (i = 0; i < 8u; i++)
+			fprintf(f, " %08x",
+			        ((const uint32_t*)RSP::rsp.DMEM)[((so + i * 4u) & 0xfffu) >> 2]);
+		fprintf(f, "\n");
+		fclose(f);
+	}
+
 	static void rsp_dma_write(RSP::CPUState *rsp)
 	{
 		uint32_t length_reg = *rsp->cp0.cr[CP0_REGISTER_DMA_WRITE_LENGTH];
@@ -1969,6 +2009,7 @@ void r31_arm_k0_repair(unsigned want);
 		r14_record(rsp, 1, dest, source, length, count, skip);
 		r20_dma_save_note(rsp, dest, length, source);
 		r30_dma_line(1, dest, source, length, rsp->pc & 0xfffu);
+		r32_wr_note(rsp, dest, source, length, count, skip);
 
 		/* ROUND-18: refuse the transfer if the ucode's DMA address register
 		   has left RDRAM (runaway walk -- see r14_wild_check).  This is the

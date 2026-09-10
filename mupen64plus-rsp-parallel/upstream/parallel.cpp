@@ -329,6 +329,74 @@ static void r29_unfix_descriptors(void)
 		r31_k0_repair = want;
 	}
 
+	/* ROUND 32 (see the long note at r30_pc_hook): s6/s7 = the RDP output
+	   buffer boundaries in DMEM, t3 = s7 - s6 = "the buffer overflowed", which
+	   is the ONLY condition that flushes it into the ring. */
+	static void r32_regs_body(unsigned p, const uint32_t* sr, const uint32_t* dm)
+	{
+		static unsigned n = 0;
+		static unsigned n250 = 0;
+		FILE* f;
+		if (n >= 700)
+			return;
+		if (!(p == 0x080u || p == 0x08cu || p == 0x090u || p == 0x170u ||
+		      p == 0x18cu || p == 0x190u || p == 0x1e4u || p == 0x1f8u ||
+		      p == 0x208u || p == 0x20cu || p == 0x210u || p == 0x250u ||
+		      p == 0x25cu || p == 0x270u || p == 0x2b8u || p == 0xfacu ||
+		      p == 0xfb4u || p == 0xfc8u || p == 0xfd4u || p == 0xfd8u ||
+		      p == 0x000u))
+			return;
+		if (p == 0x250u)
+		{
+			n250++;
+			/* keep every 1st, and then a sparse sample: the check runs per
+			   command and we only need the trend of t3. */
+			if (n250 > 1 && (n250 % 40u) != 0)
+				return;
+		}
+		n++;
+		f = fopen(R30_FILE "wd_r32fl.txt", "a");
+		if (f == NULL)
+			return;
+		fprintf(f, "R32FL n=%u pc=%03x s6=%08x s7=%08x t3=%08x k0=%08x k1=%08x "
+		           "t8=%08x t9=%08x f0=%08x fec=%08x fe8=%08x d2e0=%08x "
+		           "d2e4=%04x d2e6=%04x st=%08x n250=%u\n",
+		        n, p, (uint32_t)sr[22], (uint32_t)sr[23], (uint32_t)sr[11],
+		        (uint32_t)sr[26], (uint32_t)sr[9], (uint32_t)sr[24], (uint32_t)sr[25],
+		        dm[0x0f0 / 4], dm[0xfec / 4], dm[0xfe8 / 4], dm[0x2e0 / 4],
+		        (unsigned)dm[0x2e4 / 4] & 0xffffu, (unsigned)dm[0x2e6 / 4] & 0xffffu,
+		        *RSP::rsp.SP_STATUS_REG, n250);
+		fclose(f);
+	}
+
+	extern "C" void r32_regs(unsigned p, const uint32_t* sr, const uint32_t* dm)
+	{
+		if (!r30_armed)
+			return;
+		r32_regs_body(p, sr, dm);
+	}
+
+	/* =======================================================================
+	   ROUND 32: WHY THE RDP OUTPUT BUFFER NEVER FLUSHES.
+
+	   Measured in round 31: the gfx task walks the whole display list, runs the
+	   RDP passthrough handlers (pc 0x1F8/0x208/0x20C store the command words at
+	   s7), then reaches the flush check at pc 0x250 -- and EVERY time takes the
+	   `blez t3, 0xFD4` exit (t3 = s7 - s6 <= 0, i.e. "the output buffer has not
+	   overflowed"), so the buffer is never DMA'd into the ring and the RDP is
+	   only ever kicked with an empty window.  That is the black screen.
+
+	   The output buffer is DMEM [s6-0x158, s6) with s6 toggling 0xD00 <-> 0xF08
+	   and s7 the write pointer; the init at pc 0x08C/0x090 (`addi s7,r0,0xBA8`,
+	   `addi s6,r0,0xD00`) runs once per task inside the entry block, which the
+	   overlay DMA (0x170 bytes -> IMEM 0x000, issued from pc 0x168) then
+	   overwrites.  So log s6/s7/t3/DMEM[0x0F0] at the entry, at the handlers and
+	   at the flush check: if s7 does not walk 0xBA8,0xBB0,... the init never
+	   took effect (stale JIT block for pc 0x080) and that is the root cause.
+	   ======================================================================= */
+	static const char r32_marker[] __attribute__((used)) = "R32REGS";
+	extern "C" void r32_regs(unsigned p, const uint32_t* sr, const uint32_t* dm);
+
 	extern "C" void r30_pc_hook(unsigned pc_lo)
 	{
 		uint32_t p = pc_lo & 0xfffu;
@@ -336,6 +404,8 @@ static void r29_unfix_descriptors(void)
 		const uint32_t* sr;
 		char buf[320];
 		FILE* f;
+
+		r32_regs(p, RSP::cpu.get_state().sr, dm);
 
 		if (r30_stop)
 			return;
