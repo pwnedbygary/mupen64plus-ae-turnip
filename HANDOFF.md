@@ -5,6 +5,59 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 11 (goal round 11) — the post-load fault is NOT the RSP: the guest re-enters `0x80000400`
+where the cart's IPL3 boot code should be, and it is not there.** Branch
+`dd-eos-watchdog-checkpoint`, base `9361c3f85`.
+
+* **The instrumentation is proven INERT.** Control experiment: `git stash` the round-11 diagnostics,
+  rebuild, re-run → the watchdog counters come back **bit-identical** (`count=0b601da6`,
+  `c_cop1=192583378`, `c_task=196`, `c_asic=10604`). So neither the new code nor its file I/O moves
+  the emulation; the run is deterministic. (The first version did put `fopen/fprintf/fclose` in
+  `write_rsp_mem` — a hot path the user explicitly warned about — and was rewritten to in-memory
+  latches before that control was run; the latches cost two word-compares.)
+* **Current deterministic failure (3/3 runs):** the loading bar reaches COMPLETE (screenshot at
+  60-90 s) and the guest then executes **`0x8000040c`**, taking a **192 M COP1-unusable exception
+  loop** (`cause=9000002c epc=80000408 sr=0000ff03` — EXL set, i.e. inside a handler) until the
+  `:EmulationProcess` **dies** (`adb logcat -d -v time | grep EmulationProcess`) and the app falls
+  back to its gallery. This is a *different* terminal state from round 10's (idle thread at
+  `0x806f32ec`, machine alive).
+* **`0x80000400` is the IPL3 load/entry address** (the PIF copies the cart's IPL3 — ROM+0x40, 4032 B —
+  there and jumps to it). Neither program declares it: FZX-J cart entry `0x80267000`, DD IPL ROM
+  (`ipl.n64`, "64DD IPL (JPN)") entry `0x80260000`. So the guest is doing a **cart-boot handoff**
+  and finding garbage.
+* **What is actually at `0x80000400`:** in round 10's dump it was **`0x00010001` fill** for 64 KB
+  (`0x80000400..0x8001023C`); in the current run it holds **the FZX game's own OSTask buffer**
+  (`type=1, flags=4, ucode=0x807504f0/0xd0, ucode_data=0x7505c0/0x1000` at `0x8000041c`) plus a copy
+  of the F3DEX2 boot ucode at `0x80000458`. **Nothing ever put IPL3 back.**
+* **The RSP is HEALTHY in the current failure** — live `SPMEM` from the stall dump:
+  `DMEM[0xFC0..] = 00000001 00000004 807504f0 000000d0` (a valid gfx OSTask header) and
+  `IMEM[0..3] = 02f65822 256c0157 05910094` (the main ucode text). Round 10's `IMEM=0x00010001`
+  belonged to that run's different state, **not** to a corrupt DMA.
+* **SP-DMA provenance is fully accounted for** (new `wd_dma2.txt`): header DMAs **194/194 from
+  libultra's `tmp_task` (0x7c1c00)**, IMEM DMAs **193× 0x768e60 (audio) + 1× 0x7504f0 (gfx boot)** —
+  and those source regions are **byte-identical and intact** in both dumps. No DMA ever wrote the
+  fill pattern into RSP memory, and the new CPU-write latches show no such write either (only DMEM
+  `0x0FD` and `0x7A7-0x7C3`, values `0` / `0xA400xxxx` / `0xFFFFFFFF`).
+* **COP1 register snapshot** (round-9 in-memory capture, now printed by the stall dump) dates the bad
+  jump: `COP1SNAP3 pc=8000040c epc=80000408 ds=1` with `a0=0x125` (SP_RD_LEN), `a1=0x04001000`
+  (SP_MEM_ADDR = IMEM bank), `a2=0x807504f0`, `a3=0xd0`, `s0-s3/k0/k1 = 0xa4040000` (SP regs),
+  `ra=0x8074651c` — i.e. **the guest was inside `__osSpTaskLoad` for a GFX task** when control
+  landed on `0x80000400`.
+* **Plain-game regression: CLEAN** with the instrumented tree (`Mario Kart 64 Amped Up` renders at
+  ~59 FPS; `files/` holds only the harmless 22-byte `wd_smc.txt`, no `wd_stall`/`wd_freeze`/`wd_crash`).
+
+**ROUND 12 NEXT STEPS (in order):**
+1. Instrument the **PI/cart-ROM DMA path on the DD route** (source, dest, length + first words) and
+   check whether the IPL3 copy (`cart ROM +0x40` → `0x80000400`, 4032 B) runs at all in the
+   cart-boot handoff, and what it delivers. The first boot goes through the core's ROM/IPL3 path;
+   the DD re-boot is a plain PI DMA + jump, which nothing in this tree has ever verified.
+2. Log `c_pi`/PI-DMA destinations around the transition (the current run's `c_pi=11504` vs round
+   10's `13547`), plus `write_ri_regs`/PI source addresses, to catch a wrong ROM offset or a
+   KSEG-vs-physical mismatch on the DD route (note `do_sp_dma`'s DD-only `& 0x7fffff` source mask).
+3. Re-check watchdog survival: the EmulationProcess dies seconds-to-minutes in; add a small
+   "session alive" line to `wd_init.txt`/a heartbeat file so a dying run is distinguishable from a
+   stalled one without pulling screenshots.
+
 **ROUND 8 (the machine was RSP-starved: 100 % of the emulation thread inside the RSP):**
 commit `3602d76cf`. The DD route handed the RSP a **100 ms (audio) / 50 ms (everything else)**
 host-run budget. Measured live: every `DoRspCycles` call took a full 50-100 ms of **wall** time and

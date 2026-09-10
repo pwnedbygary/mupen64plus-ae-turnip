@@ -1450,6 +1450,27 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
         tag, s->g_vi_curr_framep, s->g_vi_next_framep, s->g_vi_curr_state,
         s->g_vi_retrace, s->g_vievtq_valid, s->g_vievtq_count);
     fprintf(f, "%s c_ht=%u c_cop1=%u\n", tag, s->c_ht, s->c_cop1);
+    /* Round 11: SP-memory integrity.  If the RSP's IMEM was destroyed by a
+       stray write, these latches date it and name the writer. */
+    {
+        extern volatile uint32_t wd_cpuw_n, wd_cpuw_imem_n, wd_cpuw_fill_n;
+        extern uint32_t wd_cpuw_latch_addr, wd_cpuw_latch_val, wd_cpuw_latch_mask;
+        extern uint32_t wd_cpuw_last_addr, wd_cpuw_last_val, wd_cpuw_last_mask;
+        extern uint32_t wd_cpuw_imem_latch_addr, wd_cpuw_imem_latch_val;
+        extern volatile uint32_t wd_imem_bad;
+        extern uint32_t wd_imem_bad_word[4], wd_imem_bad_fc0, wd_imem_bad_pc;
+        extern uint32_t wd_imem_bad_status, wd_imem_bad_count, wd_imem_bad_spdma;
+
+        fprintf(f, "%s cpuw n=%u imem_n=%u fill_n=%u last=%08x/%08x/%08x latch1=%08x/%08x/%08x latchIMEM=%08x/%08x\n",
+            tag, wd_cpuw_n, wd_cpuw_imem_n, wd_cpuw_fill_n,
+            wd_cpuw_last_addr, wd_cpuw_last_val, wd_cpuw_last_mask,
+            wd_cpuw_latch_addr, wd_cpuw_latch_val, wd_cpuw_latch_mask,
+            wd_cpuw_imem_latch_addr, wd_cpuw_imem_latch_val);
+        fprintf(f, "%s imem_bad=%u word=%08x %08x %08x %08x fc0=%08x pc=%08x status=%08x count=%08x dmas=%u\n",
+            tag, wd_imem_bad, wd_imem_bad_word[0], wd_imem_bad_word[1],
+            wd_imem_bad_word[2], wd_imem_bad_word[3], wd_imem_bad_fc0,
+            wd_imem_bad_pc, wd_imem_bad_status, wd_imem_bad_count, wd_imem_bad_spdma);
+    }
 }
 
 /* One line per /proc/self/task/<tid>: tid comm <full stat line>.  The stat line

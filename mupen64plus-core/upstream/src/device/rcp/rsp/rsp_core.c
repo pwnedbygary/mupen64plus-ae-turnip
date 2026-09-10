@@ -57,6 +57,40 @@ uint32_t wd_hdr_src[16];               /* source words, before the copy      */
 uint32_t wd_hdr_dst[16];               /* DMEM 0xFC0 words, after the copy   */
 volatile uint32_t wd_hdr_same = 0, wd_hdr_diff = 0;
 
+/* ROUND 11 DD DIAG: CPU writes into SP memory (write_rsp_mem), counted and
+   latched in memory only; and the first moment the RSP's IMEM is observed to
+   hold the game's cleared-buffer fill pattern.  All of it is printed by the
+   watchdog stall dump (main.c), so nothing is written from a hot path. */
+volatile uint32_t wd_cpuw_n = 0, wd_cpuw_imem_n = 0, wd_cpuw_fill_n = 0;
+uint32_t wd_cpuw_latch_addr = 0, wd_cpuw_latch_val = 0, wd_cpuw_latch_mask = 0;
+uint32_t wd_cpuw_last_addr = 0, wd_cpuw_last_val = 0, wd_cpuw_last_mask = 0;
+uint32_t wd_cpuw_imem_latch_addr = 0, wd_cpuw_imem_latch_val = 0;
+volatile uint32_t wd_imem_bad = 0;             /* garbage IMEM observed      */
+uint32_t wd_imem_bad_word[4] = {0, 0, 0, 0};   /* IMEM[0..3] at that moment  */
+uint32_t wd_imem_bad_fc0 = 0, wd_imem_bad_pc = 0, wd_imem_bad_status = 0;
+uint32_t wd_imem_bad_count = 0, wd_imem_bad_spdma = 0;
+
+/* Cheap (two word compares) and DD-gated; called from the background pump so a
+   garbage IMEM is dated against the CP0 count and the SP-DMA counter. */
+static void wd_check_imem_sane(struct rsp_core* sp)
+{
+    const uint32_t* im = (const uint32_t*)sp->mem;
+    if (wd_imem_bad) return;
+    if (im[0x1000 / 4] == 0x00010001u && im[0x1000 / 4 + 1] == 0x00010001u)
+    {
+        wd_imem_bad = 1;
+        wd_imem_bad_word[0] = im[0x1000 / 4];
+        wd_imem_bad_word[1] = im[0x1000 / 4 + 1];
+        wd_imem_bad_word[2] = im[0x1000 / 4 + 2];
+        wd_imem_bad_word[3] = im[0x1000 / 4 + 3];
+        wd_imem_bad_fc0 = im[0xfc0 / 4];
+        wd_imem_bad_pc = sp->regs2[SP_PC_REG];
+        wd_imem_bad_status = sp->regs[SP_STATUS_REG];
+        wd_imem_bad_count = r4300_cp0_regs(&sp->mi->r4300->cp0)[CP0_COUNT_REG];
+        wd_imem_bad_spdma = wd_c_spdma;
+    }
+}
+
 static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
 {
     unsigned int i,j;
@@ -94,6 +128,10 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
        this only matters for a whole-bank load that starts mid-bank. */
     unsigned char *spmem = (unsigned char*)sp->mem + (dma->memaddr & 0x1000);
     unsigned char *dram = (unsigned char*)sp->ri->rdram->dram;
+    /* ROUND 11 DIAG: absolute RSP-memory offset of this transfer (0..0x1FFF,
+       DMEM low bank / IMEM high bank) so the DMA log can name the destination
+       bank without re-deriving it from the two masked values. */
+    unsigned int dstbase = (dma->memaddr & 0x1000) | (memaddr & 0xfff);
     /* ROUND-7 DD DIAG (see wd_hdr_* above): a DRAM->RSP DMA whose DMEM
        destination range covers 0xFC0 is the osSpTaskLoad header copy. */
     int wd_is_hdr = 0;
@@ -145,6 +183,53 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
                 dramaddr++;
             }
             dramaddr+=skip;
+        }
+    }
+
+    /* ROUND 11 64DD DIAG (DD-gated): identify whatever destroys the RSP
+       program on the post-load 64DD route.
+
+       Measured at the round-10 stall (RP6): IMEM[0..] and the DMEM 0xFC0 task
+       header both read as 0x00010001 -- the game's cleared-buffer fill pattern
+       (16-bit value 1), i.e. a cleared RDRAM buffer was copied into RSP memory,
+       or a fill ran off the end of an RDRAM buffer into the SP memory mapping.
+       Log only the transfers that can do that: a DRAM->RSP DMA whose
+       destination covers the task header (DMEM 0xFC0) or the low IMEM page
+       (the ucode load), plus any transfer whose source starts with the fill
+       pattern.  Everything else (the thousands of ordinary audio/gfx DMAs)
+       stays silent. */
+    if (g_dev.dd.idisk != NULL)
+    {
+        const uint32_t* srcw = (const uint32_t*)(const void*)dram;
+        unsigned int srcoff = (dma->dramaddr & 0x7fffff) >> 2;
+        uint32_t s0 = srcw[srcoff], s1 = srcw[srcoff + 1];
+        int is_hdr = (dma->dir != SP_DMA_READ) && dstbase < 0x1000
+                     && dstbase <= 0xfc0 && (dstbase + length) > 0xfc0;
+        int is_lowimem = (dma->dir != SP_DMA_READ) && dstbase >= 0x1000
+                         && dstbase < 0x1100;
+        if (is_hdr || is_lowimem || s0 == 0x00010001u)
+        {
+            static unsigned d2_n = 0;
+            if (d2_n < 4000)
+            {
+                static int d2_first = 1;
+                FILE* df = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_dma2.txt",
+                                 d2_first ? "w" : "a");
+                d2_first = 0;
+                if (df)
+                {
+                    d2_n++;
+                    fprintf(df, "WDDMA2 n=%u dir=%u dst=%04x dram=%08x len=%08x src=%08x %08x"
+                                " | hdr=%d imem=%d after: fc0=%08x mem0=%08x imem0=%08x\n",
+                            d2_n, (unsigned)dma->dir, dstbase, (unsigned)dma->dramaddr, l, s0, s1,
+                            is_hdr, is_lowimem,
+                            ((const uint32_t*)sp->mem)[0xfc0 / 4],
+                            ((const uint32_t*)sp->mem)[0],
+                            ((const uint32_t*)sp->mem)[0x1000 / 4]);
+                    if ((d2_n & 0x3f) == 0) fflush(df);
+                    fclose(df);
+                }
+            }
         }
     }
 
@@ -382,6 +467,50 @@ void write_rsp_mem(void* opaque, uint32_t address, uint32_t value, uint32_t mask
 {
     struct rsp_core* sp = (struct rsp_core*)opaque;
     uint32_t addr = rsp_mem_address(address);
+
+    /* ROUND 11 64DD DIAG (DD-gated, IN-MEMORY ONLY -- no file I/O here: this
+       handler is on the guest's hot path and a prior round measured that
+       hot-path I/O changes the emulation's timing enough to move the freeze).
+
+       The CPU can write SP DMEM/IMEM directly through 0xA4000000..0xA4001FFF
+       and `addr` spans BOTH banks (0..0x1FFF).  A stray buffer fill that lands
+       here destroys the RSP program: at the round-10 stall IMEM[0..] read as
+       0x00010001 (the game's cleared-buffer fill pattern) with the plugin and
+       core pointers provably identical, i.e. something wrote the pattern into
+       SP memory without an SP DMA.  Count and latch such writes; the watchdog
+       stall dump prints the latches. */
+    if (g_dev.dd.idisk != NULL)
+    {
+        extern volatile uint32_t wd_cpuw_n, wd_cpuw_imem_n, wd_cpuw_fill_n;
+        extern uint32_t wd_cpuw_latch_addr, wd_cpuw_latch_val, wd_cpuw_latch_mask;
+        extern uint32_t wd_cpuw_last_addr, wd_cpuw_last_val, wd_cpuw_last_mask;
+        extern uint32_t wd_cpuw_imem_latch_addr, wd_cpuw_imem_latch_val;
+        uint32_t eff = value & mask;
+
+        wd_cpuw_n++;
+        wd_cpuw_last_addr = address;
+        wd_cpuw_last_val = value;
+        wd_cpuw_last_mask = mask;
+        if (addr >= 0x1000)
+        {
+            wd_cpuw_imem_n++;
+            if (wd_cpuw_imem_latch_addr == 0)
+            {
+                wd_cpuw_imem_latch_addr = address;
+                wd_cpuw_imem_latch_val = value;
+            }
+        }
+        if (eff == 0x00000001u || eff == 0x00010000u || eff == 0x00010001u)
+        {
+            wd_cpuw_fill_n++;
+            if (wd_cpuw_latch_addr == 0)
+            {
+                wd_cpuw_latch_addr = address;
+                wd_cpuw_latch_val = value;
+                wd_cpuw_latch_mask = mask;
+            }
+        }
+    }
 
     masked_write(&sp->mem[addr], value, mask);
 }
@@ -693,6 +822,7 @@ void rsp_dd_background_pump(void)
     uint32_t* cp0_regs;
 
     if (g_dev.dd.idisk == NULL) return;               /* plain carts: inert */
+    wd_check_imem_sane(&g_dev.sp);
     if (!g_dev.sp.rsp_task_locked) return;            /* no task in flight   */
     if (g_dev.sp.regs[SP_STATUS_REG] & (SP_STATUS_HALT | SP_STATUS_BROKE)) return;
     if ((++n & 3u) != 0) return;                      /* amortize the clock  */
