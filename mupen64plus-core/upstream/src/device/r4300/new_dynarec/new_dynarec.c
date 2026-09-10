@@ -2749,7 +2749,41 @@ extern void wd_pc_record(uint32_t vaddr);
 void *get_addr_ht(u_int vaddr)
 {
   wd_pc_record(vaddr);
+  /* Round 9 (DD route): the true dispatch trace.  wd_pc_ring is polluted by
+     dynarec_sample_hook, so it cannot show whether the guest actually runs the
+     block that is handed back here. */
+  if (g_dev.dd.idisk != NULL) {
+    extern volatile uint32_t wd_c_ht, wd_ht_idx, wd_ht_ring[64];
+    wd_c_ht++;
+    wd_ht_ring[wd_ht_idx++ & 63] = vaddr;
+  }
   struct ll_entry **ht_bin=hash_table[((vaddr>>16)^vaddr)&0xFFFF];
+  /* Round 9 (DD route): when the exception vector is resolved, freeze what the
+     hash table actually holds for it -- vaddr/start/length/addr -- so a stale
+     or overlapping entry (e.g. one whose code now belongs to the 0x80000400
+     fill block) is visible instead of inferred. */
+  if (g_dev.dd.idisk != NULL && vaddr == 0x80000180u) {
+    extern volatile uint32_t wd_vec_probe[2][10];
+    struct ll_entry **vb = hash_table[((0x80000400u>>16)^0x80000400u)&0xFFFF];
+    wd_vec_probe[0][0] = ht_bin[0] ? ht_bin[0]->vaddr : 0xffffffffu;
+    wd_vec_probe[0][1] = ht_bin[0] ? ht_bin[0]->start : 0;
+    wd_vec_probe[0][2] = ht_bin[0] ? ht_bin[0]->length : 0;
+    wd_vec_probe[0][3] = ht_bin[0] ? (uint32_t)(uintptr_t)ht_bin[0]->addr : 0;
+    wd_vec_probe[0][4] = ht_bin[0] ? (uint32_t)(uintptr_t)ht_bin[0]->clean_addr : 0;
+    wd_vec_probe[0][5] = ht_bin[0] ? (uint32_t)ht_bin[0]->reg32 : 0;
+    wd_vec_probe[0][6] = ht_bin[1] ? ht_bin[1]->vaddr : 0xffffffffu;
+    wd_vec_probe[0][7] = ht_bin[1] ? ht_bin[1]->start : 0;
+    wd_vec_probe[0][8] = ht_bin[1] ? ht_bin[1]->length : 0;
+    wd_vec_probe[0][9] = ht_bin[1] ? (uint32_t)(uintptr_t)ht_bin[1]->addr : 0;
+    wd_vec_probe[1][0] = vb[0] ? vb[0]->vaddr : 0xffffffffu;
+    wd_vec_probe[1][1] = vb[0] ? vb[0]->start : 0;
+    wd_vec_probe[1][2] = vb[0] ? vb[0]->length : 0;
+    wd_vec_probe[1][3] = vb[0] ? (uint32_t)(uintptr_t)vb[0]->addr : 0;
+    wd_vec_probe[1][4] = vb[1] ? vb[1]->vaddr : 0xffffffffu;
+    wd_vec_probe[1][5] = vb[1] ? vb[1]->start : 0;
+    wd_vec_probe[1][6] = vb[1] ? vb[1]->length : 0;
+    wd_vec_probe[1][7] = vb[1] ? (uint32_t)(uintptr_t)vb[1]->addr : 0;
+  }
   if(ht_bin[0]&&ht_bin[0]->vaddr==vaddr) {
     if(WD_SMC_PAGE(vaddr)) wd_smc("HT0", vaddr, (u_int)(intptr_t)ht_bin[0]->addr, (u_int)(intptr_t)ht_bin[0]->clean_addr);
     return (void *)(((intptr_t)ht_bin[0]->addr-(intptr_t)base_addr)+(intptr_t)base_addr_rx);
@@ -3090,6 +3124,30 @@ void* cop1_unusable(void)
     struct new_dynarec_hot_state* state = &r4300->new_dynarec_hot_state;
     r4300->delay_slot = state->pcaddr & 1;
     state->pcaddr &= ~1;
+    /* Round 9 (DD route): count the fault and, for the first four, freeze the
+       whole guest register file so the CALLER of whatever jumped into the bad
+       pc is identifiable.  Bounded, in-memory, no I/O. */
+    if (g_dev.dd.idisk != NULL) {
+        extern volatile uint32_t wd_c_cop1, wd_cop1_idx, wd_cop1_ring[16];
+        extern volatile uint32_t wd_cop1_snap_n, wd_cop1_regs[4][32], wd_cop1_meta[4][8];
+        uint32_t* cp0 = r4300_cp0_regs(&r4300->cp0);
+        int64_t* gregs = r4300_regs(r4300);
+        uint32_t s;
+        wd_c_cop1++;
+        wd_cop1_ring[wd_cop1_idx++ & 15] = state->pcaddr;
+        s = wd_cop1_snap_n;
+        if (s < 4) {
+            int i;
+            wd_cop1_snap_n = s + 1;
+            wd_cop1_meta[s][0] = state->pcaddr;
+            wd_cop1_meta[s][1] = cp0[CP0_STATUS_REG];
+            wd_cop1_meta[s][2] = cp0[CP0_CAUSE_REG];
+            wd_cop1_meta[s][3] = cp0[CP0_EPC_REG];
+            wd_cop1_meta[s][4] = cp0[CP0_BADVADDR_REG];
+            wd_cop1_meta[s][5] = (uint32_t)r4300->delay_slot;
+            for (i = 0; i < 32; i++) wd_cop1_regs[s][i] = (uint32_t)gregs[i];
+        }
+    }
     state->cp0_regs[CP0_CAUSE_REG] = CP0_CAUSE_EXCCODE_CPU | CP0_CAUSE_CE1;
     exception_general(r4300);
     return get_addr_ht(state->pcaddr);
@@ -3099,6 +3157,11 @@ void dynarec_gen_interrupt(void)
 {
     struct r4300_core* r4300 = &g_dev.r4300;
     struct new_dynarec_hot_state* state = &r4300->new_dynarec_hot_state;
+    /* Round 9 (64DD only): keep an unfinished RSP task running in the
+       background.  This is the CPU-side hook the synchronous RSP plugin model
+       needs -- see rsp_dd_background_pump() in rcp/rsp/rsp_core.c.  Plain
+       carts: one pointer compare. */
+    rsp_dd_background_pump();
     cp0_update_count(r4300);
     uint32_t page = ((state->cp0_regs[CP0_COUNT_REG]>>19)&0x1fc);
     unsigned int *candidate = (unsigned int *)&restore_candidate[page];

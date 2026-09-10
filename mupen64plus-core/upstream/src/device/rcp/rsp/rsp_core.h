@@ -138,6 +138,9 @@ void write_rsp_regs2(void* opaque, uint32_t address, uint32_t value, uint32_t ma
 
 void do_SP_Task(struct rsp_core* sp);
 
+/* 64DD only: feed an unfinished RSP task a bounded slice from the CPU side. */
+void rsp_dd_background_pump(void);
+
 void rsp_interrupt_event(void* opaque);
 void rsp_end_of_dma_event(void* opaque);
 

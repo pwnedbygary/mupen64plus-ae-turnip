@@ -331,9 +331,50 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 					   signaling done on an unfinished ucode.  A raw break without HALT/irq
 					   desyncs CPU<->RSP: do_SP_Task runs the gfx completion path and the
 					   next osTaskStart reads a stale/clobbered [DMEM 0xFC0] header (observed
-					   as type=garbage, ucode in PI space) -> cascading corrupt PC. */
-					*RSP::rsp.SP_STATUS_REG |= SP_STATUS_INTR_BREAK | SP_STATUS_HALT;
-					*RSP::cpu.get_state().cp0.irq |= 1;
+					   as type=garbage, ucode in PI space) -> cascading corrupt PC.
+
+					   ROUND 9 -- two corrections, both required to stop an instantaneous
+					   fake-completion livelock:
+
+					   (a) MODE_CHECK_FLAGS is NOT synonymous with "budget expired".  The
+					       ucode itself produces it on every `mtc0 SP_STATUS` while the
+					       RSP-side irq flag is set (rsp/cp0.cpp:171 returns CHECK_FLAGS when
+					       `(cp0.irq & 1) || (status & HALT)`).  Treating that as a yield
+					       fabricates a task completion for a task that never ran.  Only a
+					       real host-budget expiry is a yield; otherwise drop the irq flag and
+					       let the ucode keep executing (the JIT budget check bounds this).
+
+					   (b) `cp0.irq |= 1` was STICKY.  Nothing in the core clears the
+					       plugin's irq flag -- the guest's SP_CLR_INTR write only clears
+					       MI_INTR_SP (rsp_core.c update_sp_status) -- and this `break` skips
+					       the CheckInterrupts() call that would consume it.  So from the
+					       first yield onwards every cpu.run() returned MODE_CHECK_FLAGS
+					       immediately, i.e. the RSP never executed another instruction.
+					       Measured live (wd_rsp.txt): 13406 "tasks" inside ONE millisecond,
+					       every one with ttype=1048576 / a garbage OSTask, and an SP
+					       interrupt storm of 524k/s (wd_stall.txt DELTA2 c_exc_int).  The
+					       core raises MI_INTR_SP for this yield itself (rsp_core.c
+					       DD-gated HALT+INTR_BREAK completion block), so the plugin's irq
+					       flag is not needed here and must not survive the yield. */
+					if (!rsp_budget_expired_now())
+					{
+						*RSP::cpu.get_state().cp0.irq = 0;
+						continue;
+					}
+					/* ROUND 9 (c): a budget yield must NOT fabricate a task
+					   completion.  Setting HALT|INTR_BREAK made do_SP_Task report
+					   the task as finished, and the guest's libultra SP handler
+					   then re-entered do_SP_Task per ack -- so the guest's CPU time
+					   was 100% SP-handler and the RSP still owned the thread
+					   (measured: c_task 500/s, guest idle thread `b .`, CP0 COUNT
+					   advancing 134k/s = 0.3%).  Leave SP_STATUS exactly as the
+					   ucode left it: the task is simply unfinished and resumable.
+					   The core then marks it rsp_task_locked and rsp_dd_background_pump()
+					   (rsp_core.c, called from dynarec_gen_interrupt) keeps feeding
+					   the RSP in slices while the CPU runs -- which is the
+					   concurrency real hardware has and this synchronous plugin
+					   model otherwise cannot express. */
+					*RSP::cpu.get_state().cp0.irq = 0;
 					wd_budget_yield = 1;
 					break;
 				}

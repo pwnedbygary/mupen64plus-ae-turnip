@@ -1060,6 +1060,33 @@ volatile uint32_t wd_c_ai_evt     = 0;   /* ai_controller interrupt events      
 volatile uint32_t wd_c_rsp_run    = 0;   /* RSP DoRspCycles() budget runs           */
 volatile uint32_t wd_c_rsp_full   = 0;   /* ... of which exhausted the budget       */
 
+/* Round 9: dynarec dispatch attribution.  wd_pc_ring is written by BOTH
+   get_addr_ht() and dynarec_sample_hook(), so 2048 identical entries cannot
+   distinguish "the guest is executing the exception vector at 0x80000180"
+   from "the dispatcher keeps re-entering the vector block and it never runs".
+   wd_ht_ring is written by get_addr_ht() ONLY, so it is a true trace of every
+   block the dynarec resolves; wd_c_cop1 counts the dynarec's COP1-unusable
+   faults.  If the COP1 fault rate is tens of millions/s while the dispatch
+   ring never leaves 0x80000180, then the code the hash table hands back for
+   the vector is NOT the vector's translation -- which is exactly the state
+   found at the end of round 8 (epc frozen at 0x80000408, cause=EXCCODE_CPU|CE1,
+   the whole machine spinning through exception_general()).  DD-gated. */
+#define WD_HT_RING 64
+volatile uint32_t wd_ht_ring[WD_HT_RING];
+volatile uint32_t wd_ht_idx = 0;
+volatile uint32_t wd_c_ht = 0;       /* get_addr_ht() calls                     */
+volatile uint32_t wd_c_cop1 = 0;     /* dynarec cop1_unusable() entries         */
+volatile uint32_t wd_cop1_idx = 0;
+volatile uint32_t wd_cop1_ring[16];  /* last 16 faulting pcs                    */
+#define WD_COP1_SNAP 4
+volatile uint32_t wd_cop1_snap_n = 0;
+volatile uint32_t wd_cop1_regs[WD_COP1_SNAP][32];
+/* pcaddr, SR, CAUSE, EPC, BadVaddr, delay_slot, ht_ret_lo, ht_ret_hi */
+volatile uint32_t wd_cop1_meta[WD_COP1_SNAP][8];
+/* Hash-table contents for the exception vector (row 0) and for the 0x80000400
+   fill block (row 1): {vaddr, start, length, addr, clean_addr/...}. */
+volatile uint32_t wd_vec_probe[2][10];
+
 /* Host-PC sampler (2026-09-10 round 6).  Every other signal says the emulation
    thread is burning 100% of a core with ZERO progress in gen_interrupt,
    do_SP_Task, rsp_interrupt_event and the dynarec's do_interrupt -- so it is
@@ -1099,6 +1126,10 @@ static void wd_sigprof(int sig, siginfo_t* si, void* uc_)
         wd_sigprof_old.sa_sigaction(sig, si, uc_);
 }
 
+static struct sigaction wd_crash_old[3];
+static int wd_crash_saved = 0;
+static void wd_crash_dump(int sig, siginfo_t* si, void* uc_);
+
 static void wd_pcs_arm(void)
 {
     struct sigaction sa;
@@ -1110,6 +1141,19 @@ static void wd_pcs_arm(void)
     sa.sa_flags = SA_SIGINFO | SA_RESTART;
     sigemptyset(&sa.sa_mask);
     if (sigaction(SIGPROF, &sa, &wd_sigprof_old) == 0) wd_sigprof_saved = 1;
+    /* Round 9: the recompiler can now crash with a raw SIGILL inside the JIT
+       arena, which produces no usable C backtrace. */
+    {
+        int sigs[3];
+        int k;
+        sigs[0] = SIGILL; sigs[1] = SIGSEGV; sigs[2] = SIGBUS;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = wd_crash_dump;
+        sa.sa_flags = SA_SIGINFO | SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        for (k = 0; k < 3; k++)
+            if (sigaction(sigs[k], &sa, &wd_crash_old[k]) == 0) wd_crash_saved |= (1 << k);
+    }
     it.it_interval.tv_sec = 0; it.it_interval.tv_usec = 10000; /* 10ms of CPU */
     it.it_value = it.it_interval;
     setitimer(ITIMER_PROF, &it, NULL);
@@ -1122,6 +1166,76 @@ static void wd_pcs_arm(void)
 static volatile uint32_t wd_pc_ring[WD_PC_RING];
 static volatile uint32_t wd_reg_ring[WD_PC_RING][2];
 static volatile uint32_t wd_pc_idx = 0;
+
+static void wd_crash_dump(int sig, siginfo_t* si, void* uc_)
+{
+    ucontext_t* uc = (ucontext_t*)uc_;
+    FILE* f;
+    uintptr_t hpc = 0, hlr = 0, hsp = 0, hfp = 0;
+    int k, idx;
+    (void)si;
+#if defined(__aarch64__)
+    hpc = (uintptr_t)uc->uc_mcontext.pc;
+    hlr = (uintptr_t)uc->uc_mcontext.regs[30];
+    hsp = (uintptr_t)uc->uc_mcontext.regs[31];
+    hfp = (uintptr_t)uc->uc_mcontext.regs[29];
+#endif
+    f = fopen(WD_FILES_DIR "wd_crash.txt", "w");
+    if (f != NULL) {
+        fprintf(f, "WDCRASH sig=%d code=%d fault=%p hpc=%p hlr=%p hsp=%p hfp=%p\n",
+                sig, si ? si->si_code : -1, si ? si->si_addr : NULL,
+                (void*)hpc, (void*)hlr, (void*)hsp, (void*)hfp);
+        for (k = 0; k < 30; k++)
+#if defined(__aarch64__)
+            fprintf(f, "HOSTREG x%d=%016llx\n", k, (unsigned long long)uc->uc_mcontext.regs[k]);
+#else
+            fprintf(f, "HOSTREG x%d=?\n", k);
+#endif
+        if (wd_r4300 != NULL) {
+            uint32_t* cp0 = r4300_cp0_regs(&wd_r4300->cp0);
+            int64_t* g = r4300_regs(wd_r4300);
+            fprintf(f, "GUEST pcaddr=%08x sr=%08x cause=%08x epc=%08x badvaddr=%08x count=%08x\n",
+                    *r4300_pc(wd_r4300), cp0[CP0_STATUS_REG], cp0[CP0_CAUSE_REG],
+                    cp0[CP0_EPC_REG], cp0[CP0_BADVADDR_REG], cp0[CP0_COUNT_REG]);
+            for (k = 0; k < 32; k++) fprintf(f, "G%02d=%08x\n", k, (uint32_t)g[k]);
+            fprintf(f, "SP sp_status=%08x sp_pc=%08x busy=%08x full=%08x mi_intr=%08x mi_mask=%08x\n",
+                    g_dev.sp.regs[SP_STATUS_REG], g_dev.sp.regs2[SP_PC_REG],
+                    g_dev.sp.regs[SP_DMA_BUSY_REG], g_dev.sp.regs[SP_DMA_FULL_REG],
+                    g_dev.mi.regs[MI_INTR_REG], g_dev.mi.regs[MI_INTR_MASK_REG]);
+            fprintf(f, "CNT c_ht=%u c_cop1=%u c_exc=%u c_exc_nested=%u c_vi_evt=%u c_task=%u c_sample=%u c_genint=%u\n",
+                    wd_c_ht, wd_c_cop1, wd_c_exc_total, wd_c_exc_nested, wd_c_vi_evt,
+                    wd_c_do_sp_task, wd_c_sample, wd_c_gen_int);
+        }
+        /* The last 64 blocks the dynarec resolved (oldest first) -- this is the
+           trace that says whether the guest was executing real code or was
+           already lost in the exception vector. */
+        idx = wd_ht_idx;
+        fprintf(f, "HTRING\n");
+        for (k = 0; k < WD_HT_RING; k++)
+            fprintf(f, "%08x\n", (uint32_t)wd_ht_ring[(idx + k) & (WD_HT_RING - 1)]);
+        idx = wd_pc_idx;
+        fprintf(f, "PCRING\n");
+        for (k = 0; k < 256; k++) {
+            uint32_t i2 = (idx + k) & (WD_PC_RING - 1);
+            fprintf(f, "%08x %08x %08x\n", (uint32_t)wd_pc_ring[i2],
+                    (uint32_t)wd_reg_ring[i2][0], (uint32_t)wd_reg_ring[i2][1]);
+        }
+        fprintf(f, "COP1RING\n");
+        idx = wd_cop1_idx;
+        for (k = 0; k < 16; k++) fprintf(f, "%08x\n", (uint32_t)wd_cop1_ring[(idx + k) & 15]);
+        fprintf(f, "WDCRASH_END\n");
+        fclose(f);
+    }
+    /* Put the original handler back and take the signal again so the tombstone
+       and the framework crash report still happen. */
+    for (k = 0; k < 3; k++) {
+        int sigs[3];
+        sigs[0] = SIGILL; sigs[1] = SIGSEGV; sigs[2] = SIGBUS;
+        if (wd_crash_saved & (1 << k)) sigaction(sigs[k], &wd_crash_old[k], NULL);
+    }
+    raise(sig);
+}
+
 static volatile int wd_fault_dumped = 0;
 static volatile int wd_spodd_dumped = 0;
 
@@ -1247,6 +1361,7 @@ struct wd_snap {
     uint32_t raise_bits[8];
     uint32_t g_vi_curr_framep, g_vi_next_framep, g_vi_curr_state, g_vi_retrace;
     uint32_t g_vievtq_valid, g_vievtq_count;
+    uint32_t c_ht, c_cop1;
 };
 
 /* Read a guest u32 out of RDRAM (the guest sees KSEG0 0x80xxxxxx = phys). */
@@ -1309,6 +1424,8 @@ static void wd_take_snap(struct wd_snap* s)
        it means no VI retrace message has been delivered to the guest. */
     s->g_vievtq_valid = wd_guest32(0x807C46C8u);
     s->g_vievtq_count = wd_guest32(0x807C46D0u);
+    s->c_ht = wd_c_ht;
+    s->c_cop1 = wd_c_cop1;
 }
 
 static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
@@ -1332,6 +1449,7 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
     fprintf(f, "%s guest viCurr.framep=%08x viNext.framep=%08x viCurr.state=%04x retrace=%u vievtq=%u/%u\n",
         tag, s->g_vi_curr_framep, s->g_vi_next_framep, s->g_vi_curr_state,
         s->g_vi_retrace, s->g_vievtq_valid, s->g_vievtq_count);
+    fprintf(f, "%s c_ht=%u c_cop1=%u\n", tag, s->c_ht, s->c_cop1);
 }
 
 /* One line per /proc/self/task/<tid>: tid comm <full stat line>.  The stat line
@@ -1397,6 +1515,11 @@ static void wd_stall_probe(const char* path)
     fprintf(f, "DELTA2 guest viCurr.framep %08x -> %08x (goal fb[0]=801d9800 fb[1]=80200000), vievtq %u/%u -> %u/%u\n",
         a.g_vi_curr_framep, b.g_vi_curr_framep, a.g_vievtq_valid, a.g_vievtq_count,
         b.g_vievtq_valid, b.g_vievtq_count);
+    /* Round 9: how fast is the dynarec resolving blocks, and how fast is it
+       taking COP1-unusable faults?  c_ht == c_cop1 means no guest instruction
+       is executing between faults (pure emulator-side loop). */
+    fprintf(f, "DELTA3 c_ht=%d c_cop1=%d\n",
+        (int)(b.c_ht - a.c_ht), (int)(b.c_cop1 - a.c_cop1));
     /* Round 8: THE CP0 EVENT QUEUE.  gen_interrupt() dispatches on
        cp0.q.first->data.type, and the VI_INT handler (case 0) is what re-arms
        the next vertical interrupt -- so if the VI event is missing from this
@@ -1427,6 +1550,50 @@ static void wd_stall_probe(const char* path)
             uint32_t idx = (start + i) & (WD_PC_RING - 1);
             fprintf(f, "%08x %08x %08x\n", (uint32_t)wd_pc_ring[idx],
                 (uint32_t)wd_reg_ring[idx][0], (uint32_t)wd_reg_ring[idx][1]);
+        }
+    }
+    /* live RSP memory: DMEM then IMEM (sp.mem layout: DMEM 0, IMEM 0x1000) */
+    /* Round 9: the true dynarec dispatch trace (get_addr_ht only) and the
+       COP1-unusable fault capture.  Read HTRING* bottom-up for
+       oldest->newest order. */
+    {
+        uint32_t i, start = wd_ht_idx;
+        fprintf(f, "HTRING n=%u total=%u\n", (unsigned)WD_HT_RING, (unsigned)wd_c_ht);
+        for (i = 0; i < WD_HT_RING; i++)
+            fprintf(f, "  %08x\n", (uint32_t)wd_ht_ring[(start + i) & (WD_HT_RING - 1)]);
+    }
+    {
+        uint32_t i, start = wd_cop1_idx;
+        fprintf(f, "COP1 total=%u\n", (unsigned)wd_c_cop1);
+        for (i = 0; i < 16; i++)
+            fprintf(f, "  %08x\n", (uint32_t)wd_cop1_ring[(start + i) & 15]);
+    }
+    /* VEC0 = hash entry hit for 0x80000180; VEC1 = hash entry for 0x80000400.
+       vaddr/start/length say whether the block handed back for the vector is
+       really the vector's translation. */
+    fprintf(f, "HTVEC v0.vaddr=%08x v0.start=%08x v0.len=%08x v0.addr=%08x v0.clean=%08x v0.reg32=%08x\n",
+        (unsigned)wd_vec_probe[0][0], (unsigned)wd_vec_probe[0][1],
+        (unsigned)wd_vec_probe[0][2], (unsigned)wd_vec_probe[0][3],
+        (unsigned)wd_vec_probe[0][4], (unsigned)wd_vec_probe[0][5]);
+    fprintf(f, "HTVEC v1.vaddr=%08x v1.start=%08x v1.len=%08x v1.addr=%08x\n",
+        (unsigned)wd_vec_probe[0][6], (unsigned)wd_vec_probe[0][7],
+        (unsigned)wd_vec_probe[0][8], (unsigned)wd_vec_probe[0][9]);
+    fprintf(f, "HTVEC f0.vaddr=%08x f0.start=%08x f0.len=%08x f0.addr=%08x\n",
+        (unsigned)wd_vec_probe[1][0], (unsigned)wd_vec_probe[1][1],
+        (unsigned)wd_vec_probe[1][2], (unsigned)wd_vec_probe[1][3]);
+    fprintf(f, "HTVEC f1.vaddr=%08x f1.start=%08x f1.len=%08x f1.addr=%08x\n",
+        (unsigned)wd_vec_probe[1][4], (unsigned)wd_vec_probe[1][5],
+        (unsigned)wd_vec_probe[1][6], (unsigned)wd_vec_probe[1][7]);
+    {
+        uint32_t s, i, n = wd_cop1_snap_n;
+        if (n > WD_COP1_SNAP) n = WD_COP1_SNAP;
+        for (s = 0; s < n; s++) {
+            const volatile uint32_t* m = wd_cop1_meta[s];
+            fprintf(f, "COP1SNAP%u pc=%08x sr=%08x cause=%08x epc=%08x badvaddr=%08x ds=%u htret=%08x%08x\n",
+                s, m[0], m[1], m[2], m[3], m[4], m[5], m[7], m[6]);
+            fprintf(f, "  regs");
+            for (i = 0; i < 32; i++) fprintf(f, " %08x", (uint32_t)wd_cop1_regs[s][i]);
+            fprintf(f, "\n");
         }
     }
     /* live RSP memory: DMEM then IMEM (sp.mem layout: DMEM 0, IMEM 0x1000) */

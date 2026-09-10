@@ -564,7 +564,21 @@ void do_SP_Task(struct rsp_core* sp)
     {
         sp->rsp_task_locked = 1;
         sp->mi->r4300->cp0.interrupt_unsafe_state |= INTR_UNSAFE_RSP;
-        sp->mi->regs[MI_INTR_REG] |= MI_INTR_SP;
+        /* ROUND 9, 64DD ONLY: an unfinished RSP task after a HOST-BUDGET yield
+           must NOT interrupt the guest.  The guest's libultra SP handler
+           acknowledges the interrupt and writes SP_STATUS, which re-enters
+           do_SP_Task through update_sp_status and hands the RSP another full
+           slice -- so the guest's entire CPU share was its own SP handler and
+           the RSP still owned the emulation thread (measured on the RP6:
+           c_task 500/s, guest __osRunQueue EMPTY with the prio-0 idle thread
+           spinning at 0x806f32ec `b .`, CP0 COUNT advancing 134k/s = 0.3% of
+           real speed, VI at 2/s).  Leaving the task locked but silent lets the
+           CPU run at full speed while rsp_dd_background_pump() below feeds the
+           RSP in slices -- the concurrency real hardware provides.  The genuine
+           completion (ucode BREAK) still raises MI_INTR_SP via the stock
+           rsp_interrupt_event path, which is what wakes the guest. */
+        if (g_dev.dd.idisk == NULL)
+            sp->mi->regs[MI_INTR_REG] |= MI_INTR_SP;
     }
     /* DD-ONLY ares-derived completion/yield delivery (gated: plain cart
        games must keep the pre-ares rsp_interrupt_event path exactly). */
@@ -614,6 +628,49 @@ void do_SP_Task(struct rsp_core* sp)
 
     sp->regs[SP_STATUS_REG] &=
         ~(SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT);
+}
+
+/* 64DD ROUTE ONLY: background pump for an unfinished RSP task.
+
+   The RSP runs synchronously inside do_SP_Task (i.e. on the emulation thread,
+   inside whatever guest SP_STATUS write triggered it), so an RSP ucode that
+   polls RDRAM for the CPU -- which is exactly what the F-Zero X EK's loader
+   and audio ucodes do -- can only make progress if the CPU is given time to
+   run, and the CPU can only run while the RSP is not running.  A host-budget
+   yield alone cannot express that (the yield's completion notification traps
+   the guest in its own SP handler; see do_SP_Task), so the slice has to be
+   driven from the CPU side instead.
+
+   Called from dynarec_gen_interrupt() (the recompiler's cc_interrupt hook,
+   DD-gated by the caller) with a coarse time gate: the RSP gets a bounded
+   slice roughly every RSP_DD_PUMP_NS of wall time, and the CPU owns the rest.
+   do_SP_Task is used rather than rsp.doRspCycles() so a slice that finally
+   reaches the ucode's BREAK delivers the stock completion (SP_INT event ->
+   rsp_interrupt_event -> MI_INTR_SP -> the guest's RSP handler). */
+void rsp_dd_background_pump(void)
+{
+    static uint32_t n = 0;
+    static struct timespec last;
+    struct timespec now;
+    long long d;
+    uint32_t* cp0_regs;
+
+    if (g_dev.dd.idisk == NULL) return;               /* plain carts: inert */
+    if (!g_dev.sp.rsp_task_locked) return;            /* no task in flight   */
+    if (g_dev.sp.regs[SP_STATUS_REG] & (SP_STATUS_HALT | SP_STATUS_BROKE)) return;
+    if ((++n & 3u) != 0) return;                      /* amortize the clock  */
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (last.tv_sec != 0) {
+        d = (long long)(now.tv_sec - last.tv_sec) * 1000000000LL
+          + (long long)(now.tv_nsec - last.tv_nsec);
+        if (d < 3000000LL) return;                    /* ~40% RSP / 60% CPU  */
+    }
+    last = now;
+    /* Same CPU counter bookkeeping do_SP_Task's other callers rely on. */
+    cp0_regs = r4300_cp0_regs(&g_dev.r4300.cp0);
+    cp0_update_count(&g_dev.r4300);
+    if (cp0_regs[CP0_COUNT_REG] != 0) { /* keep the compiler honest */ }
+    do_SP_Task(&g_dev.sp);
 }
 
 void rsp_interrupt_event(void* opaque)
