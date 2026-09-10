@@ -5,6 +5,114 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 22D — THE DEADLOCK IS NOT A CRASH AND NOT AN INTERRUPT BUG: THE RDP IS FED ZEROS
+BECAUSE THE GFX UCODE NEVER WRITES ITS COMMAND STREAM TO RDRAM.** Three independent
+measurements, all from the r22a run, plus a new high-leverage resource.
+
+**(1) The F-Zero X decompilation is in the workspace** at `.fzxwork/fzerox-decomp/` and it is the
+**Expansion Kit (ek)** target (`fzerox-expansion.jp.ek.md5`), i.e. the exact binary we run:
+`linker_scripts/jp/ek/symbol_addrs.txt` (4138 symbols, 0x80000400..0x807c70a0) resolves every
+address we had been guessing at. Verified one-to-one against the r22a dump:
+`gFrameBuffer1=0x801D9800`, `gFrameBuffer2=0x80200000`, `gTaskOutputBuffer=0x802D9CD0` (BSS
+`u8 gTaskOutputBuffer[0x54000]`), `gOSYieldData=0x8032DCD0` (`OS_YIELD_DATA_SIZE=0xc00`),
+`gDramStack=0x8032E8D0`, `gspF3DEX2_fifoTextStart=0x807505C0` — all match the measured values.
+**Use this instead of reverse-engineering: it answers "what is the guest waiting for" directly.**
+
+**(2) The CPU is IDLE, not halted — the previous "fatal halt" reading was wrong.**
+`0x806F32EC` = `Idle_ThreadEntry+0x134`, whose source is
+`src/sys/sys_main.c:405-440`: `osCreateThread(sMainThread...); osStartThread(...); 
+osSetThreadPri(NULL, OS_PRIORITY_IDLE); while (true) {}`. The disassembly matches instruction for
+instruction (`jal osSetThreadPri(0,0)` then `b .`). So the machine is in a normal idle loop while
+every other thread blocks. Likewise the on-screen content is **not** a rendered frame: it is the EK
+boot logo drawn **by the CPU** in `func_806F33D0` (`sys_main.c:296-298`, source comment "Very
+FAKE"), which fills `fb->array[100][92]` + 39x34 cells — matching the measured bbox
+(x=92..225, y=101..137) exactly. **The framebuffer therefore proves nothing about the RDP.**
+
+**(3) The guest's frame loop blocks on a queue that only a DP interrupt can fill.** The protocol is
+`src/sys/sys_gfx.c:141-216`: `Gfx_SetTask()` sends `EVENT_MESG_GFX_TASK_SET`; the frame routine
+(`func_80067D64`/`func_80067E98`) then does `osRecvMesg(&D_800DCAB0)` (VI tick, sent every
+`D_800CCFB8` retraces by Main_ThreadEntry) -> build DL -> `Gfx_FullSync()` (which appends
+`gDPFullSync`, G_RDPFULLSYNC=0xe9, + `gSPEndDisplayList`) -> **`osRecvMesg(&D_800DCAC8)`**, fed
+with 0x2A by `sys_main.c:396` only when an `EVENT_MESG_SP` arrives with `sSpTaskState==SP_TASK_GFX`.
+`MI_INTR_DP` was never raised on this run (`DPCHAIN mi_rd_dp=0`, `raise_bits DP=0`), so 0x2A never
+comes and the game thread blocks — confirmed independently by the dynarec ring: the ring's
+per-thread histogram is audio 1266 / main 526 / leo_cmd 102 / idle 96 / sys6 35 / **game 0**. The
+idle thread gets the last dispatch (`__osDispatchThread`) and the trace ends there.
+
+**(4) THE ACTUAL FAULT: the gfx ucode issues a READ where its RDP flush needs a WRITE, so
+`gTaskOutputBuffer` is never populated.** `wd_dmatr.txt` is the full RSP DMA trace — 489,775
+transfers. Statistics computed on-device (`run-as ... grep -c`), so they cover the whole file:
+
+```
+WR pc=000  180144      <- every single write DMA in the run comes from the AUDIO ucode
+WR pc=1..b      0      <- not one write from any PC in the F3DEX2 text region
+RD pc=fc4   14454
+dst=2d..32      0      <- NO write DMA ever addresses gTaskOutputBuffer (0x2D0000..0x32FFFF)
+src=2d..32    296      <- but 296 READS source from inside it
+```
+
+(Field-width trap, learned the hard way: `wd_dmatr.txt` prints `src` with `%06x` and `dst` with
+`%04x`, and those are *minimum* widths — 0x2d9cd0 prints as `2d9cd0`, not `002d9cd0`. Patterns like
+`src=002d` therefore match nothing and silently read as "0 records". Sanity-anchored the greps
+instead: `src=794e` = 11592 and `dst=41` = 145371 are non-zero.)
+
+and `wd_dmatr.txt` samples are unambiguous because the two hook sites pass their arguments in
+opposite orders (cp0.cpp:1150 `rsp_dma_read` -> `r14_record(rsp,2,dest=DMA_CACHE,source=DMA_DRAM)`;
+cp0.cpp:1254 `rsp_dma_write` -> `r14_record(rsp,1,dest=DMA_DRAM,source=DMA_CACHE)`):
+
+```
+D7330 RD pc=fc4 dst=0920 src=2d9cd0 len=0168 ... f0=002d9e30 ff0=00284990
+D7331 RD pc=fc4 dst=0920 src=2d9e30 len=0170 ... f0=002d9f98 ff0=00284990
+```
+
+i.e. `rsp_dma_read(mem=0x920, dram=<rdpFifoPos>, len=block)` — a *read from* the address the ucode
+then stores into `DPC_END`. `r14_record` samples `rdram[src]`, and every such sample is
+`s0=00000000`; the RAM dump independently shows the entire `gTaskOutputBuffer` (0x2D9CD0..0x32DCD0)
+**all-zero**, and 296 of those reads sweep upward through it with no write anywhere. parallel-RDP only raises `MI_INTR_DP` for `RDP::Op::SyncFull` (0x29), and a stream of
+zeros yields `command=0`, `cmd_len_lut[0]`, and never `>= 8`, so nothing is even enqueued to the
+frontend. **That is the whole deadlock: no data -> no SyncFull -> no DP interrupt -> guest blocked
+on D_800DCAC8 -> idle thread spins.**
+
+**(5) Why the direction is what it is — decoded from the microcode itself.** The F3DEX2 text is in
+the RAM dump at 0x7505C0 (3968 bytes, IMEM offset = text offset + 0x80 because the rspboot loads it
+at IMEM 0x080). Its DMA wrappers are at the end of the text:
+
+```
+IMEM 0xfb0: addiu $11,$0,0x2e0     ; descriptor at DMEM 0x2E0
+IMEM 0xfb4: lw    $24,0($11)       ; DRAM addr
+IMEM 0xfb8: lhu   $19,4($11)       ; length (16-bit, ZERO-extended)
+IMEM 0xfbc: jal   0xfd8            ; generic launcher
+IMEM 0xfc0: lhu   $20,6($11)       ; (delay) SP mem addr, ZERO-extended  <-- sign can never be set
+IMEM 0xfe4: mtc0  $20,SP_MEM_ADDR
+IMEM 0xfe8: bltz  $20,+3           ; negative => WRITE, else READ
+IMEM 0xfec: mtc0  $24,SP_DRAM_ADDR
+IMEM 0xff0: jr    $31
+IMEM 0xff4: mtc0  $19,SP_RD_LEN    ; READ   (delay slot)
+IMEM 0xff8: jr    $31
+IMEM 0xffc: mtc0  $19,SP_WR_LEN    ; WRITE  (delay slot)
+```
+
+The write path exists, but it is selected by `bltz $20`, and the two descriptor-driven call sites
+load `$20` with `lhu` (zero-extending) or with `addiu $20,$0,0x0920` (explicitly positive), so the
+descriptor path can only ever READ. The DL walker at IMEM 0x160-0x198 is exactly this: it reads the
+display list in **168-byte (0xA8) chunks** into DMEM 0x920 and advances the pointer by 0xA8 —
+matching the trace's `len=00a8` reads stepping `2c03c0 -> 2c0468 -> 2c0510`, and then continuing
+unbounded past the gfx pool into `gTaskOutputBuffer` itself (`src=2d9cd0`, `2d9e30`, ...). So the
+walker is the **runaway display-list walk** named back in round 18, and the reason the RDP never
+gets a SyncFull is that the walk never reaches the `G_ENDDL`/`G_RDPFULLSYNC` at the end of the list.
+
+**Next round (in order, cheapest first):** (a) the DL walker's chunk buffer is DMEM
+[0x920,0x9C8) and commands may straddle its end — check the wrap/mirroring of that window
+(`r19_bankwrap_note` was built for exactly this class) and whether the walk desyncs on the first
+straddling command; (b) log the walker's registers at IMEM 0x170-0x198 (167-byte length, DL
+pointer, and the `$27=0xFF58` = -0xA8 index base) for the first ~200 chunks of a gfx task and
+compare the walked addresses against the DL the game actually built at
+`gGfxPool->gfxBuffer = DMEM[0xFF0]` (measured 0x284990, size from `task->t.data_size`) — if the
+walked range exceeds `data_size` immediately, the pointer/descriptor is wrong from chunk one;
+(c) the two `pc=0xFC4` read patterns differ (constant 0xA8 chunks vs growing 0x190/0x198/0x1A0
+blocks sourced at the RDP FIFO positions), so separate them by descriptor address (DMEM 0x2E0 vs
+0x2E8) before acting.
+
 **ROUND 22C — THE FORCED-YIELD SAVE ACTUALLY LANDS NOW, AND THE DP CHAIN IS PINNED TO ONE
 INSTRUCTION.** The round-21 save read the OSTask header out of DMEM 0xFC0 *at the preemption
 point*, where F3DEX2 has already overwritten it, so every forced yield was rejected and the save
