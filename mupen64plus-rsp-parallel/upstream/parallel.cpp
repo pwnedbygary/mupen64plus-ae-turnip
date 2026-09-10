@@ -112,7 +112,6 @@ static FILE* whf = NULL;
 
 extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 {
-	if (wd_task_start_ms == 0) return;
 	long long now = wd_now_ms();
 	if (now - wd_task_start_ms < 30) return;
 	if (now - wd_last_hb_ms < 10) return;
@@ -136,6 +135,56 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		   traces) is keyed off this so plain cart games keep the stock
 		   parallel-RSP behavior exactly. */
 		const int dd_mode = RSP::rsp.IsDDPresent && RSP::rsp.IsDDPresent();
+
+
+	/* ROUND 20: the FIFO-protocol counters (see cp0.cpp) rewritten every few
+	   seconds so the state at the test's screenshot time is always on disk.
+	   The core cannot reference these symbols (the plugin is dlopened), so the
+	   summary is produced here. */
+	if (dd_mode)
+	{
+		static long long r20_last_ms = 0;
+		long long r20_now = wd_now_ms();
+		if (r20_now - r20_last_ms >= 4000)
+		{
+			extern unsigned r20_dma_total(void), r20_dma_datalist(void), r20_dma_outbuf(void);
+			extern unsigned r20_dma_low_mem(void), r20_save_count(void);
+			extern unsigned r20_yield_req(void), r20_yield_timeout(void);
+			extern unsigned r20_first_dma_n(void);
+			extern const uint32_t* r20_first_dma(void);
+			extern unsigned r20_wr_total(void), r20_wr_outbuf(void), r20_wr_datalist(void);
+			extern unsigned r20_wr_latch_n(void);
+			extern const uint32_t* r20_wr_latch(void);
+			extern uint32_t r20_saved_k0(void), r20_saved_ptr(void);
+			unsigned k, m;
+			FILE* f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r20.txt", "w");
+			r20_last_ms = r20_now;
+			if (f)
+			{
+				fprintf(f, "R20 ms=%lld pc=%04x dma=%u datalist=%u outbuf=%u low=%u save=%u yreq=%u ytimeout=%u saved_k0=%08x yptr=%08x\n",
+				        r20_now, *RSP::rsp.SP_PC_REG & 0xfff, r20_dma_total(), r20_dma_datalist(),
+				        r20_dma_outbuf(), r20_dma_low_mem(), r20_save_count(),
+				        r20_yield_req(), r20_yield_timeout(), r20_saved_k0(), r20_saved_ptr());
+				m = r20_first_dma_n();
+				for (k = 0; k < m && k < 12; k++)
+				{
+					const uint32_t* e = r20_first_dma() + k * 6;
+					fprintf(f, "R20F %u pc=%03x src=%06x len=%05x dst=%04x data_ptr=%06x bf8=%08x\n",
+					        k, e[0], e[1], e[2], e[3], e[4], e[5]);
+				}
+				fprintf(f, "R20W wr=%u outbuf=%u datalist=%u\n",
+				        r20_wr_total(), r20_wr_outbuf(), r20_wr_datalist());
+				m = r20_wr_latch_n();
+				for (k = 0; k < m && k < 8; k++)
+				{
+					const uint32_t* e = r20_wr_latch() + k * 4;
+					fprintf(f, "R20W%u pc=%03x dst=%06x len=%05x bf8=%08x\n",
+					        k, e[0], e[1], e[2], e[3]);
+				}
+				fclose(f);
+			}
+		}
+	}
 
 		/* DIAG: task entry/exit trace (file) — identifies the freezing task.
 		   DD-only (plain games must have no tracing overhead). */
@@ -403,7 +452,30 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 				{
 				uint32_t r16_saved_k0 = hdr[0xbf8 / 4];
 				uint32_t r16_fixed_bf8 = hdr[0xff0 / 4];
-				hdr[0xbf8 / 4] = r16_fixed_bf8;
+				/* ROUND 20: DO NOT CLOBBER DMEM 0xBF8.  Round 17 set this
+				   word to data_ptr because the value restored from the
+				   yield buffer looked like a stale command word.  The
+				   ucode's own yield handler (overlay A, ucode+0xF80, loaded
+				   over IMEM 0x000 by the 0xFAC path and run at PC 0x000)
+				   writes it at PC 0x0064:
+
+				       lw  t3,0xFD0(r0)   # ucode base
+				       sw  k0,0xBF8(r0)   # the display-list pointer
+				       sw  t3,0xBFC(r0)
+				       ... DMA write DMEM[0..0xBFF] -> yield_data_ptr
+				       mtc0 SIG1|SIG2 ; break
+
+				   and the YIELDED resume entry takes k0 from exactly this
+				   word (IMEM 0x00B8 `j 0x0164` with IMEM 0x00BC
+				   `lw k0,0xBF8(r0)`).  Overwriting it restarts the walk at
+				   the top of the display list on every resume instead of
+				   continuing it -- 2538 RDP kicks with a command stream of
+				   all-zero words (the output buffer never once written) and
+				   MI_INTR_DP never raised is what that looks like from the
+				   guest's side.  The restore of the yield buffer above is
+				   the contract; leave the saved state alone.  Logged below
+				   so the value can be re-checked against RDRAM. */
+				(void)r16_fixed_bf8;
 
 				/* DIAG (DD-gated, a handful of events per run): the stale DMEM
 				   word, the saved k0 the ucode would have taken, the data_ptr it
@@ -413,7 +485,7 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 					if (!yf) yf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_yld.txt", "a");
 					if (yf)
 					{
-						fprintf(yf, "YLD ms=%lld type=%u flags=%08x yptr=%06x ysz=%04x n=%04x stale_f0=%08x stale_bf8=%08x rest_f0=%08x saved_k0=%08x fixed_k0=%08x rest_bfc=%08x ff0=%08x stale_ff0=%08x st=%08x\n",
+						fprintf(yf, "YLD ms=%lld type=%u flags=%08x yptr=%06x ysz=%04x n=%04x stale_f0=%08x stale_bf8=%08x rest_f0=%08x saved_k0=%08x data_ptr=%08x rest_bfc=%08x ff0=%08x stale_ff0=%08x st=%08x\n",
 						        wd_now_ms(), r16_type, r16_flags, r16_yptr, r16_ysz, r16_n,
 						        r16_before_f0, r16_before_bf8,
 						        hdr[0x0f0 / 4], r16_saved_k0, r16_fixed_bf8,
@@ -491,6 +563,15 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 
 		for (auto &count : RSP::MFC0_count)
 			count = 0;
+
+		/* ROUND 20 (DD route only): reset the clean-yield state machine for
+		   this slice (see cp0.cpp: the FIFO ucode is preempted by asking for
+		   SIG0 and letting it run into its own yield handler). */
+		{
+			extern void r20_task_begin(void);
+			if (dd_mode)
+				r20_task_begin();
+		}
 
 		/* Host-run budget: yield the emulation thread if a single ucode run
 		   exceeds 50ms (libultra infinite-wait ucode).  Clean audio tasks

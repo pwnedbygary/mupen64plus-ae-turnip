@@ -330,6 +330,205 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
 	return 1;
 }
 
+/* ---------------------------------------------------------------------------
+   ROUND 20: THE FIFO UCODE'S OWN YIELD PROTOCOL (and why the host must not
+   fabricate one).
+
+   Ground truth this round: the ucode this ROM actually submits is at RDRAM
+   0x7505C0 (the guest's OSTask.ucode; its text is DMA'd to IMEM 0x080, length
+   0xF80, so PC = 0x080 + (rdram - 0x7505C0)), and its two overlays follow the
+   text at ucode+0xF80 (0x98 bytes) and ucode+0x1018 (0x170 bytes).  DMEM
+   0x2E0/0x2E8 hold their descriptors, which the ucode's entry re-bases by
+   adding DMEM[0xFD0] (the header's ucode pointer) on the cold/warm paths
+   (IMEM 0x12C..0x15C) and which the YIELDED resume deliberately skips.
+
+   Disassembled, the entry is:
+
+     IMEM 0098  lw  t3,0xF0(r0)      # FIFO/RDP end pointer
+     IMEM 009C  lw  t4,0xFC4(r0)     # task flags
+     IMEM 00A0  addi at,r0,0x2800    # CLR_SIG1|CLR_SIG2
+     IMEM 00A4  beq t3,r0,0x00C0     # -> COLD
+     IMEM 00A8  mtc0 at,SP_STATUS    # (delay slot) clear YIELDED/TASKDONE
+     IMEM 00AC  andi t4,t4,0x1
+     IMEM 00B0  beq t4,r0,0x012C     # -> WARM (not yielded)
+     IMEM 00B4  sw  r0,0xFC4(r0)
+     IMEM 00B8  j   0x0164           # -> YIELDED RESUME
+     IMEM 00BC  lw  k0,0xBF8(r0)     #      k0 = the ucode's OWN saved pointer
+
+   and the main loop is
+
+     IMEM 0160  lw  k0,0xFF0(r0)     # cold/warm: k0 = header data_ptr
+     IMEM 0170  (DMA 744 bytes RDRAM[k0] -> DMEM 0x920; k0 += 0xA8)
+     IMEM 018C  mfc0 at,SP_STATUS
+     IMEM 0198  andi at,at,0x80      # SIG0 == "the CPU asked for a yield"
+     IMEM 01A8  bne at,r0,0x0FAC     # SIG0 set -> the YIELD HANDLER
+     IMEM 01B0  jr  t3               # else dispatch the command
+
+   The yield handler is overlay A (RDRAM 0x751540 = ucode+0xF80, loaded over
+   IMEM 0x000 by 0x0FAC and entered at PC 0):
+
+     PC 0060  lw  t3,0xFD0(r0)       # ucode base
+     PC 0064  sw  k0,0xBF8(r0)       # >>> SAVE THE DISPLAY-LIST POINTER
+     PC 0068  sw  t3,0xBFC(r0)
+     PC 0070  lw  t8,0xFF8(r0)       # yield_data_ptr
+     PC 0078  addi s3,r0,0x0BFF
+     PC 007C  j   0x0FD8             # DMA write DMEM[0..0xBFF] -> yield buffer
+     PC 0080  addi ra,r0,0x1088      # -> PC 0x88: mtc0 SIG1|SIG2 ; break
+
+   So the ucode suspends coherently at exactly ONE point: the SIG0 test inside
+   its command loop.  It saves k0 (the resume pointer!) and the whole FIFO state
+   into the guest's yield buffer there, acks with SIG1|SIG2 and executes
+   `break`.  That is also the resume contract: DMEM 0xBF8 coming back from the
+   yield buffer IS the display-list position the resume must continue from.
+
+   The host model in force until now did the opposite: at the 256th SP_STATUS
+   poll inside a slice it set INTR_BREAK|HALT and returned, fabricating the ack
+   (SIG1|SIG2) without the ucode ever running its handler.  The guest then
+   resumes a task whose FIFO state was never saved, and (round 17) the plugin
+   papered over the symptom by overwriting DMEM 0xBF8 with data_ptr -- which
+   restarts the walk at the top of the list on every resume instead of
+   continuing it.  Round 20 replaces the fabrication with the request the
+   hardware protocol is built on: set SIG0, keep executing, and let the ucode
+   reach PC 0x1A8 and save itself.
+
+   Fallback: if the ucode does not reach its yield point within R20_GRACE more
+   polls (the slice budget's job is to give the CPU a turn, so this must stay
+   bounded), the old fabricated handover runs unchanged.
+   --------------------------------------------------------------------------- */
+#define R20_GRACE 64u
+
+/* 1 = preempt a FIFO task by asking for a yield (SIG0) and letting the ucode
+   save itself; 0 = the round-10..19 behaviour (fabricate INTR_BREAK|HALT and
+   the ack).  Kept as a switch so the two models can be measured back to back
+   on one build. */
+#define R20_SIG0_YIELD 0
+
+static unsigned r20_dma_n = 0, r20_dma_dl = 0, r20_dma_out = 0, r20_dma_lowmem = 0;
+static unsigned r20_save_n = 0, r20_first_n = 0;
+static uint32_t r20_first[12][6];
+static uint32_t r20_save_k0 = 0, r20_save_ptr = 0;
+static unsigned r20_yreq = 0, r20_ytimeout = 0, r20_ystage = 0;
+static unsigned r20_ystage_poll = 0;
+
+/* Called by DoRspCycles for every fresh task entry. */
+extern "C" void r20_task_begin(void) { r20_ystage = 0; r20_ystage_poll = 0; }
+
+/* Classify one ucode-issued RDRAM->SP transfer: does the FIFO ever read the
+   display list at all (source == header data_ptr), or only the output buffer
+   it is supposed to be writing (0x2D9CD0..0x32DCD0) / cleared memory below
+   0x100000?  Cheap counters, plus the first twelve transfers on record. */
+static void r20_dma_note(RSP::CPUState* rsp, uint32_t dst, uint32_t src, uint32_t len)
+{
+	if (!rsp_ares_budget_enabled())
+		return;
+	{
+		uint32_t dl     = rsp->dmem[0xff0 / 4];
+		uint32_t outbuf = rsp->dmem[0xfe8 / 4];
+		uint32_t obsz   = rsp->dmem[0xfec / 4];
+		r20_dma_n++;
+		if (src == dl && dl != 0)
+			r20_dma_dl++;
+		if (outbuf && src >= outbuf && src < outbuf + obsz)
+			r20_dma_out++;
+		if (src < 0x100000u)
+			r20_dma_lowmem++;
+		if (r20_first_n < 12)
+		{
+			uint32_t* e = r20_first[r20_first_n++];
+			e[0] = rsp->pc & 0xfff; e[1] = src; e[2] = len; e[3] = dst;
+			e[4] = dl; e[5] = rsp->dmem[0xbf8 / 4];
+		}
+	}
+}
+
+/* The ucode saving itself: an RSP-issued write whose RDRAM destination is the
+   task's yield_data_ptr.  This is the ONLY coherent suspension. */
+static unsigned r20_wr_n = 0, r20_wr_out = 0, r20_wr_dl = 0, r20_wr_first_n = 0;
+static uint32_t r20_wr_first[8][4];
+
+static void r20_dma_save_note(RSP::CPUState* rsp, uint32_t dram_dst, uint32_t len)
+{
+	uint32_t yptr;
+	if (!rsp_ares_budget_enabled())
+		return;
+	/* Where does the ucode's own RDP command stream go?  The kicks program
+	   DPC_START/END inside the header's output_buff (0x2D9CD0..0x32DCD0), but
+	   that whole range reads as ZERO at 50 s while the display-list buffer at
+	   data_ptr holds plausible commands.  Count writes by destination: the
+	   output buffer (the FIFO variant's command area), the data_ptr buffer
+	   (in-place conversion), or anywhere else. */
+	r20_wr_n++;
+	{
+		uint32_t ob = rsp->dmem[0xfe8 / 4], osz = rsp->dmem[0xfec / 4];
+		uint32_t dl = rsp->dmem[0xff0 / 4];
+		if (ob && dram_dst >= ob && dram_dst < ob + osz)
+			r20_wr_out++;
+		else if (dl && dram_dst >= dl && dram_dst < dl + 0x40000u)
+			r20_wr_dl++;
+		if (r20_wr_first_n < 8)
+		{
+			uint32_t* e = r20_wr_first[r20_wr_first_n++];
+			e[0] = rsp->pc & 0xfff; e[1] = dram_dst; e[2] = len; e[3] = rsp->dmem[0xbf8 / 4];
+		}
+	}
+	yptr = rsp->dmem[0xff8 / 4];
+	if (yptr == 0 || (dram_dst & 0x7ffffc) != (yptr & 0x7ffffc))
+		return;
+	r20_save_n++;
+	r20_save_k0 = rsp->dmem[0xbf8 / 4];
+	r20_save_ptr = yptr;
+	(void)len;
+}
+
+extern "C" unsigned r20_dma_total(void)   { return r20_dma_n; }
+extern "C" unsigned r20_dma_datalist(void){ return r20_dma_dl; }
+extern "C" unsigned r20_dma_outbuf(void)  { return r20_dma_out; }
+extern "C" unsigned r20_dma_low_mem(void) { return r20_dma_lowmem; }
+extern "C" unsigned r20_save_count(void)  { return r20_save_n; }
+extern "C" unsigned r20_yield_req(void)   { return r20_yreq; }
+extern "C" unsigned r20_yield_timeout(void){ return r20_ytimeout; }
+extern "C" uint32_t r20_saved_k0(void)    { return r20_save_k0; }
+extern "C" uint32_t r20_saved_ptr(void)   { return r20_save_ptr; }
+extern "C" const uint32_t* r20_first_dma(void) { return &r20_first[0][0]; }
+extern "C" unsigned r20_first_dma_n(void) { return r20_first_n; }
+extern "C" unsigned r20_wr_total(void)   { return r20_wr_n; }
+extern "C" unsigned r20_wr_outbuf(void)  { return r20_wr_out; }
+extern "C" unsigned r20_wr_datalist(void){ return r20_wr_dl; }
+extern "C" unsigned r20_wr_latch_n(void) { return r20_wr_first_n; }
+extern "C" const uint32_t* r20_wr_latch(void) { return &r20_wr_first[0][0]; }
+
+/* Is this the FIFO/gfx task whose yield protocol the block above describes?
+   (task type 1 == graphics; audio keeps its own DSP wait below.) */
+static int r20_fifo_task(RSP::CPUState* rsp)
+{
+	return ((uint32_t*)rsp->dmem)[0xfc0 / 4] != 2u;
+}
+
+static int r20_yield_request(RSP::CPUState* rsp, unsigned counter)
+{
+	if (!rsp_ares_budget_enabled())
+		return 0;
+	if (!r20_fifo_task(rsp))
+		return 0;
+	if (r20_ystage == 0)
+	{
+		/* Ask for the yield the ucode knows how to take. */
+		*RSP::rsp.SP_STATUS_REG |= SP_STATUS_SIG0;
+		r20_ystage = 1;
+		r20_ystage_poll = counter;
+		r20_yreq++;
+		return 1;
+	}
+	if (r20_ystage == 1 && (counter - r20_ystage_poll) < R20_GRACE)
+		return 1;			/* let it reach PC 0x1A8 */
+	if (r20_ystage == 1)
+	{
+		r20_ytimeout++;
+		r20_ystage = 2;			/* wedged: fall back for this slice */
+	}
+	return 0;
+}
+
 #endif
 
 using namespace RSP;
@@ -397,6 +596,24 @@ extern "C"
 			unsigned threshold = (task_type == 2) ? (unsigned)RSP::SP_STATUS_TIMEOUT : 256u;
 			if (RSP::MFC0_count[rt] >= threshold)
 			{
+			/* ROUND 20 (DD route only): ASK THE UCODE TO YIELD INSTEAD OF
+			   FABRICATING ONE.  The FIFO ucode tests SP_STATUS & SIG0 inside
+			   its command loop (IMEM 0x1A8) and, when it is set, runs its own
+			   yield handler, which stores k0 into DMEM 0xBF8, DMAs the whole
+			   FIFO state into the guest's yield buffer, acks with SIG1|SIG2
+			   and breaks.  Setting SIG0 here and letting the ucode run a few
+			   more instructions turns the host preemption into exactly the
+			   suspension the guest and the ucode were built for.  The old
+			   path (INTR_BREAK|HALT + a faked ack) cut the task off
+			   mid-list with nothing saved, so the guest resumed a task whose
+			   FIFO state was stale -- which is how the resumed walk came to
+			   run from a garbage k0 (DMEM 0xBF8) over cleared RDRAM.
+			   Bounded by R20_GRACE polls: a ucode that never reaches its
+			   yield point still gets the old handover. */
+#if R20_SIG0_YIELD
+			if (r20_yield_request(rsp, (unsigned)RSP::MFC0_count[rt]))
+				return MODE_CONTINUE;
+#endif
 			// The ucode is polling SP_STATUS (typically waiting for the
 			// CPU to signal via INTR_BREAK / task-done).  On real hardware
 			// the RSP spins here while the CPU continues; in the
@@ -643,6 +860,7 @@ extern "C"
 		r12_record(rsp, 2, dest, source, length, count, skip);
 		r14_record(rsp, 2, dest, source, length, count, skip);
 		r19_imem_note(rsp, dest, source, length);
+		r20_dma_note(rsp, dest, source, length);
 		/* ROUND 19: would the STOCK mask have walked this transfer out of its
 		   own bank?  (DMEM->IMEM or IMEM->DMEM).  DD-gated, latch only. */
 		if (rsp_ares_budget_enabled())
@@ -744,6 +962,7 @@ extern "C"
 
 		r12_record(rsp, 1, dest, source, length, count, skip);
 		r14_record(rsp, 1, dest, source, length, count, skip);
+		r20_dma_save_note(rsp, dest, length);
 
 		/* ROUND-18: refuse the transfer if the ucode's DMA address register
 		   has left RDRAM (runaway walk -- see r14_wild_check).  This is the

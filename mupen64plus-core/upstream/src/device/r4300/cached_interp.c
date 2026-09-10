@@ -1538,6 +1538,9 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
             fprintf(f, "%s DPCHAIN mi_rd_dp=%u dp_ack=%u dp_consumed=%u core_signal=%u core_raise=%u\n",
                 tag, wd_c_mi_rd_dp, wd_c_dp_ack, wd_c_dp_consumed, wd_c_signal, wd_c_raise);
         }
+        /* ROUND 20 of the FIFO protocol lives in the RSP plugin (wd_r20.txt,
+           rewritten every few seconds): the core cannot reference the plugin's
+           symbols, so those counters are dumped from there. */
     }
 }
 

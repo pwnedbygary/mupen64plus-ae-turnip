@@ -5,6 +5,82 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 20 (goal round 20) — THE LIVE UCODE IS PROPERLY IDENTIFIED (gspF3DEX2_fifo), AND THE
+RDP IS BEING KICKED AT A RING BUFFER THAT IS NEVER WRITTEN.** Branch
+`dd-eos-watchdog-checkpoint`. Evidence: `.fzxwork/r20a` (SIG0 experiment), `.fzxwork/r20c`
+(control = same build with the experiment off), `.fzxwork/r20d` (+ write-side counters),
+`.fzxwork/r20e` (early-timing probe).
+
+**1. Address ground truth (this fixes several earlier rounds' instruction-level conclusions).**
+The decomp's `linker_scripts/jp/ek/symbol_addrs_nlib_vars.txt` maps every RSP blob:
+`rspbootTextStart=0x807504F0`, `aspMain=0x80768E60`, `gspF3DEX2_fifoText=0x807505C0`,
+`gspF3DLX2_Rej_fifo=0x80751950`, `gspF3DFLX2_Rej_fifo=0x80752AE0`, `gspL3DEX2_fifo=0x80753C70`,
+`gspF3DEX2_Rej_fifo=0x80754E00`. `wd_hdr15.txt` reports the guest's `OSTask.ucode` =
+**0x7505C0 = gspF3DEX2_fifo**, i.e. the game is in `GFXMODE_F3DEX`. Its text is DMA'd to IMEM
+0x080 with length **0xF80** (`wd_imem.txt` n=1), so **PC = 0x080 + (rdram - 0x7505C0)** and the
+text ends exactly at RDRAM 0x751540; the two overlays follow at ucode+0xF80 (0x98 B, loaded over
+IMEM 0x000 = the yield/completion handler) and ucode+0x1018 (0x170 B, the command dispatcher).
+Rounds 15-19 disassembled the *0x752AE0* copy (gspF3DFLX2_Rej_fifo, a different ucode) and/or
+used a PC base 0x1000 too high, so some of their per-instruction claims describe the wrong
+bytes; `.fzxwork/rsp_dis.py`'s CP0 name table also called registers 8/9 "SP_PC"/"SP_IBIST"
+(hiding every RDP kick) — both are fixed in the tool now.
+
+**2. The ucode's own yield handler exists, and round 17 was clobbering its result.**
+`mtc0` scan + disassembly: entry at IMEM 0x098, main loop at 0x160-0x1B4, DMA macro at
+0xFD8/0xFC8, and the overlay's yield handler at PC 0x0060:
+
+    0x0060 lw  t3,0xFD0(r0)   # ucode base      0x0064 sw  k0,0xBF8(r0)   # >>> SAVE k0
+    0x0068 sw  t3,0xBFC(r0)   # --------------- 0x0070 lw  t8,0xFF8(r0)   # yield_data_ptr
+    0x0074 addi s4,r0,0x8000  # write DMA       0x0078 addi s3,r0,0x0BFF
+    0x007C j   0x0FD8         # DMA DMEM[0..0xBFF] -> yield buffer
+    0x0080 addi ra,r0,0x1088  # -> PC 0x088: mtc0 SIG1|SIG2 ; break
+
+and the YIELDED resume takes `k0` from exactly that word (`j 0x0164` with `lw k0,0xBF8(r0)` in
+the delay slot). Round 17's `hdr[0xBF8/4] = data_ptr` therefore **destroys the resume pointer the
+ucode itself wrote**. Removed (parallel.cpp; measured behaviourally neutral on its own:
+t1gfx=6/aud=198 both ways, RDPKICK 3171 vs 2538).
+
+**3. "Ask the ucode for a yield" (host sets SIG0) was TRIED AND MEASURED BADLY.**
+Rationale: the ucode only suspends coherently at its SIG0 test (0x1A8), so a host preemption
+should set SIG0 and let it run into 0x60. Measured (r20a vs the r20c control, same tree, only
+this switch different): gfx task loads **6 -> 1**, audio loads 198 -> 193, RDP kicks
+**2537 -> 28091** with the walk running away to `start=fffffff8`, and the ucode still never ran
+its yield handler (`save=0`). The guest never clears a plugin-set SIG0, so the ucode's main loop
+diverts to the yield path on every command. Kept in the tree as `R20_SIG0_YIELD` **default 0**,
+with the measurement recorded next to it.
+
+**4. NEW, SHARP LEAD: the RDP is kicked at a 320 KiB ring that the ucode never fills.**
+New DD-only counters (`wd_r20.txt`, rewritten every 4 s from `DoRspCycles`) classify every
+ucode-issued transfer. At 50 s: reads `dma=109696` of which `datalist=197` (source == the
+header's data_ptr -> the real display list, so the walk *does* start correctly), `outbuf=40386`
+(source inside 0x2D9CD0..0x32DCD0), `low=102592` (below 1 MiB = cleared memory); writes
+`wr=2950` of which `outbuf=16` and `datalist=1272`. The kick code (PC 0x250-0x2BC) is a **ring**
+protocol: `t8 = DMEM[0xF0]` is the ring write pointer, `mtc0 t8,DPC_END` kicks, and when
+`DMEM[0xFEC] (output_buff END = 0x32DCD0) - (end+len) < 0` it waits for `DPC_CURRENT ==
+DMEM[0xFE8] (0x2D9CD0)` and re-points `DPC_START` there. `wd_cmd.txt` matches that decode
+kick-for-kick (START 0x32DCD0 -> 0x2D9CD0, END 0x2D9E30/0x2D9F98/... climbing by ~0x168).
+**But the ring is 100% zeros at 50 s (0 nonzero words of 86016) while only 16 write transfers
+ever land in it** -- so every window the RDP is handed is all-G_NOOP, `wd_c_rdp_empty` is 2033 of
+2537 kicks, **`MI_INTR_DP` is never raised** (`raise_bits DP=0`, `dp_seen=0`), and the guest's
+gfx thread stays in `osRecvMesg(&D_800DCAC8)` (sys_gfx.c:203 `func_80067D64`) -> the 64DD bar
+never advances (screen identical to r19d: YAVG 5.3, bar 657..1257 px on row 573).
+
+Early probe (`.fzxwork/r20e`, dump at 12 s instead of 50 s): the ring is **still 0 nonzero
+words / 0 FULL_SYNCs**, `dp_seen=0`, `DP=0`, `empty=1524/1902` kicks, with reads
+`dma=29600 datalist=934 outbuf=2233 low=2697` and `save=0`. So the ring is never written at any
+point in the run -- this is not a late degradation but the state from the first frames on (the
+DD loading screen the RP6 shows is drawn by the guest CPU, not by the RDP; `wd_c_rdp_empty`
+was 2033/2537 at 50 s and 1524/1902 at 12 s).
+
+Next round's first move: the ucode's kick code publishes `s6..s7` (the converted commands
+assembled in DMEM) to `DMEM[0xF0]`, and one write transfer should follow each kick -- but of
+2950 writes only 16 land in `[output_buff, output_buff_end)`. Latch the first eight writes whose
+destination is *near* `DMEM[0xF0]` (within +/-0x1000) together with the pc and the DMA length,
+plus the matching reads, and compare its pc against the kick code at PC 0x250-0x2BC: either the
+publish DMA is issued at an address the plugin mis-decodes (a `SP_MEM_ADDR`/`SP_DRAM_ADDR`
+mix-up would land it somewhere plausible-looking), or the ucode is not reaching the publish at
+all and the END-advance comes from a stale DMEM[0xF0].
+
 **ROUND 15 (goal round 15) — the ucode's task protocol is decoded properly, and the poisoning
 event is caught red-handed: an audio-ucode DMA with an UNDERFLOWED length wipes the task
 header + all of IMEM in one transfer.** Branch `dd-eos-watchdog-checkpoint`.
