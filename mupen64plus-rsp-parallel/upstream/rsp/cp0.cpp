@@ -409,7 +409,7 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
    (libultra's osSpTaskYielded only records OS_TASK_YIELDED while SIG0 is still
    visible).  0 = the round-10..20 behaviour, kept for A/B measurement on one
    build.  See the long note at the yield site in RSP_MFC0. */
-#define R21_KEEP_SIG0 0
+#define R21_KEEP_SIG0 1
 
 static unsigned r21_save_n = 0, r21_yield_n = 0, r21_log_n = 0;
 static uint32_t r21_save_k0 = 0, r21_save_f0 = 0;
@@ -841,14 +841,35 @@ extern "C"
 			   combination makes the next resume of the task run on stale
 			   DMEM (round 16 also defends against the consequence in
 			   parallel.cpp; this removes the cause). */
-			/* ROUND 21: answer the yield the way the ucode does (SIG1 =
-			   SP_STATUS_YIELDED, SIG2 = TASKDONE) but LEAVE SIG0 SET -- see
-			   the libultra excerpt above: osSpTaskYielded() records
-			   OS_TASK_YIELDED only while SP_STATUS_YIELD (SIG0) is still
-			   visible, and osSpTaskLoad() clears SIG0 at the next task load,
-			   so leaving it set is the correct, self-limiting handshake.
-			   R21_KEEP_SIG0=0 restores the round-16 form (clear SIG0) for
-			   A/B measurement. */
+			/* ROUND 21: answer the yield the way the ucode's OWN in-body yield
+			   path does, plus the one bit libultra needs.
+
+			   Decoded from RDRAM 0x751540 (= the 0x98-byte overlay at
+			   ucode+0xF80, which the body loads into IMEM 0x000; the RDRAM
+			   dump of a live run carries the decompressed blob):
+
+			     0020 bne at,r0,0x0060    # at != 0 -> the yield save at 0x0060
+			     ...
+			     0084 addi t4,r0,0x4000   # SP_SET_SIG2 == SP_SET_TASKDONE
+			     0088 mtc0 t4,SP_STATUS
+			     008c break 0
+
+			   So the ucode's own mid-task yield acks with SET_TASKDONE and
+			   LEAVES SIG0 SET (only rspboot's *task-entry* ack, 0x5200, clears
+			   it).  Leaving SIG0 set is also what libultra requires:
+			   sptaskyielded.c records OS_TASK_YIELDED into the task's flags
+			   only `if (status & SP_STATUS_YIELD)`, and that flag is what makes
+			   sys_main.c:347 keep sGfxTaskYielded and call
+			   Sched_SpTaskResumeGfx() later.  With SIG0 cleared the game drops
+			   the interrupted gfx task instead (round-16 behaviour; measured in
+			   r20j as 1472 audio tasks vs 5 gfx tasks, raise_bits DP=0).
+			   SIG1 (SP_STATUS_YIELDED) is added on top because
+			   osSpTaskYielded() takes its *result* from that bit and the ucode
+			   never sets it -- without it nothing would ever report the yield
+			   and the save emulated above would go unused.
+			   osSpTaskLoad() clears SIG0|SIG1|SIG2 at the next task load, so
+			   the handshake stays self-limiting.  R21_KEEP_SIG0=0 restores the
+			   round-16 form (clear SIG0) for A/B measurement. */
 #if R21_KEEP_SIG0
 			if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_SIG0)
 				*RSP::rsp.SP_STATUS_REG |= SP_STATUS_SIG1 | SP_STATUS_SIG2;

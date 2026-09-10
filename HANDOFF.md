@@ -28,27 +28,55 @@ per-forced-yield trace).
 * **Consequence: on a yield resume the RSP's `ucode_data` IS the ucode's saved DMEM image.**
   A host-forced yield that skips the save therefore resumes the task on stale DMEM.
 
-**2. THE LIVE UCODE'S OWN YIELD HANDLER, DISASSEMBLED FROM A CAPTURED IMEM.**
-`wd_ucode_inv1.bin` (0x20 header + IMEM 0x1000 + DMEM 0x1000) holds the gfx ucode in IMEM;
-`.fzxwork/rsp_dis.py` on it gives IMEM 0x000 — the 0x98-byte overlay the guest loads from
-`ucode+0xF80` (`wd_imem.txt` n=3) — as the task (re)start / yield-ack path:
+**2. THE DECOMPRESSED UCODE BLOBS ARE IN THE RUN'S OWN RDRAM DUMP — AND THE UCODE'S YIELD
+SAVE IS NOW DECODED INSTRUCTION FOR INSTRUCTION.** The symbol addresses are *link addresses*,
+not ROM offsets (the retail ROM stores them compressed), which is why the earlier
+`cart.z64`-offset checks looked like noise. They are, however, exactly right for a live RDRAM
+dump: `.fzxwork/rsp_dis.py r20j/ram_50s.bin $((0x80000000+0x7505c0)) 0x080` disassembles the
+running ucode. And a captured IMEM (`r21u/wd_ucode_inv1.bin`, 0x20 header + IMEM + DMEM) is
+byte-identical to RDRAM `0x7504F0` over 0xCF bytes — so the loader sitting at IMEM 0x000 in that
+capture is **rspboot**, and round 16 was reading the right code.
 
-    0000 j 0x0064              0008 lw v0,16(at)   # at=0xFC0 -> header.ucode ([0xFD0])
-    000c addi v1,r0,0xF7F      0010 addi a3,r0,0x1080
-    0014 mtc0 a3,SP_MEM_ADDR   0018 mtc0 v0,SP_DRAM_ADDR
-    001c mtc0 v1,SP_RD_LEN     # load 0xF80 bytes of text to IMEM 0x080
-    0020 mfc0 a0,SP_DMA_BUSY  0024 bne a0,r0,0x0020        # wait for the DMA
-    002c jal 0x003C           0034 jr a3                  # run the text
-    003c mfc0 t0,SP_STATUS    0040 andi t0,t0,0x80         # SIG0 = SP_STATUS_YIELD
-    0044 bne t0,r0,0x0050     004c jr ra                   # not requested -> continue
-    0054 ori t0,r0,0x5200     0058 mtc0 t0,SP_STATUS       # >>> the yield ack
-    005c break 0
+*The body* (`gspF3DEX2_fifo`, RDRAM 0x7505C0 -> IMEM 0x080, PC = 0x080 + (rdram-0x7505C0)):
 
-`0x5200` against libultra's SP_STATUS *write* bits (`rcp.h`) = `SP_CLR_SIG0 | SP_SET_SIG1 |
-SP_SET_SIG2`, i.e. **clear the request, set YIELDED + TASKDONE**. So round 16's ack shape was
-already right (this is a decode of the real instruction, not an inference); what the host-forced
-yield was missing is the *other half* of the same contract: the ucode's own **save** (`sw
-k0,0xBF8`, `sw ucode,0xBFC`, DMA DMEM[0..0xBFF] -> `yield_data_ptr`).
+    0098 lw  t3,0x0F0(r0)     # rdpFifoPos ("already initialised" marker)
+    009C lw  t4,0x0FC4(r0)    # header.flags
+    00A4 beq t3,r0,0x00C0     # ==0 -> (re)initialise the DPC ring from the header
+    00A8 mtc0 at,SP_STATUS    # delay slot: 0x2800 = CLR_SIG3|CLR_SIG2
+    00B0 beq t4,r0,0x012C     # flags&1 == 0 -> WARM (k0 = header.data_ptr, 0x0160)
+    00B4 sw  r0,0x0FC4(r0)
+    00B8 j   0x0164
+    00BC lw  k0,0x0BF8(r0)    # >>> flags&1 (OS_TASK_YIELDED) -> k0 = the saved DL pointer
+    0160 lw  k0,0x0FF0(r0)    # FRESH/WARM: k0 = header.data_ptr
+    0178 jal 0x0FD8           # read 0xA8 bytes from k0 into DMEM 0x920
+    0180 addiu k0,k0,0xA8     # k0 advances one chunk per iteration
+    018C mfc0 at,SP_STATUS     # <<< the poll the plugin intercepts
+    0198 andi at,at,0x80      # SIG0
+    01A8 bne at,r0,0x0FAC     # requested -> the ucode's own yield path
+    01B0 jr  t3               # else dispatch the command (LUT lhu 0x36E)
+
+*The overlay* (`ucode+0xF80`, 0x98 B, loaded to IMEM 0x000 by the body) is the task
+(re)start / completion / yield path, and it is where the yield contract lives:
+
+    0000 sub t3,s7,s6         # flush the accumulated RDP commands
+    0010 jal 0x0FC8 / 0018 bltz at,0x0084 / 001C mtc0 t8,DPC_END   # >>> the RDP kick
+    0020 bne at,r0,0x0060     # at != 0 -> the YIELD SAVE
+    002C sw  k0,0x0FF0(r0)    # (the other path writes the walk pointer back to data_ptr)
+    0060 lw  t3,0x0FD0(r0)    # header.ucode
+    0064 sw  k0,0x0BF8(r0)    # >>> DMEM[0xBF8] = k0   (GPR 26)
+    0068 sw  t3,0x0BFC(r0)    # >>> DMEM[0xBFC] = ucode base
+    0070 lw  t8,0x0FF8(r0)    # t8 = header.yield_data_ptr
+    0074 addi s4,r0,0x8000 / 0078 addi s3,r0,0x0BFF / 007C j 0x0FD8
+                              # >>> DMA DMEM[0..0xBFF] -> yield_data_ptr
+    0080 addi ra,r0,0x1088    # return into
+    0084 addi t4,r0,0x4000    # SP_SET_SIG2 == SP_SET_TASKDONE
+    0088 mtc0 t4,SP_STATUS
+    008C break 0
+
+So the ucode's **own mid-task yield** acks with `SET_TASKDONE` and **leaves SIG0 set** (only
+rspboot's task-entry ack, `0x5200` = `CLR_SIG0|SET_SIG1|SET_SIG2`, clears it), while the save
+writes exactly `DMEM[0xBF8] = k0`, `DMEM[0xBFC] = header.ucode`, `DMEM[0..0xBFF] ->
+yield_data_ptr` — which is what round 21 now emulates at the host-forced yield site.
 
 **3. WHAT THE r20j DEADLOCK LOOKS LIKE THROUGH THIS LENS (the numbers now line up).**
 `wd_imem.txt` n=4 is a resume (`f0=0032dcd0`, i.e. non-zero -> not the FRESH path) whose
@@ -62,13 +90,19 @@ RDP (`dp_seen=0`, `raise_bits DP=0`), and the gfx thread stays parked on `osRecv
 (1472 audio tasks vs 5 gfx tasks, `ev9 DP` sharing queue `0x8079a120` with the SP event).
 
 **4. THE ROUND-21 CHANGE (DD-gated, one build, switches for A/B).** At the forced-yield site in
-`rsp/cp0.cpp` (inside the runtime `IsDDPresent()` block): before the ack, write
-`DMEM[0xBF8] = RSP GPR 26 (k0)`, `DMEM[0xBFC] = DMEM[0xFD0]`, and copy the 0xC00-byte DMEM image
-to the header's `yield_data_ptr` using the plugin's own word-indexed RDRAM convention. The ack
-stays round 16's (`CLR_SIG0|SET_SIG1|SET_SIG2`; `R21_KEEP_SIG0=1` was tried and rejected — it
-contradicts the ucode's own 0x5200). Every forced yield is traced (bounded, 16 lines) to
-`files/wd_r21.txt` as `R21Y n= pc= sig0= st= k0= f0= bf8= yptr= typ= flg= saved=`, and the
-running totals ride in `wd_r20.txt` as `R21EMU n= k0= f0=`.
+`rsp/cp0.cpp` (inside the runtime `IsDDPresent()` block), BEFORE the ack:
+`DMEM[0xBF8] = RSP GPR 26 (k0)`, `DMEM[0xBFC] = DMEM[0xFD0]`, and a 0xC00-byte DMEM image write
+to the header's `yield_data_ptr` using the plugin's own word-indexed RDRAM convention — i.e.
+IMEM 0x0060-0x007C above, executed on the ucode's behalf because the preemption cuts it off
+before it can run there. The ack keeps SIG0 set (as the ucode's own in-body yield path does) and
+adds `SIG1|SIG2`, because `osSpTaskYielded()` takes its *result* from SIG1 while libultra only
+*records* `OS_TASK_YIELDED` while SIG0 is visible — i.e. both bits are needed for
+`sys_main.c:347` to keep `sGfxTaskYielded` and call `Sched_SpTaskResumeGfx()`, which is the only
+way the interrupted gfx task is ever run again (`R21_KEEP_SIG0=0` restores the round-16 form for
+A/B). Every forced yield is traced (bounded, 16 lines) to `files/wd_r21.txt` as
+`R21Y n= pc= sig0= st= k0= f0= bf8= yptr= typ= flg= saved=`, and the running totals ride in
+`wd_r20.txt` as `R21EMU n= k0= f0=`. The `k0` saved is by construction a pointer the body was
+walking (0x0160/0x0180), so the value itself is the check that the emulation is right.
 
 **5. STATUS: NOT YET VERIFIED ON THE RP6.** The device locked itself (secure keyguard) during
 this round, so the round-21 test could not be run: `.fzxwork/r21a` is invalid (Argosy stole the
