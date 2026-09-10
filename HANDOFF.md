@@ -989,3 +989,33 @@ i.e. every DD path is inert.
 (fix 2: CPU 48.6 M/s, VI 60/s), `ram_pump1.bin` + `freeze_state.py` output
 (guest OS thread/queue dump), `spw_fix1.txt`, `rsp_head.txt`, `bar1-3.png`,
 `plain_r9.png`.
+
+### Round-9 addendum — the EK's frame-sync sites, nailed down from `iplram_force.bin`
+Scanning the forced RDRAM dump for `jal 0x80750400` (osViGetCurrentFramebuffer)
+gives every framebuffer wait in the EK build:
+
+| site | what it is |
+|---|---|
+| `0x806f2d34-0x806f2d60` | `osViSwapBuffer(gFrameBuffers[0]); while (osViGetCurrentFramebuffer() != gFrameBuffers[0]) {}; osViBlack(0)` |
+| `0x806f2db8-0x806f2de8` | `osViSwapBuffer(gFrameBuffers[1]); wait fb1; func_806F33D0(fb0/fb1/fb2);` |
+| `0x806f2e00-0x806f2e2c` | `osViSwapBuffer(gFrameBuffers[0]); wait fb0; osViBlack(0)` |
+| `0x806f38a0-0x806f3904` | **`sys_gfx.c:198`**: `s1 = &0x8079A360` (the frame index), `s0 = 0x8079A330` (gFrameBuffers), `osViSwapBuffer(gFrameBuffers[*s1]); while (osViGetCurrentFramebuffer() != gFrameBuffers[*s1]) {}` |
+| `0x80710b48` | the EK's fault handler (`Fault_SetFrameBuffer`) |
+
+Two corrections to earlier rounds:
+* the frame index really is **0x8079A360** (the decomp's `D_800DCD00` name maps
+  elsewhere in this build);
+* `0x0001000100010001` is **not** uninitialised RDRAM — it is
+  `func_806F33D0` (`0x806f33d0`), the EK's own framebuffer clear
+  (`*var_v1-- = 0x0001000100010001` in `sys_main.c`, `for (i=0;i<3;i++)`), which
+  is exactly why `0x80000400` (gFrameBuffer3) is full of it.
+
+At the round-9 stall: index `0x8079A360 = 1` (wants `0x80200000`) while
+`__osViCurr->framep == __osViNext->framep == 0x801d9800`. Since
+`__osViSwapContext` restores exactly that invariant
+(`__osViNext = __osViCurr; __osViCurr = vc; *__osViNext = *__osViCurr;`), the
+last *completed* swap was for `gFrameBuffers[0]` — i.e. something swapped back
+to fb0 after the `osViSwapBuffer(gFrameBuffers[1])`, so the two waits fight.
+The next step is to instrument `osViSwapBuffer`/`__osViSwapContext`
+(DD-gated: log guest pc, the requested framep and the resulting
+`__osViCurr->framep`) and see which thread wins.
