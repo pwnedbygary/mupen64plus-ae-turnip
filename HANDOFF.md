@@ -2097,7 +2097,17 @@ yet a visible one -- and the frame protocol is still unfixed (`raise_bits DP=0`,
 `dp_seen=0`, and the last 16 kicks read `start=cur=end=0x00010000`).
 `wd_spkill.txt` is absent because IMEM is never poisoned any more.
 
-### 8. Next (round 20)
+### 8. Plain-game rule (user, 2026-09-05): re-checked clean
+
+The whole round-19 change set is inside runtime DD gates -- the wrap branch in
+`rsp_dma_read` keys off `rsp_ares_budget_enabled()` (the runtime
+`IsDDPresent()` callback), every new latch is inside `if (g_dev.dd.idisk !=
+NULL)`, and the first-kick ring only fills on the DD path.  Mario Tennis (USA)
+re-run with the r19d build: renders (YAVG 39.3 on an animated menu frame,
+maxluma 224), **no** `wd_stall.txt` (the same absent-file result as round 18)
+and an unchanged 22-byte `wd_smc.txt`.  Evidence `.fzxwork/r19plain/`.
+
+### 9. Next (round 20)
 
 1. `wd_wrap.txt` answered the SP-memory question (see 7).  The whole-8-KiB
    `wd_spkill.txt` dump stays armed for the next regression.
