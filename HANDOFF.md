@@ -72,7 +72,52 @@ point in the run -- this is not a late degradation but the state from the first 
 DD loading screen the RP6 shows is drawn by the guest CPU, not by the RDP; `wd_c_rdp_empty`
 was 2033/2537 at 50 s and 1524/1902 at 12 s).
 
-Next round's first move: the ucode's kick code publishes `s6..s7` (the converted commands
+**5. THE UCODE'S PROTOCOL IS NOW READ FROM ITS DOCUMENTED SOURCE, NOT INFERRED.**
+`github.com/Mr-Wiseguy/f3dex2` (CC0, "matching and mostly documented disassemblies of the
+F3DEX2/F3DZEX2 family") is the same microcode this ROM runs. It confirms every decode above and
+resolves the DMA macro: `dma_read_write` is
+
+    mtc0    dmemAddr, SP_MEM_ADDR
+    bltz    dmemAddr, dma_write
+     mtc0   cmd_w1_dram, SP_DRAM_ADDR   <- DELAY SLOT: executes on BOTH paths
+    jr $ra
+     mtc0   dmaLen, SP_RD_LEN
+ dma_write:
+    jr $ra
+     mtc0   dmaLen, SP_WR_LEN
+
+(round 20 first read 0xFEC/SP_DRAM_ADDR as write-branch-skipped; it is the delay slot of
+`bltz`, so the publish DOES set the DRAM address to `rdpFifoPos`). Its ring protocol:
+DMEM 0xF0 = `rdpFifoPos` = the RDP fifo position; two 0x158-byte DMEM command buffers at 0xBA8
+and 0xDB0 (`rdpCmdBuffer1/2`); `check_rdp_buffer_full_and_run_next_cmd` accumulates into them and
+`flush_rdp_buffer` does, in order: `mtc0 cmd_w1_dram(rdpFifoPos), DPC_END` (the kick), the
+wrap/`DPC_START = OSTask.outbuff` handling, a **back-pressure wait on DPC_CURRENT**
+(`f3dzex_000012A8`: spin while `0 < DPC_CURRENT - rdpFifoPos <= dmaLen`), then
+`sw rdpFifoPos+dmaLen, 0xF0` and the DMEM->RDRAM publish. So the whole protocol is built on
+**DPC_CURRENT advancing**.
+
+**6. THE RDP IS SILENTLY DROPPING THE WINDOWS.** `vk_process_commands`
+(`mupen64plus-video-parallel/upstream/parallel_imp.cpp:148`) finishes a call by setting
+`DPC_START = DPC_CURRENT = DPC_END`, but returns early -- leaving the pointers untouched -- in
+three cases: `length <= 0`, the `0x8000`-command capacity guard
+(`(cmd_ptr + length) & ~(0x0003FFFF >> 3)`), and `DP_END > 0x7ffffff || DP_CURRENT > 0x7ffffff`.
+New DD-gated detector in the core's `rsp_process_rdp_list` wrapper compares
+`DPC_CURRENT` against the masked `DPC_END` after every kick (`wd_c_rdp_noadv` / `wd_c_rdp_bad`,
+printed in `wd_stall.txt` as `RDPDP ... noadv= bad=`). Measured (`.fzxwork/r20i`, 20 s):
+**RDPKICK n=3170, noadv=3030, bad=2160, empty=2540, dp_seen=0, DP=0** -- i.e. 96% of the kicks
+hand parallel-RDP a window it refuses and never hands back, so the ucode's `DPC_CURRENT`
+handshake can never complete, the publish never runs, the ring stays empty, no FULL_SYNC ever
+reaches the RDP and `MI_INTR_DP` is never raised. That is the deadlock, measured end to end.
+
+Concrete next step (round 21): make the RDP's early returns hardware-faithful -- a real RDP
+consumes whatever window it is given and leaves `DPC_CURRENT == DPC_END` -- i.e. advance the
+pointers (and drop the buffered commands) instead of returning silently, then re-measure
+`noadv`, the ring content, `dp_seen` and the loading bar. This is a *video plugin* change, so
+the DD gate must be a runtime one (the plugin has no `g_dev`): gate it on the game (e.g. an
+explicit flag passed at RomOpen, or the presence of the DD file flag), and re-verify plain
+carts (Mario Tennis, cart-hack with support64dd=false) before keeping it.
+
+Previous round-20 note, superseded in part by (5): the ucode's kick code publishes `s6..s7` (the converted commands
 assembled in DMEM) to `DMEM[0xF0]`, and one write transfer should follow each kick -- but of
 2950 writes only 16 land in `[output_buff, output_buff_end)`. Latch the first eight writes whose
 destination is *near* `DMEM[0xF0]` (within +/-0x1000) together with the pc and the DMA length,

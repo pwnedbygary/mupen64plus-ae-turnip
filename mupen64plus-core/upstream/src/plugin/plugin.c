@@ -561,6 +561,7 @@ static void rsp_process_rdp_list(void)
         extern volatile uint32_t wd_c_rdp_kick;
         extern uint32_t wd_rdp_last_start, wd_rdp_last_end, wd_rdp_last_mi, wd_rdp_last_sp;
         extern volatile uint32_t wd_c_rdp_dp_seen, wd_c_rdp_dp_hot, wd_c_rdp_empty;
+        extern volatile uint32_t wd_c_rdp_noadv, wd_c_rdp_bad;
         extern volatile uint32_t wd_rdp_ring_n;
         extern uint32_t wd_rdp_ring[16][6];
         uint32_t mi_before = g_dev.mi.regs[MI_INTR_REG];
@@ -582,6 +583,39 @@ static void rsp_process_rdp_list(void)
             wd_c_rdp_empty++;
         if (mi_before & MI_INTR_DP)
             wd_c_rdp_dp_hot++;
+        /* ROUND 20/21: DID THE RDP ACTUALLY TAKE THE WINDOW IT WAS HANDED?
+           parallel-RDP (vk_process_commands) always finishes a call by setting
+           DPC_START = DPC_CURRENT = DPC_END -- except on three silent early
+           returns (length <= 0, the 0x8000-command capacity guard, and
+           DP_END/DP_CURRENT above 0x7ffffff), which leave CURRENT behind.  The
+           FIFO ucode's flush loop is built on that pointer advancing: after
+           `mtc0 rdpFifoPos, DPC_END` it spins on DPC_CURRENT to know when the
+           ring space is free again, and only then publishes the next 344-byte
+           DMEM command block (`sw $11, rdpFifoPos` / dma_write).  A silently
+           dropped window therefore hangs the ucode with the ring byte-forever
+           empty -- exactly the observed state (ring all zeros, MI_INTR_DP
+           never raised).  DD-gated; the wrapped call is untouched. */
+        {
+            uint32_t end_m = end & 0x00FFFFF8u;
+            if ((g_dev.dp.dpc_regs[DPC_CURRENT_REG] & 0x00FFFFF8u) != end_m)
+                wd_c_rdp_noadv++;
+            if (end_m == 0 || (end & 0x00800000u) || (cur & 0x00800000u))
+            {
+                wd_c_rdp_bad++;
+                if (wd_c_rdp_bad <= 4)
+                {
+                    static FILE* bf = NULL;
+                    if (!bf) bf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_rdpbad.txt", "a");
+                    if (bf)
+                    {
+                        fprintf(bf, "RDPBAD n=%u cur=%08x end=%08x start=%08x sp=%08x mi=%08x\n",
+                            wd_c_rdp_bad, cur, end, g_dev.dp.dpc_regs[DPC_START_REG],
+                            g_dev.sp.regs[SP_STATUS_REG], mi_before);
+                        fflush(bf);
+                    }
+                }
+            }
+        }
         gfx.processRDPList();
         {
             uint32_t mi_after = g_dev.mi.regs[MI_INTR_REG];

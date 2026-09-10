@@ -445,8 +445,12 @@ static void r20_dma_note(RSP::CPUState* rsp, uint32_t dst, uint32_t src, uint32_
    task's yield_data_ptr.  This is the ONLY coherent suspension. */
 static unsigned r20_wr_n = 0, r20_wr_out = 0, r20_wr_dl = 0, r20_wr_first_n = 0;
 static uint32_t r20_wr_first[8][4];
+static unsigned r20_wr_pub_n = 0, r20_wr_pub_ring = 0, r20_wr_pub_stale = 0, r20_wr_pub_latch = 0;
+static uint32_t r20_pub_first[4][6];
 
-static void r20_dma_save_note(RSP::CPUState* rsp, uint32_t dram_dst, uint32_t len)
+static uint32_t r20_last_read_dram = 0;
+extern "C" void r20_read_note(uint32_t dram_src) { r20_last_read_dram = dram_src & 0x7ffffcu; }
+static void r20_dma_save_note(RSP::CPUState* rsp, uint32_t dram_dst, uint32_t len, uint32_t rsp_mem_src)
 {
 	uint32_t yptr;
 	if (!rsp_ares_budget_enabled())
@@ -459,16 +463,41 @@ static void r20_dma_save_note(RSP::CPUState* rsp, uint32_t dram_dst, uint32_t le
 	   (in-place conversion), or anywhere else. */
 	r20_wr_n++;
 	{
-		uint32_t ob = rsp->dmem[0xfe8 / 4], osz = rsp->dmem[0xfec / 4];
+		/* The header's output_buff / output_buff_size are an address PAIR
+		   (0x2D9CD0 .. 0x32DCD0), not a base+size -- both are absolute. */
+		uint32_t ob = rsp->dmem[0xfe8 / 4], oe = rsp->dmem[0xfec / 4];
 		uint32_t dl = rsp->dmem[0xff0 / 4];
-		if (ob && dram_dst >= ob && dram_dst < ob + osz)
+		if (ob && oe > ob && dram_dst >= ob && dram_dst < oe)
 			r20_wr_out++;
-		else if (dl && dram_dst >= dl && dram_dst < dl + 0x40000u)
+		else if (dl)
 			r20_wr_dl++;
 		if (r20_wr_first_n < 8)
 		{
 			uint32_t* e = r20_wr_first[r20_wr_first_n++];
 			e[0] = rsp->pc & 0xfff; e[1] = dram_dst; e[2] = len; e[3] = rsp->dmem[0xbf8 / 4];
+		}
+		/* THE PUBLISH.  The kick code (text PC 0x250-0x2CC) accumulates the
+		   converted RDP command stream in the two 344-byte DMEM buffers at
+		   0xBA8 and 0xDB0 (s6/s7, flipped by `xori s6,s6,0x208`), then calls
+		   the DMA macro with s4 = s6-0x2158 (< 0 -> the WRITE branch, whose
+		   source masks to 0xBA8).  Note the macro's write branch does NOT
+		   write SP_DRAM_ADDR -- it jumps from `bltz s4` straight to
+		   SP_WR_LEN -- so the destination is whatever SP_DRAM_ADDR already
+		   holds.  Record where those transfers actually land and whether that
+		   is the ring the DPC kick points at. */
+		if ((rsp_mem_src & 0xfffu) == 0xba8u || (rsp_mem_src & 0xfffu) == 0xdb0u)
+		{
+			r20_wr_pub_n++;
+			if (ob && oe > ob && dram_dst >= ob && dram_dst < oe)
+				r20_wr_pub_ring++;
+			if (dram_dst == r20_last_read_dram)
+				r20_wr_pub_stale++;
+			if (r20_wr_pub_latch < 4)
+			{
+				uint32_t* e = r20_pub_first[r20_wr_pub_latch++];
+				e[0] = rsp->pc & 0xfff; e[1] = dram_dst; e[2] = len;
+				e[3] = rsp->dmem[0xf0 / 4]; e[4] = rsp->dmem[0xfec / 4]; e[5] = rsp_mem_src & 0xfffu;
+			}
 		}
 	}
 	yptr = rsp->dmem[0xff8 / 4];
@@ -494,6 +523,11 @@ extern "C" unsigned r20_first_dma_n(void) { return r20_first_n; }
 extern "C" unsigned r20_wr_total(void)   { return r20_wr_n; }
 extern "C" unsigned r20_wr_outbuf(void)  { return r20_wr_out; }
 extern "C" unsigned r20_wr_datalist(void){ return r20_wr_dl; }
+extern "C" unsigned r20_pub_n(void)      { return r20_wr_pub_n; }
+extern "C" unsigned r20_pub_ring(void)   { return r20_wr_pub_ring; }
+extern "C" unsigned r20_pub_stale(void)  { return r20_wr_pub_stale; }
+extern "C" unsigned r20_pub_latch_n(void) { return r20_wr_pub_latch; }
+extern "C" const uint32_t* r20_pub_latch(void) { return &r20_pub_first[0][0]; }
 extern "C" unsigned r20_wr_latch_n(void) { return r20_wr_first_n; }
 extern "C" const uint32_t* r20_wr_latch(void) { return &r20_wr_first[0][0]; }
 
@@ -861,6 +895,7 @@ extern "C"
 		r14_record(rsp, 2, dest, source, length, count, skip);
 		r19_imem_note(rsp, dest, source, length);
 		r20_dma_note(rsp, dest, source, length);
+		r20_read_note(source);
 		/* ROUND 19: would the STOCK mask have walked this transfer out of its
 		   own bank?  (DMEM->IMEM or IMEM->DMEM).  DD-gated, latch only. */
 		if (rsp_ares_budget_enabled())
@@ -962,7 +997,7 @@ extern "C"
 
 		r12_record(rsp, 1, dest, source, length, count, skip);
 		r14_record(rsp, 1, dest, source, length, count, skip);
-		r20_dma_save_note(rsp, dest, length);
+		r20_dma_save_note(rsp, dest, length, source);
 
 		/* ROUND-18: refuse the transfer if the ucode's DMA address register
 		   has left RDRAM (runaway walk -- see r14_wild_check).  This is the

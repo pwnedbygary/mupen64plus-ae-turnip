@@ -99,6 +99,7 @@ uint32_t wd_rdp_last_start = 0, wd_rdp_last_end = 0, wd_rdp_last_mi = 0, wd_rdp_
    wd_rdp_ring records (start, current, end, status, mi_before, mi_after) of
    the last 16 kicks so the whole conversation is visible in one dump. */
 volatile uint32_t wd_c_rdp_dp_seen = 0, wd_c_rdp_dp_hot = 0, wd_c_rdp_empty = 0;
+volatile uint32_t wd_c_rdp_noadv = 0, wd_c_rdp_bad = 0;
 volatile uint32_t wd_rdp_ring_n = 0;
 uint32_t wd_rdp_ring[16][6];
 /* ROUND 19: the first 16 kicks, so the watchdog can answer "was the RDP ever

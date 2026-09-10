@@ -1511,8 +1511,10 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
             extern volatile uint32_t wd_rdp_ring_n;
             extern uint32_t wd_rdp_ring[16][6];
             uint32_t k, n = wd_rdp_ring_n < 16 ? wd_rdp_ring_n : 16;
-            fprintf(f, "%s RDPDP dp_seen=%u dp_hot=%u empty=%u ring_n=%u\n",
-                tag, wd_c_rdp_dp_seen, wd_c_rdp_dp_hot, wd_c_rdp_empty, wd_rdp_ring_n);
+            extern volatile uint32_t wd_c_rdp_noadv, wd_c_rdp_bad;
+            fprintf(f, "%s RDPDP dp_seen=%u dp_hot=%u empty=%u ring_n=%u noadv=%u bad=%u\n",
+                tag, wd_c_rdp_dp_seen, wd_c_rdp_dp_hot, wd_c_rdp_empty, wd_rdp_ring_n,
+                wd_c_rdp_noadv, wd_c_rdp_bad);
             for (k = 0; k < n; k++)
             {
                 uint32_t* e = wd_rdp_ring[(wd_rdp_ring_n - n + k) & 15];

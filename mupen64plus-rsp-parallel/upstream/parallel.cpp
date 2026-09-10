@@ -155,6 +155,9 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 			extern unsigned r20_wr_total(void), r20_wr_outbuf(void), r20_wr_datalist(void);
 			extern unsigned r20_wr_latch_n(void);
 			extern const uint32_t* r20_wr_latch(void);
+			extern unsigned r20_pub_n(void), r20_pub_ring(void), r20_pub_stale(void);
+			extern unsigned r20_pub_latch_n(void);
+			extern const uint32_t* r20_pub_latch(void);
 			extern uint32_t r20_saved_k0(void), r20_saved_ptr(void);
 			unsigned k, m;
 			FILE* f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r20.txt", "w");
@@ -174,6 +177,15 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 				}
 				fprintf(f, "R20W wr=%u outbuf=%u datalist=%u\n",
 				        r20_wr_total(), r20_wr_outbuf(), r20_wr_datalist());
+				fprintf(f, "R20P pub=%u ring=%u stale=%u\n",
+				        r20_pub_n(), r20_pub_ring(), r20_pub_stale());
+				m = r20_pub_latch_n();
+				for (k = 0; k < m && k < 4; k++)
+				{
+					const uint32_t* e = r20_pub_latch() + k * 6;
+					fprintf(f, "R20P%u pc=%03x dst=%06x len=%05x ring0_f0=%06x ringend=%06x memsrc=%05x\n",
+					        k, e[0], e[1], e[2], e[3], e[4], e[5]);
+				}
 				m = r20_wr_latch_n();
 				for (k = 0; k < m && k < 8; k++)
 				{
