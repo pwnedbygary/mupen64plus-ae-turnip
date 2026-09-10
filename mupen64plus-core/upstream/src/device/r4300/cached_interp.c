@@ -1469,6 +1469,17 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
         fprintf(f, "%s imem_bad=%u word=%08x %08x %08x %08x fc0=%08x pc=%08x status=%08x count=%08x dmas=%u\n",
             tag, wd_imem_bad, wd_imem_bad_word[0], wd_imem_bad_word[1],            wd_imem_bad_word[2], wd_imem_bad_word[3], wd_imem_bad_fc0,
             wd_imem_bad_pc, wd_imem_bad_status, wd_imem_bad_count, wd_imem_bad_spdma);
+        /* ROUND 19: which path wrote the fill pattern into IMEM (1 = CPU
+           direct SP-memory write, 2 = CPU-side SP DMA, 3 = RSP-side DMA,
+           5 = only ever seen by the pump), and with which parameters. */
+        {
+            extern volatile uint32_t wd_imem_kill_path;
+            extern uint32_t wd_imem_kill_a, wd_imem_kill_b, wd_imem_kill_c, wd_imem_kill_d;
+            extern uint32_t wd_imem_kill_pc, wd_imem_kill_count, wd_imem_kill_spdma;
+            fprintf(f, "%s IMEMKILL path=%u a=%08x b=%08x c=%08x d=%08x pc=%08x count=%08x dmas=%u\n",
+                tag, wd_imem_kill_path, wd_imem_kill_a, wd_imem_kill_b, wd_imem_kill_c,
+                wd_imem_kill_d, wd_imem_kill_pc, wd_imem_kill_count, wd_imem_kill_spdma);
+        }
     }
     /* ROUND 13: the frame protocol.  A task-load is classified by the type word
        in the OSTask the guest DMAd into DMEM 0xFC0 (1=gfx, 2=audio); the RDP
@@ -1507,6 +1518,18 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
                 uint32_t* e = wd_rdp_ring[(wd_rdp_ring_n - n + k) & 15];
                 fprintf(f, "%s RDPR %u start=%08x cur=%08x end=%08x st=%08x mib=%08x mia=%08x\n",
                     tag, k, e[0], e[1], e[2], e[3], e[4], e[5]);
+            }
+            /* ROUND 19: the first 16 kicks, in order. */
+            {
+                extern volatile uint32_t wd_rdp_first_n;
+                extern uint32_t wd_rdp_first[16][6];
+                uint32_t m = wd_rdp_first_n < 16 ? wd_rdp_first_n : 16;
+                for (k = 0; k < m; k++)
+                {
+                    uint32_t* e = wd_rdp_first[k];
+                    fprintf(f, "%s RDPF %u start=%08x cur=%08x end=%08x st=%08x mib=%08x mia=%08x\n",
+                        tag, k, e[0], e[1], e[2], e[3], e[4], e[5]);
+                }
             }
         }
         {

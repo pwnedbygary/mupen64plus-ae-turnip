@@ -218,6 +218,118 @@ static void r15_bad_dump(RSP::CPUState* rsp, uint32_t src, uint32_t dst, uint32_
 	fclose(f);
 }
 
+/* ---------------------------------------------------------------------------
+   ROUND 19: the two "firsts" that decide the 64DD route's frame protocol.
+
+   Round 18 named the run-killer (a runaway display-list walk) but not what
+   starts it.  Two measurements pin the origin down, both cheap and both DD
+   gated:
+
+   (1) WHO WRITES IMEM.  The watchdog reports IMEM[0..3] as the game's
+       cleared-buffer fill 0x00010001 (the ucode's program is gone) while the
+       DMA trace shows NO core-side (CPU) SP DMA into IMEM late in the run, so
+       the writer is the RSP side.  Every transfer with bit 12 of SP_MEM_ADDR
+       set writes IMEM; they are rare (whole-ucode loads only), so a small RAM
+       ring is affordable and the first eight are flushed once.
+
+   (2) WHETHER THE RDP EVER GOT A REAL LIST.  parallel-RDP raises MI_INTR_DP
+       only for RDP::Op::SyncFull inside DPC_CURRENT..DPC_END, and the DD
+       route's DPC_START reads 0xFFFFFFF8 -- with CURRENT=0xFFFFFFF8 >
+       END=0x13C0 every kick is discarded before a single command is looked at,
+       so the guest's DP_WAIT gfx task can never complete.  Latch the first
+       CMD_START/CMD_END writes (what the ucode actually programmed) together
+       with the DMEM the ucode computed them from. */
+/* Would the stock `& 0x1FFC` mask have carried this transfer across the
+   4 KiB bank boundary (i.e. into the other bank, destroying it)?  Counts once
+   for DMEM->IMEM and once for IMEM->DMEM, with the first occurrence on
+   record; DD-gated and RAM-only apart from that single latch. */
+static unsigned r19_wrap_d2i_n = 0, r19_wrap_i2d_n = 0;
+static uint32_t r19_wrap_first[8] = {0,0,0,0,0,0,0,0};
+extern "C" void r19_bankwrap_note(uint32_t dst, uint32_t length, unsigned count, uint32_t skip, uint32_t pc)
+{
+	uint32_t end = (dst & 0xFFFu) + (uint32_t)(count + 1u) * length;
+	if (end <= 0x1000u)
+		return;
+	if (dst & 0x1000u)
+	{
+		r19_wrap_i2d_n++;
+		if (r19_wrap_i2d_n != 1) return;
+	}
+	else
+	{
+		r19_wrap_d2i_n++;
+		if (r19_wrap_d2i_n != 1) return;
+	}
+	r19_wrap_first[0] = dst; r19_wrap_first[1] = length; r19_wrap_first[2] = count;
+	r19_wrap_first[3] = skip; r19_wrap_first[4] = pc; r19_wrap_first[5] = end;
+	{
+		FILE* f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_wrap.txt", "a");
+		if (f)
+		{
+			fprintf(f, "R19WRAP %s dst=%04x len=%04x cnt=%u skip=%u end=%05x pc=%03x\n",
+			        (dst & 0x1000u) ? "IMEM->DMEM" : "DMEM->IMEM",
+			        dst, length, count, skip, end, pc);
+			fclose(f);
+		}
+	}
+}
+extern "C" unsigned r19_bankwrap_d2i(void) { return r19_wrap_d2i_n; }
+extern "C" unsigned r19_bankwrap_i2d(void) { return r19_wrap_i2d_n; }
+extern "C" const uint32_t* r19_bankwrap_first(void) { return r19_wrap_first; }
+
+static unsigned r19_imem_n = 0;
+static void r19_imem_note(RSP::CPUState* rsp, uint32_t dst, uint32_t src, uint32_t len)
+{
+	FILE* f;
+	if (!(dst & 0x1000))
+		return;
+	if (r19_imem_n >= 8 || !rsp_ares_budget_enabled())
+		return;
+	f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_imem.txt",
+	          r19_imem_n ? "a" : "w");
+	r19_imem_n++;
+	if (f == NULL)
+		return;
+	fprintf(f, "R19IMEM n=%u pc=%03x dst=%04x src=%06x len=%04x status=%08x "
+	           "imem0=%08x %08x fc0=%08x f0=%08x ff0=%08x bf8=%08x "
+	           "dmemfe0=%08x %08x %08x %08x %08x\n",
+	        r19_imem_n, rsp->pc & 0xfff, dst, src, len,
+	        *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS],
+	        rsp->imem[0], rsp->imem[1],
+	        rsp->dmem[0xfc0 / 4], rsp->dmem[0x0f0 / 4], rsp->dmem[0xff0 / 4], rsp->dmem[0xbf8 / 4],
+	        rsp->dmem[0x2e0 / 4], rsp->dmem[0x2e4 / 4], rsp->dmem[0x2e8 / 4],
+	        rsp->dmem[0xfdc / 4], rsp->dmem[0xfe0 / 4]);
+	fclose(f);
+}
+
+/* The first CMD_START/CMD_END the ucode programmes.  CMD_START is the one that
+   matters: the plugin sets START=CURRENT=END from it, so a garbage START makes
+   every later kick an empty window. */
+static unsigned r19_cmd_n = 0;
+static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
+{
+	FILE* f;
+	if (r19_cmd_n >= 16)
+		return 0;
+	f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_cmd.txt",
+	          r19_cmd_n ? "a" : "w");
+	r19_cmd_n++;
+	if (f == NULL)
+		return 0;
+	fprintf(f, "R19CMD n=%u %s val=%08x pc=%03x status=%08x imem0=%08x "
+	           "fc0=%08x f0=%08x ff0=%08x bf8=%08x "
+	           "dstk=%08x outbuf=%08x outend=%08x data=%08x datasz=%08x desc=%08x %08x\n",
+	        r19_cmd_n, what, val, rsp->pc & 0xfff,
+	        *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS],
+	        rsp->imem[0],
+	        rsp->dmem[0xfc0 / 4], rsp->dmem[0x0f0 / 4], rsp->dmem[0xff0 / 4], rsp->dmem[0xbf8 / 4],
+	        rsp->dmem[0xfe4 / 4], rsp->dmem[0xfe8 / 4], rsp->dmem[0xfec / 4],
+	        rsp->dmem[0xff0 / 4], rsp->dmem[0xff4 / 4],
+	        rsp->dmem[0x2e0 / 4], rsp->dmem[0x2e4 / 4]);
+	fclose(f);
+	return 1;
+}
+
 #endif
 
 using namespace RSP;
@@ -530,6 +642,14 @@ extern "C"
 
 		r12_record(rsp, 2, dest, source, length, count, skip);
 		r14_record(rsp, 2, dest, source, length, count, skip);
+		r19_imem_note(rsp, dest, source, length);
+		/* ROUND 19: would the STOCK mask have walked this transfer out of its
+		   own bank?  (DMEM->IMEM or IMEM->DMEM).  DD-gated, latch only. */
+		if (rsp_ares_budget_enabled())
+		{
+			extern void r19_bankwrap_note(uint32_t dst, uint32_t length, unsigned count, uint32_t skip, uint32_t pc);
+			r19_bankwrap_note(dest, length, count, skip, rsp->pc & 0xfff);
+		}
 
 		/* ROUND-18: refuse the transfer if the ucode's DMA address register
 		   has left RDRAM (runaway walk -- see r14_wild_check). */
@@ -547,12 +667,32 @@ extern "C"
 #endif
 
 		do
+		/* ROUND 19 (64DD route only): WRAP INSIDE THE SELECTED 4 KiB BANK.
+
+		   `dest & 0x1FFC` (the stock mask) lets a transfer that starts in one
+		   4 KiB bank walk straight into the other one: a DMEM-destined read
+		   whose length carries it past 0x1000 keeps going into IMEM and
+		   destroys the RSP's program -- measured this round, it is exactly how
+		   the machine dies (see the round-19 note above r19_imem_note).
+
+		   Real hardware, and this core's own CPU-side SP DMA on the DD route
+		   (`do_sp_dma`'s ROUND-7 `memaddr & 0xfff`), wrap within the bank
+		   selected by bit 12 of SP_MEM_ADDR.  The DD route's whole-ucode load
+		   (SP_MEM_ADDR=0x1080, RD_LEN=0xF7F: 4096 bytes into IMEM starting at
+		   0x080) ends exactly on the bank boundary, so bank-limited wrapping
+		   reproduces it byte for byte while stopping a stray length from
+		   crossing banks.  Plain carts keep the stock mask (user rule
+		   2026-09-05). */
 		{
 			unsigned j = 0;
+			const uint32_t wd_bank_limited = rsp_ares_budget_enabled() ? 1u : 0u;
+			const uint32_t wd_dbank = dest & 0x1000u;
 			do
 			{
 				uint32_t source_addr = (source + j) & 0x7FFFFC;
-				uint32_t dest_addr = (dest + j) & 0x1FFC;
+				uint32_t dest_addr = wd_bank_limited
+				                   ? (wd_dbank | ((dest + j) & 0xFFCu))
+				                   : ((dest + j) & 0x1FFCu);
 				uint32_t word = rsp->rdram[source_addr >> 2];
 
 				if (dest_addr & 0x1000)
@@ -689,6 +829,9 @@ extern "C"
 #endif
 			*rsp->cp0.cr[CP0_REGISTER_CMD_START] = *rsp->cp0.cr[CP0_REGISTER_CMD_CURRENT] =
 			    *rsp->cp0.cr[CP0_REGISTER_CMD_END] = val & 0xfffffff8u;
+#ifdef PARALLEL_INTEGRATION
+			r19_cmd_latch(rsp, "START", val & 0xfffffff8u);
+#endif
 			break;
 
 		case CP0_REGISTER_CMD_END:
@@ -698,6 +841,7 @@ extern "C"
 			*rsp->cp0.cr[CP0_REGISTER_CMD_END] = val & 0xfffffff8u;
 
 #ifdef PARALLEL_INTEGRATION
+			r19_cmd_latch(rsp, "END", val & 0xfffffff8u);
 			RSP::rsp.ProcessRdpList();
 #endif
 			break;

@@ -564,6 +564,13 @@ static void rsp_process_rdp_list(void)
         extern volatile uint32_t wd_rdp_ring_n;
         extern uint32_t wd_rdp_ring[16][6];
         uint32_t mi_before = g_dev.mi.regs[MI_INTR_REG];
+        /* ROUND 19: the LAST 16 kicks are printed by the watchdog, but the
+           interesting question is whether the RDP was EVER handed a real list:
+           by 50 s all 16 ring slots read start=cur=0xfffffff8 with end climbing
+           in the low page, i.e. every kick is discarded before a command is
+           examined and MI_INTR_DP can never be raised.  Keep the FIRST 16 too. */
+        extern volatile uint32_t wd_rdp_first_n;
+        extern uint32_t wd_rdp_first[16][6];
         uint32_t cur = g_dev.dp.dpc_regs[DPC_CURRENT_REG];
         uint32_t end = g_dev.dp.dpc_regs[DPC_END_REG];
         wd_c_rdp_kick++;
@@ -588,6 +595,13 @@ static void rsp_process_rdp_list(void)
             e[4] = mi_before;
             e[5] = mi_after;
             wd_rdp_ring_n++;
+            if (wd_rdp_first_n < 16)
+            {
+                uint32_t* q = wd_rdp_first[wd_rdp_first_n];
+                q[0] = wd_rdp_last_start; q[1] = cur; q[2] = end;
+                q[3] = e[3]; q[4] = mi_before; q[5] = mi_after;
+                wd_rdp_first_n++;
+            }
         }
         return;
     }

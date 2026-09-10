@@ -1916,3 +1916,195 @@ pumps is not, so counters can drift by a few units between runs (1643 vs 1644
 `c_task`, 607 vs 607 `RDPKICK`) -- treat runs as comparable, not bit-identical.
 The frame protocol (goal 3) is unchanged: `MI_INTR_DP` still never survives to
 the core's DD-gated conversion (`wd_c_dp_consumed` 0, `raise_bits DP=0`).
+
+## UPDATE 2026-09-10 (goal round 19) — the k0 that walks an empty buffer, and a build trap that invalidated two runs
+
+### 1. Instruments added this round (all DD-gated; RAM-only apart from first-time latches)
+
+* `rsp/cp0.cpp` `r19_imem_note` -- the first 8 **RSP-side DMA reads whose
+  destination is in the IMEM bank** (`dst & 0x1000`), with pc/dst/src/len and
+  the DMEM header words.  This is the instrument that answers "who loads IMEM".
+* `rsp/cp0.cpp` `r19_cmd_latch` -- the first 16 `mtc0 CMD_START` / `CMD_END`
+  writes, with the value the ucode programmed and the DMEM header fields it
+  computed it from (`output_buff`, `output_buff_size`, `data_ptr`,
+  `data_size`, the descriptor at 0x2E0).
+* `rsp/cp0.cpp` `r19_bankwrap_note` -- counts transfers whose *stock*
+  `& 0x1FFC` destination mask would carry them across the 4 KiB bank boundary
+  (DMEM->IMEM / IMEM->DMEM), first of each direction on record; plus a
+  DD-gated bank-limited wrap in `rsp_dma_read` (`dest & 0x1000 | (dest+j) &
+  0xFFC`), which is what real hardware and this core's own `do_sp_dma`
+  (ROUND-7 fix) already do.
+* `plugin.c` + `rsp_core.c` -- a **first-16 RDP kick ring** (`RDPF` lines) next
+  to the round-17 last-16 ring, so the two ends of the run can be compared.
+* `rsp_core.c` `wd_imem_probe()` -- latches the *first* operation that leaves
+  `IMEM[0..1] == 0x00010001` **with the path that did it** (1 = CPU direct
+  SP-memory write, 2 = CPU-side SP DMA, 5 = only ever seen by the pump), plus
+  its parameters and the CP0 count.
+* **Fixed a structurally dead counter**: `wd_cpuw`'s IMEM test compared a
+  *word index* against 0x1000, so `wd_cpuw_imem_n` read 0 in every run of every
+  round since round 11.  The IMEM bank is word index 0x400+.  Corrected, the
+  real number is **2319 direct CPU writes into the IMEM bank per run** (first at
+  address 0x04001FD8, 47 of them carrying a fill value, first at 0x04001FDC).
+
+### 2. Measured: the gfx task's whole preamble is *correct*
+
+From the RSP-side DMA trace (`.fzxwork/r19a/dmatr_head.txt`, 40 492 transfers
+of the first 6 MB -- the file grows to tens of GB, never pull it whole):
+
+```
+D7324 RD dst=0000 src=779860 len=0800   fc0=00000001 ff0=00284990 fc4=00000004   ucode_data -> DMEM 0
+D7325 RD dst=1080 src=7505c0 len=0f80   f0=00000000                            text      -> IMEM 0x080
+D7326 RD dst=1000 src=7515d8 len=0170   f0=0032dcd0                            overlay   -> IMEM 0x000
+D7327 RD dst=0920 src=2c03c0 len=00a8   <-- the FIRST display-list fetch, from the WRONG address
+```
+
+The guest's OSTask is intact (`type=1 flags=0x4 OS_TASK_LOADABLE`,
+`ucode 0x7505c0`, `ucode_data 0x779860`, `data_ptr 0x284990` = a real
+three-command list `gSPSegment(0,0) / gDPFullSync / gDPEndDisplayList`), the
+task-header DMA into DMEM 0xFC0 comes from the same static struct as every
+audio task (`RDRAM 0x7C1C00`, `wd_hdr.txt`), and the CPU-side loads are exactly
+the two that `osSpTaskLoad` issues.
+
+### 3. The first wrong pointer: k0 = 0x2C03C0 instead of data_ptr = 0x284990
+
+`0x284990` never appears as a DMA source anywhere in the run (no
+`src=284990` line in the whole trace): the walk starts at **0x2C03C0** -- all
+zero in RDRAM -- and steps by the 168-byte chunk size.  Zero words are
+`G_NOOP` (opcode 0x00), so the list never ends:
+
+* the FIFO/output pointer climbs (`DMEM[0xF0] = 0x32dcd0, 0x2d9e30, 0x2d9f98,
+  ...`, +8 per fetch),
+* the fetch length register climbs with it (`len=0168, 0170, 0178, ...`, the
+  round-18 `wd_dmatr.txt` pattern),
+* the source walks out of the RDP output buffer into RDRAM and finally past the
+  end of it -- which is the transfer round 18's guard latches
+  (`WILD dir=RD pc=fc4 dram=00fffff8 mem=00000920 len=06d8`),
+* and the machine spends the rest of the run re-walking `0x00010001` fill.
+
+**Corrected decode.** Round 17's "entry logic" (`IMEM 0x098..0x118`) is *text*
+code, but the ucode loads a 368-byte **overlay** from RDRAM 0x7515D8 over
+`IMEM 0x000..0x16F` *before* the walk starts (D7326), so at run time that range
+holds the overlay, not the text.  The main loop is at IMEM 0x170.., which is
+outside the overlay:
+
+```
+0170: addi s3,r0,167      # len-1 = 167 -> 168 bytes per chunk
+0174: ori  t8,k0,0        # DMA source = k0
+0178: jal  0x0FD8         # issue the read DMA
+017C: addiu s4,r0,0x920   #   into DMEM 0x920
+0180: addiu k0,k0,0xA8    # k0 += 168
+0184: addi k1,r0,-0xA8    # buffer cursor
+018C..: per-command dispatch, SIG0 poll -> 0x0FAC = load the overlay + jump to
+        IMEM 0x000;  the overlay's first basic block ends `ori k0,t8,0` ->
+        `j 0x0170`, i.e. the overlay hands the fetch routine whatever t8 held,
+        and t8 is left over from the overlay *loader* (`lw t8,0(t3)` of the
+        descriptor at DMEM 0x2E0 / 0x2E8).
+```
+
+So the initial k0 is whatever the overlay loader's descriptor held -- it must
+be `data_ptr` (DMEM 0xFF0) for a fresh task and the saved pointer for a yielded
+resume, and round 17's `DMEM[0xBF8] = data_ptr` fix-up only fires for
+`flags & OS_TASK_YIELDED` (this task's flags are 0x4 = `OS_TASK_LOADABLE`, so
+it never applies).  **This is the next thing to make right.**
+
+### 4. The frame protocol: DPC is garbage from the very first kick
+
+`RDPF` (first 16 kicks, in order) and `RDPR` (last 16) from the same run:
+
+```
+RDPF 0..1  start=0032dcd0 cur=0032dcd0 end=0032dcd0   <-- empty, and START is
+                                                          the *yield* pointer,
+                                                          not output_buff
+RDPF 2..15 start=002d9cd0 cur=002d9cd0 end=002d9e30 (+0x168, +0x178, ...)
+RDPR *     start=fffffff8 cur=fffffff8 end=00001438   st=00000008
+RDPDP      dp_seen=0 dp_hot=0 empty=482 ring_n=607
+```
+
+The ucode's **first** `mtc0 CMD_START` writes 0x32DCD0 (the task's
+`yield_data_ptr` / `output_buff_size` end pointer) and only the second writes
+`output_buff` 0x2D9CD0; `parallel-RDP` raises `MI_INTR_DP` only for an
+`RDP::Op::SyncFull` inside `CURRENT..END`, and by 50 s `START` is 0xFFFFFFF8
+with `CURRENT > END`, so **every** kick is discarded before a command is looked
+at (`empty=482/607`) and `MI_INTR_DP` is never raised (`raise_bits DP=0`,
+`wd_c_dp_consumed=0`).  The guest's `OS_TASK_DP_WAIT`-less gfx thread blocks in
+`osRecvMesg(&D_800DCAC8)` for exactly that event, so the frame protocol still
+cannot advance.
+
+### 5. What is *not* the cause (measured, negative results)
+
+* The watchdog's IMEM/DMEM poisoning is **not** a cross-bank DMA and **not** a
+  transfer any instrumented writer issues: `IMEMKILL path=5` (the pump sees the
+  fill before any CPU write, CPU SP DMA or RSP DMA does), only **two**
+  IMEM-writing RSP DMAs happen in the entire run (both legitimate, above), and
+  the header DMA always comes from the guest's own OSTask.
+* The poison *content* is a verbatim copy of RDRAM: the poisoned
+  `DMEM 0xFC0..0xFEF` (`def7ffff ffffffff ffffffff ce731085 00010001 x5
+  00014211 ffffffff ffffffff`) is byte-identical to `RDRAM 0x12218..0x12247`
+  (copies of that record also exist at RDRAM 0x1EB618, 0x211E18, 0x76AD3C), and
+  the fill run around it starts at RDRAM 0x11258 -- i.e. **8 KiB of RDRAM were
+  copied into SP memory 0x0000..0x1FFF**, DMEM 0x000 <- RDRAM 0x11258 and
+  IMEM 0x000 <- RDRAM 0x12258.  Which copy, and from which side, is the open
+  question; a snapshot-diff of SP memory between pump calls is the instrument
+  to answer it (the `wd_spkill.txt` dump at slice entry was added this round
+  but never ran -- see below).
+* The RSP JIT (`jit_andi(..., 0xfff)`) and the interpreter (`ls.cpp`, all VU
+  stores `& 0xfff`, all 16-byte stores bounded to `addr & 0xf == 0`) keep every
+  store inside its own 4 KiB bank, so an RSP *store* cannot be the IMEM writer.
+
+### 6. Build trap (important): gradle silently skipped the native rebuild
+
+Two device runs this round (`r19b`, `r19c`) were made with a **stale
+libmupen64plus-rsp-parallel.so**: `:app:assembleDebug` reported success and
+produced a 10:32 APK, but the C++ changes from 10:40 and 10:45 were not in it
+(`strings` on the packaged .so: `R19IMEM`/`R19CMD` present from the 10:32 build,
+`R19WRAP`/`SPKILL` absent).  Both runs are therefore **void** -- in particular
+`wd_wrap.txt` never appearing does *not* yet prove "no transfer crossed banks".
+Fix: `rm -rf mupen64plus-rsp-parallel/build/intermediates/cxx
+mupen64plus-rsp-parallel/.cxx app/build/intermediates/{merged,stripped}_native_libs`
+before the build, and **verify a new marker string is in the packaged .so**
+(`unzip -p app-debug.apk lib/arm64-v8a/libmupen64plus-rsp-parallel.so | strings
+| grep <marker>`) before trusting any device run.  Round 18's and round 17's
+results are unaffected (each of those rounds verified a *new* diagnostic file
+that only the new code writes).
+
+### 7. RESULT (r19d, forced rebuild -- the round's real outcome)
+
+With the native rebuild actually applied (`strings` on the packaged .so now has
+`R19WRAP`, `SPKILL`), the same 50 s run gives:
+
+| @50 s, DD route | r19a (before) | **r19d (bank-limited wrap)** |
+|---|---|---|
+| SP memory | `imem_bad=1`, IMEM 0x000-0x00F **and** DMEM 0xFC0-0xFFF = 0x00010001, `IMEMKILL path=5` | **`imem_bad=0`, `IMEMKILL path=0`** -- intact |
+| `WDWRAP` latch | (instrument absent) | **`DMEM->IMEM dst=0920 len=06e8 cnt=0 skip=0 end=01008 pc=18c`** |
+| gfx task loads (`t1gfx`) | 1 | **6** |
+| `RDPKICK n` | 607 | **2538** |
+| `c_exc` | 18737 | 18789 (no exception storm either way) |
+| screen (`shotstat.py`) | YAVG 5.3, brightest y=572-576(max 45) | identical profile |
+
+The `WDWRAP` line is the exact mechanism, caught in one line: a **read DMA to
+DMEM 0x920 whose length (0x6e8) carries the destination to 0x1008** -- the stock
+`& 0x1FFC` mask kept going past 0x1000 and wrote the last 8 bytes into **IMEM
+0x000**, and with the runaway's ever-growing length register every later
+transfer crossed further.  Round 18 stopped the *RDRAM* wipe; this stops the
+**SP-memory** wipe, and unlike round 18's refusal it is not containment: the
+transfer still happens, it just wraps inside its own 4 KiB bank, which is what
+hardware and this core's CPU-side SP DMA already do.
+
+Measured effect: the RSP keeps its program, the game submits **6 gfx tasks**
+instead of one, and the RDP is kicked 4x as often.  The picture is identical
+(still the 64DD loading screen, YAVG 5.3), so this is a *state* improvement, not
+yet a visible one -- and the frame protocol is still unfixed (`raise_bits DP=0`,
+`dp_seen=0`, and the last 16 kicks read `start=cur=end=0x00010000`).
+`wd_spkill.txt` is absent because IMEM is never poisoned any more.
+
+### 8. Next (round 20)
+
+1. `wd_wrap.txt` answered the SP-memory question (see 7).  The whole-8-KiB
+   `wd_spkill.txt` dump stays armed for the next regression.
+2. Fix the initial k0: give the overlay loader's `data_ptr`/saved-pointer choice
+   the header it needs (the fetch must start at DMEM[0xFF0] for a fresh task).
+   With the walk starting on the real three-command list, `gDPFullSync` reaches
+   `parallel-RDP`'s `SyncFull` branch, which is the only path that raises
+   `MI_INTR_DP`.
+3. Frame protocol: after (2), `DPC_START` must be `output_buff` (0x2D9CD0) for
+   the *first* kick; the 0x32DCD0 first-kick value is the symptom to re-check.

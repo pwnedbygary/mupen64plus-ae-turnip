@@ -426,6 +426,51 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 			}
 		}
 
+		/* ROUND-19: WHERE IS THE SP MEMORY KILLED?
+		   Every instrumented writer came back clean (no CPU SP DMA, no CPU
+		   direct SP-memory write in the low IMEM page, and only two legitimate
+		   RSP-side IMEM loads in the whole run), yet the watchdog keeps finding
+		   IMEM[0..3] and DMEM[0xFC0..] full of the game's 0x00010001 fill.
+		   Checking IMEM[0..1] at EVERY slice entry bounds the corruption to a
+		   single slice, and dumping the whole 8 KiB of SP memory plus this
+		   slice's entry state says which side (RSP instruction stream or CPU
+		   between slices) did it.  DD-gated, once per run. */
+		if (dd_mode)
+		{
+			static int wd_spkill_n = 0;
+			if (wd_spkill_n < 2 &&
+			    RSP::cpu.get_state().imem[0] == 0x00010001u &&
+			    RSP::cpu.get_state().imem[1] == 0x00010001u)
+			{
+				FILE* f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_spkill.txt",
+				                wd_spkill_n ? "a" : "w");
+				wd_spkill_n++;
+				if (f)
+				{
+					unsigned k;
+					fprintf(f, "SPKILL n=%d ms=%lld pc=%04x status=%08x sp_pc=%08x fc0=%08x f0=%08x ff0=%08x bf8=%08x\n",
+					        wd_spkill_n, wd_now_ms(), RSP::cpu.get_state().pc & 0xfff,
+					        *RSP::rsp.SP_STATUS_REG, *RSP::rsp.SP_PC_REG,
+					        RSP::cpu.get_state().dmem[0xfc0 / 4], RSP::cpu.get_state().dmem[0x0f0 / 4],
+					        RSP::cpu.get_state().dmem[0xff0 / 4], RSP::cpu.get_state().dmem[0xbf8 / 4]);
+					fprintf(f, "  dmem ");
+					for (k = 0; k < 0x1000 / 4; k++)
+					{
+						if ((k & 15) == 0) fprintf(f, "\n   %03x:", k * 4);
+						fprintf(f, " %08x", RSP::cpu.get_state().dmem[k]);
+					}
+					fprintf(f, "\n  imem ");
+					for (k = 0; k < 0x1000 / 4; k++)
+					{
+						if ((k & 15) == 0) fprintf(f, "\n   %03x:", 0x1000 + k * 4);
+						fprintf(f, " %08x", RSP::cpu.get_state().imem[k]);
+					}
+					fprintf(f, "\n");
+					fclose(f);
+				}
+			}
+		}
+
 		/* DIAG: arm freeze heartbeat (DD-only) */
 		if (dd_mode)
 		{

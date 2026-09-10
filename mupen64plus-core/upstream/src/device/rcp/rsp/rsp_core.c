@@ -101,6 +101,11 @@ uint32_t wd_rdp_last_start = 0, wd_rdp_last_end = 0, wd_rdp_last_mi = 0, wd_rdp_
 volatile uint32_t wd_c_rdp_dp_seen = 0, wd_c_rdp_dp_hot = 0, wd_c_rdp_empty = 0;
 volatile uint32_t wd_rdp_ring_n = 0;
 uint32_t wd_rdp_ring[16][6];
+/* ROUND 19: the first 16 kicks, so the watchdog can answer "was the RDP ever
+   handed a real CURRENT..END window?" (the last-16 ring is all garbage once the
+   ucode's state is lost). */
+volatile uint32_t wd_rdp_first_n = 0;
+uint32_t wd_rdp_first[16][6];
 
 /* ROUND 11 DD DIAG: CPU writes into SP memory (write_rsp_mem), counted and
    latched in memory only; and the first moment the RSP's IMEM is observed to
@@ -115,11 +120,39 @@ uint32_t wd_imem_bad_word[4] = {0, 0, 0, 0};   /* IMEM[0..3] at that moment  */
 uint32_t wd_imem_bad_fc0 = 0, wd_imem_bad_pc = 0, wd_imem_bad_status = 0;
 uint32_t wd_imem_bad_count = 0, wd_imem_bad_spdma = 0;
 
+/* ROUND 19: WHO wrote the bad IMEM.  `wd_check_imem_sane` (below) is only
+   called from the background pump, i.e. up to ~12 ms after the damage, and it
+   cannot say which path did it.  wd_imem_probe() is called from every path
+   that can write IMEM and latches the FIRST one that observes the fill
+   pattern, with the parameters of the operation that just ran:
+     path 1 = CPU direct SP-memory write (write_rsp_mem, guest 0xA4001xxx)
+     path 2 = CPU-side SP DMA (do_sp_dma, the ucode/task load)
+     path 3 = RSP-side DMA (plugin rsp_dma_read -> wd_imem.txt)
+     path 5 = the background pump (i.e. none of the above: seen too late)
+   Two word compares on the DD path only; no file I/O. */
+volatile uint32_t wd_imem_kill_path = 0;
+uint32_t wd_imem_kill_a = 0, wd_imem_kill_b = 0, wd_imem_kill_c = 0, wd_imem_kill_d = 0;
+uint32_t wd_imem_kill_pc = 0, wd_imem_kill_count = 0, wd_imem_kill_spdma = 0;
+
+void wd_imem_probe(struct rsp_core* sp, uint32_t path, uint32_t a, uint32_t b,
+                   uint32_t c, uint32_t d)
+{
+    const uint32_t* im = (const uint32_t*)sp->mem;
+    if (wd_imem_kill_path) return;
+    if (im[0x1000 / 4] != 0x00010001u || im[0x1000 / 4 + 1] != 0x00010001u) return;
+    wd_imem_kill_path = path;
+    wd_imem_kill_a = a; wd_imem_kill_b = b; wd_imem_kill_c = c; wd_imem_kill_d = d;
+    wd_imem_kill_pc = sp->regs2[SP_PC_REG];
+    wd_imem_kill_count = r4300_cp0_regs(&sp->mi->r4300->cp0)[CP0_COUNT_REG];
+    wd_imem_kill_spdma = wd_c_spdma;
+}
+
 /* Cheap (two word compares) and DD-gated; called from the background pump so a
    garbage IMEM is dated against the CP0 count and the SP-DMA counter. */
 static void wd_check_imem_sane(struct rsp_core* sp)
 {
     const uint32_t* im = (const uint32_t*)sp->mem;
+    wd_imem_probe(sp, 5, 0, 0, 0, 0);   /* round 19: fallback if no writer caught it */
     if (wd_imem_bad) return;
     if (im[0x1000 / 4] == 0x00010001u && im[0x1000 / 4 + 1] == 0x00010001u)
     {
@@ -299,6 +332,10 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
             }
         }
     }
+
+    /* ROUND 19: did THIS transfer write the fill pattern into IMEM?  (path 2) */
+    if (g_dev.dd.idisk != NULL)
+        wd_imem_probe(sp, 2, dma->dir, dma->memaddr, dma->dramaddr, l);
 
     /* schedule end of dma event */
     cp0_update_count(sp->mi->r4300);
@@ -573,7 +610,11 @@ void write_rsp_mem(void* opaque, uint32_t address, uint32_t value, uint32_t mask
         wd_cpuw_last_addr = address;
         wd_cpuw_last_val = value;
         wd_cpuw_last_mask = mask;
-        if (addr >= 0x1000)
+        /* ROUND 19: `addr` is a WORD index into the 0x2000-byte SP memory
+           (rsp_mem_address = (address & 0x1fff) >> 2), so the old `addr >=
+           0x1000` test could never fire and wd_cpuw_imem_n stayed 0 for every
+           run: the IMEM bank is word index 0x400..0x7ff. */
+        if (addr >= (0x1000 >> 2))
         {
             wd_cpuw_imem_n++;
             if (wd_cpuw_imem_latch_addr == 0)
@@ -595,6 +636,10 @@ void write_rsp_mem(void* opaque, uint32_t address, uint32_t value, uint32_t mask
     }
 
     masked_write(&sp->mem[addr], value, mask);
+
+    /* ROUND 19: this direct CPU write is path 1 (see wd_imem_probe). */
+    if (g_dev.dd.idisk != NULL)
+        wd_imem_probe(sp, 1, address, value, mask, addr);
 }
 
 
