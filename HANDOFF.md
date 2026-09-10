@@ -2,8 +2,77 @@
 
 > Auto-generated checkpoint. Read top-to-bottom. The single biggest concrete progress this
 > session: **the missing-DD-ROM root cause is fixed and verified** — the DD ROM and disk now
-> load, so the remaining black-screen fault is a *different, later* problem that needs fresh
-> diagnosis rather than the prior MI-interrupt fix.
+> load, so the remaining fault is a *different, later* problem that needs fresh
+> diagnosis rather than the prior MI-interrupt fix. **Round 34 corrects the oldest shared
+> assumption: the "black screen" is not empty — the guest is drawing a static "…64DD…" screen and
+> the display path works (see ROUND 34 below).**
+
+**ROUND 34 — THE SCREEN IS NOT BLANK: WHAT ROUNDS 13..33 CALLED "97% BLACK" IS THE GUEST'S OWN
+STATIC "…64DD…" SCREEN (the core OSD is ruled out by experiment), SO THE DISPLAY PATH IS ALIVE
+AND THE FAULT IS A STALL *AFTER* THE FIRST SCREEN.**
+
+**1. What the screencaps actually contain (measured, `screenstat.py`).** Every "black" capture of the
+64DD route holds exactly three things:
+* a big white-on-black text band, ink bbox **x 661..1255, y 459..617** (596x158 px), built from three
+  connected components: (661,459,156,158) + (861,481,349,113) + (1213,570,44,24). The middle
+  component is 4 glyphs of ~87x113 px; tesseract reads it as **`64DD`** at every scale and psm mode
+  tried ("iff 64DD..", "WS 64DD.", "i! 64DD", psm 6/7/8/11/13, 2x/3x/4x, normal and inverted), and
+  the whole band reads `… 64DD ..`. The band region is **57.2 % ink** -- it is not nearly-black, it
+  is a bold white line on black;
+* the front-end FPS counter in the top-right corner (`60FPS`, skin bitmaps
+  `assets/.../skins/touchscreen/*/fps.png` + `fps-0..9.png`, glyphs ~19x18 px), which is a *separate*
+  renderer from the band (5x glyph size difference);
+* nothing else: `raw_ink = 2.74 %`, `game_ink = 0.00 %` after masking those two.
+
+**2. It is NOT the core's on-screen display -- proved by experiment (run r34b).** `osd.c` draws with
+OGLFT from `FONT_FILENAME "font.ttf"`, and `VidExt_ResizeWindow()` calls `osd_init()` unconditionally
+(vidext.c:442/481) while several `osd_new_message()` sites bypass the `OnScreenDisplay` config check
+(main.c:446/500/535/537/1914, two of them `osd_message_set_user_managed()` = permanent). So the OSD
+was a live suspect. r34b made `files/font.ttf` **`chmod 000`** for the entire DD run (verified
+`----------` before launch, restored to 644 after, mtime unchanged so the asset extractor did not
+re-copy it) and launched the exact r33c combo: **the band is PIXEL-IDENTICAL to r33c
+(`maxdiff = 0`)**, in both captures. A font-less OGLFT cannot draw that text, so the OSD did not draw it.
+
+**3. It is not the launcher or another app.** On the Android HOME screen the band is absent
+(`raw_ink 0.53 %`, band region not equal). It is tied to the emulator's window being in front.
+
+**4. It is drawn at a resolution that is NOT the screen's**, so it is not an app overlay drawn in
+screen space either: the band's `64DD` measures 349x113 px, while `font.ttf` renders `64DD` at
+400x113 for the size (149) whose cap height is exactly 113 px -- the glyphs are **0.87x as wide**,
+i.e. the text was rendered somewhere else and scaled anisotropically. A front-end overlay drawn at
+screen resolution would match the font's aspect exactly.
+
+**5. Control run r34a (the plain path on the same APK).** `Mario Tennis (USA).zip`
+(`support64dd=false` in its own prefs) fills **62.3 % of the screen with normal game output**
+(`game_ink 56.1 %`, `colorful 58.1 %`), no band. So the front-end display path, the VI and the plain
+route are all healthy; the DD route's static screen is what the *emulated machine* is displaying.
+
+**Conclusion.** The RDP -> VI -> front-end chain works at least once on the DD route: the "black
+screen" is a **static 64DD screen drawn by the guest**, not an absence of rendering. Round 33's
+measurements (the `0x00010001` fill in DMEM 0xF0/0xFE8/0xFEC making every later DPC kick an empty
+window; the RSP parked at pc 0x0FDC in the DMA primitive's `SP_DMA_FULL` wait) therefore describe
+**the stall that freezes the screen after it was drawn**, not "nothing ever rendered". A historical
+data point fits: in `run10_screencap.png` (08-31) the same band had a **second line** below it at
+y 820..872 that OCRs as `DD LOADING …` and is absent from every 09-10 capture -- the screen advanced
+at least once, months of builds ago.
+
+**6. New artifact.** The IPL ROM the DD route actually boots is now archived:
+`.fzxwork/n64dd/ipl_japan.n64`, 4194304 bytes, md5 `8d3d9f294b6e174bc7b1d2fd1c727530`, internal
+header name `64DD IPL (JPN)`, selected by the same prefs file as the disk
+(`support64dd=true`, `idlPath64dd=…/N64DD IPLROM [Japan].n64`, `diskPath64dd=…/F-Zero X.ndd`).
+Note `main.c:load_dd_rom()` **memcpy's the IPL OVER the cart ROM**, so on this route the emulated
+cartridge is the IPL, not `F-Zero X (Japan).z64`.
+
+**7. Acceptance criteria change.** "Screen not ~96 % black" was measuring overlays and is retired.
+Use `.fzxwork/screenstat.py`, which masks the band and the FPS corner and reports `game_ink`:
+`game_ink 0.00 %` = the guest is showing only the static 64DD screen; anything above it means the
+guest advanced.
+
+**8. Next (round 35).** Find who deposits the fill pattern into the gfx ucode's flush state:
+instrument every DMA that *writes* DMEM 0xF0 / 0xFE8 / 0xFEC / 0xFC0..0xFFC with `0x00010001` and the
+guest-side pointer that selected it (the fill is the game's own cleared-buffer pattern, so the
+suspect is a DMA whose RDRAM source is a buffer the guest has just cleared), and check whether the
+stall is the guest re-issuing a task against a cleared buffer or the RSP reading the wrong address.
 
 **ROUND 33 — ROUND 32'S CONCLUSION IS RETRACTED (WRONG BYTE ORDER IN THE UCODE DISPATCH TABLE);
 THE REAL FAULT IS THE DD ROUTE'S HOST PREEMPTION, READ AGAINST THE GAME'S OWN SOURCE.**
