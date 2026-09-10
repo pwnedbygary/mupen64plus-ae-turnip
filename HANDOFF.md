@@ -5,6 +5,99 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 33 — ROUND 32'S CONCLUSION IS RETRACTED (WRONG BYTE ORDER IN THE UCODE DISPATCH TABLE);
+THE REAL FAULT IS THE DD ROUTE'S HOST PREEMPTION, READ AGAINST THE GAME'S OWN SOURCE.**
+
+**0. The ROM/disk archive is verified (user request).** `.fzxwork/n64dd/` now holds the exact pair
+the device runs, pulled from `/storage/EBFF-F6C0/ROMs/64dd/F-Zero X Expansion Kit/`:
+`fzx_64dd.z64` (md5 `58d200d4…` = `F-Zero X (Japan).z64`) and `fzx_64dd.ndd` (md5 `4c407df2…`).
+The per-game prefs (`shared_prefs/58D200D43620007314304F4E6C9E6528_preferences.xml`) select exactly
+that disk through `diskPath64dd`, and the core's working copy `files/dd_disk.ndd` hashes `4c407df2…`
+— so the run really uses the disk the user normally uses. The `/ROMs/n64` copies are archived too
+(cart hack `F-Zero X.z64` = `753437d0…`, the other disk variant `F-Zero X.ndd` = `f775dfc5…`).
+**All four disk variants carry the SAME ucode** (992/992 words at .ndd 0xAF88C0), so no variant can
+explain the black screen; they differ in 554 words (disk ID + patches) only.
+
+**1. RETRACTED: round 32's "the flush's DMA runs the WRONG WAY / s6 is corrupted in the JIT".**
+The ucode dispatch table at DMEM 0x36E is a **halfword** table and round 32 read it little-endian.
+Read the way the RSP's `lhu` reads it (big-endian halfword, verified against the traced behaviour —
+the FULLSYNC `t9=0xE9000000` really does land on pc 0x20C) the table is plain GBI:
+
+    0xDB G_MOVEWORD -> 0x038     0xDC G_MOVEMEM -> 0x120    0xDD -> 0xFAC
+    0xDE G_DL       -> 0x000     0xDF G_ENDDL   -> 0x1E4    0xE4 G_TEXRECT -> 0x02C
+    0xE7/0xE9 sync  -> 0x20C     0xF2..0xF9 etc -> 0x208    0xFD/0xFE -> 0x218
+
+`0x000` is the G_DL push handler (overlay B: `sw v1,0x138(at)`, `k0 = t8`, jump into the walk) and
+`0x1E4` is the G_ENDDL pop-or-end handler (`beq at,r0,0xFAC` with `at` = the DL stack depth at
+DMEM 0xDE). The flush's `addi s4,s6,-0x2158` is the **normal** direction encoding of this DMA macro
+(`0xFE4 mtc0 s4,SP_MEM_ADDR` / `0xFE8 bltz s4,0xFF8` picks RD vs WR by the sign bit; low 12 bits =
+s6-0x158 = the buffer base), and `WR pc=fc4 dst=2d9cd0 src=000ba8 len=0008` in the DMA trace is the
+flush doing exactly the right thing. Round 32's write census was unsound for a second reason: its
+filter (src in [0xBA8,0xF08) or dst in the ring) also admits an unrelated 0x170-byte overlay copy
+from DMEM 0xC80/0xE20 to RDRAM 0x415xxx, which filled the 300-line cap — so "no write ever reaches
+the ring" was an artefact of the census, not a measurement.
+
+**2. THE PROTOCOL, now read from the vendored decomp instead of inferred** (`.fzxwork/fzerox-decomp`,
+`src/libultra/io/sptaskyield.c`, `sptaskyielded.c`, `sptask.c`, `src/sys/sys_main.c`, `PR/rcp.h`):
+`osSpTaskYield()` = `SP_SET_SIG0`; `osSpTaskYielded()` returns `OS_TASK_YIELDED` **only if SIG1
+(SP_STATUS_YIELDED) is set**, and records the flag into the task while **SIG0 is still set**;
+`osSpTaskLoad` clears SIG0|SIG1|SIG2 (`0x2b00` — exactly the write seen 132× in `wd_spw.txt`) and,
+for a yielded task, sets `ucode_data = yield_data_ptr` + `ucode = *(yield_data_ptr+0xBFC)`. The game
+reaches `Sched_SpTaskResumeGfx()` only through SIG1 (`sys_main.c:347`). **Only the RSP boot code
+sets SIG1** (`mtc0 0x5200` = CLR SIG0|SET SIG1|SET SIG2 at IMEM 0x054, its yield test at 0x03C), while
+the ucode's own in-body yield (the 0x98-byte end overlay at ucode+0xF80, descriptor DMEM 0x2E0,
+entered on G_ENDDL with an empty DL stack or on SIG0) acks with **`mtc0 0x4000` = SET TASKDONE
+(SIG2) only**. The walk loads 0xA8-byte display-list chunks (descriptor DMEM 0x2E8 = the 0x170-byte
+startup overlay B at ucode+0x1018) into DMEM 0x920 and dispatches through DMEM 0x36E.
+
+**3. MEASURED (r33a: `wd_r33sg.txt` + `wd_spw.txt` + `wd_r31yld.txt`).**
+(a) SIG0 changes exactly **three** times in a whole run and **SIG1 is NEVER set** — so
+`osSpTaskYielded()` always returns 0, `sGfxTaskYielded` is never set, and the yield path can never
+carry the gfx task forward. (b) SIG0 is already set when the gfx task's walk starts, so the ucode
+takes its own yield path at the **first** display-list command. (c) The guest never writes the
+SIG0-set form in the captured window (only `0x2B00`, `0x0125`, `0x8008`), so the SIG0 came from the
+audio thread's `Sched_SpTaskYield()` after an RSP slice ended. (d) On a resume
+(`wd_r31yld.txt`, `flags=00000005`) **`bf8=00000000`** — the yield buffer's saved walk pointer is
+zero, which is why round 31's k0 "repair" (forcing k0 = DMEM[0xFF0]) restarts the list at data_ptr
+instead of continuing it.
+
+**4. THE HAND-ROLLED SIG0 IS NOT A DIAGNOSTIC** (user question). It is the DD route's *host
+preemption* workaround. History: `75ee1623f` (r20) added `R20_SIG0_YIELD` (default 0 — "the guest
+never clears a plugin-set SIG0"), `110633f97` (r21) added the "faithful save" + `R21_KEEP_SIG0`,
+`780508e19` (r27) rejected the SIG0-yield model with a clean A/B. It exists because in the
+synchronous model the CPU cannot preempt a running RSP, so the plugin cuts the RSP off (2 ms budget,
+`rsp_set_budget_deadline_us(dd_mode ? 2000 : 0)`) **and at 256 `mfc0 SP_STATUS` polls for gfx
+tasks** — and the gfx ucode reads SP_STATUS **once per display-list command**, so that threshold
+preempts the walk every 256 commands. Both handovers end with `HALT|INTR_BREAK`, which the guest's
+own state machine (`SP_TASK_GFX` + SP event ⇒ "the frame is done") cannot distinguish from a
+completed gfx task: **the DP event that only a finished gfx task raises never arrives
+(`raise_bits DP=0`) and the screen stays black.**
+
+**5. FIX ATTEMPTED AND RUN (r33c).** Per-task budget caps (`rsp_set_budget_deadline_us(us, units)`:
+audio 2 ms/20480 unchanged, **gfx 20 ms/262144**) and the short MFC0 threshold removed for gfx tasks
+(the budget/watchdog is the limiter). Measured effect: the gfx walk runs **5× further** (read DMAs
+28176 → **149072**) and the forced-yield log now shows a real resumed task (`flg=00000005`,
+`k0=00255c70` instead of the audio's leftover `0x152C03C0`) — **but the DPC_START/END trace and the
+screen are unchanged (still 97.3 % pure black)**, and the freeze finds the RSP spinning in the DMA
+macro's SP_DMA_FULL wait at pc 0x0FDC. So the fix changed how much work the gfx task does, not the
+outcome. DD-gated throughout: `dd_mode` false ⇒ `us=0` ⇒ unlimited budget, exactly as before.
+
+**6. NEW EVIDENCE THAT REFRAMES THE REMAINING FAULT.** `wd_cmd.txt` shows DPC_END advancing six
+times per frame (`002d9cd0 → 002d9ed8 → 002da0e8 → 002da300 → 002da520 → 002da748 → 002da978`,
+0x208..0x230 bytes per flush) with `datasz=000012e0` (a real 4832-byte display list) — **the RSP IS
+producing a real RDP command stream and kicking the RDP.** The ring reads as zeros in the freeze
+snapshot except the 8-byte FULLSYNC at its base, so that snapshot is NOT evidence that nothing was
+rendered (the game reuses/clears the buffer between frames). The fault is therefore downstream of
+the RSP: the RDP plugin's consumption, the DP interrupt, or the guest's frame swap.
+
+**7. NEXT (round 34).** (a) Sample the flushed 0x208 bytes *during* the run (a bounded per-flush
+capture) to confirm real geometry lands in the ring — the freeze RAM cannot show it. (b) Follow the
+DP path: the DPC_END kick ⇒ the RDP plugin's completion ⇒ `MI_INTR_DP` ⇒ the guest's
+`EVENT_MESG_DP` (commit `217490766` touched exactly this) and the VI/framebuffer swap. (c) Fix the
+lost resume pointer (`DMEM[0xBF8]=0` in the yield buffer), or drop round 31's k0 repair, so a
+resumed walk continues instead of restarting. (d) Keep round 31's "distrust a foreign yield state"
+check: `wd_r31yld.txt` shows `flags=ff7fffff bf8=ffffffff` being treated as a resume.
+
 **ROUND 29 — ROOT CAUSE FOUND AND FIXED: THE F3DEX2 ENTRY'S OVERLAY-DESCRIPTOR FIX-UP RAN
 TWICE, TURNING THE DESCRIPTORS INTO OUT-OF-RANGE ADDRESSES (0x751540 -> 0xEA1B00) SO THE
 UCODE'S OWN OVERLAY LOAD COPIED GARBAGE OVER IMEM. THIS IS THE BLACK SCREEN.**

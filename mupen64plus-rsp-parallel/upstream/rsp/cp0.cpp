@@ -1006,7 +1006,20 @@ void r31_arm_k0_repair(unsigned want);
 			   parallel.cpp, where it does not change how often the task is
 			   preempted. */
 			unsigned task_type = ((uint32_t*)RSP::rsp.DMEM)[0xfc0 / 4];
-			unsigned threshold = (task_type == 2) ? (unsigned)RSP::SP_STATUS_TIMEOUT : 256u;
+			/* ROUND 33: NO SHORT GFX THRESHOLD.  The F3DEX2 command loop
+			   executes `mfc0 at,SP_STATUS` ONCE PER DISPLAY-LIST COMMAND
+			   (IMEM 0x18C), so the old 256-poll threshold cut the gfx walk
+			   off every 256 commands and handed over with HALT+INTR_BREAK --
+			   which the guest's own state machine (decomp sys_main.c: an SP
+			   event in state SP_TASK_GFX means THE FRAME IS DONE) cannot tell
+			   from a completed gfx task.  The frame's DP event, which only a
+			   gfx task that reached the end overlay's DPC_END kick can raise,
+			   then never arrived: raise_bits DP=0, the gfx thread parked, and
+			   the screen stayed black.  Both task types now leave this wait
+			   to the per-task budget/watchdog, which is the limiter that
+			   actually knows how much work a task has. */
+			unsigned threshold = (unsigned)RSP::SP_STATUS_TIMEOUT;
+			(void)task_type;
 			if (RSP::MFC0_count[rt] >= threshold)
 			{
 			/* ROUND 20 (DD route only): ASK THE UCODE TO YIELD INSTEAD OF
@@ -1968,30 +1981,33 @@ void r31_arm_k0_repair(unsigned want);
 	static unsigned r32_wrn = 0;
 	/* build marker: verify the packaged .so really carries round 32 */
 	static const char r32_marker[] __attribute__((used)) = "R32FLUSH";
+	/* ROUND 33: the last block-entry pc, published by parallel.cpp's
+	   r30_pc_hook.  rsp->pc is NOT maintained by this JIT (it reads 0 for every
+	   DMA in the r32 census), so this is the only usable issuer pc. */
+	extern "C" unsigned r33_last_pc;
 	static void r32_wr_note(RSP::CPUState* rsp, uint32_t dest, uint32_t source,
 	                        uint32_t length, unsigned count, uint32_t skip)
 	{
 		unsigned so = source & 0x1fffu;
 		FILE* f;
-		unsigned i;
-		if (r32_wrn >= 300u)
+		if (r32_wrn >= 3000u)
 			return;
-		if (!((so >= 0xba8u && so < 0xf08u) ||
-		      (dest >= 0x2d9cd0u && dest < 0x32dcd0u)))
-			return;
+		/* ROUND 33: NO FILTER.  Round 32's filter let an unrelated 0x170-byte
+		   overlay copy (DMEM 0xC80/0xE20 -> RDRAM 0x415xxx) fill the 300-line
+		   cap, so the flush's own DMA was never recorded and "the ring is
+		   never written" was an artefact of the census.  Log them all, with
+		   the issuer pc and the ring pointer. */
 		r32_wrn++;
 		f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r32wr.txt",
 		          r32_wrn == 1u ? "w" : "a");
 		if (f == NULL)
 			return;
-		fprintf(f, "R32WR n=%u pc=%03x dst=%08x src=%04x len=%05x cnt=%u skip=%u f0=%08x "
-		           "d2e0=%08x words:", r32_wrn, rsp->pc & 0xfffu, dest, so, length,
+		fprintf(f, "R33WR n=%u ipc=%03x dst=%08x raw=%08x src=%04x len=%05x cnt=%u "
+		           "skip=%u f0=%08x fe8=%08x fec=%08x\n",
+		        r32_wrn, r33_last_pc & 0xfffu, dest, source, so, length,
 		        count, skip, ((const uint32_t*)RSP::rsp.DMEM)[0x0f0 / 4],
-		        ((const uint32_t*)RSP::rsp.DMEM)[0x2e0 / 4]);
-		for (i = 0; i < 8u; i++)
-			fprintf(f, " %08x",
-			        ((const uint32_t*)RSP::rsp.DMEM)[((so + i * 4u) & 0xfffu) >> 2]);
-		fprintf(f, "\n");
+		        ((const uint32_t*)RSP::rsp.DMEM)[0xfe8 / 4],
+		        ((const uint32_t*)RSP::rsp.DMEM)[0xfec / 4]);
 		fclose(f);
 	}
 

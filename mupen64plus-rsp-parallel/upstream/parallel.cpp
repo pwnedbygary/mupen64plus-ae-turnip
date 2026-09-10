@@ -35,7 +35,7 @@ void DebugMessage(int level, const char *message, ...)
     va_end(args);
 }
 
-extern "C" void rsp_set_budget_deadline_us(long long us);
+extern "C" void rsp_set_budget_deadline_us(long long us, long long units);
 extern "C" int rsp_budget_expired_now(void);
 /* ROUND-18 DIAG: emulated work (budget checks) this slice consumed, and whether
    the wall-clock backstop -- not the deterministic countdown -- ended it. */
@@ -376,6 +376,63 @@ static void r29_unfix_descriptors(void)
 		r32_regs_body(p, sr, dm);
 	}
 
+	/* -----------------------------------------------------------------------
+	   ROUND 33: the RDP command path, measured where it is unambiguous.
+	   The live IMEM (r30im.bin) disassembles to this -- note that the region
+	   IMEM 0x080..0x16C is NOT the disk text: 0x170 bytes of OVERLAY (RDRAM
+	   0x751658 == ovlB+0x80) are resident there, so the disk blob's "init"
+	   (`addi s7,r0,0xBA8` / `addi s6,r0,0xD00` at 0x08C/0x090) never executes:
+
+	     0x190 lw   t9,0x9C8(k1)   ; command word
+	     0x194 beq  k1,r0,0x170    ; chunk exhausted -> load the next 0xA8 bytes
+	     0x19C sra  t4,t9,24       ; opcode
+	     0x1A4 lhu  t3,0x36E(t3)   ; dispatch table in DMEM (loaded from the
+	                               ; ucode DATA blob RDRAM 0x779860+0x36E)
+	     0x1B0 jr   t3
+	     0x208 sw   t8,4(s7)  /  0x20C sw t9,0(s7)   ; RDP passthrough store
+	     0x210 j    0x250     /  0x214 addi s7,s7,8
+	     0x250 addi ra,r0,0x118C
+	     0x254 sub  t3,s7,s6
+	     0x258 blez t3,0xFD4       ; not full -> jr ra back to the loop
+	     0x264 addiu s3,t3,0x158   ; flush length
+	     0x2B8 sw   t3,0xF0(r0)    ; ring pointer += length
+	     0x2C0 addi s4,s6,-0x2158  ; low12 = s6-0x158, sign bit = "write"
+	     0x2C4 xori s6,s6,0x208    ; toggle the double buffer
+	     0x2C8 j    0xFD8          ; 0xFD8 = the DMA macro, `bltz s4` picks the
+	     0x2CC addi s7,s6,-0x158   ; direction -- so a flush MUST have s4 < 0
+	   ----------------------------------------------------------------------- */
+	static unsigned r33_n = 0;
+	static void r33_flush_body(unsigned p, const uint32_t* sr, const uint32_t* dm)
+	{
+		FILE* f;
+		if (r33_n >= 900u)
+			return;
+		if (!(p == 0x1b0u || p == 0x208u || p == 0x20cu || p == 0x264u ||
+		      p == 0x2b8u || p == 0x2c0u))
+			return;
+		r33_n++;
+		f = fopen(R30_FILE "wd_r33fl.txt", r33_n == 1u ? "w" : "a");
+		if (f == NULL)
+			return;
+		fprintf(f, "R33FL n=%u pc=%03x op=%02x t3=%08x t4=%08x t8=%08x t9=%08x "
+		           "s3=%08x s4=%08x s6=%08x s7=%08x k0=%08x k1=%08x f0=%08x "
+		           "fe8=%08x fec=%08x st=%08x\n",
+		        r33_n, p, (unsigned)((sr[25] >> 24) & 0xffu), (uint32_t)sr[11],
+		        (uint32_t)sr[12], (uint32_t)sr[24], (uint32_t)sr[25],
+		        (uint32_t)sr[19], (uint32_t)sr[20], (uint32_t)sr[22],
+		        (uint32_t)sr[23], (uint32_t)sr[26], (uint32_t)sr[27],
+		        dm[0x0f0 / 4], dm[0xfe8 / 4], dm[0xfec / 4],
+		        *RSP::rsp.SP_STATUS_REG);
+		fclose(f);
+	}
+
+	extern "C" void r33_flush(unsigned p, const uint32_t* sr, const uint32_t* dm)
+	{
+		if (!r30_armed)
+			return;
+		r33_flush_body(p, sr, dm);
+	}
+
 	/* =======================================================================
 	   ROUND 32: WHY THE RDP OUTPUT BUFFER NEVER FLUSHES.
 
@@ -395,7 +452,25 @@ static void r29_unfix_descriptors(void)
 	   took effect (stale JIT block for pc 0x080) and that is the root cause.
 	   ======================================================================= */
 	static const char r32_marker[] __attribute__((used)) = "R32REGS";
+	/* build marker: verify the packaged .so really carries round 33 */
+	static const char r33_marker[] __attribute__((used)) = "R33FLSH";
 	extern "C" void r32_regs(unsigned p, const uint32_t* sr, const uint32_t* dm);
+	extern "C" void r33_flush(unsigned p, const uint32_t* sr, const uint32_t* dm);
+
+	/* =======================================================================
+	   ROUND 33.  Round 32's write census filtered on
+	       (src in [0xBA8,0xF08)) || (dest in the ring)
+	   which the FLUSH passes -- but so does an unrelated stream of 0x170-byte
+	   writes from DMEM 0xC80/0xE20 to RDRAM 0x415xxx (a copy of the 0x170-byte
+	   OVERLAY, whose source happens to sit inside that window).  With the cap
+	   at 300 the census was therefore filled by that stream and the flush's own
+	   DMA was never recorded; "no write ever reaches the ring" was an artefact.
+	   Round 33 logs EVERY write DMA unfiltered, tagged with the last block-
+	   entry pc (rsp_enter is the only trustworthy pc source -- rsp->pc is not
+	   maintained by the JIT) and with DMEM[0xF0] (the ring pointer).
+	   r33_last_pc is published for cp0.cpp's rsp_dma_write.
+	   ======================================================================= */
+	extern "C" unsigned r33_last_pc = 0;
 
 	extern "C" void r30_pc_hook(unsigned pc_lo)
 	{
@@ -405,7 +480,43 @@ static void r29_unfix_descriptors(void)
 		char buf[320];
 		FILE* f;
 
+		r33_last_pc = p;
+
+		/* ROUND 33: WHO SETS SIG0?  The F3DEX2 body tests SP_STATUS & 0x80 at
+		   IMEM 0x1A8 and, when it is set, takes the YIELD path (0xFAC -> the
+		   0x98-byte END overlay -> flush + save k0 to DMEM[0xBF8] + break).
+		   Measured: the gfx task's FIRST display-list command already takes
+		   that path, so SIG0 is set before the walk starts.  The guest never
+		   writes the set form (wd_spw.txt: only 0x2b00 = CLR SIG0/SIG1/SIG2,
+		   0x125, 0x8008 -- no 0x400).  So localise it: log every change of the
+		   bit with the block-entry pc that straddles it. */
+		{
+			static uint32_t sg_last = 0xffffffffu;
+			static unsigned sg_n = 0;
+			uint32_t sg = *RSP::rsp.SP_STATUS_REG;
+			if (sg != sg_last)
+			{
+				if (sg_n < 300u)
+				{
+					FILE* sf = fopen(R30_FILE "wd_r33sg.txt", sg_n == 0u ? "w" : "a");
+					if (sf)
+					{
+						fprintf(sf, "R33SG n=%u pc=%03x st=%08x was=%08x sig0=%d f0=%08x "
+						            "fc0=%08x fc4=%08x fc8=%08x ff0=%08x ff8=%08x\n",
+						        sg_n, p, sg, (sg_last == 0xffffffffu) ? 0u : sg_last,
+						        (sg & 0x80u) ? 1 : 0, dm[0x0f0 / 4], dm[0xfc0 / 4],
+						        dm[0xfc4 / 4], dm[0xfc8 / 4], dm[0xff0 / 4],
+						        dm[0xff8 / 4]);
+						fclose(sf);
+					}
+					sg_n++;
+				}
+				sg_last = sg;
+			}
+		}
+
 		r32_regs(p, RSP::cpu.get_state().sr, dm);
+		r33_flush(p, RSP::cpu.get_state().sr, dm);
 
 		if (r30_stop)
 			return;
@@ -1260,7 +1371,38 @@ extern "C" void r29_pc_hook(unsigned pc_lo)
 		   the RDP was never kicked and the frame protocol stopped dead.  The
 		   2 ms slice is what makes the DD path progress at all, so it stays
 		   in force for every task type. */
-		rsp_set_budget_deadline_us(dd_mode ? 2000 : 0);
+
+		/* ROUND 33: EVERY TASK TYPE HAS ITS OWN CAP -- and this is the
+		   round-17 experiment done on the right axis.
+
+		   Round 17 relaxed the budget for the gfx task and measured a stall
+		   (RDPKICK n=0, VI raise 271 vs 6087) -- but it relaxed it to 100 ms
+		   of WALL time and left the MFC0 preemption in place, so the guest
+		   got ten turns a second AND the walk was still faked out mid-list
+		   every 256 commands.  What the guest's own source says (decomp,
+		   src/sys/sys_main.c) is:
+
+		     EVENT_MESG_AUDIO_TASK_SET -> Sched_SpTaskYield() -> osSpTaskYield()
+		     EVENT_MESG_AUDIO_TASK_SET + !sSpTaskActive -> Sched_SpTaskStartAudio()
+		     SP event, state SP_TASK_GFX  -> the frame is DONE
+
+		   i.e. a gfx task that is cut off mid-list is indistinguishable from
+		   a completed one, and the event the game actually renders on -- the
+		   DP interrupt that a FINISHED gfx task raises (DPC_END kick in the
+		   0x98-byte end overlay) -- never arrives.  raise_bits DP=0 is the
+		   whole black screen.
+
+		   A budget is a CAP, not a quantum: the RSP returns to the guest the
+		   instant the task breaks, so a generous gfx cap costs nothing when
+		   the list is short and is the only thing that lets a long one
+		   finish.  The audio task keeps its 2 ms cap (it parks in a wait loop
+		   and must hand the CPU a turn) and the 250 ms wall backstop and the
+		   freeze watchdog stay armed for both. */
+		{
+			unsigned wd_t2 = (dsp_task_type == 2u);
+			rsp_set_budget_deadline_us(dd_mode ? (wd_t2 ? 2000 : 20000) : 0,
+			                           dd_mode ? (wd_t2 ? 20480 : 262144) : 0);
+		}
 		/* ROUND-18 DIAG: wall time this slice costs, paired in the exit log with
 		   the budget checks it consumed (see rsp_slice_units_now).  This is the
 		   only clock read on this path -- one per DoRspCycles, never per

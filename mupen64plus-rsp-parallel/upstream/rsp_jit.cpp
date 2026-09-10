@@ -380,16 +380,24 @@ extern "C"
 	   the 64DD route was tuned on -- so the RSP got ~0.1 ms of work per pump
 	   and never finished a task before the guest overwrote the header again.
 	   20480 checks is that same 2 ms, but counted in emulated work instead of
-	   host time, so the slice boundaries stay identical run to run. */
+	   host time, so the slice boundaries stay identical run to run.
+
+	   ROUND 33: the unit count is now a PARAMETER.  The 2 ms slice is what
+	   the AUDIO task needs (it parks in a wait loop and only leaves it when
+	   the CPU feeds it more data), but it is exactly what stops the GFX task
+	   from ever finishing its display list -- and the guest's frame protocol
+	   waits for the DP event that only a FINISHED gfx task raises.  A budget
+	   is a CAP, not a fixed quantum: a task that finishes early still returns
+	   to the guest immediately, so the gfx cap can be generous. */
 	#define RSP_BUDGET_SLICE_UNITS 20480LL
 	#define RSP_BUDGET_HARD_CAP_US 250000LL
 
-	extern "C" void rsp_set_budget_deadline_us(long long us)
+	extern "C" void rsp_set_budget_deadline_us(long long us, long long units)
 	{
 		s_rsp_slice_units = 0;
 		if (us > 0)
 		{
-			s_rsp_budget_units = RSP_BUDGET_SLICE_UNITS;
+			s_rsp_budget_units = (units > 0) ? units : RSP_BUDGET_SLICE_UNITS;
 			s_rsp_budget_wall_hit = 0;
 			s_rsp_budget_hard_deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(RSP_BUDGET_HARD_CAP_US);
 		}
