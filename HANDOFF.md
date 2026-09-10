@@ -5,6 +5,67 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 8 (the machine was RSP-starved: 100 % of the emulation thread inside the RSP):**
+commit `3602d76cf`. The DD route handed the RSP a **100 ms (audio) / 50 ms (everything else)**
+host-run budget. Measured live: every `DoRspCycles` call took a full 50-100 ms of **wall** time and
+they ran strictly back-to-back (~20/s) — 100 % of the emulation thread inside the RSP — while the
+dynarec's interrupt hook froze (`wd_c_sample` delta 0) because the CPU never got a slice. On real
+hardware a spinning RSP does **not** block the CPU, so the budget must interleave: now **2 ms**
+(still millions of RSP cycles, far more than any real task slice). The budget-yield path is
+unchanged and still emits the clean `HALT|INTR_BREAK|irq` boundary.
+
+**Effect: the boot ADVANCED past the deadlock that had held it for 12+ minutes.** Before, the guest
+sat forever at `sys_gfx.c:198` (`while (osViGetCurrentFramebuffer() != gFrameBuffers[i]) {}`) with
+`guest viCurr.framep` pinned at `0x80200000` and the libultra `viEventQueue` empty. Now the swap
+completes (`viCurr.framep = 0x801D9800` = framebuffer1) and the screen reaches the F-Zero X EK
+**"DD LOADING" screen with its progress bar**, instead of the bare Nintendo 64DD logo.
+
+**New diagnostic instrumentation, all DD-gated (`g_dev.dd.idisk != NULL`), all pure counter
+increments or watchdog-thread reads — no hot-path I/O:**
+- `wd_c_exc_total/int/nested` in `exception_general()`, classified **before** EXL is set, so
+  `nested` really means "an exception taken while EXL/ERL was already set" — i.e. a synchronous
+  `exception_general()` from `raise_maskable_interrupt()` stomping an in-flight exception frame.
+- `wd_c_raise` / `wd_c_signal` / `wd_c_raise_bits[8]` (per `MI_INTR` source), `wd_c_cmp_int`,
+  `wd_c_vi_evt`, `wd_c_vi_ack`.
+- `wd_stall.txt` gains **DELTA2** (exc/raise/VI rates, per-source raise deltas) and a **CP0 EVENT
+  QUEUE dump** (`type`/`count`/`delta` per node) — `gen_interrupt` dispatches on
+  `cp0.q.first->data.type` and the `VI_INT` handler is what re-arms the next vertical interrupt, so
+  a lost VI shows up exactly there. It also dumps the guest's own libultra VI state
+  (`__osViCurr`/`__osViNext->framep`, `state`, `retraceCount`, `viEventQueue` validCount/msgCount,
+  and the `gFrameBuffers` index).
+- `wd_thread` now polls `files/wd_force.flag` **itself** (capped at 8 dumps/run). The old trigger
+  lived in `dynarec_sample_hook`, which stops running exactly when the CPU is starved — precisely
+  when a dump is wanted.
+
+**What the probe found (first run with it):** `c_vi_evt` froze at **272** and the **VI event is
+absent from the CP0 event queue**, whose head is `COMPARE_INT`:
+
+    CP0Q count=0b6c6651
+      EV0 type=1  count=0b752fcd delta=575868      (COMPARE_INT)
+      EV1 type=32 count=80000000 delta=1955830191  (unexpected type)
+      EV2 type=2  count=00000000 delta=-191653457  (CHECK_INT, already due)
+
+With no `VI_INT` node, the guest's `viMgrMain` thread (prio 254, blocked on the viEventQueue) never
+receives a retrace and `__osViSwapContext()` never runs. **That is the next bug to fix.**
+
+**Current end state (NOT the objective):** the CPU falls into an infinite **nested** exception loop
+— `c_exc_nested` +16.7 M per 300 ms sample (**~55 M/s**), `epc=0x80000408`, `cause=0x9000002c`
+(BD|CE|Coprocessor-Unusable), `badvaddr=ffffffff` — while every other counter (`c_task`, `c_genint`,
+`c_pi`, `c_sample`) is frozen at zero delta. `epc=0x80000408` is inside the decomp's
+`framebuffer_unused` (vram `0x80000400`, filled with `0x0001000100010001` by the game's own
+framebuffer fill), i.e. the guest is executing framebuffer fill data. The screen still presents the
+DD LOADING screen at 60 FPS because the frontend re-presents the last frame. Objective (load fully,
+**reach the menu, clean audio**) is NOT met.
+
+**Round 9 next steps:** (1) make the VI event survive — find who drops it (the `VI_INT` case in
+`gen_interrupt` deliberately does *not* remove the event; `vi_vertical_interrupt_event` removes the
+queue **head** and re-adds with `add_interrupt_event_count`, so any intervening head insertion
+desynchronises it) and re-arm it on the DD route when it goes missing; (2) trace how the PC reached
+`0x80000408` (the round-5 stale-code / descramble class again, or a jump through the fill value) —
+`wd_pc_ring` + `iplram_force.bin` via the now-working `wd_force.flag` are the tools; (3) re-check the
+SP re-dispatch rate now that the budget is 2 ms: `c_task` went 20/s → ~500/s, so each budget yield is
+reported to the guest as a task completion; that rate may need a different yield model.
+
 **ROUND 7 (ROOT CAUSE of the post-load stall: the DD SP DMA lost the IMEM bank selector):**
 commit `283a01c67`. The round-6 "wrap fix" (244245731) replaced the bank base with the flat RSP
 memory base, so `memaddr` -- already stripped of bit 12 by `& 0xff8` -- could never select IMEM:
