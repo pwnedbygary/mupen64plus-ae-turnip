@@ -266,7 +266,21 @@ extern "C"
 			   fixed 0x7fff threshold makes the game's yield protocol turns
 			   too coarse and the loader stalls at ~6/8.  Give non-audio
 			   tasks a frequent turn (every 256 polls); audio (clean type 2)
-			   keeps the large threshold (its own DSP wait protocol). */
+			   keeps the large threshold (its own DSP wait protocol).
+
+			   ROUND 17 (DD route only): the GFX task (type 1) was given the
+			   stock 0x7fff-scale wait in a first attempt to keep the ucode's
+			   own SIG0 handshake in charge.  MEASURED AND REVERTED: with the
+			   gfx task left unprompted the ucode walks its list and then
+			   parks forever -- wd_stall of that build (r17d) reads
+			   `RDPKICK n=0`, `FRAME loads t1gfx=1`, `raise_bits VI=271`
+			   (vs 6087 before), i.e. the gfx task never reached DPC_END and
+			   the whole frame protocol died with it.  The host-side
+			   preemption is load-bearing for this game's 64DD path and stays
+			   exactly as it was; the round-17 fix instead removes the
+			   *consequence* of a forced yield (the stale DMEM[0xBF8] k0) in
+			   parallel.cpp, where it does not change how often the task is
+			   preempted. */
 			unsigned task_type = ((uint32_t*)RSP::rsp.DMEM)[0xfc0 / 4];
 			unsigned threshold = (task_type == 2) ? (unsigned)RSP::SP_STATUS_TIMEOUT : 256u;
 			if (RSP::MFC0_count[rt] >= threshold)

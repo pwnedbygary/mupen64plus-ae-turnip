@@ -89,6 +89,19 @@ volatile uint32_t wd_c_rdp_kick = 0;
 volatile uint32_t wd_c_dp_consumed = 0;   /* DP bits converted to CP0 events */
 uint32_t wd_rdp_last_start = 0, wd_rdp_last_end = 0, wd_rdp_last_mi = 0, wd_rdp_last_sp = 0;
 
+/* ROUND-17 DIAG (DD-gated at the call site): what the RDP did with each kick.
+   The round-13/16 counters could not separate "parallel-RDP never reached the
+   list" from "it processed the list but the DP bit was consumed before anyone
+   looked", because the wrapper only sampled MI_INTR BEFORE the call.
+   wd_c_rdp_dp_seen counts kicks after which MI_INTR_DP is set -- with
+   wd_c_rdp_dp_hot counting those where it was ALREADY set on entry (i.e. the
+   previous raise was never consumed, which is the other failure mode), and
+   wd_rdp_ring records (start, current, end, status, mi_before, mi_after) of
+   the last 16 kicks so the whole conversation is visible in one dump. */
+volatile uint32_t wd_c_rdp_dp_seen = 0, wd_c_rdp_dp_hot = 0, wd_c_rdp_empty = 0;
+volatile uint32_t wd_rdp_ring_n = 0;
+uint32_t wd_rdp_ring[16][6];
+
 /* ROUND 11 DD DIAG: CPU writes into SP memory (write_rsp_mem), counted and
    latched in memory only; and the first moment the RSP's IMEM is observed to
    hold the game's cleared-buffer fill pattern.  All of it is printed by the

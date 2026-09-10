@@ -306,20 +306,15 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		     1068 andi v0,v0,2      # OS_TASK_DP_WAIT only
 		     106c beq v0,r0,0x108c  # not DP_WAIT -> SKIP the DATA DMA
 		     ... 108c..10ac: DMA ucode_data -> DMEM 0 ...
-		   so a *resumed* task -- which by construction has DP_WAIT cleared --
-		   never gets its saved state back: DMEM keeps whatever the intervening
-		   AUDIO task left behind.  Measured on the RP6 (round 15/16): the gfx
-		   resume at wd_hdr15 seq=201 (flags=00000005, bf4=00ae00b0 = a leftover
-		   EK audio command word) ran with DMEM[0xBF8]=0, and the F3DEX2 entry
-		   takes k0 = DMEM[0xBF8] as its display-list pointer on the resume path
-		   -> it parses RDRAM 0 as GBI -> issues the length-underflow DMA
-		   (SP_RD_LEN=0xFFFFFFFF -> 4096 bytes, wrapping through IMEM) that wipes
-		   the task header and ALL of IMEM, after which every later task reads a
-		   0x00010001 header (wd_bad3, imem_bad=1).
-
-		   Loading the yield buffer here is exactly what osSpTaskLoad's
-		   `ucode_data = yield_data_ptr` assignment means, and it is what makes
-		   the resume land on the saved DL pointer instead of on zeroed DMEM.
+		   ROUND 17 CORRECTION (the DMA trace settles it): the ucode_data ->
+		   DMEM 0 transfer is NOT gated on the DP_WAIT bit -- IMEM 106C's
+		   `beq v0,r0,0x108C` jumps *to* the DMA when DP_WAIT is clear, so a
+		   resumed task does get its saved image back (measured: wd_dmatr
+		   D7982/D8944 are `RD dst=0000 src=32dcd0 len=0c00`, i.e. the boot
+		   ucode loading the whole 0xC00 yield buffer over DMEM 0 immediately
+		   after a yielded osSpTaskLoad).  This copy is therefore the same
+		   transfer the guest performs, done one slice earlier; what it buys is
+		   the word-level fix-up below, which the guest's DMA cannot express.
 		   Gates (all required, so nothing else in the tree can match):
 		     * DD route only (Runtime IsDDPresent()); plain carts unchanged.
 		     * SP_PC == 0x1000 & 0xfff == 0: a FRESH task start (osSpTaskSetPc
@@ -329,7 +324,7 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		     * flags & OS_TASK_YIELDED, !(flags & OS_TASK_DP_WAIT)  -- the exact
 		       combination libultra produces for a yielded task.
 		     * yield ptr/size sane; size is 0xC00 (whole DMEM 0..0xBFF) and the
-		       header at 0xFC0.. is deliberately NOT touched. */
+		       OSTask header itself (0xFC0..0xFFF) is deliberately NOT touched. */
 		if (dd_mode && (*RSP::rsp.SP_PC_REG & 0xfff) == 0)
 		{
 			uint32_t* hdr = (uint32_t*)RSP::rsp.DMEM;
@@ -337,35 +332,92 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 			uint32_t r16_flags = hdr[0xfc4 / 4];
 			uint32_t r16_yptr  = hdr[0xff8 / 4];
 			uint32_t r16_ysz   = hdr[0xffc / 4];
-			if (r16_type <= 2u && (r16_flags & 0x1u) && !(r16_flags & 0x2u) &&
-			    r16_ysz >= 0x40u && r16_ysz <= 0x1000u &&
-			    r16_yptr >= 0x100u && (r16_yptr & 0x3u) == 0 &&
-			    r16_yptr + r16_ysz <= 0x800000u)
+			/* Note: the buffer copy needs a sane descriptor; the k0 fix-up
+			   below does not (it only reads the header), so the two halves are
+			   gated separately. */
+			if (r16_type <= 2u && (r16_flags & 0x1u) && !(r16_flags & 0x2u))
 			{
-				uint32_t r16_n = (r16_ysz + 3u) & ~3u;
-				uint32_t r16_i;
+				uint32_t r16_n = 0, r16_i;
 				uint32_t r16_before_f0  = hdr[0x0f0 / 4];
 				uint32_t r16_before_bf8 = hdr[0xbf8 / 4];
-				/* NOTE: RSP::rsp.RDRAM is an `unsigned char *` (RSP_INFO is
-				   byte-typed); the word view is state.rdram (uint32_t*). */
-				for (r16_i = 0; r16_i < (r16_n >> 2); r16_i++)
-					hdr[r16_i] = RSP::cpu.get_state().rdram[((r16_yptr & 0x7ffffcu) >> 2) + r16_i];
-				/* DIAG (DD-gated, a handful of events per run): what the stale
-				   DMEM held vs. what the saved image restored.  This is the
-				   line that proves the resume now starts from the ucode's own
-				   saved k0 instead of from the audio task's leftovers. */
+				uint32_t r16_before_ff0 = hdr[0xff0 / 4];
+				if (r16_ysz >= 0x40u && r16_ysz <= 0x1000u &&
+				    r16_yptr >= 0x100u && (r16_yptr & 0x3u) == 0 &&
+				    r16_yptr + r16_ysz <= 0x800000u)
+				{
+					r16_n = (r16_ysz + 3u) & ~3u;
+					/* NOTE: RSP::rsp.RDRAM is an `unsigned char *` (RSP_INFO is
+					   byte-typed); the word view is state.rdram (uint32_t*). */
+					for (r16_i = 0; r16_i < (r16_n >> 2); r16_i++)
+						hdr[r16_i] = RSP::cpu.get_state().rdram[((r16_yptr & 0x7ffffcu) >> 2) + r16_i];
+				}
+
+				/* ROUND 17: GIVE THE RESUMED UCODE A VALID DISPLAY-LIST POINTER.
+
+				   Disassembly of the ucode this ROM actually submits
+				   (GFXMODE_F3DFLX -> gspF3DFLX2_Rej_fifo, text RDRAM 0x752AE0
+				   -> IMEM 0x080; linker_scripts/jp/ek/symbol_addrs_nlib_vars.txt
+				   confirms both, and the live IMEM matches the text byte for
+				   byte) shows that the yielded resume is the ONE entry path that
+				   does not take its display list from the task header:
+
+				     IMEM 0098  lw  t3,0xF0(r0)     # DMEM[0xF0] = FIFO end ptr
+				     IMEM 009C  lw  t4,0xFC4(r0)    # DMEM[0xFC4] = task flags
+				     IMEM 00A4  beq t3,r0,0x00C0    # 0 -> COLD init path
+				     IMEM 00AC  andi t4,t4,0x1      # OS_TASK_YIELDED
+				     IMEM 00B0  beq t4,r0,0x0144    # not yielded -> warm path
+				     IMEM 00B4  sw  r0,0xFC4(r0)    # (consume the flag)
+				     IMEM 00B8  j   0x0164          # <- YIELDED RESUME
+				     IMEM 00BC  lw  k0,0xBF8(r0)    #    k0 = DMEM[0xBF8]  (saved)
+				     IMEM 0144  (adds the ucode base to the DMEM 0x280/0x288
+				                 overlay descriptors -- SKIPPED on the resume,
+				                 which is why those words must stay absolute)
+				     IMEM 0160  lw  k0,0xFF0(r0)    # k0 = header data_ptr
+				     IMEM 0164  (main display-list loop; the loop polls
+				                 SP_STATUS & 0x80 per command and jumps to
+				                 IMEM 0FAC, the DMA+overlay loader)
+
+				   So every entry except the yielded resume walks from
+				   data_ptr.  Measured on the RP6: the healthy trip reads
+				   `RD dst=09b0 src=24e260` (== data_ptr), while the yielded
+				   resume whose saved DMEM had [0xBF8]=0x1208 walked RDRAM
+				   0x1208 -- framebuffer memory filled with 0x00010001, which
+				   the ucode reads as G_NOOP (opcode 0x00) straight into
+				   gTaskOutputBuffer, kicking the RDP on an empty list; the
+				   game's DP event then never fires and the loader stalls.
+
+				   DMEM[0xBF8] is scratch the ucode itself never stores k0 to
+				   (verified: no store to 0xBF8 anywhere in the 0xF80-byte text
+				   or the 0x170-byte overlay at RDRAM 0x753AF8), so whatever the
+				   save captured there is a stale command word -- 0xE6000000,
+				   0x10000003, 0x1208 in the live traces.  Re-pointing it at the
+				   header's data_ptr makes the resume walk the real, current
+				   display list exactly like a fresh task, without disturbing
+				   anything else the saved image restored (the FIFO/RDP state at
+				   0xF0/0xF4 and the absolute overlay descriptors at 0x280/0x288
+				   that the 0x144 path must not re-base). */
+				{
+				uint32_t r16_saved_k0 = hdr[0xbf8 / 4];
+				uint32_t r16_fixed_bf8 = hdr[0xff0 / 4];
+				hdr[0xbf8 / 4] = r16_fixed_bf8;
+
+				/* DIAG (DD-gated, a handful of events per run): the stale DMEM
+				   word, the saved k0 the ucode would have taken, the data_ptr it
+				   takes instead, and how much of the image was restored. */
 				{
 					static FILE* yf = NULL;
 					if (!yf) yf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_yld.txt", "a");
 					if (yf)
 					{
-						fprintf(yf, "YLD ms=%lld type=%u flags=%08x yptr=%06x ysz=%04x stale_f0=%08x stale_bf8=%08x rest_f0=%08x rest_bf8=%08x rest_bfc=%08x st=%08x\n",
-						        wd_now_ms(), r16_type, r16_flags, r16_yptr, r16_ysz,
+						fprintf(yf, "YLD ms=%lld type=%u flags=%08x yptr=%06x ysz=%04x n=%04x stale_f0=%08x stale_bf8=%08x rest_f0=%08x saved_k0=%08x fixed_k0=%08x rest_bfc=%08x ff0=%08x stale_ff0=%08x st=%08x\n",
+						        wd_now_ms(), r16_type, r16_flags, r16_yptr, r16_ysz, r16_n,
 						        r16_before_f0, r16_before_bf8,
-						        hdr[0x0f0 / 4], hdr[0xbf8 / 4], hdr[0xbfc / 4],
+						        hdr[0x0f0 / 4], r16_saved_k0, r16_fixed_bf8,
+						        hdr[0xbfc / 4], hdr[0xff0 / 4], r16_before_ff0,
 						        *RSP::rsp.SP_STATUS_REG);
 						fflush(yf);
 					}
+				}
 				}
 			}
 		}
@@ -425,7 +477,16 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		   still ~millions of RSP cycles (far more than any real task slice)
 		   while guaranteeing the CPU a turn.  The budget-yield path below
 		   still emits the clean HALT+INTR_BREAK+irq task boundary, so the
-		   guest acks and re-dispatches exactly as with the long deadline. */
+		   guest acks and re-dispatches exactly as with the long deadline.
+
+		   ROUND 17 (DD route only): relaxing the budget for gfx tasks (so the
+		   ucode could finish its display list unprompted) was TRIED AND
+		   REVERTED.  That build (r17d) reads `RDPKICK n=0`,
+		   `FRAME loads t1gfx=1`, `raise_bits VI=271/AI=192` against
+		   6087/6005 for this build: the gfx task never reached DPC_END, so
+		   the RDP was never kicked and the frame protocol stopped dead.  The
+		   2 ms slice is what makes the DD path progress at all, so it stays
+		   in force for every task type. */
 		rsp_set_budget_deadline_us(dd_mode ? 2000 : 0);
 
 		int wd_budget_yield = 0;

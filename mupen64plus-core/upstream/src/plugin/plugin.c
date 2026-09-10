@@ -560,11 +560,36 @@ static void rsp_process_rdp_list(void)
     {
         extern volatile uint32_t wd_c_rdp_kick;
         extern uint32_t wd_rdp_last_start, wd_rdp_last_end, wd_rdp_last_mi, wd_rdp_last_sp;
+        extern volatile uint32_t wd_c_rdp_dp_seen, wd_c_rdp_dp_hot, wd_c_rdp_empty;
+        extern volatile uint32_t wd_rdp_ring_n;
+        extern uint32_t wd_rdp_ring[16][6];
+        uint32_t mi_before = g_dev.mi.regs[MI_INTR_REG];
+        uint32_t cur = g_dev.dp.dpc_regs[DPC_CURRENT_REG];
+        uint32_t end = g_dev.dp.dpc_regs[DPC_END_REG];
         wd_c_rdp_kick++;
         wd_rdp_last_start = g_dev.dp.dpc_regs[DPC_START_REG];
-        wd_rdp_last_end = g_dev.dp.dpc_regs[DPC_END_REG];
-        wd_rdp_last_mi = g_dev.mi.regs[MI_INTR_REG];
+        wd_rdp_last_end = end;
+        wd_rdp_last_mi = mi_before;
         wd_rdp_last_sp = g_dev.sp.regs[SP_STATUS_REG];
+        if ((int32_t)((end & 0x00FFFFF8u) - (cur & 0x00FFFFF8u)) <= 0)
+            wd_c_rdp_empty++;
+        if (mi_before & MI_INTR_DP)
+            wd_c_rdp_dp_hot++;
+        gfx.processRDPList();
+        {
+            uint32_t mi_after = g_dev.mi.regs[MI_INTR_REG];
+            uint32_t* e = wd_rdp_ring[wd_rdp_ring_n & 15];
+            if (mi_after & MI_INTR_DP)
+                wd_c_rdp_dp_seen++;
+            e[0] = wd_rdp_last_start;
+            e[1] = cur;
+            e[2] = end;
+            e[3] = g_dev.dp.dpc_regs[DPC_STATUS_REG];
+            e[4] = mi_before;
+            e[5] = mi_after;
+            wd_rdp_ring_n++;
+        }
+        return;
     }
     gfx.processRDPList();
 }

@@ -1492,6 +1492,24 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
             tag, wd_c_rdp_kick, wd_rdp_last_start, wd_rdp_last_end, wd_rdp_last_mi,
             wd_rdp_last_sp, wd_c_sp_status_wr, wd_c_sp_sig_wr);
         {
+            /* ROUND-17: did the video plugin actually see a command list, and
+               did it raise MI_INTR_DP for it?  empty = the CURRENT..END window
+               handed to parallel-RDP was non-positive, i.e. the plugin returned
+               without touching a single command. */
+            extern volatile uint32_t wd_c_rdp_dp_seen, wd_c_rdp_dp_hot, wd_c_rdp_empty;
+            extern volatile uint32_t wd_rdp_ring_n;
+            extern uint32_t wd_rdp_ring[16][6];
+            uint32_t k, n = wd_rdp_ring_n < 16 ? wd_rdp_ring_n : 16;
+            fprintf(f, "%s RDPDP dp_seen=%u dp_hot=%u empty=%u ring_n=%u\n",
+                tag, wd_c_rdp_dp_seen, wd_c_rdp_dp_hot, wd_c_rdp_empty, wd_rdp_ring_n);
+            for (k = 0; k < n; k++)
+            {
+                uint32_t* e = wd_rdp_ring[(wd_rdp_ring_n - n + k) & 15];
+                fprintf(f, "%s RDPR %u start=%08x cur=%08x end=%08x st=%08x mib=%08x mia=%08x\n",
+                    tag, k, e[0], e[1], e[2], e[3], e[4], e[5]);
+            }
+        }
+        {
             extern volatile uint32_t wd_c_mi_rd_dp, wd_c_dp_ack, wd_c_signal, wd_c_raise;
             extern volatile uint32_t wd_c_dp_consumed;
             fprintf(f, "%s DPCHAIN mi_rd_dp=%u dp_ack=%u dp_consumed=%u core_signal=%u core_raise=%u\n",
