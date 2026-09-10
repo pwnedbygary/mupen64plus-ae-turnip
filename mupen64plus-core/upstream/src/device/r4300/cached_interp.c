@@ -1026,6 +1026,40 @@ static volatile uint32_t wd_pc_idx = 0;
 static volatile int wd_fault_dumped = 0;
 static volatile int wd_spodd_dumped = 0;
 
+/* DD-route only (2026-09-10 round 3): instruction-level ring of
+   (pc, opcode, sp) sampled after every interpreted instruction.  `$sp` going
+   odd (0x800d4200 ^ 3 -- mupen's S8 byte-lane constant) is the FIRST defect in
+   the F-Zero X EK boot failure, and it reproduces IDENTICALLY under the cached
+   interpreter and the recompiler, so it is shared code, not the dynarec.
+   This records the exact instruction that introduces it. */
+#define WD_IRING 96
+static uint32_t wd_i_pc[WD_IRING];
+static uint32_t wd_i_op[WD_IRING];
+static int64_t  wd_i_sp[WD_IRING];
+static uint32_t wd_i_idx = 0;
+static volatile int wd_spodd2_dumped = 0;
+
+static void wd_spodd2_dump(struct r4300_core* r4300, uint32_t pc, uint32_t op)
+{
+    FILE* f = fopen(WD_FILES_DIR "wd_spodd2.txt", "w");
+    uint32_t i, n;
+    int64_t* regs;
+    if (f == NULL) return;
+    regs = r4300_regs(r4300);
+    fprintf(f, "WDSPODD2 pc=%08x op=%08x sp=%08x ra=%08x a0=%08x a1=%08x a2=%08x a3=%08x\n",
+            pc, op, (uint32_t)regs[29], (uint32_t)regs[31], (uint32_t)regs[4],
+            (uint32_t)regs[5], (uint32_t)regs[6], (uint32_t)regs[7]);
+    n = wd_i_idx;
+    fprintf(f, "IRING n=%u\n", n < WD_IRING ? n : WD_IRING);
+    for (i = 0; i < WD_IRING; i++) {
+        uint32_t idx = (n - WD_IRING + i) & (WD_IRING - 1);
+        if (n < WD_IRING && i >= n) continue;
+        fprintf(f, "%08x %08x %08x\n", wd_i_pc[idx], wd_i_op[idx], (uint32_t)wd_i_sp[idx]);
+    }
+    fclose(f);
+    DebugMessage(M64MSG_WARNING, "WDSPODD2 pc=%08x op=%08x sp=%08x", pc, op, (uint32_t)regs[29]);
+}
+
 /* guest word read from the (word-swapped) RDRAM image */
 static uint32_t wd_rdram32(uint32_t addr)
 {
@@ -1255,6 +1289,23 @@ void run_cached_interpreter(struct r4300_core* r4300)
 #ifdef DBG
         if (g_DebuggerActive) update_debugger((*r4300_pc_struct(r4300))->addr);
 #endif
-        (*r4300_pc_struct(r4300))->ops();
+        {
+            struct precomp_instr* pin = *r4300_pc_struct(r4300);
+            uint32_t pc_here = pin->addr;
+            if (g_dev.dd.idisk != NULL && !wd_spodd2_dumped) {
+                uint32_t idx = wd_i_idx & (WD_IRING - 1);
+                wd_i_pc[idx] = pc_here;
+                wd_i_op[idx] = wd_rdram32(pc_here);
+                wd_i_sp[idx] = r4300_regs(r4300)[29];
+                wd_i_idx = wd_i_idx + 1;
+            }
+            pin->ops();
+            if (g_dev.dd.idisk != NULL && !wd_spodd2_dumped) {
+                if (r4300_regs(r4300)[29] & 3) {
+                    wd_spodd2_dumped = 1;
+                    wd_spodd2_dump(r4300, pc_here, wd_rdram32(pc_here));
+                }
+            }
+        }
     }
 }
