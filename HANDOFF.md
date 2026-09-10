@@ -54,9 +54,12 @@ injection measured `fake_n=0` in this run, so it is not even firing; the SIG1 fa
 
 **Two side findings worth keeping.** (1) The `0x00010001` fill in RDRAM 0x400-0x25800 is the
 GAME's own boot code: `sys_main.c:259` fills all three framebuffers
-(`*var_v1-- = 0x0001000100010001`) while `gFrameBuffers[]` is still NULL, so it writes from
-`offsetof(buffer)+19199*8` downwards — the fill's size (0x25800) matches exactly. It is
-static, present at 40s and 85s, and predates the frame stall. (2) Instrumentation on the RSP
+(`*var_v1-- = 0x0001000100010001`) and this build's third entry in `gFrameBuffers`
+(0x8079A330) is **0x80000400** (`= 0x801D9800, 0x80200000, 0x80000400`), i.e. its pixels land
+at physical 0x400..0x25B00 — the fill's measured extent is exactly 0x400-0x25800. It is
+static, present at 40s and 85s, and predates the frame stall; the same 0x80000400 is round 11's
+"cart-boot handoff" address, so the *content* of that area (DD IPL3 on hardware) is still the
+thing this game expects to find there. (2) Instrumentation on the RSP
 hot path is not free: with per-SP_STATUS-write file I/O the emulation process died with
 `SIGILL` in the RSP JIT (`pc` in an anon .bss mapping, pid 28133 `:EmulationProcess`) about 4s
 in, at the gfx task; the same tree with RAM-only rings ran to 85s. Keep the RSP path file-I/O
