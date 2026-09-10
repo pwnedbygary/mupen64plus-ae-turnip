@@ -5,9 +5,164 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 23 — ROOT CAUSE FOUND: THE F3DEX2 UCODE'S DL-WALK PROLOGUE IS *NOT IN IMEM* AT
+RUNTIME. IMEM 0x000..0x17F HOLDS THE WRONG RDRAM REGION, SO THE WALK NEVER READS THE GUEST'S
+DISPLAY LIST AND THE RDP IS NEVER FED.** Everything below is measured against the r22a RAM
+dump, the r22a/r22b traces, and the F-Zero X EK decomp source that is in the workspace.
+
+**0. READ-ENDIANNESS TRAP (applies to every earlier read of `ram.bin`).** `.fzxwork/r22a/ram.bin`
+is the 8 MB RDRAM written as **host little-endian u32 words**, so each 4-byte group is
+byte-reversed relative to N64 memory. Proof: file bytes at 0x000000 are `74 80 1a 3c`, which only
+decodes as MIPS read little-endian: `lui $26,0x8074; addiu $26,$26,0x6800; jr $26` = a jump to
+`__osException` (0x80746800), i.e. the boot exception vector. **Read words with
+`struct.unpack('<I', ...)`, not with `xxd`/`.hex()`.** Zeros are unaffected, so the
+"gTaskOutputBuffer is all zero" result still stands; any *content* decode taken before this round
+must be redone. New helper: `.fzxwork/tools/sym.py <addr>...` resolves guest addresses against
+`linker_scripts/jp/ek/symbol_addrs.txt` (note: the ucode symbols are NOT in that file —
+`gspF3DEX2_fifoTextStart` is **not** verifiable from it, see §3).
+
+**1. THE GUEST'S INPUT IS CORRECT — so the fault is entirely downstream of the guest.**
+The gfx task matches `src/sys/sys_gfx.c:142-175` (`Gfx_SetTask`) field for field against the
+r22a header latch: `type=M_GFXTASK(1)`, `flags=OS_TASK_LOADABLE(0x4)`, `ucode=0x007505C0`,
+`ucode_data_size=2048`, `output_buff=0x802D9CD0` (size 0x54000), `yield_data_ptr=0x8032DCD0`
+(size 0xC00), and `data_ptr = 0x80284990` — which is exactly
+`task->t.data_ptr = (u64*) gGfxPool->gfxBuffer` with `data_size = (gMasterDisp -
+gGfxPool->gfxBuffer) * sizeof(Gfx) = 0x18`. And the display list at 0x80284990 is complete and
+correct, three commands:
+
+```
+284990: DB060000 00000000   G_MOVEWORD  (index G_MW_SEGMENT=6, offset 0 -> segment 0)
+284998: E9000000 00000000   G_RDPFULLSYNC          <-- the command that must raise MI_INTR_DP
+2849A0: DF000000 00000000   G_ENDDL
+```
+
+So F3DEX2 is handed, in 24 bytes, a display list whose whole purpose is to make the RDP execute
+`SyncFull`. Nothing about the guest, the DD route's loader, or the frame protocol is wrong at this
+point — the ucode simply never gets that far.
+
+**2. THE KICK PROTOCOL, DECODED (this replaces all earlier speculation about DPC).** The F3DEX2
+text is at RDRAM 0x7505C0, and mapping RDRAM->IMEM is `IMEM = rdram - 0x750540` (i.e. text at
+IMEM 0x080), verified two ways: `wd_bad1.txt`'s IMEM sample dump maps back to RDRAM with that
+constant for 0x180..0xFFF *including* the last line (`1FC0: 95740006 359f0000 400b3000
+1560ffff` = the DMA routine at RDRAM 0x751500), and the ucode's own `jal 0x1FD8` (target IMEM
+0xFD8) lands exactly on the flush-routine entry at RDRAM 0x751518.
+
+* The FIFO **write pointer** lives in DMEM 0x0F0 and the **read pointer** in DMEM 0xFE8. The
+  kick is `mtc0 DMEM[0x0F0], DPC_END`, then wait for `DPC_CURRENT == DMEM[0xFE8]`, then
+  `mtc0 DMEM[0xFE8], DPC_START` (IMEM 0x270-0x2BC).
+* A second, **deliberately empty** kick path sets `DPC_START = DPC_END = DMEM[0xFEC]`
+  (IMEM 0x10C-0x114) and records `DMEM[0xF0] = that value`. **This is the "empty
+  `start=cur=end=0032DCD0`" form that dominates the RDPBAD/RDPF tables — it is by design, not a
+  bug.** The RDPBAD `cur=FFFFFFF8` symptom is a separate, later artefact.
+* Consequence: since the RDP is told to consume RDRAM up to a write pointer that sits inside
+  `gTaskOutputBuffer`, the ucode MUST have DMA-written the command stream below it.
+
+**3. THE ONLY TWO `$20`-NEGATIVE (== WRITE) SITES, corrected from round 22D.** Round 22D claimed
+`bltz $20` in the descriptor DMA routine (IMEM 0xFE8) can never be taken. That is too strong: the
+routine is reached from exactly five `jal` sites (IMEM 0x178, 0x500, 0xFBC, 0x1038, 0x1050) and
+three of them can produce a negative `$20` — `addi $20,$22,-8536` (0x2C0), `sub $20,$20,$1`
+(0x4FC) and `addi $20,$0,-32768` (0x1074, the only literal-negative one: `SP_MEM_ADDR=0xFFFF8000`
+masks to **DMEM 0x000**). The `lhu $20,6($11)` at IMEM 0xFC0 is confirmed (`0x95740006`, opcode
+0x25) and is genuinely read-only, but it is not the only call site. **What is still true and now
+better stated: no site anywhere in this ucode can write the RDP command buffer (DMEM 0x9C8+) out
+to RDRAM**, which is what the §2 kick protocol requires.
+
+**4. THE DL WALK, DECODED — AND THIS IS WHERE IT BREAKS.** The walk prologue is at IMEM
+0x160..0x17F and it is the code that loads the guest's display list:
+
+```
+160: lw    $26,4080($0)   ; $26 = DMEM[0xFF0] = t.data_ptr = THE DISPLAY LIST
+164: addi  $11,$0,0x2e8   ; descriptor at DMEM 0x2E8
+168: jal   0x7ed
+16c: ori   $12,$31,0
+170: addi  $19,$0,0xa7    ; len = 0xA8 = 168 bytes
+174: ori   $24,$26,0      ; dram = the DL pointer
+178: jal   0x7f6          ; the DMA routine -> READ into DMEM 0x920
+17c: addiu $20,$0,0x920
+```
+followed by the chunk loop (`$26 += 0xA8`, `$27 = -0xA8` counting up to 0 in steps of 8 = 21
+commands per chunk, dispatch through a 16-bit offset table at DMEM 0x36E).
+
+**At runtime those eight instructions are not there.** Two independent measurements agree
+(`wd_bad1.txt`'s `imem` block and the `imem=` field of `wd_wild.txt`) that
+`IMEM 0x000..0x03F = 900100DE 001913C0 0C000487 035B1820 | ...`, which is byte-identical to
+RDRAM **0x7515D8**, and the sampled IMEM groups map contiguously to RDRAM
+**0x7515D8..0x751757**. Mapping the samples gives a complete, precise picture of what IMEM holds:
+
+| IMEM | actually loaded from | should have been (rspboot load, §5) |
+|---|---|---|
+| 0x000-0x17F (384 B) | RDRAM 0x7515D8..0x751757 = image[0x1018..0x1197] | RDRAM 0x750540..0x7506BF |
+| 0x180-0xFFF (3712 B) | RDRAM 0x7506C0..0x75153F (correct ucode text, shifted +0x100) | RDRAM 0x7506C0..0x75153F |
+
+So the walk prologue (IMEM 0x160..0x17F) actually executes
+`ad63ef8c 8c1900c8 08000482 8c1800cc 900b01dc 080004bb 900601dd 37fe0000` — the tail of an
+unrelated DMEM save/restore routine containing `j 0x482` / `j 0x4BB` far jumps. `$26` is never
+loaded, so the walk starts from whatever the registers happen to hold. **That single fact
+explains every measurement in rounds 18-22 at once:** the walk sources that are not the DL
+(0x2C03C0, then a runaway through `gTaskOutputBuffer`), the growing 0x168/0x170/0x178 read
+lengths, `s0=00000000` on every sample, no write DMA to `gTaskOutputBuffer`, all-zero
+`gTaskOutputBuffer`, `DPC` windows that only ever take the empty-kick form, `mia=00000000`,
+`raise_bits DP=0`, no FULLSYNC, and the guest parked forever on `osRecvMesg(&D_800DCAC8)`.
+
+**5. THE RSPBOOT IS FULLY DECODED, AND IT LENGTHENS THE CORRECT LOAD (a long-standing note is
+wrong).** RDRAM 0x7504F0..0x7505C0 (`rspbootTextStart = 0x807504F0`, 0xD0 bytes):
+
+```
+000: j     0x1000419
+004: addi  $1,$0,0xfc0       ; $1 = DMEM 0xFC0 = the OSTask header
+008: lw    $2,16($1)         ; $2 = t.ucode
+00c: addi  $3,$0,0xf7f
+010: addi  $7,$0,0x1080      ; SP_MEM_ADDR = IMEM 0x080
+014: mtc0  $7,SP_MEM_ADDR
+018: mtc0  $2,SP_DRAM_ADDR
+01c: mtc0  $3,SP_RD_LEN      ; (0xF7F & 0xFFF)+1 = 0xF80 = 3968 bytes  <-- NOT 4096
+020-030: wait for the DMA, jal to the wait routine
+034: jr    $7                ; jump to IMEM 0x080
+038: mtc0  $0,SP_SEMAPHORE
+```
+Then it reads `header[0x18/0x1C]` (`t.ucode_data` / size) and DMAs that to **DMEM 0x000** with
+`SP_MEM_ADDR = 0`, and loops on the DPC.
+
+**`SP_RD_LEN = 0x0F7F` means length 3968, not 4096: the rspboot load does NOT wrap.** The
+round-18/round-22D note that describes it as "a 4096-byte load ... wrapping into 0x00..0x7F" is a
+miscount (`0xF7F` is the length *minus one*), and the cp0.cpp comment that justifies the DD-route
+4 KiB bank-wrap in `rsp_dma_read` by that claim rests on the same miscount — re-derive that
+justification before trusting the bank-wrap code. What the rspboot actually does is load the text
+to IMEM 0x080..0xFFF and jump to 0x080, which is *exactly* the mapping §2/§4 verified — so the
+rspboot is behaving, and something **after** it (or a second loader) puts RDRAM 0x7515D8 into
+IMEM 0x000..0x17F.
+
+**6. THE CORROBORATING REGISTER STATE.** At the moment of the `wd_bad1` capture the RSP register
+file is:
+`$2=00751540  $3=007515D8  $4=00751748  $5=00750810  $6=000002A8  $7=00001080  $17=00000F80
+$19=00000550  $20=00000920  $24=00000000  $26=152C09A8  $27=FFFFFF68(-0x98)  $28=00413470
+$31=0000118C`, with `spregs mem=00000920 dram=00000000 rdlen=00000550 wrlen=000002BF`.
+`$2/$3/$4` are three RDRAM pointers that differ by exactly the anomalous 0x98 and 0x170 strides
+(`$2 = t.ucode+0xF80 = 0x751540` is *the correct wrap point*; `$3 = t.ucode+0x1018 = 0x7515D8` is
+*what IMEM 0x000 actually holds*) — i.e. the ucode/loader is carrying both the right and the wrong
+address for the same region, and `$27 = -0x98` is that same stride as an index base. Note also
+`wrlen=000002BF`: a **write** DMA had been programmed, so the DD-gated write path is live.
+
+**7. NEXT ROUND (one instrument, then the fix).** The remaining unknown is *which transfer* puts
+RDRAM 0x7515D8 at IMEM 0x000 and/or IMEM 0x080. That is one bounded trace: in `rsp_dma_read`
+log every transfer whose destination bank is **IMEM** (`dest & 0x1000`) or whose per-word
+`dest & 0x1FFC` masks across a bank boundary, with `pc`, `dest`, `src`, `len`, `count`, `skip`
+and — after the transfer — `imem[0..3]`, for the first ~64 such transfers, plus the same for the
+rspboot's own two loads. `r19_bankwrap_note` already exists for the boundary class. Then:
+(a) if the bad transfer is the rspboot's text load, the DMA length/`SP_MEM_ADDR` is being
+decoded wrong in the plugin (look hard at the DD-route per-word `dest & 0x1FFC` wrap that
+replaced upstream's clamp, and at `length = (length + 7) & ~7`);
+(b) if it is a ucode self-overlay, the source pointer (`DMEM 0x92C`, `DMEM 0xFD0`) is wrong and
+the DL chunk at DMEM 0x920 is feeding it garbage — in which case fix the walk first;
+(c) either way, A/B on the **stock** (non-DD) `rsp_dma_read` path for this same transfer decides
+whether this is a regression the DD gate introduced. Everything stays DD-gated
+(`g_dev.dd.idisk != NULL`) and the plain-cart CI baseline must be re-checked after.
+
 **ROUND 22D — THE DEADLOCK IS NOT A CRASH AND NOT AN INTERRUPT BUG: THE RDP IS FED ZEROS
 BECAUSE THE GFX UCODE NEVER WRITES ITS COMMAND STREAM TO RDRAM.** Three independent
-measurements, all from the r22a run, plus a new high-leverage resource.
+measurements, all from the r22a run, plus a new high-leverage resource. **See round 23 above for
+the mechanism that makes this true, and for two corrections to this section: the RAM dump is
+word-swapped (§0) and `bltz $20` is not unreachable (§3).**
 
 **(1) The F-Zero X decompilation is in the workspace** at `.fzxwork/fzerox-decomp/` and it is the
 **Expansion Kit (ek)** target (`fzerox-expansion.jp.ek.md5`), i.e. the exact binary we run:

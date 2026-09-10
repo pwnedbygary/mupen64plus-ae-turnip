@@ -1131,13 +1131,23 @@ extern "C"
 		   the end of DMEM/IMEM; real hardware WRAPS (the per-word address is
 		   masked with 0x1FFC, which is what the inner loop below does).  The
 		   64DD boot ucode depends on the wrap: it issues
-		   SP_MEM_ADDR=0x1080 / SP_RD_LEN=0xF7F, i.e. a 4096-byte load of the
-		   whole main ucode into IMEM starting at 0x80 and wrapping into
-		   0x00..0x7F.  Clamping truncates it to 3968 bytes and leaves the
-		   ucode's first 128 bytes (IMEM 0x000..0x07F) holding whatever was
-		   there before, so the RSP resumes into garbage and burns its whole
-		   host budget instead of running the ucode.  DD route only: plain
-		   games keep the stock clamp exactly (user rule 2026-09-05). */
+		   SP_MEM_ADDR=0x1080 / SP_RD_LEN=0xF7F.
+
+		   ROUND 23 CORRECTION (the premise above was miscounted, and it is
+		   the premise, not the code, that was wrong): SP_RD_LEN holds
+		   LENGTH-1, so 0xF7F means **0xF80 = 3968 bytes, not 4096**.  The
+		   rspboot's load therefore ends exactly on the IMEM bank boundary
+		   (0x1080+0xF80 == 0x2000, last word 0x1FFC) and does NOT wrap.
+		   Decoded from RDRAM 0x7504F0 (rspboot, 0xD0 bytes): `lw $2,16($1)`
+		   (t.ucode) -> DRAM_ADDR, `addi $3,$0,0xf7f` -> RD_LEN,
+		   `addi $7,$0,0x1080` -> MEM_ADDR, then `jr $7`.  No clamp can
+		   truncate this transfer, so the DD-route bank-limited wrap is not
+		   needed *for this load* and must be justified by something else
+		   before it is trusted -- and it is now a prime suspect for the
+		   round-23 finding that IMEM 0x000..0x17F holds RDRAM 0x7515D8
+		   instead of 0x750540 (see HANDOFF.md ROUND 23 sections 4-7).
+		   DD route only: plain games keep the stock clamp exactly
+		   (user rule 2026-09-05). */
 		if (!rsp_ares_budget_enabled() &&
 		    ((*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0xFFF) + length) > 0x1000)
 			length = 0x1000 - (*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0xFFF);
@@ -1186,8 +1196,9 @@ extern "C"
 		   Real hardware, and this core's own CPU-side SP DMA on the DD route
 		   (`do_sp_dma`'s ROUND-7 `memaddr & 0xfff`), wrap within the bank
 		   selected by bit 12 of SP_MEM_ADDR.  The DD route's whole-ucode load
-		   (SP_MEM_ADDR=0x1080, RD_LEN=0xF7F: 4096 bytes into IMEM starting at
-		   0x080) ends exactly on the bank boundary, so bank-limited wrapping
+		   (SP_MEM_ADDR=0x1080, RD_LEN=0xF7F: 3968 bytes into IMEM starting at
+		   0x080 -- see the ROUND 23 CORRECTION above; the length is 0xF80, not
+		   4096) ends exactly on the bank boundary, so bank-limited wrapping
 		   reproduces it byte for byte while stopping a stray length from
 		   crossing banks.  Plain carts keep the stock mask (user rule
 		   2026-09-05). */
