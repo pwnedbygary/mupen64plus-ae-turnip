@@ -403,6 +403,20 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
    on one build. */
 #define R20_SIG0_YIELD 0
 
+/* ROUND 21 (DD route only): 1 = on a host-forced yield, emulate the ucode's own
+   yield save (DMEM[0xBF8] = live k0, DMEM[0xBFC] = ucode base, DMEM[0..0xBFF] ->
+   the header's yield_data_ptr) and answer with SIG1|SIG2 while LEAVING SIG0 set
+   (libultra's osSpTaskYielded only records OS_TASK_YIELDED while SIG0 is still
+   visible).  0 = the round-10..20 behaviour, kept for A/B measurement on one
+   build.  See the long note at the yield site in RSP_MFC0. */
+#define R21_KEEP_SIG0 1
+
+static unsigned r21_save_n = 0;
+static uint32_t r21_save_k0 = 0, r21_save_f0 = 0;
+extern "C" unsigned r21_emu_save_n(void) { return r21_save_n; }
+extern "C" uint32_t r21_emu_save_k0(void) { return r21_save_k0; }
+extern "C" uint32_t r21_emu_save_f0(void) { return r21_save_f0; }
+
 static unsigned r20_dma_n = 0, r20_dma_dl = 0, r20_dma_out = 0, r20_dma_lowmem = 0;
 static unsigned r20_save_n = 0, r20_first_n = 0;
 static uint32_t r20_first[12][6];
@@ -658,6 +672,79 @@ extern "C"
 			// the CPU-side wait (osSpTaskStart / SP_STATUS poll at the
 			// game's side) completes.  This is the CXD4 "CPU host" model:
 			// the CPU took over the timeline.
+			/* ============================================================
+			   ROUND 21 (DD route only): MAKE THE FORCED YIELD FAITHFUL --
+			   PERFORM THE UCODE'S OWN YIELD SAVE, AND DO NOT CLEAR SIG0.
+
+			   The decomp vendors libultra, so the contract is now read from
+			   source instead of inferred
+			   (`.fzxwork/fzerox-decomp/src/libultra/io/`):
+
+			     sptaskyielded.c:  result = (status & SP_STATUS_YIELDED) ? OS_TASK_YIELDED : 0;
+			                       if (status & SP_STATUS_YIELD) {   // SIG0
+			                           tp->t.flags |= result; ... }
+
+			     sptask.c (osSpTaskLoad), for a task whose flags carry
+			     OS_TASK_YIELDED:
+			                       tp->t.ucode_data      = tp->t.yield_data_ptr;
+			                       tp->t.ucode_data_size = tp->t.yield_data_size;
+			                       if (flags & OS_TASK_LOADABLE)
+			                           tp->t.ucode = IO_READ(yield_data_ptr + 0xBFC);
+
+			   i.e. on resume the RSP's *ucode_data becomes the yield buffer*
+			   and the ucode pointer comes out of its last word -- exactly the
+			   DMEM image the ucode's yield handler saves at
+			   IMEM PC 0x0060..0x0080:
+
+			       0060 lw  t3,0xFD0(r0)   # ucode base
+			       0064 sw  k0,0xBF8(r0)   # >>> resume DL pointer
+			       0068 sw  t3,0xBFC(r0)   # >>> resume ucode pointer
+			       0070 lw  t8,0xFF8(r0)   # yield_data_ptr
+			       007C j   0x0FD8         # DMA DMEM[0..0xBFF] -> yield buffer
+			       0080 addi ra,r0,0x1088  # -> 0x088: mtc0 SIG1|SIG2 ; break
+
+			   Two separate bugs followed from not doing this:
+
+			   (1) SIG0 was CLEARED here.  libultra only records
+			       OS_TASK_YIELDED *while the request is still visible*, so
+			       clearing it makes osSpTaskYielded() return 0, the game never
+			       sets sGfxTaskYielded, sys_main.c:347 never calls
+			       Sched_SpTaskResumeGfx() -- and the interrupted GFX task is
+			       abandoned forever.  Measured exactly that on the RP6
+			       (r20j): 1472 audio tasks, 5 gfx tasks, raise_bits DP=0,
+			       the gfx thread parked on D_800DCAC8, ring all zero.
+			   (2) The save never happened, so the guest's resume reloaded
+			       *stale* DMEM as ucode_data and the RESUME path took
+			       k0 = DMEM[0xBF8] from whatever the intervening audio task
+			       left there (r20j: 0x152C03C0 / 0x00000000, and DMEM[0xF0]
+			       = the audio ucode's data word 0x0A446669).  The resumed
+			       walk therefore started outside RDRAM, its wild DMAs wiped
+			       IMEM + the task header with the game's 0x00010001 fill,
+			       and no FULLSYNC ever reached the RDP.
+
+			   Emulating the save here is what makes the yield coherent: the
+			   ucode's private FIFO state (segment table, rdpFifoPos, command
+			   buffers) travels through the yield buffer back into DMEM on the
+			   guest's resume, and k0 comes from the live RSP register file
+			   (GPR 26) instead of a stale word. */
+			{
+				uint32_t* dmem = (uint32_t*)RSP::rsp.DMEM;
+				uint32_t yptr = dmem[0xff8 / 4];
+				uint32_t k0 = rsp->sr[26];
+				dmem[0xbf8 / 4] = k0;                 /* the resume DL pointer */
+				dmem[0xbfc / 4] = dmem[0xfd0 / 4];    /* the resume ucode base */
+				r21_save_k0 = k0;
+				r21_save_f0 = dmem[0xf0 / 4];
+				/* Same word-indexed convention as rsp_dma_write above. */
+				if (RSP::rsp.RDRAM != NULL && (yptr & 0x7fffffu) <= 0x800000u - 0xc00u)
+				{
+					uint32_t* rd = (uint32_t*)RSP::rsp.RDRAM;
+					unsigned i;
+					for (i = 0; i < 0xc00u / 4u; i++)
+						rd[((yptr & 0x7ffffcu) >> 2) + i] = dmem[i];
+					r21_save_n++;
+				}
+			}
 			*RSP::rsp.SP_STATUS_REG |= SP_STATUS_INTR_BREAK | SP_STATUS_HALT;
 			/* ROUND 10 (DD-GATED: this whole block only runs when a 64DD
 			   disk is attached).  ACKNOWLEDGE A PENDING LIBULTRA YIELD.
@@ -689,9 +776,21 @@ extern "C"
 			   combination makes the next resume of the task run on stale
 			   DMEM (round 16 also defends against the consequence in
 			   parallel.cpp; this removes the cause). */
+			/* ROUND 21: answer the yield the way the ucode does (SIG1 =
+			   SP_STATUS_YIELDED, SIG2 = TASKDONE) but LEAVE SIG0 SET -- see
+			   the libultra excerpt above: osSpTaskYielded() records
+			   OS_TASK_YIELDED only while SP_STATUS_YIELD (SIG0) is still
+			   visible, and osSpTaskLoad() clears SIG0 at the next task load,
+			   so leaving it set is the correct, self-limiting handshake.
+			   R21_KEEP_SIG0=0 restores the round-16 form (clear SIG0) for
+			   A/B measurement. */
+#if R21_KEEP_SIG0
+			*RSP::rsp.SP_STATUS_REG |= SP_STATUS_SIG1 | SP_STATUS_SIG2;
+#else
 			if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_SIG0)
 				*RSP::rsp.SP_STATUS_REG =
 				    (*RSP::rsp.SP_STATUS_REG | SP_STATUS_SIG1 | SP_STATUS_SIG2) & ~SP_STATUS_SIG0;
+#endif
 			*rsp->cp0.irq |= 1;
 			/* ROUND-14 DIAG: count the synthetic yields this block
 			   fabricates (RAM only -- no file I/O in the RSP path). */
