@@ -528,3 +528,100 @@ editing: log `using_tlb` and `memory_map[0x800bb]` at the moment `new_recompile_
 Also still open (independent of this bug): the post-load SP/RSP deadlock — the **interpreter run
 did not get past the DD-loading screen either**, so the round-13 queue-full/RSP-halted analysis
 still needs its own fix.
+
+---
+
+## UPDATE 2026-09-10 (goal round 5) — **FIXED: the recompiler now boots the 64DD game.**
+## Root cause was NOT write-protect/byte-lane — it was *speculative compilation past a JAL*.
+
+### 1. The instrument that cracked it
+`new_dynarec.c` gained a **doubly-gated** SMC trace: 64DD route only
+(`g_dev.dd.idisk != NULL`) **and** a page window (`0x800bb000-0x800bbfff`). It logs
+`COMPILE`/`BLOCK`/`LINK`/`CHK_*`/`GA_*`/`HT*`/`INVAL_BLOCK` events, capped at 2000, to
+`files/wd_smc.txt`. One 50 s run was enough. Proof it is inert for plain carts: the
+Mario Tennis run produced a 22-byte file (header only, zero events).
+
+### 2. The smoking gun (`.fzxwork/wd_smc_run1.txt`)
+```
+162: COMPILE a=800bb540 b=3c07800c c=27bdbb03    <- c = mem[0x800bb67c] = SCRAMBLED
+180: BLOCK   a=800bb540 b=00000133 c=800bba0c    <- slen=0x133=307 insns, ends 0x800bba0c
+181: INVAL_BLOCK a=000800bb                      <- descrambler's 1st store — TOO LATE
+```
+`LeoBootGame` (0x800bb540) descrambles `__LeoBootGame2` (0x800bb67c) and `__LeoBootGame3`
+(0x800bb9a0) in place and then **calls** the fresh code. The dynarec's block for
+`0x800bb540` was **307 instructions long and ran to 0x800bba0c** — it swallowed the call
+target *and* the next function, i.e. **`__LeoBootGame2` was translated INLINE, from the
+still-scrambled bytes, into LeoBootGame's own host block.**
+
+### 3. Why (the exact scan logic)
+`new_recompile_block`'s Pass 1 has "speculative precompilation": for a JAL
+(`itype==UJUMP && rt1==31`) `done` stays 0, so the scan continues past the call to
+compile the *return* path. It stops at the next `jr ra` (`rt1==0` → `done=1`) — **unless**
+this test finds a branch into the delay-slot area:
+```c
+for(j=i-1;j>=0;j--) {
+  if(ba[j]==start+i*4)   done=j=0;   // branch into delay slot
+  if(ba[j]==start+i*4+4) done=j=0;   // <<< the killer
+  if(ba[j]==start+i*4+8) done=j=0;
+}
+```
+For FZX: `jr ra` at 0x800bb674, delay slot 0x800bb678 → `start+i*4+4 = 0x800bb67c`, and the
+**JAL at 0x800bb664 calls exactly 0x800bb67c**. The test (meant for "some branch targets the
+code right after the delay slot") matches a *call* target, `done` is cleared, and the block
+grows straight through the callee. `internal_branch()` then reports the JAL target as
+internal, the JAL is linked as an internal jump, and the scrambled bytes are emitted inline.
+
+Page invalidation cannot save this: `invalidate_addr()` kills the block's **entry points**,
+but the block that is *already executing* keeps running to its internal target. The cached
+interpreter never had the bug because it re-reads memory for every instruction.
+
+### 4. The fix — `new_recompile_block()`, DD-gated, 2 lines
+```c
+  if (g_dev.dd.idisk != NULL) stop_after_jal = 1;
+```
+Every block now ends at its JAL, so the call target is resolved through `get_addr_ht()` at
+run time — which recompiles it from the **descrambled** bytes. Same mechanism the stock
+"Disabled speculative precompilation" path already uses.
+
+### 5. Verified on RP6 (F-Zero X (Japan).z64 + F-Zero X.ndd, emumode=2)
+| | before | after |
+|---|---|---|
+| `iplram_fault.bin` / `iplram_spodd.bin` | written every run | **never written** |
+| guest fault | `WDFAULT vaddr=079b0880`, odd `$sp`=0x800d4203 | **none** |
+| boot | dies before the DD screen | **reaches 64DD "DD LOADING", 59-60 FPS** |
+Blocks are now short (slen 2..0x29 instead of 0x133) and `INVAL_BLOCK` no longer appears on
+that page. **The recompiler now agrees with the cached interpreter**, which is the intended
+outcome. Plain-cart regression: Mario Tennis (USA).zip boots to an in-game match at 59 FPS,
+process alive, zero trace events. Committed as `c12de6262`.
+
+One-off note: the very first run after installing the fixed APK died with **SIGILL
+(ILL_ILLOPC) inside the JIT buffer** (pc in `[anon:.bss]`, i.e. `extra_memory`). It did not
+reproduce on two subsequent runs of the same build (>4 min each). Keep an eye on it.
+
+### 6. REMAINING BLOCKER — the post-load stall (unchanged, and now the *only* thing left)
+The bar freezes at ~6.5-7/8 segments on "DD LOADING". Evidence from this round:
+* `wd_rsp.txt` (RSP plugin trace) is the live signal: **the same task (`seq=2764`) exits over
+  and over, ~60×/s, at `pc=0x00b8`, `status=0x243` (HALT|BROKE|INTR_BREAK|SIG3),
+  `irq=1`, `sem=00000000`, `timed=32767`** — the audio ucode's SP_STATUS poll times out
+  every time and the task never completes. `seq` never advances ⇒ no new task is ever
+  started by the guest.
+* `files/wd_force.flag` was **not consumed in 4 minutes** ⇒ `dynarec_sample_hook` (called
+  only from `arm64/linkage_arm64.S:do_interrupt`) never runs ⇒ **the guest CPU takes no
+  interrupts at all**; the emulation thread is effectively 100 % inside the RSP.
+* The audio budget in `parallel.cpp` is currently **100 ms for ttype==2** (`dsp_task_type == 2
+  ? 100000 : 50000`). Round 6 earlier found the **10 ms** audio budget was what made the machine
+  schedule at all and advanced the loading bar — that value is NOT in the tree now. Re-trying
+  10 ms (or bounding the wedged audio wait) is the cheapest next experiment.
+* Round 13's chain still stands behind it: SP/DP event queue `0x800dcad0` full (16 msgs,
+  unconsumed), prio-99 SP-consumer thread STOPPED, guest game queue `0x800dca40` empty.
+
+### Next step (round 6)
+1. Re-check the audio budget value (100 ms → 10 ms) and re-run; confirm with `wd_rsp.txt`
+   whether `seq` starts advancing and the bar passes 8/8.
+2. Get a guest-CPU dump at the stall: the force flag needs `(d_sample & 0x1FFF)==0`, which
+   only advances when `do_interrupt` runs — if the CPU takes no interrupts it never fires.
+   Either widen that trigger (e.g. also check from the RSP-side hook, which runs 60×/s) or
+   accept `wd_rsp.txt` as the primary instrument.
+3. Then the `do_SP_Task` completion contract: at the stall the ucode BREAKs
+   (`status` bit 0x2) and the core's DD-gated completion path should raise MI_INTR_SP and set
+   TASKDONE — verify the guest actually observes it (`rsp_interrupt_event`, DD-gated only).
