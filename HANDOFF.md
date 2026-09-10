@@ -1658,3 +1658,159 @@ yield-save ran — our force-yield may be fabricating that).
 (post-fix, 45 s apart), `shot_50s.png` (pre-fix screen), `shot_fix_45s.png` /
 `shot_fix_95s.png` (post-fix screen), `plain_60s.png` (plain-cart regression),
 `run_r13*.log`, `run_r13*.sh`, `plain.log`.
+
+## UPDATE 2026-09-10 (goal round 17) — the ucode's entry logic decoded, the k0 fix landed, and the DD route measured to be non-deterministic
+
+Commit `a04d2c3d9`.
+
+### 1. Which microcode this ROM actually submits (verified, not inferred)
+
+The gfx task's `ucode` field in the live task struct is
+`0x80752AE0` = **`gspF3DFLX2_Rej_fifoTextStart`** (`GFXMODE_F3DFLX`), data
+`0x8077A090` = its `fifoDataStart`; the earlier logo/loading segments submit
+`GFXMODE_F3DEX` (`gspF3DEX2_fifo` = text `0x807505C0`, data `0x80779860`).
+Both match `linker_scripts/jp/ek/symbol_addrs_nlib_vars.txt` **and** the live
+IMEM byte for byte (48/64 sampled words from `ram_live.bin` at RDRAM
+`0x752AE0` -> IMEM `0x080`; the remainder is the 0x170-byte overlay block at
+RDRAM `0x753AF8` that the ucode swaps into IMEM `0x000`).
+
+Buffer layout, from the decomp (`src/sys/sys_gfx.c:167-172`,
+`src/sys/buffers.c`): `gTaskOutputBuffer` = `0x802D9CD0` (0x54000),
+`output_buff_size` = `gTaskOutputBuffer + 0x54000` = `0x8032DCD0`, and
+`gOSYieldData` = **the same address** — so the RDP command FIFO and the libultra
+yield buffer are adjacent, not aliased.
+
+### 2. The entry logic, disassembled (this is the whole ball game)
+
+```
+IMEM 0098  lw   t3,0xF0(r0)      # DMEM[0xF0] = FIFO end pointer (0 = cold)
+IMEM 009C  lw   t4,0xFC4(r0)     # DMEM[0xFC4] = the OSTask flags word
+IMEM 00A4  beq  t3,r0,0x00C0     # cold: init RDP state, DPC_END=1, ...
+IMEM 00AC  andi t4,t4,0x1        # OS_TASK_YIELDED
+IMEM 00B0  beq  t4,r0,0x0144     # warm, not yielded
+IMEM 00B4  sw   r0,0xFC4(r0)     # consume the flag
+IMEM 00B8  j    0x0164           # ---- YIELDED RESUME ----
+IMEM 00BC  lw   k0,0xBF8(r0)     #      k0 = DMEM[0xBF8]   <-- saved scratch
+IMEM 0144  (adds `ucode` to the DMEM 0x280/0x288 overlay descriptors)
+IMEM 0160  lw   k0,0xFF0(r0)     # k0 = header data_ptr  (cold AND warm)
+IMEM 0164  main loop; per command it issues the 0xA8-byte DL chunk DMA into
+           DMEM 0x9B0 via the shared helper at IMEM 0x0FAC/0x0FC8/0x0FD8
+           (t8 = RDRAM, s3 = len-1, s4 = DMEM addr with bit31 = write), polls
+           SIG0 at 0198, and branches to 0x0FAC (DMA + jump to the IMEM 0x000
+           overlay) when SIG0 is set.
+```
+
+Two consequences that decided the round:
+
+* **Only a yielded resume takes `k0` from `DMEM[0xBF8]`.** Everything else
+  walks from the header's `data_ptr`.
+* **`DMEM[0xBF8]` is scratch.** No store to `0xBF8` exists anywhere in the
+  0xF80-byte text *or* in the 0x170-byte IMEM-0x000 overlay, so the saved k0 is
+  whatever command word happened to sit there when the save ran — the live
+  traces read `0xE6000000`, `0x10000003`, `0x1208`. With `[0xBF8]=0x1208` (round
+  16's `wd_dmatr` tail) the ucode walked framebuffer memory full of
+  `0x00010001`, read it as `G_NOOP` (opcode `0x00`) all the way into
+  `gTaskOutputBuffer`, and kicked the RDP on an effectively empty list.
+
+### 3. Round 16's premise corrected, and the fix
+
+Round 16 claimed the boot ucode's `ucode_data -> DMEM 0` DMA is gated on
+`OS_TASK_DP_WAIT`. It is not: IMEM `106C`'s `beq v0,r0,0x108C` jumps *to* the
+DMA when DP_WAIT is clear, and the trace shows the transfer happening on every
+yielded start (`D7982`/`D8944` = `RD dst=0000 src=32dcd0 len=0c00`, i.e. the
+whole 0xC00 yield buffer over DMEM 0). So the round-16 copy duplicates a
+transfer the guest performs by itself; the only thing the guest cannot express
+is a word fix-up, which is now the whole fix:
+
+```c
+hdr[0xbf8 / 4] = hdr[0xff0 / 4];      /* k0 := header data_ptr */
+```
+
+Same DD gate as before (`dd_mode && (*SP_PC_REG & 0xfff) == 0`, header type
+<= 2, `flags & OS_TASK_YIELDED`, `!DP_WAIT`). Measured firing once in the
+round-17 baseline run (`wd_yld.txt`:
+`rest_f0=002d9e58 saved_k0=0024e260 fixed_k0=0024e260 ff0=0024e260`) — there
+the saved k0 already equalled `data_ptr`, so the fix was a no-op and the run
+walked the real list; the failure mode it removes is the stale-scratch one.
+
+### 4. New diagnostics: the RDP conversation, both sides of the call
+
+`rsp_process_rdp_list()` (core `plugin.c`) now samples `MI_INTR_REG` before
+*and* after the plugin call and records `DPC_START/CURRENT/END/STATUS`. The
+watchdog dump grows:
+
+```
+RDPDP dp_seen=<n> dp_hot=<n> empty=<n> ring_n=<n>
+RDPR  <i> start=… cur=… end=… st=… mib=… mia=…
+```
+
+`empty` counts kicks where `CURRENT..END` was non-positive — parallel-RDP's
+`vk_process_commands()` processes **`DPC_CURRENT`..`DPC_END`** (not START) and
+`return`s immediately when `length <= 0`, running no command and raising no DP.
+First measurement (run r17c):
+`RDPDP dp_seen=0 dp_hot=0 empty=2` with `START==CURRENT==END==0x32DCD0`, i.e.
+the ucode kicked twice and the RDP was handed nothing both times.
+
+### 5. Tried and reverted (both DD-gated, both documented in place)
+
+Relaxing the 2 ms host budget **and** the 256-poll yield threshold for gfx
+tasks, so the ucode could finish its list unprompted:
+
+| build | RDPKICK | FRAME t1gfx | raise_bits VI / AI | screen |
+|---|---|---|---|---|
+| kept (2 ms + 256 polls) | 140 | 3 | 6089 / 6007 | running |
+| relaxed (unbounded gfx) | **0** | 1 | **271 / 192** | black |
+
+The gfx task parked and never reached `DPC_END`. **The host-side preemption is
+load-bearing for this 64DD path** — do not remove it again without a
+replacement interleaving mechanism.
+
+### 6. The headline problem: this route is not reproducible
+
+Five runs of near-identical builds, five outcomes:
+
+| run | RDP kicks | gfx loads | DP raised | screen (YAVG) | end state |
+|---|---|---|---|---|---|
+| r16 (`abd7e5192`) | 245 | 5 | 1 | 61.8 (content) | frame protocol starves |
+| r17 (`a04d2c3d9`) | 3 | 1 | 0 | 5.3 (black) | guest idle on gMainThreadMesgQueue |
+| r17b | — | — | — | 61.8 then dead | app gone before 50 s |
+| r17c | 2 (both empty) | 1 | 0 | 5.3 | ucode livelock: `RD src=ea1b00 -> IMEM 0x000` forever |
+| r17e | 140 | 3 | 1 | 4.3 | `imem_bad=1`, guest idle |
+
+The one mechanical cause we can name: **the 2 ms budget is wall-clock**
+(`rsp_set_budget_deadline_us`), so how many slices a task takes, and *where*
+inside the ucode each forced yield lands, changes run to run. Every forced
+yield can fabricate a libultra yield acknowledgement for a task the ucode never
+saved, which then resumes from scratch DMEM. That is the structure behind the
+variance.
+
+### 7. Round-18 target, in order
+
+1. **Make the preemption deterministic.** Budget on RSP cycles (or a JIT
+   instruction count) instead of wall-clock time, so the same ROM produces the
+   same slice boundaries and runs become comparable. This is a prerequisite for
+   evaluating anything else.
+2. Re-measure with `RDPDP`: the goal is `empty=0` and `dp_seen` tracking kicks.
+   An empty kick means the ucode's FIFO pointers (`DMEM[0xF0]`/`[0xF4]`) were
+   resumed from a scratch image — the same class of fault as the k0 one, and
+   the same fix shape applies (`DMEM[0xF0]` must be a live FIFO pointer).
+3. Only then go back to the frame protocol: `sMainThread` parks on
+   `gMainThreadMesgQueue` (`valid=0/16`) waiting for the SP/DP events in every
+   run; the DP event needs a non-empty RDP list *and* `MI_INTR_DP` surviving to
+   the core's DD-gated conversion block (`rsp_core.c`, `wd_c_dp_consumed` is
+   still 0 in every run measured so far).
+
+### 8. Evidence (round 17)
+
+`.fzxwork/r17/`: `analyze.py`, `run_r17.sh`, `run_plain.sh`,
+`ucode_dis.txt` (the entry/main-loop/overlay disassembly),
+`rdpdp_evidence.txt`, `stall_50s/95s.txt`, `ram_50s/95s.bin`, `wd_dmatr.txt`.
+`.fzxwork/r17c/` (empty kicks), `.fzxwork/r17d/` (the reverted budget
+experiment), `.fzxwork/r17e/` (baseline restored + `wd_yld.txt` showing the k0
+fix firing). Round-16 artefacts stay in `.fzxwork/r16/`.
+
+Plain-game regression: every round-17 change is inside a runtime DD gate
+(`g_dev.dd.idisk != NULL` / `IsDDPresent()`); `plugin.c`'s plain branch is
+still the original single `gfx.processRDPList()` call and the new core globals
+are only written on the DD path. See `run_plain.sh` output in
+`.fzxwork/r17plain/`.
