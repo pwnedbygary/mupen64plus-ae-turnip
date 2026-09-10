@@ -296,6 +296,7 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		   (HALT+INTR_BREAK+irq) for non-audio; this makes audio use it too. */
 		rsp_set_budget_deadline_us(dd_mode ? (dsp_task_type == 2 ? 100000 : 50000) : 0);
 
+		int wd_budget_yield = 0;
 		{
 			while (!(*RSP::rsp.SP_STATUS_REG & SP_STATUS_HALT))
 			{
@@ -321,6 +322,7 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 					   as type=garbage, ucode in PI space) -> cascading corrupt PC. */
 					*RSP::rsp.SP_STATUS_REG |= SP_STATUS_INTR_BREAK | SP_STATUS_HALT;
 					*RSP::cpu.get_state().cp0.irq |= 1;
+					wd_budget_yield = 1;
 					break;
 				}
 				}
@@ -368,7 +370,24 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 			RSP::SP_STATUS_TIMEOUT = dd_mode ? 0x7fff : 16; // DD keeps the long wait (JIT budget handles preemption); plain games keep the stock 16-turn wait
 
 		// CPU restarts with the correct SIGs.
-		*RSP::rsp.SP_STATUS_REG &= ~SP_STATUS_HALT;
+		/* 64DD ROUTE ONLY: do NOT un-halt after a HOST-BUDGET yield.  The
+		   stock clear below is CXD4's "task finished, RSP idle" handshake and
+		   is only safe when the ucode actually finished (BROKE) or halted
+		   itself.  After a budget yield the task is still unfinished, so
+		   leaving HALT cleared makes the core read "RSP still running"
+		   (do_SP_Task sets rsp_task_locked + raises MI_INTR_SP); the guest's
+		   __osRspHandler then acknowledges with SP_STATUS=0x8008
+		   (SP_CLR_SIG3|SP_CLR_INTR), which passes update_sp_status' gate
+		   because rsp_task_locked is set and HALT is clear -> do_SP_Task ->
+		   another full 50ms RSP run.  Measured live before this fix: 1362 RSP
+		   runs in 68s, every one 50ms, i.e. 100% of the emulation thread, with
+		   only 2 SP DMAs in the whole run -- a livelock that starves the guest
+		   CPU so the audio task it is waiting on can never complete.  Keeping
+		   HALT set makes the acknowledge write a no-op and leaves the RSP
+		   halted until the guest starts a new task, which is the real-hardware
+		   behaviour. */
+		if (!(dd_mode && wd_budget_yield))
+			*RSP::rsp.SP_STATUS_REG &= ~SP_STATUS_HALT;
 
 		return cycles;
 	}

@@ -21,6 +21,7 @@
 
 #include "rsp_core.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "device/memory/memory.h"
@@ -36,6 +37,26 @@
 #include "plugin/plugin.h"
 #include "api/callbacks.h"
 
+/* ---------------------------------------------------------------------------
+   ROUND-7 DD DIAG: who loads the RSP task header, and does it survive?
+   libultra's osSpTaskLoad DMAs the 64-byte OSTask into DMEM 0xFC0 (from its
+   static tmp_task; physical 0x7C1C00 in the F-Zero X EK build), and
+   do_SP_Task classifies the task by reading DMEM[0xFC0/4].  Live the header
+   reads 0x00010001 x16 (the game's own 0x0001 memory-fill pattern) while
+   tmp_task holds a perfectly valid M_AUDTASK, so either the header DMA never
+   lands in DMEM 0xFC0 or the running ucode clobbers it afterwards.  Record
+   the source and the post-copy destination of every DMA covering 0xFC0, then
+   re-read DMEM at the next do_SP_Task entry: dm_same != 0 means the DMA is
+   fine and the ucode overwrote it; dm_same == 0 with hdr_n != 0 means the
+   copy landed elsewhere.  hdr_n == 0 means no header DMA ever happened.
+   --------------------------------------------------------------------------- */
+volatile uint32_t wd_c_spdma = 0;      /* SP DMAs seen on the DD route       */
+volatile uint32_t wd_hdr_n = 0;        /* DMAs covering DMEM 0xFC0           */
+uint32_t wd_hdr_dram = 0, wd_hdr_mem = 0, wd_hdr_len = 0, wd_hdr_seq = 0;
+uint32_t wd_hdr_src[16];               /* source words, before the copy      */
+uint32_t wd_hdr_dst[16];               /* DMEM 0xFC0 words, after the copy   */
+volatile uint32_t wd_hdr_same = 0, wd_hdr_diff = 0;
+
 static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
 {
     unsigned int i,j;
@@ -50,27 +71,56 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
     unsigned int dramaddr = dma->dramaddr & 0xfffff8;
 
     /* 64DD ROUTE ONLY (runtime gate; plain carts keep the original code path
-       byte-for-byte).  The SP DMA address counter must WRAP inside DMEM/IMEM
-       (4 KiB each): upstream indexes from a fixed base, so
-       SP_MEM_ADDR=0x1080 + SP_RD_LEN=0xF7F (a 4096-byte transfer, which is
-       exactly how the 64DD boot ucode loads the whole main ucode into IMEM
-       starting at 0x080 and wrapping into 0x000..0x07F -- measured live:
-       imem[(0x80+k)&1023] == ucode[k] holds for k=0..0xF7F and fails for the
-       last 0x80 bytes) walks 0x80 bytes PAST the end of the 8 KiB RSP memory:
-       the wrapped tail is lost and 128 bytes of the neighbouring arena are
-       clobbered.  Masking each access reproduces the hardware wrap. */
-    unsigned char *spmem;
-    if (g_dev.dd.idisk != NULL)
-        spmem = (unsigned char*)sp->mem;
-    else
-        spmem = (unsigned char*)sp->mem + (dma->memaddr & 0x1000);
+       byte-for-byte).  Two things differ from upstream on this route:
+
+       (1) BANK SELECTION.  `memaddr` above has already stripped the low 12
+       bits of SP_MEM_ADDR (`& 0xff8`), which drops bit 12 -- the DMEM/IMEM
+       bank selector.  Upstream re-adds it through `spmem`.  The round-6 edit
+       set `spmem = sp->mem` and masked the offset with `& 0x1fff` instead,
+       which can never select IMEM because bit 12 is already gone: EVERY
+       SP DMA on the DD route landed in DMEM.  Measured live: the 64DD audio
+       task's boot-ucode load (SP_MEM_ADDR=0x04001000, 4096 bytes) wrote the
+       ucode over DMEM 0x000..0xFFF -- wiping the 64-byte OSTask header the
+       preceding osSpTaskLoad DMA had just put at DMEM 0xFC0 (type 2 ->
+       0x00010001 afterwards, DMEM[0] became the ucode's first word
+       0x340A0FC0) -- while IMEM stayed zero.  do_SP_Task then classified the
+       task as garbage, the RSP executed NOPs, and the guest's audio task
+       never completed.
+
+       (2) WRAP.  A transfer must wrap inside the selected 4 KiB bank rather
+       than walking into the neighbouring bank (upstream lets it run past the
+       end).  Masking each access with `& 0xfff` reproduces the hardware wrap;
+       for every DMA observed so far the offset stays below 0x1000 anyway, so
+       this only matters for a whole-bank load that starts mid-bank. */
+    unsigned char *spmem = (unsigned char*)sp->mem + (dma->memaddr & 0x1000);
     unsigned char *dram = (unsigned char*)sp->ri->rdram->dram;
+    /* ROUND-7 DD DIAG (see wd_hdr_* above): a DRAM->RSP DMA whose DMEM
+       destination range covers 0xFC0 is the osSpTaskLoad header copy. */
+    int wd_is_hdr = 0;
+    if (g_dev.dd.idisk != NULL)
+    {
+        wd_c_spdma++;
+        if (dma->dir != SP_DMA_READ && (dma->memaddr & 0x1000) == 0
+            && (dma->memaddr & 0xfff) <= 0xfc0
+            && ((dma->memaddr & 0xfff) + length) > 0xfc0)
+        {
+            unsigned int k;
+            wd_is_hdr = 1;
+            wd_hdr_n++;
+            wd_hdr_dram = dma->dramaddr;
+            wd_hdr_mem = dma->memaddr;
+            wd_hdr_len = l;
+            wd_hdr_seq = wd_c_spdma;
+            for (k = 0; k < 16; k++)
+                wd_hdr_src[k] = ((uint32_t*)(void*)dram)[((dma->dramaddr & 0x7fffff) >> 2) + k];
+        }
+    }
     if (dma->dir == SP_DMA_READ)
     {
         for(j=0; j<count; j++) {
             for(i=0; i<length; i++) {
                 if (g_dev.dd.idisk != NULL)
-                    dram[(dramaddr & 0x7fffff)^S8] = spmem[(memaddr & 0x1fff)^S8];
+                    dram[(dramaddr & 0x7fffff)^S8] = spmem[(memaddr & 0xfff)^S8];
                 else
                     dram[dramaddr^S8] = spmem[memaddr^S8];
                 memaddr++;
@@ -88,7 +138,7 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
 
             for(i=0; i<length; i++) {
                 if (g_dev.dd.idisk != NULL)
-                    spmem[(memaddr & 0x1fff)^S8] = dram[(dramaddr & 0x7fffff)^S8];
+                    spmem[(memaddr & 0xfff)^S8] = dram[(dramaddr & 0x7fffff)^S8];
                 else
                     spmem[memaddr^S8] = dram[dramaddr^S8];
                 memaddr++;
@@ -101,6 +151,47 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
     /* schedule end of dma event */
     cp0_update_count(sp->mi->r4300);
     add_interrupt_event(&sp->mi->r4300->cp0, RSP_DMA_EVT, (count * length) / 8);
+
+    if (wd_is_hdr)
+    {
+        unsigned int k;
+        for (k = 0; k < 16; k++)
+            wd_hdr_dst[k] = ((uint32_t*)sp->mem)[0xfc0 / 4 + k];
+    }
+
+    /* ROUND-7 DD DIAG: full DMA history with the DMEM 0xFC0 word after each
+       transfer, so it is unambiguous which DMA (if any) changes the task
+       header.  Also prints the header word the PLUGIN would see through its
+       own pointer (mem_base_u32(g_mem_base, MM_RSP_MEM)) in case the core's
+       sp->mem and the plugin's DMEM are not the same buffer. */
+    if (g_dev.dd.idisk != NULL)
+    {
+        static unsigned dma_log_n = 0;
+        if (dma_log_n < 48)
+        {
+            static int dma_first = 1;
+            FILE* df = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_dma.txt",
+                             dma_first ? "w" : "a");
+            dma_first = 0;
+            if (df)
+            {
+                const uint32_t* plug_dmem = (const uint32_t*)mem_base_u32(g_mem_base, MM_RSP_MEM);
+                dma_log_n++;
+                fprintf(df, "WDDMA n=%u seq=%u dir=%u ishdr=%d mem=%08x dram=%08x len=%08x "
+                            "count=%u length=%u skip=%u | after: core_fc0=%08x plug_fc0=%08x "
+                            "core_imem0=%08x plug_imem0=%08x dmem0=%08x\n",
+                        dma_log_n, (unsigned)wd_c_spdma, (unsigned)dma->dir, wd_is_hdr,
+                        (unsigned)dma->memaddr, (unsigned)dma->dramaddr, l,
+                        count, length, skip,
+                        ((const uint32_t*)sp->mem)[0xfc0 / 4],
+                        plug_dmem ? plug_dmem[0xfc0 / 4] : 0,
+                        ((const uint32_t*)sp->mem)[0x1000 / 4],
+                        plug_dmem ? plug_dmem[0x1000 / 4] : 0,
+                        ((const uint32_t*)sp->mem)[0]);
+                fclose(df);
+            }
+        }
+    }
 }
 
 static void fifo_push(struct rsp_core* sp, uint32_t dir)
@@ -155,6 +246,39 @@ static void fifo_pop(struct rsp_core* sp)
 
 static void update_sp_status(struct rsp_core* sp, uint32_t w)
 {
+    /* ROUND-7 DD DIAG: identify the guest code that drives the 20 RSP
+       starts/second.  osSpTaskLoad and osSpTaskStartGo are the only libultra
+       functions that write SP_STATUS in the clear-halt/clear-broke form, and
+       the SP DMA trace shows osSpTaskLoad ran exactly ONCE per run while the
+       RSP is re-entered 20x/s -> either the guest is calling osSpTaskStartGo
+       in a loop or something else writes this register.  Log guest pc/ra/sp/
+       a0..a3 plus the register state around every SP_STATUS write, capped. */
+    if (g_dev.dd.idisk != NULL)
+    {
+        static unsigned spw_n = 0;
+        static unsigned spw_tick = 0;
+        spw_tick++;
+        if (spw_n < 700 && (spw_n < 400 || (spw_tick % 4000) == 0))
+        {
+            static int spw_first = 1;
+            FILE* wf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_spw.txt",
+                             spw_first ? "w" : "a");
+            spw_first = 0;
+            if (wf)
+            {
+                int64_t* gpr = r4300_regs(sp->mi->r4300);
+                spw_n++;
+                fprintf(wf, "WDSPW n=%u pc=%08x ra=%08x sp=%08x a0=%08x a1=%08x a2=%08x a3=%08x "
+                            "w=%08x st_before=%08x st_after=%08x dmem_fc0=%08x dmas=%u hdr=%u\n",
+                        spw_n, (uint32_t)*r4300_pc(sp->mi->r4300), (uint32_t)gpr[31], (uint32_t)gpr[29],
+                        (uint32_t)gpr[4], (uint32_t)gpr[5], (uint32_t)gpr[6], (uint32_t)gpr[7],
+                        w, sp->regs[SP_STATUS_REG],
+                        (sp->regs[SP_STATUS_REG] & ~0x1u) | ((w & 0x1) ? 0 : 1),
+                        ((uint32_t*)sp->mem)[0xfc0 / 4], (unsigned)wd_c_spdma, (unsigned)wd_hdr_n);
+                fclose(wf);
+            }
+        }
+    }
     /* clear / set halt */
     if (w & 0x1) sp->regs[SP_STATUS_REG] &= ~SP_STATUS_HALT;
     if (w & 0x2) sp->regs[SP_STATUS_REG] |= SP_STATUS_HALT;
@@ -335,6 +459,48 @@ void do_SP_Task(struct rsp_core* sp)
        "ucode already halted before entry" (doRspCycles returns 0 without
        running, so we must NOT re-deliver a stale interrupt). */
     uint32_t wd_status_entry = sp->regs[SP_STATUS_REG];
+
+    /* ROUND-7 DD DIAG (see wd_hdr_* above): compare the header DMEM 0xFC0
+       against what the last header DMA actually wrote there.  `same` means
+       the copy landed and survived (so the guest handed us this header);
+       `diff` means something overwrote it after the DMA (the ucode itself,
+       which is the known F3DEX behaviour), and `hdr_n == 0` means no header
+       DMA ever reached DMEM 0xFC0 at all. */
+    if (g_dev.dd.idisk != NULL)
+    {
+        static unsigned hdr_log_n = 0;
+        static unsigned hdr_tick = 0;
+        uint32_t cur[16];
+        unsigned int k;
+        int same = 1;
+        hdr_tick++;
+        for (k = 0; k < 16; k++)
+        {
+            cur[k] = ((uint32_t*)sp->mem)[0xfc0 / 4 + k];
+            if (cur[k] != wd_hdr_dst[k]) same = 0;
+        }
+        if (same) wd_hdr_same++; else wd_hdr_diff++;
+        if (hdr_log_n < 200 && (hdr_log_n < 64 || (hdr_tick % 2000) == 0))
+        {
+            static int hdr_first = 1;
+            FILE* hf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_hdr.txt",
+                             hdr_first ? "w" : "a");
+            hdr_first = 0;
+            if (hf)
+            {
+                hdr_log_n++;
+                fprintf(hf, "WDHDR n=%u hdr_n=%u seq=%u dram=%08x mem=%08x len=%08x same=%u diff=%u dmas=%u type=%08x\n",
+                        hdr_log_n, (unsigned)wd_hdr_n, (unsigned)wd_hdr_seq, wd_hdr_dram, wd_hdr_mem,
+                        wd_hdr_len, (unsigned)wd_hdr_same, (unsigned)wd_hdr_diff, (unsigned)wd_c_spdma, cur[0]);
+                fprintf(hf, "  dmem ");
+                for (k = 0; k < 16; k++) fprintf(hf, "%08x ", cur[k]);
+                fprintf(hf, "\n  dmasrc ");
+                for (k = 0; k < 16; k++) fprintf(hf, "%08x ", wd_hdr_src[k]);
+                fprintf(hf, "\n");
+                fclose(hf);
+            }
+        }
+    }
 
     uint32_t sp_delay_time;
 
