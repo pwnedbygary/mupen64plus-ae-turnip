@@ -429,7 +429,56 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
    save itself; 0 = the round-10..19 behaviour (fabricate INTR_BREAK|HALT and
    the ack).  Kept as a switch so the two models can be measured back to back
    on one build. */
+/* ROUND 27 (DD route only): ENABLED.  Rounds 10..26 preempted the gfx task by
+   fabricating a yield at whatever instruction the host budget happened to land
+   on -- including inside the ucode's own DMA-issue/wait helper (measured:
+   1487 slices entered at PC 0x0FC8, `mfc0 SP_DMA_BUSY / bne`).  At that point
+   the ucode is mid-transfer with no consistent FIFO state, so the guest's
+   resume restarts the walk from a stale DMEM 0xBF8 (0xFFFFFFFF / the audio
+   ucode's leftover) and the display list at the header's data_ptr (0x284990,
+   [MOVEWORD seg0=0, FULLSYNC, ENDDL]) is never read -- `R20W outbuf=0`,
+   `mi_rd_dp=0`, black screen.
+
+   The ucode tests SP_STATUS & SIG0 inside its own command loop (IMEM 0x1A8)
+   and, when set, runs its yield handler: store k0 -> DMEM 0xBF8, DMA the whole
+   FIFO state to the header's yield_data_ptr, ack SIG1|SIG2, break.  Asking for
+   that yield and running R20_GRACE more polls turns the host preemption into
+   the suspension the ucode and the guest were built for.  The round-10/21
+   fabricated handover stays as the bounded fallback.  DD-gated: the whole
+   branch sits behind rsp_ares_budget_enabled() == IsDDPresent(), so plain
+   carts, cart-hack and Mario Tennis keep the stock path bit for bit. */
 #define R20_SIG0_YIELD 0
+
+#if R20_SIG0_YIELD
+/* ROUND 27 A/B RESULT -- MEASURED, KEPT OFF.  The switch was flipped to 1,
+   built (marker `R27SIG0YIELD-ON` verified in the packaged
+   libmupen64plus-rsp-parallel.so) and run on the RP6 (.fzxwork/r27a).  It is a
+   REGRESSION, not a fix, and the route is measurably worse with it on:
+
+     clean wd_rsp.txt over 106 s of emulation (the run script now clears every
+     diagnostic file first -- several were previously left to accumulate, which
+     is how round 26 read stale "freeze" data):
+       SIG0 yield ON : ttype=2 (audio) 193 slices, ttype=1 (gfx) 2 slices,
+                       ttype=0x10001 (the game's cleared-buffer fill, i.e. a
+                       GARBAGE header) 3311 slices, 3317 exits at pc=0000 with
+                       status=HALT|BROKE spending the FULL 20480-unit budget
+                       (us=3560) breaking at PC 0 -- the round-10 "type=garbage,
+                       cascading corrupt PC" failure.
+       SIG0 yield OFF: audio runs at its real 60/s (r26 t2aud 5998) and the gfx
+                       task gets its slices.
+
+     `wd_r20.txt` of the ON run reads yreq=1 (the request fired exactly once),
+     ytimeout=0, and `R20W wr=2861 outbuf=0 datalist=2861` -- the FIFO STILL
+     never writes the RDP output buffer, so it does not fix the real failure
+     either.  The mechanism is understood: SIG0 is set and then left set (the
+     request path returns MODE_CONTINUE, and nothing clears it), so the guest's
+     yield/scheduler handshake (sptaskyielded.c: `if (status & SP_STATUS_YIELD)`)
+     goes out of phase and it stops dispatching tasks -- which is exactly the
+     collapse in slice counts above.
+
+   Do NOT re-enable without first clearing SIG0 again when the R20_GRACE window
+   expires without the ucode reaching its yield point. */
+#endif
 
 /* ROUND 21 (DD route only): 1 = on a host-forced yield, emulate the ucode's own
    yield save (DMEM[0xBF8] = live k0, DMEM[0xBFC] = ucode base, DMEM[0..0xBFF] ->
@@ -458,7 +507,29 @@ static unsigned r20_yreq = 0, r20_ytimeout = 0, r20_ystage = 0;
 static unsigned r20_ystage_poll = 0;
 
 /* Called by DoRspCycles for every fresh task entry. */
-extern "C" void r20_task_begin(void) { r20_ystage = 0; r20_ystage_poll = 0; }
+extern "C" void r20_task_begin(void)
+{
+	/* ROUND 27 build marker -- BOTH settings carry one, so the packaged
+	   libmupen64plus-rsp-parallel.so can be verified with `strings` whichever
+	   way the switch is set (this is the build-trap check: a stale .so has
+	   silently invalidated runs in this tree before).  A bare
+	   `__attribute__((used))` array does NOT survive linking here
+	   (--gc-sections drops its .rodata section), so the string goes through a
+	   referenced fprintf instead.  One line per process; DD-gated by the caller
+	   (parallel.cpp: `if (dd_mode)`). */
+	static int r27_marker_once = 0;
+	if (!r27_marker_once)
+	{
+		r27_marker_once = 1;
+#if R20_SIG0_YIELD
+		fprintf(stderr, "R27SIG0YIELD-ON\n");
+#else
+		fprintf(stderr, "R27C-SIG0OFF-BUSYPRINT\n");
+#endif
+	}
+	r20_ystage = 0;
+	r20_ystage_poll = 0;
+}
 
 /* Classify one ucode-issued RDRAM->SP transfer: does the FIFO ever read the
    display list at all (source == header data_ptr), or only the output buffer

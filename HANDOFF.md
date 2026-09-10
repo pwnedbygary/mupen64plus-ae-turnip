@@ -5,6 +5,83 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 27 — TWO HYPOTHESES KILLED WITH CLEAN A/B RUNS, ONE METHODOLOGY BUG FOUND, AND A
+CLEAN BASELINE ESTABLISHED. THE BLACK SCREEN IS UNCHANGED: `R20W outbuf=0`, `R20P ring=0`,
+`R26W wild=20479`, screen 96.5% black.**
+
+**1. THE DIAGNOSTIC FILES WERE ACCUMULATING ACROSS RUNS — SOME EARLIER READINGS WERE STALE.**
+The run scripts only ever cleared ~11 files; `wd_rsp.txt`, `wd_cmd.txt`, `wd_freeze.txt`,
+`wd_init.txt`, `wd_pub.txt` and `wd_hdr.txt` were never in the clear list, so
+`r26a/wd_rsp.txt` (15 MB) and `r25f/wd_cmd.txt` were **accumulated history, not one run's
+state**.  Proof: `r25f/wd_cmd.txt` and `r27a/wd_cmd.txt` (a freshly cleared file from a
+different build) are **byte-identical** — the DPC START/END latch is a deterministic early-boot
+sequence.  Round 26's slice histograms (ttype=2 40062 / ttype=1 938) were therefore **not** a
+clean control.  `.fzxwork/r27a_run.sh` now clears every diagnostic file before each run; that
+run script is the template for all later rounds.  **Never again read a wd_* file as "the freeze
+state" unless the run script cleared it.**
+
+**2. `R20_SIG0_YIELD=1` IS A REGRESSION — MEASURED AND KEPT OFF.**  The switch in
+`mupen64plus-rsp-parallel/upstream/rsp/cp0.cpp` (built as `R27SIG0YIELD-ON`, marker verified in
+the packaged `.so`) asks the FIFO ucode for its own yield via `SP_STATUS SIG0` instead of
+fabricating one.  Over ~106 s of emulation, against the clean control arm:
+
+| | audio (ttype=2) | gfx (ttype=1) | garbage header `0x10001` |
+|---|---|---|---|
+| SIG0 **ON**  (r27a) | 193 slices  | 2 slices | 3311 slices |
+| SIG0 **OFF** (r27b) | 6352 slices | 172 slices | 6 slices |
+
+and on SIG0 ON, **3317 slices exit at `pc=0000` with `status=HALT|BROKE`** having burned the
+full 20480-unit budget (`us=3560`) — the round-10 "type=garbage, cascading corrupt PC" failure.
+`wd_r20.txt` of that arm reads `yreq=1 ytimeout=0` and `R20W outbuf=0`, i.e. it does not fix
+the real failure either.  Mechanism: the request path returns `MODE_CONTINUE` and **nothing
+clears SIG0 again**, so the guest's yield handshake
+(`sptaskyielded.c: if (status & SP_STATUS_YIELD)`) goes out of phase and it stops dispatching
+tasks.  The full A/B is recorded at the `#define`.  **Do not re-enable without clearing SIG0
+when the `R20_GRACE` window expires.**
+
+**3. `SP_DMA_BUSY` IS NOT THE BLOCKER — HYPOTHESIS TESTED AND ELIMINATED.**  The FIFO ucode's
+DMA helper polls it (`IMEM 1FC8 mfc0 $11,SP_DMA_BUSY / 1FCC bne -1 / 1FD0 mfc0`), and 162-168
+slices of *every* round-27 run end at exactly `pc=0fc8`, which reads like a livelock on a stuck
+flag.  It is not one.  Round 27c redirected the RSP's `cr[0x5]`/`cr[0x6]` (which point at the
+**core's CPU-side FIFO** `regs[SP_DMA_FULL/BUSY]`, not at anything this plugin drives) to a
+plugin-local zero for the DD route — the truthful model, since this plugin performs every
+RSP-initiated transfer itself and synchronously — and the run came back
+**`core_busy=0 core_full=0`**: the flags were already zero.  Everything else was identical (162
+vs 168 slices at 0fc8; `R20W wr=97257 outbuf=0 datalist=97257`, `R20P pub=53279 ring=0`,
+`R26W wild=20479`).  **The redirect was reverted as unproven; only the `core_busy=/core_full=`
+sampling was kept**, so every future run states the flags outright.  Consequence: **PC 0x0FC8 is
+NOT a livelock** — it is the shared DMA helper the ucode passes through on every transfer, so
+slice boundaries land there often.  Do not chase it again.
+
+**4. THE CLEAN CONTROL BASELINE (r27b, SIG0 off) — WHAT ACTUALLY WORKS.**  Audio is healthy:
+6352 audio slices and 6380 `EXIT pc=00b8 status=00000243` (TASKDONE|HALT|SIG0|INTR_BREAK) in
+106 s ≈ its real 60/s.  The forced yield is **faithful**: `wd_r21.txt` reads
+`typ=00000001` (M_GFXTASK), `bfc=007505c0` (the gfx ucode base, i.e. the header is intact),
+`yptr=0032dcd0 ysz=00000c00` (the yield buffer), `saved=16 ok=1 hdrbad=0`, and k0 values
+`0x091151 / 0x0200AA / 0x286FA0 / 0x28F190` — all sane.  So the guest-visible yield protocol is
+working; the task simply resumes onto a garbage walk.
+
+**5. THE REMAINING CHAIN IS UNCHANGED FROM ROUND 26 AND IS NOW THE ONLY THING LEFT.**
+`R20W wr=97257 **outbuf=0** datalist=97257` — the FIFO's write DMAs target only the audio AList
+region and **never** the RDP output buffer (0x2D9CD0..0x32DCD0); `R20P pub=53279 **ring=0**` —
+nothing lands in the RDP command ring; `R26W wild=20479` — 20479 transfers go outside RDRAM;
+`mi_rd_dp=0`; screen 96.5% black, mean luma 5.3.  The guest's DL is real and was re-confirmed
+from `r27b/ram.bin`: `data_ptr=0x284990` = `[DB060000 MOVEWORD seg0=0, E9000000 G_RDPFULLSYNC,
+DF000000 G_ENDDL]`, `data_size=0x18` — and parallel-RDP raises `MI_INTR_DP` **only** on an RDP
+SyncFull (`mupen64plus-video-parallel/upstream/parallel_imp.cpp:215-219`).  **The next round
+should start from `R20W outbuf=0` + `wild=20479`: why do the FIFO's write DMAs never target the
+output buffer, and where do the 20479 out-of-RDRAM transfers come from?**
+
+**6. BUILD/VERIFY (unchanged, but the marker must be checked).**  `rm -rf
+mupen64plus-core/build/intermediates/cxx mupen64plus-rsp-parallel/{build/intermediates/cxx,.cxx}
+app/build/intermediates/{merged,stripped}_native_libs`, then `export
+GRADLE_USER_HOME=$PWD/.gradle_home && .gradle_home/gradle-8.4/bin/gradle :app:assembleDebug
+--offline` (~6 s incremental), then `unzip` the APK and `strings` the packaged
+`lib/arm64-v8a/libmupen64plus-rsp-parallel.so` for the round's marker — this round's is
+`R27C-SIG0OFF-BUSYPRINT`.  **A `__attribute__((used))` array does NOT survive
+`--gc-sections`; emit the marker through a referenced `fprintf` instead** (that is how the
+`r27_build_marker` attempt failed in round 27a).
+
 **ROUND 26 — ROUND 25's "PIN" IS RETRACTED (it was a truncated log), THE IMEM IS PROVEN
 INTACT, AND THE FAILURE IS RELOCATED TO ONE MEASURED FACT: THE GFX UCODE NEVER PUBLISHES A
 SINGLE BYTE, SO NO `FULLSYNC` EVER REACHES THE RDP AND `MI_INTR_DP` IS NEVER RAISED.**

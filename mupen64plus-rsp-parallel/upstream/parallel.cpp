@@ -106,6 +106,11 @@ static inline long long wd_now_ms()
 /* DIAG: freeze heartbeat — log RSP state when one task run exceeds 30ms.
    Called from rsp_enter at every JIT block boundary (rsp_jit.cpp), so even
    self-branching ucode loops produce rate-limited lines with the live pc. */
+/* ROUND 27 (DD route only): the RSP's SP_DMA_BUSY / SP_DMA_FULL as the CORE
+   last left them, sampled once per DoRspCycles slice.  Used by the R20 summary
+   and by the redirect below. */
+static uint32_t r27_raw_busy = 0, r27_raw_full = 0;
+
 static long long wd_task_start_ms = 0;
 static long long wd_last_hb_ms = 0;
 static FILE* whf = NULL;
@@ -135,6 +140,40 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		   traces) is keyed off this so plain cart games keep the stock
 		   parallel-RSP behavior exactly. */
 		const int dd_mode = RSP::rsp.IsDDPresent && RSP::rsp.IsDDPresent();
+
+	/* ROUND 27 (DD route only) -- SP_DMA_BUSY/SP_DMA_FULL ARE NOT THE BLOCKER:
+	   MEASURED, HYPOTHESIS ELIMINATED.
+
+	   The FIFO ucode's own DMA helper polls SP_DMA_BUSY:
+
+	       IMEM 1FC8  mfc0 $11, SP_DMA_BUSY
+	       IMEM 1FCC  bne  $11,$0,-1
+	       IMEM 1FD0  mfc0 $11, SP_DMA_BUSY   (delay slot)
+
+	   and 162-168 slices of every round-27 run END at exactly `pc=0fc8`, so
+	   the obvious reading was "the flag is stuck and the ucode livelocks
+	   there".  It is not: the RSP's cr[0x5]/cr[0x6] point at the core's
+	   regs[SP_DMA_FULL_REG]/regs[SP_DMA_BUSY_REG] (the CPU-side FIFO engine,
+	   set by fifo_push and cleared asynchronously by fifo_pop), so the plugin
+	   was asked to make the RSP's view of them report idle -- which is the
+	   truthful model here, because this plugin performs every RSP-initiated
+	   transfer itself, synchronously, inside the mtc0 SP_RD_LEN/SP_WR_LEN
+	   handler.
+
+	   Round 27c redirected cr[0x5]/cr[0x6] to a plugin-local zero for the DD
+	   route and ran it: `core_busy=0 core_full=0` -- the core's flags were
+	   ALREADY zero -- and the run is unchanged (162 vs 168 slices at pc=0fc8;
+	   `R20W wr=97257 outbuf=0 datalist=97257`, `R20P pub=53279 ring=0`,
+	   `R26W wild=20479`, all byte-identical to the control arm).  The redirect
+	   was therefore reverted; only the sampling below was kept, so every future
+	   run states the flags outright.
+
+	   Consequence for the diagnosis: PC 0x0FC8 is NOT a livelock.  It is the
+	   shared DMA helper, which the ucode passes through on EVERY transfer, so a
+	   slice boundary lands there often.  The real chain stays: the gfx FIFO's
+	   write DMAs never target the output buffer and it never publishes. */
+	r27_raw_busy = *RSP::rsp.SP_DMA_BUSY_REG;
+	r27_raw_full = *RSP::rsp.SP_DMA_FULL_REG;
 
 
 	/* ROUND 20: the FIFO-protocol counters (see cp0.cpp) rewritten every few
@@ -166,10 +205,11 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 			r20_last_ms = r20_now;
 			if (f)
 			{
-				fprintf(f, "R20 ms=%lld pc=%04x dma=%u datalist=%u outbuf=%u low=%u save=%u yreq=%u ytimeout=%u saved_k0=%08x yptr=%08x\n",
+				fprintf(f, "R20 ms=%lld pc=%04x dma=%u datalist=%u outbuf=%u low=%u save=%u yreq=%u ytimeout=%u saved_k0=%08x yptr=%08x core_busy=%u core_full=%u\n",
 				        r20_now, *RSP::rsp.SP_PC_REG & 0xfff, r20_dma_total(), r20_dma_datalist(),
 				        r20_dma_outbuf(), r20_dma_low_mem(), r20_save_count(),
-				        r20_yield_req(), r20_yield_timeout(), r20_saved_k0(), r20_saved_ptr());
+				        r20_yield_req(), r20_yield_timeout(), r20_saved_k0(), r20_saved_ptr(),
+				        r27_raw_busy, r27_raw_full);
 				m = r20_first_dma_n();
 				for (k = 0; k < m && k < 12; k++)
 				{
