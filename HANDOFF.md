@@ -5,6 +5,88 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 15 (goal round 15) — the ucode's task protocol is decoded properly, and the poisoning
+event is caught red-handed: an audio-ucode DMA with an UNDERFLOWED length wipes the task
+header + all of IMEM in one transfer.** Branch `dd-eos-watchdog-checkpoint`.
+
+**The ucode protocol (disassembled from the running tree, not inferred).** Read with a
+purpose-built RSP disassembler (`.fzxwork/rsp_dis.py` = file disasm, `.fzxwork/rsp_live.py` =
+live IMEM/DMEM out of a `wd_ucode*.bin` capture; RSP CP0 map: 0-3 DMA regs, 4 SP_STATUS,
+8/9/10/11 DPC_START/END/CURRENT/STATUS, i.e. the ucode's "kick" is `mtc0 x, DPC_END` ->
+`RSP::rsp.ProcessRdpList()`, NOT a magic SP_STATUS bit).
+* Task entry = IMEM 0x1080 (the boot at 0x1000 loads DATA+`0xF80` of TEXT to IMEM 0x1080, then
+  `jr 0x1080`). Entry logic: `t3 = DMEM[0x0F0]` (the RDP end pointer the ucode stores on a cold
+  start = "already initialised" marker), `t4 = DMEM[0x0FC4]` (the header's flags word).
+  `DMEM[0xF0]==0` -> FRESH path; `!=0 && !(flags&1)` -> WARM path; `!=0 && (flags&OS_TASK_YIELDED)`
+  -> **RESUME**: `k0 = DMEM[0x0BF8]` (the DL pointer the yield path saved), and libultra has
+  already loaded the *yield buffer* as the task's ucode DATA. The FRESH/WARM paths take
+  `k0 = DMEM[0x0FF0]` = the header's `data_ptr`. All three then `k0 += 0xA8` per fetched chunk.
+* Display-list walk: read 0xA8 bytes from k0 into DMEM 0x920 (F3DEX2) / **0x9B0 (F3DLX2)** ,
+  `lw t9,0xA58(k1)` (F3DEX2) / `0xA58`-equivalent, 8-byte GBI commands, dispatch through a table
+  loaded from the *other* overlay; SP_STATUS is polled once per command and SIG0
+  (`andi at,at,0x80`) branches to the overlay at 0x1FAC, which loads the "finish" overlay to
+  IMEM 0x1000 and returns to 0x1000.
+* **The finish overlay (blob offsets 0x1F80..0x2000, i.e. IMEM 0x1F80 after a text load) is the
+  whole completion path**: flush the accumulated RDP commands (`s7 - s6` bytes) out of DMEM 0xBA8
+  (F3DEX2) / 0xA58 (F3DLX2), kick the RDP, then either `bltz at -> 0x1084` (mtc0 0x4000 =
+  SET_TASKDONE, then `break`) or `bne at,r0 -> 0x1060` (the **yield save**: `sw k0,0xBF8`,
+  `sw ucode,0xBFC`, then DMA-write DMEM 0..0xC00 to the header's yield_data_ptr, then the same
+  SET_TASKDONE+BREAK). The resume entry reads exactly those two saved words.
+* **No ucode anywhere writes SIG1 (SP_STATUS_YIELDED).** Scanned every `mtc0 ...,SP_STATUS` in
+  the F3DEX2 blob (text+overlays), the F3DLX2 blob and the audio blob (0x80768E60): the only
+  writes are `0x2800` (CLR_SIG1|CLR_TASKDONE) at entry, `0x4000` (SET_TASKDONE) + `break` at
+  completion. So the libultra yield answer (SIG1) never comes from the microcode, and
+  `osSpTaskYielded()` should always return 0 -- **yet `wd_hdr15.txt` catches a gfx task loaded
+  with `flags=0x05` (= OS_TASK_LOADABLE|OS_TASK_YIELDED, seq 201), i.e. a resume really did
+  happen.** The only code in the tree that can set SIG1 is `rsp/cp0.cpp`'s round-10 fake
+  (`fake_n=0` in the r14 run, so it is not proven to be the one) -- re-check per run.
+
+**The poisoning event, captured with full state (new one-shot diag `wd_badN.txt`, written before
+the copy, `.fzxwork/r15/`).** `BADRD` fires on the first RSP-side DMA whose RDRAM source is below
+1 MB. Three fired in the r15 run, all with `cmd_start=cmd_end=0x002E3D18` (= the RDP output
+cursor, i.e. the same range as round 14's bogus `k0 = 0x2E03C0`):
+* `bad1 pc=0D04 mem=0x1584 dram=0x18B0 rdlen=0x1F` -- a 0x20-byte read from low RDRAM into
+  **IMEM 0x1584** (regs: `at=t5=0x7586`, `v0=0x18B1`, `s7=0x0FB0`; the raw 0x7586 is masked by the
+  hardware's 0x1FFF to 0x1586). The audio ucode loading a "segment" from address 0x18B0.
+* `bad3 pc=0x14C0 mem=0x0FB0 dram=0x00000000 rdlen=0xFFFFFFFF` -- regs `at=s7=0x0FB0` (the task
+  header pointer), `v0=0`, **`v1=0xFFFFFFFF`**. That is a **4096-byte DMA from RDRAM 0 into RSP
+  address 0xFB0**, which runs 0xFB0->0x1FFF: **it overwrites the DMEM task header (0xFB0-0xFFF)
+  AND all of IMEM (0x1000-0x1FB0) with RDRAM 0's content.** `v1 = size-1` with `size = 0` is the
+  classic underflow, and `dram = 0` with `size = 0` says the ucode was handed a **zero-filled
+  descriptor** (null pointer, zero length).
+* `bad2` (false positive, low-RDRAM filter) is a legit 0x10-byte read from the game's audio data
+  (0x42128) into DMEM 0xFE0 (the header region) -- i.e. the audio ucode *does* DMA into the header
+  area on purpose, which is why one bad descriptor there is so destructive.
+End state of the r15 run (`stall_90s.txt`): `imem_bad=1 word=00010001 ... pc=04001b20
+status=000000c1`, `raise_bits ... DP=0`, `RDPKICK n=6 last start=002e3d18 end=002e3d18` (an
+*empty* range -> parallel-RDP never sees SYNC_FULL -> no DP event -> `sGameThread` parked on
+D_800DCAC8 forever), `FRAME loads t1gfx=2 t2aud=266 t3=0` (only 2 gfx tasks in the whole run),
+`sp_status=000000c0/00000040`, and the audio ucode's own last write `sw_last=00004000
+sw_after=000002c0` (SET_TASKDONE landed, SIG0 still set).
+
+**Superseded from round 14**: (a) the resumed task does *not* start from a "zero DL pointer" --
+the FRESH/WARM paths take k0 from the header's `data_ptr` and only the RESUME path takes it from
+DMEM 0xBF8, so a bogus k0 means the *header* (or the saved word) was already wrong; (b) the
+`0x00010001` stream is not "the game's framebuffer fill being parsed as a DL" by the *gfx* ucode
+alone -- the same value enters RSP memory through *audio* ucode DMAs (bad1) and through a
+zero-length underflow (bad3).
+
+**ROUND 15 NEXT STEPS (in order):**
+1. Find who hands the audio ucode a null/zero descriptor. The EK's audio is **disk-streamed**
+   (`src/audio/disk/lib/` in the decomp, `AudioLoad_SetDmaHandler`/`SetLeoHandler`, and the game's
+   ABI command buffers live at 0x80411910/0x804132D0 with segment-encoded words like
+   `0x152E03C0`, `0x0D1703C0`), so the prime suspect is the 64DD audio read path delivering
+   nothing/zeros. Instrument the game's LEO read results (buffer addr + first words) and the audio
+   ucode's descriptor (the DMEM word it takes `v1` from) rather than guessing.
+2. Test the DMA-clamp question: `rsp/cp0.cpp` disables upstream's clamp on the DD route ("real
+   hardware WRAPS"). bad3 with the *clamp* would write 0x50 bytes (header only) instead of 0xFB0
+   bytes (all of IMEM) -- decide with a targeted experiment whether the clamp or the wrap matches
+   hardware for a transfer that crosses the DMEM/IMEM boundary, because it decides whether this
+   class of bug is "one bad task" or "the whole machine dies".
+3. Keep the round-10 fake SIG1 under suspicion: no ucode sets SIG1, so a resume (flags 0x05) can
+   only come from that fake -- and a resume with an *unsaved* yield buffer is exactly what makes a
+   ucode read a garbage saved state.
+
 **ROUND 14 (goal round 14) — the frame stall decoded: the gfx ucode runs a
 YIELD/RESUME handshake the DD route fakes, and the resumed task parses low RDRAM.**
 Branch `dd-eos-watchdog-checkpoint`, base `0fec82230` (instrumentation) over `baea19d80`.

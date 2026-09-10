@@ -92,6 +92,16 @@ static void r12_record(RSP::CPUState* rsp, unsigned dir, uint32_t dst, uint32_t 
    halves: the issuing instruction and the memory state it acted on. */
 struct r14_ent {
 	unsigned dir; uint32_t pc, dst, src, len, cnt, skip, s0, st, fc0;
+	/* ROUND 15: the two DMEM words the F3DEX2/F3DLX2 entry code keys its
+	   fresh/warm/resume decision on, sampled per transfer:
+	     DMEM[0x0F0] = the "already initialised" marker (the ucode stores the
+	                   RDP end pointer there on a cold start),
+	     DMEM[0xFF0] = the task header's data_ptr, which the ucode loads into
+	                   k0 for its display-list walk.
+	   With both on every line the DMEM[0xFF0] history can be read straight off
+	   the transfer stream and compared with the source address the ucode
+	   actually fetched from. */
+	uint32_t f0, ff0, bf8, fc4;
 };
 static struct r14_ent r14_ring[256];
 static unsigned r14_idx = 0;
@@ -110,10 +120,11 @@ static void r14_flush(void)
 		return;
 	for (i = start; i < r14_idx; i++) {
 		const struct r14_ent* e = &r14_ring[i & 255];
-		fprintf(f, "D%u %s pc=%03x dst=%04x src=%06x len=%04x cnt=%u skip=%u s0=%08x st=%08x fc0=%08x\n",
+		fprintf(f, "D%u %s pc=%03x dst=%04x src=%06x len=%04x cnt=%u skip=%u s0=%08x st=%08x fc0=%08x f0=%08x ff0=%08x bf8=%08x fc4=%08x\n",
 		        i + 1, e->dir == 2 ? "RD" : "WR", e->pc, e->dst, e->src,
 		        (unsigned)e->len, (unsigned)e->cnt, (unsigned)e->skip,
-		        (unsigned)e->s0, (unsigned)e->st, (unsigned)e->fc0);
+		        (unsigned)e->s0, (unsigned)e->st, (unsigned)e->fc0,
+		        (unsigned)e->f0, (unsigned)e->ff0, (unsigned)e->bf8, (unsigned)e->fc4);
 	}
 	r14_note(f);
 	fclose(f);
@@ -131,6 +142,10 @@ static void r14_record(RSP::CPUState* rsp, unsigned dir, uint32_t dst, uint32_t 
 	e->s0 = rsp->rdram[(src & 0x7ffffc) >> 2];
 	e->st = *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS];
 	e->fc0 = ((uint32_t*)RSP::rsp.DMEM)[0xfc0 / 4];
+	e->f0 = ((uint32_t*)RSP::rsp.DMEM)[0x0f0 / 4];
+	e->ff0 = ((uint32_t*)RSP::rsp.DMEM)[0xff0 / 4];
+	e->bf8 = ((uint32_t*)RSP::rsp.DMEM)[0xbf8 / 4];
+	e->fc4 = ((uint32_t*)RSP::rsp.DMEM)[0xfc4 / 4];
 	r14_idx++;
 	if ((r14_idx & 63) == 0)
 		r14_flush();
@@ -153,6 +168,54 @@ static void r14_note(FILE* f)
 	        r14_spw_n, r14_spw_n ? r14_spw_ring[i][0] : 0,
 	        r14_spw_n ? r14_spw_ring[i][1] : 0,
 	        r14_fake_n, r14_fake_last_pc, r14_fake_last_st);
+}
+
+/* ROUND-15 DIAG (DD route only, ONE-SHOT): the first DMA read whose RDRAM
+   source lands in the low 1MB -- i.e. the ucode fetching a "display list" out
+   of the guest's zero page / boot framebuffer fill instead of its pool.  The
+   whole register file plus the DMEM regions the F3DEX2/F3DLX2 entry code and
+   display-list walk keep their pointers in are written once, so the issuing
+   instruction and its inputs are both visible.  One-shot: a single fopen on a
+   path that fires at most once per run cannot perturb the timing the way
+   per-transfer logging does (round 14: per-SP_STATUS-write logging killed the
+   run with SIGILL in the RSP JIT). */
+static unsigned r15_bad_dumped = 0;
+static void r15_bad_dump(RSP::CPUState* rsp, uint32_t src, uint32_t dst, uint32_t len)
+{
+	FILE* f;
+	unsigned i;
+	char path[128];
+	if (r15_bad_dumped >= 8 || !rsp_ares_budget_enabled())
+		return;
+	snprintf(path, sizeof(path), "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_bad%u.txt", r15_bad_dumped + 1);
+	r15_bad_dumped++;
+	f = fopen(path, "w");
+	if (f == NULL)
+		return;
+	fprintf(f, "BADRD pc=%04x src=%06x dst=%04x len=%04x status=%08x\n",
+	        rsp->pc & 0xfff, src, dst, len, *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS]);
+	fprintf(f, "  spregs mem=%08x dram=%08x rdlen=%08x wrlen=%08x cmd_start=%08x cmd_end=%08x cmd_cur=%08x\n",
+	        *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_CACHE], *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_DRAM],
+	        *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_READ_LENGTH], *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_WRITE_LENGTH],
+	        *rsp->cp0.cr[RSP::CP0_REGISTER_CMD_START], *rsp->cp0.cr[RSP::CP0_REGISTER_CMD_END],
+	        *rsp->cp0.cr[RSP::CP0_REGISTER_CMD_CURRENT]);
+	fprintf(f, "  regs ");
+	for (i = 0; i < 32; i++)
+		fprintf(f, "%s=%08x ", (i % 8 == 0) ? "\n   " : "", rsp->sr[i]);
+	fprintf(f, "\n  dmem ");
+	for (i = 0; i < 0x1000 / 4; i += 4)
+	{
+		if ((i & 0x3f) == 0)
+			fprintf(f, "\n   %03x:", i * 4);
+		fprintf(f, " %08x", ((uint32_t*)rsp->dmem)[i]);
+	}
+	fprintf(f, "\n  imem ");
+	for (i = 0; i < 0x1000 / 4; i += 16)
+		fprintf(f, "\n   %03x: %08x %08x %08x %08x", 0x1000 + i * 4,
+		        ((uint32_t*)rsp->imem)[i], ((uint32_t*)rsp->imem)[i + 1],
+		        ((uint32_t*)rsp->imem)[i + 2], ((uint32_t*)rsp->imem)[i + 3]);
+	fprintf(f, "\n");
+	fclose(f);
 }
 
 #endif
@@ -376,6 +439,11 @@ extern "C"
 
 		r12_record(rsp, 2, dest, source, length, count, skip);
 		r14_record(rsp, 2, dest, source, length, count, skip);
+
+		/* ROUND-15: first fetch out of the low 1MB (guest zero page / the
+		   boot framebuffer fill) -- capture the full RSP state once. */
+		if (source < 0x100000)
+			r15_bad_dump(rsp, source, dest, length);
 
 #ifdef INTENSE_DEBUG
 		fprintf(stderr, "DMA READ: (0x%x <- 0x%x) len %u, count %u, skip %u\n", dest & 0x1ffc, source & 0x7ffffc,

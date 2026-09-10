@@ -166,6 +166,31 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 					r14_nzi, r14_nzd,
 					(void*)RSP::rsp.IMEM, (void*)RSP::rsp.DMEM, (void*)RSP::rsp.RDRAM,
 					(void*)RSP::cpu.get_state().imem);
+				/* ROUND-15 DIAG: the F3DEX2/F3DLX2 entry code keys its
+				   fresh/warm/resume decision on DMEM[0x0F0] (the RDP end
+				   pointer it stores on a cold start) and takes k0 from
+				   DMEM[0xFF0] (the header's data_ptr) -- or from DMEM[0xBF8]
+				   (the pointer saved by the yield path) on a resume.  Log
+				   those words plus the flags the ucode clears itself on every
+				   gfx task entry, before the walk starts rewriting them. */
+				if (ttype == 1 || ttype == 0)
+				{
+					static int r15_hdr_first = 1;
+					FILE* hf15 = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_hdr15.txt",
+					                   r15_hdr_first ? "w" : "a");
+					r15_hdr_first = 0;
+					if (hf15)
+					{
+						uint32_t* h15 = (uint32_t*)RSP::rsp.DMEM;
+						fprintf(hf15, "H15 ms=%lld seq=%u pc=%04x type=%08x flags=%08x f0=%08x ff0=%08x ff4=%08x bf8=%08x bf4=%08x ucode=%08x yield=%08x ysz=%08x st=%08x\n",
+						        now_ms, task_seq, *RSP::rsp.SP_PC_REG & 0xfff,
+						        h15[0xfc0 / 4], h15[0xfc4 / 4], h15[0x0f0 / 4],
+						        h15[0xff0 / 4], h15[0xff4 / 4], h15[0xbf8 / 4], h15[0xbf4 / 4],
+						        h15[0xfd0 / 4], h15[0xff8 / 4], h15[0xffc / 4],
+						        *RSP::rsp.SP_STATUS_REG);
+						fclose(hf15);
+					}
+				}
 				/* DIAG (round 6): log the DMEM task header the guest submitted.
 				   A zeroed header means the guest re-started the RSP without an
 				   __osSpTaskLoad (or with an uninitialised OSTask), which makes
