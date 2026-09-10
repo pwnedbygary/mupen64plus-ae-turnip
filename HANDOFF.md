@@ -76,6 +76,24 @@ corruption and the round-20 finding that the FIFO's write DMAs never target the 
 boot (`off=354 0→1`, guest PC 0), which consumes its one shot — gate it on `wd_c_do_sp_task` before
 relying on it.
 
+**7. Plain-cart regression check: clean.** `r35c_run.sh` re-ran round 34's control (Mario Tennis
+(USA).zip, `support64dd=false`) on the round-35 APK: `screenstat.py` gives `game_ink 55.32 %` /
+`57.05 %` versus `56.10 %` / `57.05 %` on the pre-change build — the second capture is identical to
+three decimal places, and the first differs only within the run-to-run frame variance the same build
+shows between its own two captures. The guard is unreachable on plain carts by construction
+(`rsp_ares_budget_enabled()` is `IsDDPresent()`), so `r35_wraps` and `r35_skipped` are both 0 and no
+word is ever skipped.
+
+**8. Round-36 target.** The write DMA's descriptor is the thing to trace: at the wrap,
+`dst = 0x007FFFF8` (the raw `SP_DRAM_ADDR`) with `src = IMEM 0x9B0`, `len = 0xB40`, `cnt = 0`,
+`skip = 0`, while `DMEM[0xFC0] = 0x00010001` and `DMEM[0xBF8] = 0x10000003`. F3DEX2's own DMA helper
+reads its descriptor from DMEM `0x2E0` (`lw t8,0(t3)` / `lhu s3,4(t3)` / `lhu s4,6(t3)` with
+`t3 = 0x2E0`), so logging that triple plus `DMEM[0xBF8]`/`DMEM[0xFF0]` on every write DMA should name
+which store put `0x7FFFF8` into the address register — and, since the same stale pointer is what keeps
+the FIFO's write DMAs off the output buffer (round 20), fixing it is the likely path to actually
+rendering. **A write whose source bank is IMEM is itself anomalous** (an output DMA should source
+DMEM) and is worth checking against the ucode's dispatch table entry for that opcode.
+
 **ROUND 34 — THE SCREEN IS NOT BLANK: WHAT ROUNDS 13..33 CALLED "97% BLACK" IS THE GUEST'S OWN
 STATIC "…64DD…" SCREEN (the core OSD is ruled out by experiment), SO THE DISPLAY PATH IS ALIVE
 AND THE FAULT IS A STALL *AFTER* THE FIRST SCREEN.**
