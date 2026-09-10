@@ -1701,6 +1701,16 @@ static void wd_stall_probe(const char* path)
         uint32_t i, start = wd_hdr_ring_n;
         fprintf(f, "TASKRING n=%u gfxn=%u audn=%u\n", (unsigned)wd_hdr_ring_n,
                 (unsigned)wd_c_gfx_load, (unsigned)wd_c_audio_load);
+        /* ROUND 22: the header the plugin acts on for a forced yield -- latched
+           from the task-load DMA source, not read from the clobbered DMEM copy.
+           [0] type [1] flags [4] ucode [14] yield_data_ptr [15] yield_data_size */
+        {
+            extern uint32_t wd_cur_hdr[16];
+            extern volatile uint32_t wd_cur_hdr_seq;
+            fprintf(f, "CURHDR seq=%u type=%08x flags=%08x ucode=%08x ucd=%08x data=%08x yptr=%08x ysz=%08x\n",
+                    (unsigned)wd_cur_hdr_seq, wd_cur_hdr[0], wd_cur_hdr[1], wd_cur_hdr[4],
+                    wd_cur_hdr[6], wd_cur_hdr[12], wd_cur_hdr[14], wd_cur_hdr[15]);
+        }
         for (i = 0; i < 32; i++)
         {
             const uint32_t* e = wd_hdr_ring[(start + i) & 31u];

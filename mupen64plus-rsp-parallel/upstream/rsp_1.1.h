@@ -110,6 +110,15 @@ typedef unsigned int RCPREG; /* ANSI approximation of 32-bit size */
 		/* IsDDPresent: RUNTIME query — non-zero when a 64DD disk image is
 		   attached (evaluated at task time, after init_device). */
 		int (*IsDDPresent)(void);
+		/* TaskHeaderLatch / TaskHeaderSeq: ROUND 22 (DD route).  The task
+		   header libultra DMAs into DMEM 0xFC0, latched by the core from the
+		   task-load DMA source (see m64p_plugin.h for the full rationale).
+		   F3DEX2 clobbers the DMEM copy as soon as it runs, so a forced yield
+		   must not read the header out of DMEM.  Word layout:
+		     [0] type  [1] flags  [4] ucode  [14] yield_data_ptr
+		     [15] yield_data_size */
+		const unsigned int * TaskHeaderLatch;
+		const volatile unsigned int * TaskHeaderSeq;
 	} RSP_INFO;
 #endif
 

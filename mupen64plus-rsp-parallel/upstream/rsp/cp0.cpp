@@ -778,33 +778,77 @@ extern "C"
 				   thread stayed parked on D_800DCAC8. */
 				uint32_t* dmem = (uint32_t*)RSP::rsp.DMEM;
 				uint32_t st_before = *RSP::rsp.SP_STATUS_REG;
-				uint32_t yptr = dmem[0xff8 / 4];
 				uint32_t k0 = rsp->sr[26];
 				int sig0 = (st_before & SP_STATUS_SIG0) != 0;
 				r21_yield_n++;
-				dmem[0xbf8 / 4] = k0;              /* the resume DL pointer */
-				dmem[0xbfc / 4] = dmem[0xfd0 / 4]; /* the resume ucode base */
-				r21_save_k0 = k0;
-				r21_save_f0 = dmem[0xf0 / 4];
-				/* ROUND 21d (measured, not defensive): the OSTask copy at DMEM
-				   0xFC0 is only valid while the running ucode is keeping it
-				   there, and a *forced* preemption lands at an arbitrary point in
-				   the walk.  On the RP6 (r21f) the intercepted poll at pc=0x18C
-				   read back type=0xDEF3FFFF flags=0xFFFFFFFF yield_data_ptr=0, and
-				   the unguarded save then wrote the whole 0xC00-byte DMEM image to
-				   RDRAM offset 0 -- i.e. straight over the guest's boot exception
-				   vector at 0x80000000.  That is a corruption the emulation cannot
-				   survive, so the save is now conditional on the header still
-				   looking like the task that was latched at load time. */
-				uint32_t hdr_type = dmem[0xfc0 / 4];
+				/* Live DMEM words, kept for the trace only: after the ucode has
+				   been running these are the clobbered values that made the
+				   round-21 save inert (typ=0xDEF3FFFF / 0x00010001, yptr=0). */
+				uint32_t yptr_live = dmem[0xff8 / 4];
+				uint32_t typ_live = dmem[0xfc0 / 4];
+				/* ROUND 22: TAKE THE HEADER FROM THE CORE'S TASK-LOAD LATCH.
+
+				   Round 21d proved the DMEM copy at 0xFC0 is unusable at an
+				   arbitrary preemption point (at pc=0x18C it reads
+				   type=0xDEF3FFFF, then the game's 0x00010001 fill,
+				   yield_data_ptr=0) -- but it kept *reading* DMEM and merely
+				   refused to act on it, so every forced yield was rejected
+				   (measured: hdrbad=5, saved=0) and the save path was inert.
+				   The header is only meaningful at the instant the guest DMAs
+				   it into DMEM, so the core now latches it at the task-load DMA
+				   and publishes it through RSP_INFO (TaskHeaderLatch /
+				   TaskHeaderSeq, filled in plugin.c from rsp_core.c).  Validate
+				   and act on that instead of on DMEM.
+
+				   Word layout of the latched header, verified against the
+				   decomp's osSpTaskLoad and the wd_hdr15.txt capture
+				   (ucode=007505c0, yield=0032dcd0, ysz=00000c00):
+				     [0] type   [1] flags   [4] ucode   [14] yield_data_ptr
+				     [15] yield_data_size */
+				uint32_t hdr_type = typ_live;
 				uint32_t hdr_flags = dmem[0xfc4 / 4];
 				uint32_t hdr_ucode = dmem[0xfd0 / 4];
+				uint32_t yptr = yptr_live;
+				uint32_t ysize = dmem[0xffc / 4];
+				uint32_t lseq = 0;
+				int latched = 0;
+				if (RSP::rsp.TaskHeaderLatch != NULL)
+				{
+					const uint32_t* lh = (const uint32_t*)RSP::rsp.TaskHeaderLatch;
+					lseq = (RSP::rsp.TaskHeaderSeq != NULL) ? *RSP::rsp.TaskHeaderSeq : 0u;
+					if (lseq != 0u)
+					{
+						hdr_type = lh[0];
+						hdr_flags = lh[1];
+						hdr_ucode = lh[4];
+						yptr = lh[14];
+						ysize = lh[15];
+						latched = 1;
+					}
+				}
 				uint32_t yphys = yptr & 0x7fffffu;
-				int hdr_ok = (hdr_type >= 1u && hdr_type <= 4u) &&
+				/* A task that never had a yield buffer (yield_data_size == 0)
+				   cannot be saved coherently; that is reported, not faked. */
+				int hdr_ok = ((hdr_type & 3u) != 0u) &&
 				             (hdr_flags != 0xffffffffu) &&
-				             ((hdr_ucode & 0xfff00000u) == 0x80000000u ||
-				              (hdr_ucode & 0x007fffffu) != 0u) &&
+				             (ysize >= 0xc00u) &&
+				             ((hdr_ucode & 0x007fffffu) != 0u) &&
 				             (yphys >= 0x1000u) && (yphys <= 0x800000u - 0xc00u);
+				if (hdr_ok)
+				{
+					/* The ucode's own yield handler, instruction for
+					   instruction (overlay at ucode+0xF80):
+					     0060 lw t3,0xFD0(r0) / 0064 sw k0,0xBF8(r0)
+					     0068 sw t3,0xBFC(r0) / 0070 lw t8,0xFF8(r0)
+					     007C DMA DMEM[0..0xBFF] -> yield_data_ptr
+					   Write the resume words ONLY when the image can land:
+					   the round-21 form wrote a live (garbage) ucode base into
+					   0xBFC unconditionally, which a resume would then load. */
+					dmem[0xbf8 / 4] = k0;          /* the resume DL pointer */
+					dmem[0xbfc / 4] = hdr_ucode;   /* the resume ucode base */
+					r21_save_k0 = k0;
+					r21_save_f0 = dmem[0xf0 / 4];
+				}
 				r21_hdr_bad_n += (hdr_ok ? 0 : 1);
 				/* Same word-indexed convention as rsp_dma_write above. */
 				if (hdr_ok && RSP::rsp.RDRAM != NULL)
@@ -823,10 +867,11 @@ extern "C"
 					FILE* f = fopen(R21_LOG_PATH, (r21_log_n == 0) ? "w" : "a");
 					if (f)
 					{
-						fprintf(f, "R21Y n=%u pc=%03x sig0=%d st=%08x k0=%08x f0=%08x bf8=%08x yptr=%08x typ=%u flg=%08x saved=%u ok=%d hdrbad=%u\n",
+						fprintf(f, "R21Y n=%u pc=%03x sig0=%d st=%08x k0=%08x f0=%08x bf8=%08x bfc=%08x latched=%d seq=%u typ=%08x flg=%08x ucode=%08x yptr=%08x ysz=%08x ylive=%08x tlive=%08x saved=%u ok=%d hdrbad=%u\n",
 						        r21_yield_n, rsp->pc & 0xfff, sig0, st_before, k0,
-						        dmem[0xf0 / 4], dmem[0xbf8 / 4], yptr,
-						        dmem[0xfc0 / 4], dmem[0xfc4 / 4], r21_save_n,
+						        dmem[0xf0 / 4], dmem[0xbf8 / 4], dmem[0xbfc / 4],
+						        latched, lseq, hdr_type, hdr_flags, hdr_ucode,
+						        yptr, ysize, yptr_live, typ_live, r21_save_n,
 						        hdr_ok, r21_hdr_bad_n);
 						fflush(f);
 						fclose(f);

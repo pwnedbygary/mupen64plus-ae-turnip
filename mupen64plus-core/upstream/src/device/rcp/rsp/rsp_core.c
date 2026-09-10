@@ -81,6 +81,15 @@ volatile uint32_t wd_c_task_etype[4] = {0, 0, 0, 0}; /* do_SP_Task entry type */
 volatile uint32_t wd_c_gfx_load = 0, wd_c_audio_load = 0;
 volatile uint32_t wd_hdr_ring_n = 0;
 uint32_t wd_hdr_ring[32][8];  /* seq,type,ucode,ucode_data,data,status,pc,resv */
+/* ROUND 22: the task header of the MOST RECENT task load, as latched from the
+   DMA source.  This is published to the RSP plugin through RSP_INFO
+   (TaskHeaderLatch/TaskHeaderSeq) because the plugin's forced-yield path needs
+   the header's yield_data_ptr, and by the time the RSP has been running the
+   DMEM copy at 0xFC0 has been overwritten by the ucode itself.  Layout is the
+   libultra RSP task header: [0] type, [1] flags, [4] ucode (0xFD0),
+   [14] yield_data_ptr (0xFF8), [15] yield_data_size (0xFFC). */
+volatile uint32_t wd_cur_hdr_seq = 0;
+uint32_t wd_cur_hdr[16];
 volatile uint32_t wd_spw_ring_n = 0;
 uint32_t wd_spw_ring[16][2];  /* last SP_STATUS writes: value, guest pc      */
 volatile uint32_t wd_c_sp_status_wr = 0, wd_c_sp_sig_wr = 0;
@@ -230,6 +239,12 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
             wd_hdr_seq = wd_c_spdma;
             for (k = 0; k < 16; k++)
                 wd_hdr_src[k] = ((uint32_t*)(void*)dram)[((dma->dramaddr & 0x7fffff) >> 2) + k];
+            /* ROUND 22: publish this load's header to the plugin (see
+               wd_cur_hdr above).  Captured here, at the DMA, because the DMEM
+               copy the ucode sees at 0xFC0 does not survive the first slice. */
+            for (k = 0; k < 16; k++)
+                wd_cur_hdr[k] = wd_hdr_src[k];
+            wd_cur_hdr_seq++;
             /* ROUND 13: a header copy IS a task load (libultra's osSpTaskLoad
                DMAs the 64-byte OSTask into DMEM 0xFC0).  Classify by the type
                word read from the SOURCE, before the ucode can clobber it, and

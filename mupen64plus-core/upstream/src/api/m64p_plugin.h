@@ -79,6 +79,28 @@ typedef struct {
        ares-derived RSP work (yield protocol, JIT budget, clean completion)
        must be keyed off this callback, not a static wiring decision. */
     int (*IsDDPresent)(void);
+    /* TaskHeaderLatch / TaskHeaderSeq: ROUND 22 (DD route).
+       The plugin needs the RSP task header -- the 0x40-byte block libultra
+       DMAs into DMEM 0xFC0 -- but that copy is only valid until the ucode
+       starts running: F3DEX2 overwrites DMEM 0xFC0 with display-list/FIFO
+       state, so at an arbitrary preemption point it reads back as garbage
+       (measured: type=0xDEF3FFFF, then the game's 0x00010001 fill;
+       yield_data_ptr=0).  Acting on those words is what made the round-21
+       forced-yield save both inert (every yield rejected: hdrbad=5, saved=0)
+       and, before it was guarded, destructive (the 0xC00-byte DMEM image went
+       to RDRAM offset 0 = the guest's boot exception vector).
+
+       The core therefore latches the header from the task-load DMA *source*,
+       which is the one moment its fields are trustworthy, and publishes it
+       here.  Word layout, verified against the decomp's osSpTaskLoad and the
+       wd_hdr15.txt capture (ucode=007505c0, yield=0032dcd0, ysz=00000c00):
+         [0]  type              [1]  flags
+         [4]  ucode  (0xFD0)    [14] yield_data_ptr (0xFF8)
+         [15] yield_data_size   (0xFFC)
+       TaskHeaderSeq increments on every latch so a reader can tell two loads
+       of the same address apart. */
+    const unsigned int * TaskHeaderLatch;
+    const volatile unsigned int * TaskHeaderSeq;
 } RSP_INFO;
 
 typedef struct {

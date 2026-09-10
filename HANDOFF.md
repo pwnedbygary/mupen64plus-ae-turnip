@@ -5,6 +5,64 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 22C — THE FORCED-YIELD SAVE ACTUALLY LANDS NOW, AND THE DP CHAIN IS PINNED TO ONE
+INSTRUCTION.** The round-21 save read the OSTask header out of DMEM 0xFC0 *at the preemption
+point*, where F3DEX2 has already overwritten it, so every forced yield was rejected and the save
+path was inert. The header is only meaningful at the instant the guest DMAs it, so the core now
+latches it there (`wd_cur_hdr` in rsp_core.c, at the same site that classifies the task) and
+publishes it to the plugin through two new `RSP_INFO` fields (`TaskHeaderLatch`/`TaskHeaderSeq`,
+wired in plugin.c); cp0.cpp validates and acts on the latch instead of on DMEM. Evidence
+`.fzxwork/r22a/` (`r21.txt`, `stall.txt`, `ram.bin`), run via `.fzxwork/r22a_run.sh`:
+
+```
+R21Y n=1 pc=18c ... bfc=007505c0 latched=1 seq=194 typ=00000001 flg=00000004
+                    ucode=007505c0 yptr=0032dcd0 ysz=00000c00
+                    ylive=00000000 tlive=def7ffff saved=1 ok=1 hdrbad=0
+```
+
+The latched values are byte-for-byte the golden reference from `wd_hdr15.txt`
+(`ucode=007505c0`, `yield=0032dcd0`, `ysz=00000c00`), the latched type is 1 (M_GFXTASK) while the
+*live* DMEM word reads `def7ffff`/`00010001` — i.e. the latch is doing exactly the job the DMEM
+read could not. 16 forced yields this run, **all** `latched=1 ok=1 saved=N hdrbad=0`, versus 5
+yields all `ok=0 hdrbad=5 saved=0` in r21h. From n=6 on the header shows
+`flg=00000005` (OS_TASK_YIELDED|OS_TASK_LOADABLE), so the guest is now taking the yield answer and
+re-loading the task through the resume path. The run was stable for the full 70 s sampling window.
+
+**TWO NEW, DECISIVE FACTS ABOUT WHERE THE DEADLOCK LIVES.**
+
+1. **`MI_INTR_DP` is raised in exactly one place, and it is the RDP executing a FULLSYNC.**
+   `mupen64plus-video-parallel/upstream/parallel_imp.cpp:210-217`: inside `vk_process_commands`
+   the DP interrupt is set only under `if (RDP::Op(command) == RDP::Op::SyncFull)`. So "no DP
+   event" is not an interrupt-plumbing bug at all — it means **no FULLSYNC command ever reaches
+   the RDP**, which is a statement about the ucode's display-list walk, not about MI. This
+   collapses rounds of interrupt investigation into one target: does the FIFO ever carry op
+   0x29, and if not, where does the walk diverge?
+
+2. **One bad kick poisons the RDP plugin for the rest of the run (a sticky failure).**
+   `vk_process_commands` line 178: `if (DP_END > 0x7ffffff || DP_CURRENT > 0x7ffffff) return;`
+   — an early return that leaves `DPC_CURRENT` untouched, and line 224 is the only place that
+   resets START/CURRENT/END. So a kick whose `DPC_CURRENT` is already garbage can never be
+   repaired by a later kick: every subsequent call bails at line 178 forever. Measured in
+   `.fzxwork/r22a/wd_rdpbad.txt` (fetched off-device):
+
+   ```
+   RDPBAD n=1 cur=002f3ae0 end=00000000 start=002f3ae0
+   RDPBAD n=2 cur=fffffff8 end=000006c8 start=fffffff8   <-- then it never recovers
+   ```
+   and in the stall dump's RDP tables: the first 16 kicks (RDPF 2..15) are *real, advancing*
+   windows (002d9cd0 -> 002d9e30 -> 002d9f98 -> ... walking the FIFO ring) but every one of them
+   has `mia=00000000`, and the last 16 kicks are all the empty `start=cur=end=0032dcd0` form.
+   Totals: `RDPKICK n=656 empty=530 noadv=606 bad=432 dp_seen=0`. Note `0xFFFFFFF8 == -8`, i.e.
+   the value is a *negative* small number, not a wild pointer — worth chasing at its source.
+
+So the state of play: the yield/resume protocol is now faithful and the run is stable, but the
+guest still issues only 2 gfx tasks (`gfxn=2`, `audn=4263`) because no FULLSYNC reaches the RDP.
+Decisive next checks: (a) trace every write to `DPC_START/END/CURRENT` (both the CPU side in
+dp_controller.c and the ucode side via `mtc0` in the plugin) to find which side writes `END=0`
+and then `CURRENT=0xFFFFFFF8`; (b) instrument whether op 0x29 is ever *enqueued* to the frontend
+(`command >= 8` path, line 207) — if the FIFO never carries it, the walk is the bug; if it does
+but `RDP::Op` decodes something else, the decode is.
+
 **ROUND 22B (same round, after the guard + a real unlocked run) — RUNS ARE NOW STABLE AND REACH
 4x FURTHER THAN EVER, BUT THE GFX TASK IS STILL ISSUED ONLY TWICE.** Commit `c4839dec7` (the
 DMEM 0xFC0 guard). Evidence: `.fzxwork/r21g/` (r21/r20 traces, stall, RDRAM, screenshots) and

@@ -74,6 +74,13 @@ typedef struct {
        attached.  Evaluated at task time (after init_device), so the ares
        yield/budget/completion work is keyed off this, not a static gate. */
     int (*IsDDPresent)(void);
+    /* TaskHeaderLatch / TaskHeaderSeq: ROUND 22 (DD route).  The task header
+       libultra DMAs into DMEM 0xFC0, latched by the core at the load DMA --
+       the only moment its fields are trustworthy, because F3DEX2 clobbers the
+       DMEM copy once it runs.  Layout: [0] type, [1] flags, [4] ucode,
+       [14] yield_data_ptr, [15] yield_data_size. */
+    const unsigned int * TaskHeaderLatch;
+    const volatile unsigned int * TaskHeaderSeq;
 } RSP_INFO;
 
 typedef struct {

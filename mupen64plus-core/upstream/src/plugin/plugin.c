@@ -678,6 +678,17 @@ static m64p_error plugin_start_rsp(void)
        itself no-ops without a disk (belt-and-suspenders). */
     rsp_info.ForceSynchronize = rsp_force_synchronize;
     rsp_info.IsDDPresent = rsp_is_dd_present;
+    /* ROUND 22 (DD route): publish the latched task header (rsp_core.c) so the
+       plugin's forced-yield save can read yield_data_ptr/ucode from the load
+       DMA instead of DMEM 0xFC0, which the ucode overwrites as soon as it runs.
+       The latch is a static of the core library and stays valid for the whole
+       process, so nothing needs re-publishing when the memory base moves. */
+    {
+        extern uint32_t wd_cur_hdr[16];
+        extern volatile uint32_t wd_cur_hdr_seq;
+        rsp_info.TaskHeaderLatch = wd_cur_hdr;
+        rsp_info.TaskHeaderSeq = &wd_cur_hdr_seq;
+    }
 
     /* call the RSP plugin  */
     rsp.initiateRSP(rsp_info, NULL);
