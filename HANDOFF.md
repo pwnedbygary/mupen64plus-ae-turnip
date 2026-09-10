@@ -5,6 +5,95 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 12 (goal round 12) — the fault decoded end-to-end: the RSP is fed its OWN corrupted memory
+(the "`0x00010001` fill" is audio-ucode data, not a fill), and round 11's death spiral is one extra
+step — a ucode-issued DMA that writes RSP memory over the exception vectors.** Branch
+`dd-eos-watchdog-checkpoint`, base `cc977373e`.
+
+**Method corrections (both change how every earlier dump must be read):**
+* **RDRAM dumps are host-word-order: read them LITTLE-ENDIAN.** `wd_full_dump` does
+  `fwrite(g_mem_base, 1, 0x800000, f)`; the guest word is the LE read of those bytes (verified against
+  the guest's own `a2=0x807504f0`, and against `freeze_state.py`, which decodes thread/queue state
+  correctly with `<I`). Round 11 read them big-endian, which byte-reverses every word (its
+  "`0x8000041c`" is really `0x80000418`, its `0x00010001`/`0xffffffff` readouts are byte-swapped).
+* **The N64 exception vector at `0x80000180` is INTACT in every dump except round 11's**: population A
+  runs (FZX cart game, `__osException=0x800bc4c0`) and population B runs (`__osException=0x80746800`)
+  both hold `3c1a8074 275a6800 03400008 00000000` (or the `800c/c4c0` variant) = `lui k0; addiu k0;
+  jr k0; nop`. **In the round-11 dump `0x80000180` is ALL ZEROS** and `0x80000000-0x80000400` holds
+  non-code data — that is the terminal fault, not a missing IPL3.
+* **What is there: a copy of RSP memory.** `RDRAM[0x80000000 + k] == SPMEM[0xBA8 + k]` for the whole
+  low 64 KB (419/512 words match over the first 2 KB with an exact contiguous 520-byte run) and the
+  walk is **linear over the full 8 KB** (`(0xBA8+k) & 0x1FFF`, i.e. it runs off DMEM into IMEM).
+  `& 0x1FFC`-style linear wrap is the **plugin's** `rsp_dma_write` (cp0.cpp); the core's `do_sp_dma`
+  wraps inside a 4 KB bank with `& 0xfff`. So the damaging transfer is **ucode-issued**, and the
+  "IPL3/cart-boot handoff" reading of round 11 is retired: the CPU died because an interrupt found a
+  zeroed vector, flowed through the zeroed page into data at `0x80000408` and faulted
+  (`c_exc_int` frozen at 12680 while `c_exc_nested` climbed 12.3 M / 300 ms).
+* **The core-side SP DMA path is clean for the whole run**: `wd_dma2.txt` (DD route) has exactly four
+  transfer shapes — header `← tmp_task 0x7c1c00` (`dst=0xfc0`), IMEM `← 0x768e60` ×193, IMEM
+  `← 0x7504f0` ×1 — all `dir=1`, and **no transfer with `src=00010001`**.
+* **`0x00010001` is not a fill pattern — it is content of the audio ucode's data tables.**
+  `RDRAM 0x80768e60 + 0xf90/+0x10c8/+0x11e0/+0x12f4` hold 308/264/252/244-word runs of it, and the
+  surviving live-IMEM words (`319d0043 00010001×4 6319ffff`) match **RDRAM `0x8076b268` exactly**
+  (a unique 6-word match). Round 10's "a cleared RDRAM buffer was copied into RSP memory" is
+  therefore refined to "audio-ucode data was copied into RSP memory".
+
+**New instrumentation (DD-gated via `rsp_ares_budget_enabled()`, i.e. runtime `IsDDPresent()`), and
+what it caught in the round-12 run (`wd_pdma.txt`):** a 128-entry RAM ring of every ucode-issued
+transfer in the plugin's `rsp_dma_read`/`rsp_dma_write`, dumped (max 4 times) when a read's RDRAM
+source starts with `0x00010001` or a write lands below RDRAM `0x1000`. Trigger:
+
+```
+R12DMA dump=1 idx=7317 trig=RD dst=00001000 src=00000f80 len=152 cnt=0 skip=0 s0=00010001 s1=00010001
+  ... (preceding ring entries = the normal F3DEX task load)
+  RD dst=00000000 src=00779860 len=2048     <- ucode_data  -> DMEM 0
+  RD dst=00001080 src=007505c0 len=3968     <- main ucode  -> IMEM 0x80
+  RD dst=00001000 src=00000f80 len=152      <- THE BAD ONE  (sources = the 0x00010001 tables)
+  live pc=0d14 status=00000040 imem0=09000419 20010fc0 dmem0=00000000 fc0=00000001
+```
+The ring's two preceding transfers are exactly what the boot ucode at `0x807504f0` is written to do —
+it disassembles cleanly as `addi at,zero,0xFC0; lw v0,0x10(at) [header ucode]; addi v1,zero,0xF7F;
+addi a3,zero,0x1080; mtc0 a3,SP_MEM_ADDR; mtc0 v0,SP_DRAM_ADDR; mtc0 v1,SP_RD_LEN` then the
+`flags&2`-gated `ucode_data` load to DMEM 0. So the *third* transfer is not in the boot ucode: some
+later step DMAs **from RDRAM `0xF80`** (note: `0xF80` is the *length* `0xF7F+1`, and `0x1080/0x1000`
+are the IMEM addresses of the same load) into IMEM 0 with length 152 — i.e. an address register that
+holds a size/offset where an address belongs, and the source it reads is garbage-audio-ucode data.
+
+**Round-12 run's terminal state (screenshot + `wd_stall.txt` + fresh RDRAM dump):** *different* from
+round 11's death spiral — the machine is ALIVE and only the RSP is off the rails:
+`cause=10000000` (a plain interrupt), `c_cop1=2`, `c_exc_nested=0`, `c_exc_int=44232`, `c_task=7766`,
+`c_vi_evt=14447 / c_vi_ack=14449`, `sp_status=0x000000c0`, `sp_pc=0x04001098`, guest idle at
+`epc=0x806f32ec`, exception vector at `0x80000180` INTACT, but the round-11 latches fire:
+`imem_bad=1 word=00010001 … pc=04001c34 status=00000040 count=0b6145ea dmas=388`. So the RSP-memory
+corruption happens **without** the vector clobber; round 11's fatal step is the extra wild *write*.
+**Caveat (do not overclaim):** the ring dump does file I/O inside the RSP DMA path and the ares path
+is gated by a *host-time* budget, so this run's softer terminal state cannot be assumed inert. Round
+11's stash+rebuild control (bit-identical counters) covered the round-11 diagnostics only.
+* **The EK data load is real:** `RDRAM 0x8076a000..0x8076c000` holds packed EK data (runs of
+  `0x00010001` interleaved with `0x22894553/0x45134513/0x39e131e1`-style words) in the r11/r12 runs and
+  is **all zeros** in the round-10 stalled run — the DD read path is delivering data.
+* **Plain-game regression: CLEAN** — MK64 Amped Up (CI emumode=1 path) renders and plays with the
+  instrumented build; the only watchdog file is the harmless `wd_smc.txt`, no `wd_pdma.txt`.
+
+**ROUND 13 NEXT STEPS (in order):**
+1. **Latch the DMA-register writes** (`RSP_MTC0` for `CP0_REGISTER_DMA_DRAM/DMA_CACHE/
+   DMA_READ_LENGTH/DMA_WRITE_LENGTH`) with the RSP pc + a few registers, so the instruction that
+   computes `src=0xF80 / dst=0x1000 / len=152` is identified. Suspects: (a) a display-list-supplied
+   `G_LOAD_UCODE`-style pointer inside the freshly loaded EK data, or (b) the plugin's register echo
+   (`rsp_dma_read` writes back `DMA_DRAM += length + skip`, and `SP_DMA_FULL`/`SP_DMA_BUSY` are
+   approximated) handing the ucode a size where an address belongs.
+2. **Check the gfx ucode's tail.** In RDRAM the main gfx ucode (`0x807505c0`, size `0x1000` per the
+   task header) has code up to ~`+0xC00` and **zeros after** (`0x807511c0` = 0, so IMEM `0xC00..0xFFF`
+   is NOPs — and the RSP's pc sits at `0xC34/0xD14` exactly when things go wrong). If the real F3DEX2
+   build is longer, then the load length/source is wrong; if not, the ucode is *supposed* to run off
+   its own tail into IMEM 0 and the fault is upstream (the bad `src=0xF80`).
+3. **Cheap defensive fix worth testing (DD-gated):** in the plugin's `rsp_dma_write`, refuse (and log)
+   writes whose RDRAM destination is `< 0x1000` — RDRAM's first page is the exception-vector area and
+   is never a legitimate DMA target. That converts round 11's fatal vector clobber into a survivable
+   glitch and gives a clean signal in the log.
+4. Keep the goal active: the game still does not reach the menu (it now gets further — EK data loaded,
+   RSP tasks running, VI acking — and then the RSP is poisoned from a bad DMA source).
+
 **ROUND 11 (goal round 11) — the post-load fault is NOT the RSP: the guest re-enters `0x80000400`
 where the cart's IPL3 boot code should be, and it is not there.** Branch
 `dd-eos-watchdog-checkpoint`, base `9361c3f85`.

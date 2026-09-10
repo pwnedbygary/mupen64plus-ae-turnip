@@ -16,6 +16,63 @@ extern int SP_STATUS_TIMEOUT;
 #ifdef PARALLEL_INTEGRATION
 /* DD-route gate (runtime IsDDPresent()); defined in parallel.cpp. */
 extern "C" int rsp_ares_budget_enabled(void);
+
+/* ROUND-12 DIAG (DD route only).  The post-load failure writes a WORD-ALIGNED
+   copy of the audio ucode's data table -- a long run of 0x00010001 at
+   RDRAM 0x8076b268, i.e. ucode+0x2408 -- over live RSP memory (IMEM[0] and the
+   DMEM 0xFC0 task header both end up 0x00010001).  The RSP then executes data,
+   and its wild DMAs overwrite RDRAM 0..0x400 -- the exception vectors -- which
+   is what kills the CPU (192M COP1-unusable faults, c_exc_int frozen at 12680).
+   The core's own do_sp_dma log (wd_dma2.txt) shows only four clean transfer
+   shapes for the whole run, so the damaging transfer is issued by the ucode
+   through THIS path.  Keep a 128-entry RAM ring of every ucode-issued transfer
+   and dump it (bounded) the first few times one looks like the culprit, so the
+   source address, length and count are on record without per-transfer file I/O
+   in the RSP's hot path. */
+struct r12_ent { uint32_t dst, src, len, cnt, skip, s0, s1; unsigned dir; };
+static struct r12_ent r12_ring[128];
+static unsigned r12_idx = 0;
+static unsigned r12_dumps = 0;
+
+static void r12_record(RSP::CPUState* rsp, unsigned dir, uint32_t dst, uint32_t src,
+                       uint32_t len, unsigned count, uint32_t skip)
+{
+	if (!rsp_ares_budget_enabled())
+		return;
+
+	struct r12_ent* e = &r12_ring[r12_idx & 127];
+	e->dir = dir; e->dst = dst; e->src = src; e->len = len; e->cnt = count; e->skip = skip;
+	e->s0 = rsp->rdram[(src & 0x7FFFFC) >> 2];
+	e->s1 = rsp->rdram[((src + 4) & 0x7FFFFC) >> 2];
+	r12_idx++;
+
+	/* Trigger only on the two shapes that damage the machine:
+	   a read whose RDRAM source starts with the ucode's 1-table, and a write
+	   that lands in RDRAM's first page (the exception vectors). */
+	if (dir == 2) { if (e->s0 != 0x00010001u) return; }
+	else          { if ((dst & 0x7FFFFC) >= 0x1000) return; }
+	if (r12_dumps >= 4)
+		return;
+	r12_dumps++;
+
+	FILE* f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_pdma.txt",
+	                (r12_dumps == 1) ? "w" : "a");
+	if (f == NULL)
+		return;
+	fprintf(f, "R12DMA dump=%u idx=%u trig=%s dst=%08x src=%08x len=%u cnt=%u skip=%u s0=%08x s1=%08x\n",
+	        r12_dumps, r12_idx, (dir == 2) ? "RD" : "WR", dst, src, len, count, skip, e->s0, e->s1);
+	unsigned k;
+	for (k = 0; k < 128; k++) {
+		struct r12_ent* q = &r12_ring[(r12_idx + k) & 127];
+		if (q->len == 0 && q->dst == 0 && q->src == 0) continue;
+		fprintf(f, "  %s dst=%08x src=%08x len=%u cnt=%u skip=%u s0=%08x s1=%08x\n",
+		        (q->dir == 2) ? "RD" : "WR", q->dst, q->src, q->len, q->cnt, q->skip, q->s0, q->s1);
+	}
+	fprintf(f, "  live pc=%04x status=%08x imem0=%08x %08x dmem0=%08x fc0=%08x\n",
+	        rsp->pc & 0xfff, *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS],
+	        rsp->imem[0], rsp->imem[1], rsp->dmem[0], rsp->dmem[0xfc0 / 4]);
+	fclose(f);
+}
 #endif
 
 using namespace RSP;
@@ -221,6 +278,8 @@ extern "C"
 		uint32_t source = *rsp->cp0.cr[CP0_REGISTER_DMA_DRAM];
 		uint32_t dest = *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE];
 
+		r12_record(rsp, 2, dest, source, length, count, skip);
+
 #ifdef INTENSE_DEBUG
 		fprintf(stderr, "DMA READ: (0x%x <- 0x%x) len %u, count %u, skip %u\n", dest & 0x1ffc, source & 0x7ffffc,
 		        length, count + 1, skip);
@@ -281,6 +340,8 @@ extern "C"
 
 		uint32_t dest = *rsp->cp0.cr[CP0_REGISTER_DMA_DRAM];
 		uint32_t source = *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE];
+
+		r12_record(rsp, 1, dest, source, length, count, skip);
 
 #ifdef INTENSE_DEBUG
 		fprintf(stderr, "DMA WRITE: (0x%x <- 0x%x) len %u, count %u, skip %u\n", dest & 0x7ffffc, source & 0x1ffc,
