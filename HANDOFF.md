@@ -3773,3 +3773,44 @@ own `g_ENDDL` that ends the walk; (b) confirm that the G_ENDDL/link entries in t
 table really are the "continue at t8" primitive for the *disk* ucode (they may be patched
 at runtime by the game's ucode-patch table, which would change the whole picture);
 (c) `wd_watch.txt`/`wd_cmd.txt` again for DPC_START/END once real commands reach the ring.
+
+## ROUND 31 -- the entry never executes the k0 load (measured), and the walk pointer is now repaired
+
+**The measurement that settles it** (runs 31d/31e): three `lui` markers were written into
+the ucode text at the whole-ucode DMA (IMEM 0x080 = s0, 0x094 = s1, 0x160 = s2) and read
+back out of the register file on every DMA line:
+
+```
+R30DMA n=3 (overlay-B load)   s0=11110000 s1=22220000 s2=00000000
+R30DMA n=4 (the first fetch)  s0=11110000 s1=22220000 s2=00000000
+```
+
+The F3DEX2 text entry runs (0x080, 0x094 executed) but **never reaches pc 0x160**, the
+`lw k0,0xFF0(r0)` that sets the display-list pointer. Round 30 read this as "the JIT loses
+the k0 load"; it is "the entry jumps over it". The only path that skips 0x160 is the
+OS_TASK_YIELDED resume at 0x0B8 (`j 0x164` + delay `lw k0,0xBF8`), whose saved pointer is
+witnessed by DMEM 0xBFC (the ucode base the yield handler stores beside it) -- and at task
+load that witness is 0x00080008 against ucode 0x007505C0, i.e. the saved state belongs to
+the previous (audio) task. IMEM at the entry was captured too (wd_r31a/b.bin): the text is
+resident and byte-correct in IMEM, so this is not a stale-memory problem.
+
+**Fixed and verified this round:**
+
+* `rsp_jit.cpp` + `cp0.cpp` -- the JIT clears its resident blocks the moment the RSP
+  rewrites its own IMEM (a generation counter bumped by the IMEM DMA, honoured at the next
+  block lookup).  `blocks[pc>>2]` is only hash-checked when it is NULL, and `run()` clears
+  the table only once per slice, so a ucode swap followed by `jr a3` inside one slice used
+  to execute the previous program.  On the DD route the clear is unconditional; plain carts
+  keep a content-compared invalidation, so a byte-identical ucode re-load costs one memcmp.
+* `parallel.cpp` -- a fresh task whose flags say YIELDED but whose saved-state witness
+  (DMEM 0xBFC) names a different ucode has the flag cleared (wd_r31yld.txt).
+* `parallel.cpp` + `cp0.cpp` -- at the one instant the register file is authoritative (the
+  block entry at pc 0x180, immediately after the repaired fetch) the plugin hands the
+  corrected display-list pointer to $k0.  **Verified: `R30T n=17 pc=180 k0=00284990`**
+  (was 0x152c03c0), and the fetch walks the real list at 0x284990.
+
+**Still open (round 32):** the ring holds only the task's first command
+(`e9000000 ffd2ffd2` at 0x2D9CD0, 2 non-zero words over the whole 336 KiB ring), only one
+fetch DMA is issued per task and the gfx task still hands back to the audio task, so the
+frame is still black.  Next: with k0 now correct, count the commands consumed before the
+SIG0 yield and find out what ends the walk.

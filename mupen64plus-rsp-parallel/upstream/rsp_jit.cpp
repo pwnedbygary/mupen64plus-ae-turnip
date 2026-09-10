@@ -48,6 +48,104 @@ void CPU::invalidate_imem()
 			state.dirty_blocks |= (0x3 << i) >> 1;
 }
 
+/* ==========================================================================
+   ROUND 31 FIX -- INVALIDATE THE CODE CACHE *INSIDE* THE RUN, NOT AT ITS END.
+
+   `blocks[pc >> 2]` is a plain lookup table: get_jit_block() consults the
+   (pc, IMEM-hash) cache in `cached_blocks` ONLY when `blocks[pc >> 2]` is
+   NULL.  So a block that is already resident for a pc keeps being used even
+   after the IMEM bytes under it were replaced -- until something zeroes the
+   table.
+
+   The only thing that zeroes it is invalidate_code(), which run() calls ONCE,
+   at the top of a slice, after parallel.cpp's invalidate_imem() has content-
+   compared the IMEM.  That ordering is fine when the IMEM is rewritten from
+   OUTSIDE the RSP (the CPU-side SP DMA between slices), and it is fine when
+   the rewritten bytes are identical (a game re-loading the same ucode).
+
+   It is NOT fine when the RSP rewrites its own IMEM *and then executes the
+   new bytes inside the same slice* -- which is exactly the ucode-swap flow:
+
+       rspboot  pc 0x08c  DMA ucode_data -> DMEM
+                pc 0x008  DMA ucode text -> IMEM 0x080..0xFFF
+                pc 0x034  jr a3  -->  pc 0x080 = the NEW ucode's entry
+
+   MEASURED (F-Zero X EK, DD route, run 30a/30e/30g): the gfx task's entry at
+   pc 0x080 runs the code of the PREVIOUS task (the audio ucode, whose 4 KiB
+   image occupies the whole IMEM) because those pcs already had resident
+   blocks compiled from the audio ucode.  Consequence: the entry's
+   `lw k0,0xFF0(r0)` at pc 0x160 never executes, $k0 keeps the audio task's
+   leftover 0x152C03C0 (present in RDRAM only inside the audio command list at
+   0x411998), and the display-list walk starts outside RDRAM.
+
+   Round 30 marked dirty_blocks on every IMEM DMA word and saw NO change: the
+   mark is honoured only by the NEXT slice's invalidate_code(), by which time
+   the entry has already run.  The mark must be honoured at the instant the
+   next block is looked up.
+
+   The fix below is a generation counter bumped by the RSP's own IMEM-writing
+   DMA (rsp_imem_dma_bump, called from cp0.cpp's rsp_dma_read).  The next block
+   lookup content-compares the IMEM against cached_imem and only then clears
+   the affected chunks.
+
+   UNCONDITIONAL AND REGRESSION-FREE BY CONSTRUCTION: the comparison means a
+   re-load of byte-identical code (every plain-cart task load) marks nothing,
+   and invalidate_code() returns without touching a single block.  Only a real
+   program change invalidates anything. */
+static unsigned s_rsp31_imem_gen = 0;
+static unsigned s_rsp31_imem_gen_seen = 0;
+
+#define R31_DIAG_PATH "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/"
+
+/* ROUND 31 DIAGNOSTIC: log the (pc, live IMEM word) of every block lookup for
+   the pcs that matter to the F3DEX2 entry, and whether the block came from the
+   table (HIT) or was compiled (NEW).  `im_pc` is the live IMEM word at the
+   block's own pc -- comparing it with the ucode text on the host says which
+   program the JIT compiled the block from. */
+static int s_r31_blk_armed = 0;
+
+static void r31_blk_log(const char *what, uint32_t pc, uint32_t im0, uint32_t im_pc)
+{
+	if (!s_r31_blk_armed)
+		return;
+	switch (pc)
+	{
+	case 0x000: case 0x008: case 0x018: case 0x064: case 0x080: case 0x094:
+	case 0x0a4: case 0x0c0: case 0x12c: case 0x160: case 0x170: case 0x180:
+	case 0xfb4: case 0xfd8:
+		break;
+	default:
+		return;
+	}
+	static int n = 0;
+	if (n >= 400)
+		return;
+	n++;
+	FILE *f = fopen(R31_DIAG_PATH "wd_r31blk.txt", "a");
+	if (f)
+	{
+		fprintf(f, "R31BLK %s pc=%03x im_pc=%08x im0=%08x\n", what, pc, im_pc, im0);
+		fclose(f);
+	}
+}
+
+extern "C" void r31_arm_blocks(void)
+{
+	s_r31_blk_armed = 1;
+	FILE *f = fopen(R31_DIAG_PATH "wd_r31blk.txt", "w");
+	if (f)
+		fclose(f);
+}
+
+/* Build marker (verified in the packaged .so with `strings`): R31IMEMGEN.
+   Non-static so the linker cannot drop it. */
+extern "C" const char rsp31_build_marker[] = "R31IMEMGEN-rsp-imem-dma-invalidation";
+
+extern "C" void rsp_imem_dma_bump(void)
+{
+	s_rsp31_imem_gen++;
+}
+
 void CPU::invalidate_code()
 {
 	if (!state.dirty_blocks)
@@ -797,6 +895,52 @@ void CPU::init_jit_thunks()
 Func CPU::get_jit_block(uint32_t pc)
 {
 	pc &= IMEM_SIZE - 1;
+
+	/* ROUND 31: honour an IMEM rewrite by the RSP's own DMA immediately.  See
+	   the long note above invalidate_code().  Content-compared, so a task load
+	   of unchanged code is free. */
+	if (s_rsp31_imem_gen != s_rsp31_imem_gen_seen)
+	{
+		uint32_t before;
+		s_rsp31_imem_gen_seen = s_rsp31_imem_gen;
+		before = state.dirty_blocks;
+		if (rsp_ares_budget_enabled())
+		{
+			/* DD ROUTE: unconditional.  MEASURED (run 31b): the content
+			   comparison below finds NOTHING to invalidate here -- by the
+			   time this lookup runs, cached_imem already matches the new
+			   IMEM -- so the entry at pc 0x080 kept executing the AUDIO
+			   ucode's resident block.  Proof: with IMEM 0x160 (the entry's
+			   own `lw k0,0xFF0(r0)`) patched to `lui k0,0x5A5A` at the text
+			   load, the first fetch STILL reported k0=152c03c0 -- the
+			   patched instruction never ran.  A ucode load is a handful of
+			   events per task, so clearing everything is cheap and it is the
+			   only thing that is unconditionally correct. */
+			state.dirty_blocks = ~0u;
+		}
+		else
+		{
+			/* Plain carts: byte-identical re-loads of the same ucode mark
+			   nothing and cost one comparison per chunk. */
+			invalidate_imem();
+		}
+		{
+			static int gn = 0;
+			if (gn < 200)
+			{
+				FILE *f = fopen(R31_DIAG_PATH "wd_r31gen.txt", "a");
+				gn++;
+				if (f)
+				{
+					fprintf(f, "R31GEN gen=%u dirty_before=%08x dirty_after=%08x im0=%08x\n",
+					        s_rsp31_imem_gen, before, state.dirty_blocks, state.imem[0]);
+					fclose(f);
+				}
+			}
+		}
+		invalidate_code();
+	}
+
 	uint32_t word_pc = pc >> 2;
 	auto &block = blocks[word_pc];
 
@@ -813,7 +957,10 @@ Func CPU::get_jit_block(uint32_t pc)
 			block = ptr;
 		else
 			block = ptr = jit_region(hash, word_pc, end - word_pc);
+		r31_blk_log("NEW", pc, state.imem[0], state.imem[word_pc]);
 	}
+	else
+		r31_blk_log("HIT", pc, state.imem[0], state.imem[word_pc]);
 	return block;
 }
 

@@ -318,6 +318,17 @@ static void r29_unfix_descriptors(void)
 		fclose(f);
 	}
 
+	extern "C" void r31_arm_blocks(void);
+
+	/* ROUND 31: a repaired display-list pointer waiting to be handed to the
+	   ucode at the block entry that follows the repaired fetch (pc 0x180). */
+	static uint32_t r31_k0_repair = 0xffffffffu;
+
+	extern "C" void r31_arm_k0_repair(unsigned want)
+	{
+		r31_k0_repair = want;
+	}
+
 	extern "C" void r30_pc_hook(unsigned pc_lo)
 	{
 		uint32_t p = pc_lo & 0xfffu;
@@ -333,6 +344,7 @@ static void r29_unfix_descriptors(void)
 			if (dm[0xfc0 / 4] != 1u || dm[0xfd0 / 4] != 0x007505c0u)
 				return;
 			r30_armed = 1;
+			r31_arm_blocks();
 			{
 				FILE* sf = fopen(R30_FILE "wd_r30dm.bin", "wb");
 				if (sf)
@@ -374,6 +386,22 @@ static void r29_unfix_descriptors(void)
 				fclose(sf);
 			}
 		}
+		/* ROUND 31 DIAGNOSTIC: what is actually in IMEM at the instant the
+		   JIT enters the F3DEX2 entry (pc 0x080) and at the pc-0 entry that
+		   follows it?  IMEM+DMEM each, one capture per pc per run. */
+		{
+			static int r31_im80 = 0, r31_im0 = 0, r31_saw80 = 0;
+			FILE* sf = NULL;
+			if (p == 0x080u) r31_saw80 = 1;
+			if (p == 0x080u && !r31_im80) { r31_im80 = 1; sf = fopen(R30_FILE "wd_r31a.bin", "wb"); }
+			else if (p == 0x000u && r31_saw80 && !r31_im0) { r31_im0 = 1; sf = fopen(R30_FILE "wd_r31b.bin", "wb"); }
+			if (sf)
+			{
+				fwrite(RSP::rsp.IMEM, 1, 0x1000, sf);
+				fwrite(RSP::rsp.DMEM, 1, 0x1000, sf);
+				fclose(sf);
+			}
+		}
 		if (p == 0x170u && ++r30_170 > 40u)
 		{
 			r30_stop = 1;
@@ -385,6 +413,17 @@ static void r29_unfix_descriptors(void)
 		{
 			r30_stop = 1;
 			return;
+		}
+		if (p == 0x180u && r31_k0_repair != 0xffffffffu)
+		{
+			uint32_t* srw = RSP::cpu.get_state().sr;
+			srw[26] = r31_k0_repair;
+			{
+				FILE* kf = fopen(R30_FILE "wd_r31k0.txt", "a");
+				if (kf) { fprintf(kf, "R31K0 pc=%03x k0:=%08x ff0=%08x bf8=%08x\n", p,
+					r31_k0_repair, ((uint32_t*)RSP::rsp.DMEM)[0xff0/4], ((uint32_t*)RSP::rsp.DMEM)[0xbf8/4]); fclose(kf); }
+			}
+			r31_k0_repair = 0xffffffffu;
 		}
 		sr = RSP::cpu.get_state().sr;
 		snprintf(buf, sizeof(buf),
@@ -407,9 +446,10 @@ static void r29_unfix_descriptors(void)
 		if (!r30_armed || r30_stop || r30_dma_n >= 600u)
 			return;
 		r30_dma_n++;
-		snprintf(buf, sizeof(buf), "R30DMA n=%u dir=%s pc=%03x dram=%08x mem=%04x len=%05x\n",
+		snprintf(buf, sizeof(buf), "R30DMA n=%u dir=%s pc=%03x dram=%08x mem=%04x len=%05x s0=%08x s1=%08x s2=%08x\n",
 		         r30_dma_n, dir ? "WR" : "RD", rsp->pc & 0xfffu,
-		         dir ? dst : src, (unsigned)(dir ? src : dst) & 0x1fffu, len);
+		         dir ? dst : src, (unsigned)(dir ? src : dst) & 0x1fffu, len,
+		         (unsigned)rsp->sr[16], (unsigned)rsp->sr[17], (unsigned)rsp->sr[18]);
 		r30_line(buf);
 	}
 
@@ -429,10 +469,11 @@ static void r29_unfix_descriptors(void)
 		{
 			const uint32_t* srt = RSP::cpu.get_state().sr;
 			snprintf(buf, sizeof(buf),
-			         "R30DMA n=%u dir=%s pc=%03x dram=%08x mem=%04x len=%05x k0=%08x at=%08x ra=%08x t8=%08x\n",
+			         "R30DMA n=%u dir=%s pc=%03x dram=%08x mem=%04x len=%05x k0=%08x at=%08x ra=%08x t8=%08x s0=%08x s1=%08x s2=%08x\n",
 			         r30_dma_n, dir ? "WR" : "RD", pc, dir ? dst : src,
 			         (unsigned)(dir ? src : dst) & 0x1fffu, len,
-			         (uint32_t)srt[26], (uint32_t)srt[1], (uint32_t)srt[31], (uint32_t)srt[24]);
+			         (uint32_t)srt[26], (uint32_t)srt[1], (uint32_t)srt[31], (uint32_t)srt[24],
+			         (uint32_t)srt[16], (uint32_t)srt[17], (uint32_t)srt[18]);
 		}
 		r30_line(buf);
 	}
@@ -847,6 +888,69 @@ extern "C" void r29_pc_hook(unsigned pc_lo)
 		       combination libultra produces for a yielded task.
 		     * yield ptr/size sane; size is 0xC00 (whole DMEM 0..0xBFF) and the
 		       OSTask header itself (0xFC0..0xFFF) is deliberately NOT touched. */
+		/* ==================================================================
+		   ROUND 31 FIX (DD route only) -- DO NOT RESUME FROM ANOTHER TASK'S
+		   SAVED DISPLAY-LIST POINTER.  THIS IS THE BLACK SCREEN.
+
+		   The F3DEX2 text entry (disk ucode, IMEM 0x080) is:
+
+		     IMEM 0098  lw   t3,0x0F0(r0)   # DMEM[0xF0] = FIFO end ptr
+		     IMEM 009C  lw   t4,0x0FC4(r0)  # the task flags
+		     IMEM 00A0  addi at,r0,0x2800
+		     IMEM 00A4  beq  t3,r0,0x00C0   # 0 -> COLD init
+		     IMEM 00A8  mtc0 at,SP_STATUS   # [delay]
+		     IMEM 00AC  andi t4,t4,1        # OS_TASK_YIELDED
+		     IMEM 00B0  beq  t4,r0,0x012C   # not yielded -> re-base path
+		     IMEM 00B4  sw   r0,0x0FC4(r0)  # [delay] consume the flag
+		     IMEM 00B8  j    0x0164         # <-- YIELDED RESUME
+		     IMEM 00BC  lw   k0,0x0BF8(r0)  #     k0 = the SAVED pointer
+		     IMEM 012C..0x015C  re-base the overlay descriptors by DMEM[0xFD0]
+		     IMEM 0160  lw   k0,0x0FF0(r0)  # <-- k0 = header data_ptr
+		     IMEM 0164  addi t3,r0,0x2E8 ; jal 0x0FB4   (load overlay B)
+
+		   MEASURED (run 31e, three `lui` markers written into the text at the
+		   text DMA and read back out of the register file on every DMA line):
+
+		     R30DMA n=3 (overlay-B load)  s0=11110000 s1=22220000 s2=00000000
+		     R30DMA n=4 (the first fetch) s0=11110000 s1=22220000 s2=00000000
+
+		   with s0 planted at IMEM 0x080, s1 at 0x094, s2 at 0x160.  So the
+		   entry runs, but takes the 0x0B8 branch: pc 0x160 -- the load that
+		   the whole walk depends on -- is jumped over, and $k0 keeps the AUDIO
+		   task's leftover 0x152C03C0 (present in RDRAM only inside the audio
+		   command list at 0x411998).  Round 30 read this as "the JIT loses the
+		   k0 load"; it is really "the entry never executes that load".
+
+		   The saved pointer comes from DMEM 0xBF8, which the ucode's own yield
+		   handler writes together with its ucode base at DMEM 0xBFC.  That
+		   pair is the witness: when DMEM[0xBFC] is not this header's ucode
+		   (DMEM 0xFD0), the saved state belongs to the PREVIOUS task -- on the
+		   DD route that is the audio ucode, whose data image and yield buffer
+		   share these words (measured at task load: bf8 = bfc = 0x00080008
+		   against ucode = 0x007505C0).
+
+		   Fix: on a FRESH task start (SP_PC == 0) whose flags say YIELDED but
+		   whose saved-state witness names a different ucode, clear
+		   OS_TASK_YIELDED.  The entry then takes the normal path and loads k0
+		   from the header's own data_ptr.  DD-gated; plain carts never reach
+		   this (their saved state always comes from the same ucode). */
+		if (dd_mode && (*RSP::rsp.SP_PC_REG & 0xfff) == 0)
+		{
+			uint32_t* hdr31 = (uint32_t*)RSP::rsp.DMEM;
+			if ((hdr31[0xfc4 / 4] & 0x1u) && hdr31[0xbfc / 4] != hdr31[0xfd0 / 4])
+			{
+				static FILE* f31 = NULL;
+				if (!f31) f31 = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r31yld.txt", "a");
+				if (f31)
+				{
+					fprintf(f31, "R31YLD flags=%08x bf8=%08x bfc=%08x ucode=%08x ff0=%08x -> cleared\n",
+					        hdr31[0xfc4 / 4], hdr31[0xbf8 / 4], hdr31[0xbfc / 4],
+					        hdr31[0xfd0 / 4], hdr31[0xff0 / 4]);
+					fflush(f31);
+				}
+				hdr31[0xfc4 / 4] &= ~0x1u;
+			}
+		}
 		if (dd_mode && (*RSP::rsp.SP_PC_REG & 0xfff) == 0)
 		{
 			uint32_t* hdr = (uint32_t*)RSP::rsp.DMEM;

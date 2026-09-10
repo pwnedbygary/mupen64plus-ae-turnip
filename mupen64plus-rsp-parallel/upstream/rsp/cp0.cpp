@@ -876,6 +876,15 @@ using namespace RSP;
 extern "C"
 {
 
+/* ROUND 31 (defined in rsp_jit.cpp): the RSP rewrote its own IMEM, so the
+   JIT's resident blocks for the affected pcs must be re-checked at the very
+   next block lookup -- not at the top of the next slice. */
+void rsp_imem_dma_bump(void);
+
+/* ROUND 31 (defined in parallel.cpp): hand the repaired display-list pointer
+   to the ucode's $k0 at the block entry that follows the repaired fetch. */
+void r31_arm_k0_repair(unsigned want);
+
 #ifdef INTENSE_DEBUG
 	void log_rsp_mem_parallel(void);
 #endif
@@ -1529,6 +1538,9 @@ extern "C"
 		unsigned i = 0;
 		uint32_t source = *rsp->cp0.cr[CP0_REGISTER_DMA_DRAM];
 		uint32_t dest = *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE];
+		/* ROUND 31: set when this transfer writes any IMEM word -- see the bump
+		   at the end of the transfer below. */
+		int wd31_wrote_imem = 0;
 		/* ROUND 29: `dest` is advanced by the transfer loop below, so keep the
 		   START address for the descriptor normalisation (the first attempt
 		   tested the post-loop value and therefore never matched). */
@@ -1620,6 +1632,17 @@ extern "C"
 					source = want;
 					*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] = want;
 				}
+				/* ROUND 31: repairing only the TRANSFER is not enough.  The
+				   ucode's own walk pointer lives in $k0 and the next block
+				   (IMEM 0x180, `addiu k0,k0,0xA8`) advances it, so a stale
+				   $k0 sends every later fetch back outside RDRAM (measured:
+				   0x152c03c0 -> 0x152c0468 -> ... in wd_r30tr.txt).  Hand the
+				   corrected pointer to the walk at the one instant the
+				   register file is authoritative -- the block entry that
+				   follows this fetch, which rsp_enter sees as pc 0x180 -- and
+				   the ucode carries the walk correctly from then on. */
+				if ((want & 0xffffffu) < 0x800000u)
+					r31_arm_k0_repair(want);
 			}
 		}
 
@@ -1674,6 +1697,12 @@ extern "C"
 			unsigned j = 0;
 			const uint32_t wd_bank_limited = rsp_ares_budget_enabled() ? 1u : 0u;
 			const uint32_t wd_dbank = dest & 0x1000u;
+			/* ROUND 31: remember whether this transfer replaced the RSP's own
+			   program.  If it did, the JIT's resident blocks for the affected
+			   pcs are stale the moment this handler returns, and the ucode
+			   jumps straight into them (rspboot's `jr a3` -> the new entry).
+			   Bump the generation so the very next block lookup re-checks the
+			   IMEM instead of waiting for the next slice's invalidate_code(). */
 			do
 			{
 				uint32_t source_addr = (source + j) & 0x7FFFFC;
@@ -1684,6 +1713,7 @@ extern "C"
 
 				if (dest_addr & 0x1000)
 				{
+					wd31_wrote_imem = 1;
 					// Invalidate IMEM.
 					unsigned block = (dest_addr & 0xfff) / CODE_BLOCK_SIZE;
 					rsp->dirty_blocks |= (0x3 << block) >> 1;
@@ -1721,6 +1751,35 @@ extern "C"
 			source += length + skip;
 			dest += length;
 		} while (++i <= count);
+
+		/* ROUND 31: the RSP just rewrote (part of) its own program.  Tell the
+		   JIT now -- the ucode may jump into the new bytes before this slice
+		   ends (see the note at the write above and the one in rsp_jit.cpp
+		   above invalidate_code()). */
+		if (wd31_wrote_imem)
+		{
+			rsp_imem_dma_bump();
+
+			/* ==========================================================
+			   ROUND 31 DIAGNOSTIC (temporary, removed once the round is
+			   answered): the F3DEX2 text entry loads the display-list
+			   pointer with `lw k0,0xFF0(r0)` at IMEM 0x160.  That load
+			   demonstrably does not take effect -- the first fetch is
+			   issued with $k0 = the AUDIO task's leftover 0x152C03C0 --
+			   while the surrounding entry code (DMEM 0xF0, the overlay
+			   descriptor re-base, the loader call) demonstrably does.
+			   Two explanations remain and they are told apart by one
+			   number: patch that instruction into `lui k0,0x5A5A`.
+			     * fetch DMA line reports k0=5a5a0000  -> pc 0x160 IS
+			       executed, and the JIT mis-executes the load itself.
+			     * fetch DMA line still reports k0=152c03c0 -> pc 0x160 is
+			       NOT executed at all, i.e. the block the JIT runs for the
+			       entry is not the one the text bytes describe.
+			   Patched once per whole-ucode text load (dest IMEM 0x080,
+			   0xF80 bytes), which is exactly the rspboot transfer. */
+			/* ROUND 31: no IMEM patching -- the diagnostic markers were
+			   removed once run 31e answered the question. */
+		}
 
 		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] = source;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] = dest;
