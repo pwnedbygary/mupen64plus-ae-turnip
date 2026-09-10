@@ -25,6 +25,7 @@
 #include "cp0.h"
 #include "r4300_core.h"
 #include "new_dynarec/new_dynarec.h"
+#include "cached_interp.h"
 #include "recomp.h"
 
 #ifdef COMPARE_CORE
@@ -194,6 +195,9 @@ void TLB_refill_exception(struct r4300_core* r4300, uint32_t address, int w)
 {
     uint32_t* cp0_regs = r4300_cp0_regs(&r4300->cp0);
     int usual_handler = 0, i;
+
+    /* DD-route diagnostic: first guest fault dumps state + recent PCs. */
+    wd_fault_hook(r4300, address, w);
 
     if (r4300->emumode != EMUMODE_DYNAREC && w != 2) {
         cp0_update_count(r4300);

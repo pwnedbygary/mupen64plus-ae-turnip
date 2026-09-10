@@ -2710,8 +2710,11 @@ void *get_addr(u_int vaddr)
 }
 
 // Look up address in hash table first
+extern void wd_pc_record(uint32_t vaddr);
+
 void *get_addr_ht(u_int vaddr)
 {
+  wd_pc_record(vaddr);
   struct ll_entry **ht_bin=hash_table[((vaddr>>16)^vaddr)&0xFFFF];
   if(ht_bin[0]&&ht_bin[0]->vaddr==vaddr) return (void *)(((intptr_t)ht_bin[0]->addr-(intptr_t)base_addr)+(intptr_t)base_addr_rx);
   if(ht_bin[1]&&ht_bin[1]->vaddr==vaddr) return (void *)(((intptr_t)ht_bin[1]->addr-(intptr_t)base_addr)+(intptr_t)base_addr_rx);

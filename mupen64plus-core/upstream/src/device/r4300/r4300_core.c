@@ -132,6 +132,14 @@ void run_r4300(struct r4300_core* r4300)
     *r4300_stop(r4300) = 0;
     g_rom_pause = 0;
 
+    /* Attach the CPU-side deadlock watchdog for BOTH emumodes.  Under
+       emumode=2 (dynarec) the run_cached_interpreter hook is inert, so the
+       stall thread is attached here instead: it watches the heartbeat
+       advanced by dynarec_sample_hook (do_interrupt) and fires a full-RDRAM
+       dump when the CPU stops making progress (e.g. the post-load
+       RSP-cycling / CPU-blocked deadlock). */
+    wd_attach(r4300);
+
     /* clear instruction counters */
 #if defined(COUNT_INSTR)
     memset(instr_count, 0, 131*sizeof(instr_count[0]));

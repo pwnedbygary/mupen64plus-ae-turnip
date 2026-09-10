@@ -212,6 +212,8 @@ GLOBAL_FUNCTION(do_interrupt):
     tst    w2, w2
     b.ne   new_dyna_stop
     ldr    w0, [x29, #fp_pcaddr]
+    bl     dynarec_sample_hook
+    ldr    w0, [x29, #fp_pcaddr]
     bl     get_addr_ht
     ldr    w20, [x29, #fp_cycle_count]
     br     x0

@@ -24,6 +24,10 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <time.h>
+#include <fcntl.h>
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
@@ -33,7 +37,12 @@
 #include "api/debugger.h"
 #include "api/m64p_types.h"
 #include "device/r4300/r4300_core.h"
+#include "device/r4300/cp0.h"
 #include "device/r4300/idec.h"
+#include "device/rcp/vi/vi_controller.h"
+#include "device/rcp/mi/mi_controller.h"
+#include "device/rcp/rsp/rsp_core.h"
+#include "device/dd/dd_controller.h"
 #include "main/main.h"
 #include "osal/preproc.h"
 
@@ -986,10 +995,258 @@ void invalidate_cached_code_hacktarux(struct r4300_core* r4300, uint32_t address
     }
 }
 
+// -----------------------------------------------------------
+// DSTALL watchdog: stall / on-demand force dump of the full guest RDRAM
+// plus device state.  Ported from the pre-reset branch (lost in the
+// dc955483a "fresh start" reset).  The recompiler (emumode=2) is the active
+// CPU path, so the on-demand force dump + spin detector live in
+// dynarec_sample_hook (called from do_interrupt in linkage_arm64.S); a
+// realtime stall thread watches the heartbeat for a hard stall.
+//
+// The dump writes the full 8MB RDRAM (identity guest->file offset) followed
+// by a "WD pc=" header + CPU/CP0/SP/VI/MI state + DD trace; that layout is
+// exactly what .fzxwork/freeze_state.py decodes for guest OS thread/queue
+// state.
+//
+#define WD_STALL_SECS 4
+#define WD_FILES_DIR "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/"
+#define WD_FORCE_FLAG WD_FILES_DIR "wd_force.flag"
+
+static volatile uint64_t wd_hb = 0;
+static volatile int wd_dumped = 0;
+static struct r4300_core* wd_r4300 = NULL;
+
+/* Recent-PC ring buffer: sampled in dynarec_sample_hook (do_interrupt), dumped
+   on the FIRST guest fault (TLB miss / address error).  The 64DD route only --
+   the guest fault is what parks F-Zero X's main thread. */
+#define WD_PC_RING 2048
+static volatile uint32_t wd_pc_ring[WD_PC_RING];
+static volatile uint32_t wd_reg_ring[WD_PC_RING][2];
+static volatile uint32_t wd_pc_idx = 0;
+static volatile int wd_fault_dumped = 0;
+static volatile int wd_spodd_dumped = 0;
+
+/* guest word read from the (word-swapped) RDRAM image */
+static uint32_t wd_rdram32(uint32_t addr)
+{
+    return ((const volatile uint32_t*)g_mem_base)[(addr & 0x7FFFFF) >> 2];
+}
+
+/* Shared state dumper: `path` selects the trigger label (iplram_fault.bin for
+   the first guest fault, iplram_spodd.bin for the first misaligned $sp).
+   Tag string is written into the header so the two dumps stay distinguishable. */
+static void wd_state_dump(const char* path, const char* tag, struct r4300_core* r4300,
+                          uint32_t vaddr, int w)
+{
+    FILE* f;
+    uint32_t* cp0_regs;
+    int64_t* regs;
+    uint32_t sp, pc, i, n;
+
+    /* DD route only: plain carts must not pay for (or see) any of this. */
+    if (g_dev.dd.idisk == NULL) return;
+    if (r4300 == NULL || g_mem_base == NULL) return;
+
+    f = fopen(path, "wb");
+    if (f == NULL) return;
+
+    regs = r4300_regs(r4300);
+    cp0_regs = r4300_cp0_regs(&r4300->cp0);
+    sp = (uint32_t)regs[29];
+    pc = (uint32_t)*r4300_pc(r4300);
+
+    fwrite(g_mem_base, 1, 0x800000, f);
+    fprintf(f, "WD%s vaddr=%08x w=%d pc=%08x ra=%08x sp=%08x a0=%08x a1=%08x a2=%08x a3=%08x "
+               "v0=%08x v1=%08x t0=%08x t1=%08x t2=%08x t3=%08x t9=%08x s0=%08x s1=%08x s2=%08x\n",
+        tag, vaddr, w, pc, (uint32_t)regs[31], sp, (uint32_t)regs[4], (uint32_t)regs[5],
+        (uint32_t)regs[6], (uint32_t)regs[7], (uint32_t)regs[2], (uint32_t)regs[3],
+        (uint32_t)regs[8], (uint32_t)regs[9], (uint32_t)regs[10], (uint32_t)regs[11],
+        (uint32_t)regs[25], (uint32_t)regs[16], (uint32_t)regs[17], (uint32_t)regs[18]);
+    fprintf(f, "WDCP0 cause=%08x status=%08x epc=%08x badvaddr=%08x errorpc=%08x\n",
+        cp0_regs[CP0_CAUSE_REG], cp0_regs[CP0_STATUS_REG], cp0_regs[CP0_EPC_REG],
+        cp0_regs[CP0_BADVADDR_REG], cp0_regs[CP0_ERROREPC_REG]);
+    fprintf(f, "WDRSP status=%08x pc=%08x mi_intr=%08x mi_mask=%08x\n",
+        g_dev.sp.regs[SP_STATUS_REG], g_dev.sp.regs2[SP_PC_REG],
+        g_dev.mi.regs[MI_INTR_REG], g_dev.mi.regs[MI_INTR_MASK_REG]);
+
+    /* stack window around sp (walking down = older frames) */
+    if (sp >= 0x80000000u && sp < 0x80800000u) {
+        fprintf(f, "WDSTACK sp=%08x\n", sp);
+        for (i = 0; i < 0x300; i += 4) {
+            fprintf(f, "%08x%c", (uint32_t)wd_rdram32(sp + i - 0x100),
+                    ((i % 16) == 12) ? '\n' : ' ');
+        }
+    }
+    /* recent PCs, oldest first */
+    n = wd_pc_idx;
+    fprintf(f, "WDPCS n=%u\n", n < WD_PC_RING ? n : WD_PC_RING);
+    for (i = 0; i < WD_PC_RING; i++) {
+        uint32_t idx = (n - WD_PC_RING + i) & (WD_PC_RING - 1);
+        if (n < WD_PC_RING && i >= n) continue;
+        fprintf(f, "%08x %08x %08x\n", (uint32_t)wd_pc_ring[idx],
+                (uint32_t)wd_reg_ring[idx][0], (uint32_t)wd_reg_ring[idx][1]);
+    }
+    fprintf(f, "\nWDEND\n");
+    fclose(f);
+    DebugMessage(M64MSG_WARNING, "WD%s vaddr=%08x w=%d pc=%08x sp=%08x -> %s",
+        tag, vaddr, w, pc, sp, path);
+}
+
+/* Dump the full 8MB RDRAM + "WD pc=" header + CPU/CP0/SP/VI/MI state + DD
+   trace to `path`. */
+static void wd_full_dump(const char* path, uint32_t pc)
+{
+    FILE* f;
+    /* DD route only: the watchdog exists for the 64DD/EK boot bringsup and
+       must stay invisible to plain carts (user rule 2026-09-05). Checked at
+       dump time because dd.idisk is only valid after init_device. */
+    if (g_dev.dd.idisk == NULL) return;
+    f = fopen(path, "wb");
+    if (f == NULL) return;
+    const uint8_t* mb = (const uint8_t*)g_mem_base;
+    int64_t* regs = r4300_regs(wd_r4300);
+    fwrite(mb, 1, 0x800000, f);
+    fprintf(f, "WD pc=%08x ra=%08x sp=%08x a0=%08x a1=%08x a2=%08x a3=%08x v0=%08x s0=%08x s3=%08x s4=%08x s5=%08x\n",
+        pc, (uint32_t)regs[31], (uint32_t)regs[29], (uint32_t)regs[4], (uint32_t)regs[5],
+        (uint32_t)regs[6], (uint32_t)regs[7], (uint32_t)regs[2], (uint32_t)regs[16],
+        (uint32_t)regs[19], (uint32_t)regs[20], (uint32_t)regs[21]);
+    uint32_t* cp0_regs = r4300_cp0_regs(&wd_r4300->cp0);
+    fprintf(f, "WDCP0 cause=%08x status=%08x epc=%08x badvaddr=%08x count=%08x\n",
+        cp0_regs[CP0_CAUSE_REG], cp0_regs[CP0_STATUS_REG],
+        cp0_regs[CP0_EPC_REG], cp0_regs[CP0_BADVADDR_REG], cp0_regs[CP0_COUNT_REG]);
+    fprintf(f, "MISTATE intr=%08x mask=%08x\n",
+        g_dev.mi.regs[MI_INTR_REG], g_dev.mi.regs[MI_INTR_MASK_REG]);
+    fprintf(f, "SPSTATE status=%08x dma_busy=%08x dma_full=%08x pc=%08x\n",
+        g_dev.sp.regs[SP_STATUS_REG], g_dev.sp.regs[SP_DMA_BUSY_REG],
+        g_dev.sp.regs[SP_DMA_FULL_REG], g_dev.sp.regs2[SP_PC_REG]);
+    fprintf(f, "VISTATE field=%u delay=%u cpsl=%u current=%08x origin=%08x\n",
+        g_dev.vi.field, g_dev.vi.delay, g_dev.vi.count_per_scanline,
+        g_dev.vi.regs[VI_CURRENT_REG], g_dev.vi.regs[VI_ORIGIN_REG]);
+    dd_trace_dump(f);
+    fclose(f);
+    DebugMessage(M64MSG_WARNING, "WDDUMP pc=%08x -> %s", pc, path);
+}
+
+static void* wd_thread(void* arg)
+{
+    (void)arg;
+    uint64_t last = wd_hb;
+    struct timespec t0, t;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (;;)
+    {
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        uint64_t cur = wd_hb;
+        if (cur != last) { last = cur; t0 = t; }
+        else if ((t.tv_sec - t0.tv_sec) > WD_STALL_SECS) {
+            if (!wd_dumped && wd_r4300 != NULL && g_mem_base != NULL) {
+                wd_dumped = 1;
+                uint32_t pc = 0;
+                struct precomp_instr** pp = r4300_pc_struct(wd_r4300);
+                if (pp != NULL && *pp != NULL) pc = (*pp)->addr;
+                wd_full_dump(WD_FILES_DIR "iplram_wd.bin", pc);
+            }
+            break;
+        }
+        usleep(100 * 1000);
+    }
+    return NULL;
+}
+
+/* Executed-block trace (called from get_addr_ht in the dynarec).  DD route
+   only: plain games pay a single pointer compare per block transition.
+   Each entry records target vaddr + sp + ra so the corruption of the stack
+   pointer / return address can be localized to a single block. */
+void wd_pc_record(uint32_t vaddr)
+{
+    uint32_t idx, sp;
+    int64_t* regs;
+    if (g_dev.dd.idisk == NULL) return;
+    idx = wd_pc_idx & (WD_PC_RING - 1);
+    wd_pc_ring[idx] = vaddr;
+    if (wd_r4300 != NULL) {
+        regs = r4300_regs(wd_r4300);
+        sp = (uint32_t)regs[29];
+        wd_reg_ring[idx][0] = sp;                   /* sp */
+        wd_reg_ring[idx][1] = (uint32_t)regs[31];   /* ra */
+        /* Root-cause probe (2026-09-10): an odd $sp is never legal MIPS, and it
+           is the *first* corruption in the F-Zero X EK boot failure -- the very
+           next `lw ra,20(sp)` reads a byte-rotated word (rotl8 of the correct
+           pointer) because mupen does not raise AdEL for the misaligned access,
+           and `jr ra` then jumps into unmapped space.  Dump the ring the first
+           time $sp goes odd so the offending block is identifiable. */
+        if (!wd_spodd_dumped && (sp & 3) != 0) {
+            wd_spodd_dumped = 1;
+            wd_state_dump(WD_FILES_DIR "iplram_spodd.bin", "SPODD", wd_r4300, vaddr, -1);
+        }
+    }
+    wd_pc_idx++;
+}
+
+/* Called from TLB_refill_exception (cp0.c) before the guest handler runs:
+   dumps the first guest fault on the DD route. */
+void wd_fault_hook(struct r4300_core* r4300, uint32_t vaddr, int w)
+{
+    if (wd_fault_dumped) return;
+    wd_fault_dumped = 1;
+    wd_state_dump(WD_FILES_DIR "iplram_fault.bin", "FAULT", r4300, vaddr, w);
+}
+
+void wd_attach(struct r4300_core* r4300)
+{
+    if (wd_r4300 == NULL) {
+        wd_r4300 = r4300;
+        pthread_t t;
+        if (pthread_create(&t, NULL, wd_thread, NULL) == 0) {
+            pthread_detach(t);
+        }
+    }
+}
+
+/* Per-interrupt-check sample hook for the dynarec (called from do_interrupt
+   in linkage_arm64.S): advances the watchdog heartbeat, detects a CPU spin
+   (same pc region repeated), and performs the on-demand FULL-RDRAM force dump
+   when files/wd_force.flag is present.  The force dump is the reliable
+   trigger for a livelocked/cycling run that never hard-stalls. */
+void dynarec_sample_hook(uint32_t pc)
+{
+    static uint64_t d_sample = 0;
+    static uint32_t d_stall_pc = 0xffffffff;
+    static int d_stall_count = 0;
+    static int d_stall_dumped = 0;
+    static int wd_force_dumped = 0;
+    wd_pc_ring[wd_pc_idx++ & (WD_PC_RING - 1)] = pc;
+    if ((d_sample & 0xFFFFF) == 0) wd_hb++;
+    d_sample++;
+    if (!wd_force_dumped && (d_sample & 0x1FFF) == 0 &&
+        access(WD_FORCE_FLAG, F_OK) == 0 && g_mem_base != NULL && wd_r4300 != NULL) {
+        wd_force_dumped = 1;
+        unlink(WD_FORCE_FLAG);
+        wd_full_dump(WD_FILES_DIR "iplram_force.bin", pc);
+    }
+    if ((d_sample & 0xFFFFFULL) == 0 && wd_r4300 != NULL) {
+        uint32_t w = pc & 0xFFFFF000u;
+        if (w == d_stall_pc) {
+            d_stall_count++;
+        } else {
+            d_stall_pc = w;
+            d_stall_count = 0;
+        }
+        if (d_stall_count > 40 && !d_stall_dumped) {
+            d_stall_dumped = 1;
+            wd_full_dump(WD_FILES_DIR "iplram_dump.bin", pc);
+        }
+    }
+}
+
 void run_cached_interpreter(struct r4300_core* r4300)
 {
+    wd_attach(r4300);
     while (!*r4300_stop(r4300))
     {
+        /* DD-route heartbeat: dynarec_sample_hook only runs on the recompiler,
+           so without this the CI (emumode=1) + 64DD run would false-dump. */
+        if (g_dev.dd.idisk != NULL) wd_hb++;
 #ifdef COMPARE_CORE
         if ((*r4300_pc_struct(r4300))->ops == cached_interp_FIN_BLOCK && ((*r4300_pc_struct(r4300))->addr < 0x80000000 || (*r4300_pc_struct(r4300))->addr >= 0xc0000000))
             virtual_to_physical_address(r4300, (*r4300_pc_struct(r4300))->addr, 2);
