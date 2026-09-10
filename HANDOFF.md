@@ -5,6 +5,81 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 21 (goal round 21) — THE YIELD CONTRACT IS NOW READ FROM LIBULTRA SOURCE, AND THE
+MISSING PIECE OF OUR FORCED YIELD IS THE UCODE'S OWN STATE SAVE.** Branch
+`dd-eos-watchdog-checkpoint`, commit `110633f97` (+ this round's follow-up). Evidence: r20j (the
+measured deadlock), `.fzxwork/r21u/` (live IMEM capture + header decode), `wd_r21.txt` (new
+per-forced-yield trace).
+
+**1. THE DECOMP VENDORS LIBULTRA — no more inference about the yield protocol.**
+`.fzxwork/fzerox-decomp/src/libultra/io/`:
+* `sptaskyield.c`: `osSpTaskYield()` is just `__osSpSetStatus(SP_SET_YIELD)` = `SP_SET_SIG0`.
+* `sptaskyielded.c`: `result = (status & SP_STATUS_YIELDED) ? OS_TASK_YIELDED : 0;` and the
+  task's `flags` are only updated **while SIG0 (`SP_STATUS_YIELD`) is still visible**.
+* `sptask.c` `osSpTaskLoad()`, for a task whose flags carry `OS_TASK_YIELDED`:
+  `ucode_data := yield_data_ptr`, `ucode_data_size := yield_data_size`, and with
+  `OS_TASK_LOADABLE` also `ucode := *(u32*)(yield_data_ptr + 0xBFC)`.
+  `OSTask` is 0x40 bytes and lands at DMEM 0xFC0, so the header map is
+  `0xFC0 type / 0xFC4 flags / 0xFC8 boot / 0xFCC boot_size / 0xFD0 ucode / 0xFD4 ucode_size /
+  0xFD8 ucode_data / 0xFDC ucode_data_size / 0xFE0 dram_stack / 0xFE4 size / 0xFE8 output_buff /
+  0xFEC output_buff_size / 0xFF0 data_ptr / 0xFF4 data_size / 0xFF8 yield_data_ptr /
+  0xFFC yield_data_size` — every field matches what `wd_hdr15.txt` reports
+  (`ucode=007505c0`, `ff0=00284990`, `ff4=00000018`, `yield=0032dcd0`, `ysz=00000c00`).
+* **Consequence: on a yield resume the RSP's `ucode_data` IS the ucode's saved DMEM image.**
+  A host-forced yield that skips the save therefore resumes the task on stale DMEM.
+
+**2. THE LIVE UCODE'S OWN YIELD HANDLER, DISASSEMBLED FROM A CAPTURED IMEM.**
+`wd_ucode_inv1.bin` (0x20 header + IMEM 0x1000 + DMEM 0x1000) holds the gfx ucode in IMEM;
+`.fzxwork/rsp_dis.py` on it gives IMEM 0x000 — the 0x98-byte overlay the guest loads from
+`ucode+0xF80` (`wd_imem.txt` n=3) — as the task (re)start / yield-ack path:
+
+    0000 j 0x0064              0008 lw v0,16(at)   # at=0xFC0 -> header.ucode ([0xFD0])
+    000c addi v1,r0,0xF7F      0010 addi a3,r0,0x1080
+    0014 mtc0 a3,SP_MEM_ADDR   0018 mtc0 v0,SP_DRAM_ADDR
+    001c mtc0 v1,SP_RD_LEN     # load 0xF80 bytes of text to IMEM 0x080
+    0020 mfc0 a0,SP_DMA_BUSY  0024 bne a0,r0,0x0020        # wait for the DMA
+    002c jal 0x003C           0034 jr a3                  # run the text
+    003c mfc0 t0,SP_STATUS    0040 andi t0,t0,0x80         # SIG0 = SP_STATUS_YIELD
+    0044 bne t0,r0,0x0050     004c jr ra                   # not requested -> continue
+    0054 ori t0,r0,0x5200     0058 mtc0 t0,SP_STATUS       # >>> the yield ack
+    005c break 0
+
+`0x5200` against libultra's SP_STATUS *write* bits (`rcp.h`) = `SP_CLR_SIG0 | SP_SET_SIG1 |
+SP_SET_SIG2`, i.e. **clear the request, set YIELDED + TASKDONE**. So round 16's ack shape was
+already right (this is a decode of the real instruction, not an inference); what the host-forced
+yield was missing is the *other half* of the same contract: the ucode's own **save** (`sw
+k0,0xBF8`, `sw ucode,0xBFC`, DMA DMEM[0..0xBFF] -> `yield_data_ptr`).
+
+**3. WHAT THE r20j DEADLOCK LOOKS LIKE THROUGH THIS LENS (the numbers now line up).**
+`wd_imem.txt` n=4 is a resume (`f0=0032dcd0`, i.e. non-zero -> not the FRESH path) whose
+`bf8` already reads `0x152C03C0` — a pointer no ucode ever stored, because the save never ran;
+`wd_yld.txt` records the ucode's one real save with that same bogus `saved_k0=152c03c0`; the
+header's `flags=0x05` (`OS_TASK_YIELDED|OS_TASK_LOADABLE`) is what makes libultra take the
+resume path in the first place. The resumed walk therefore starts outside RDRAM, its wild DMAs
+poison IMEM and the DMEM header with the game's `0x00010001` fill, no FULLSYNC ever reaches the
+RDP (`dp_seen=0`, `raise_bits DP=0`), and the gfx thread stays parked on `osRecvMesg` at
+`D_800DCAC8` — which is exactly the state `.fzxwork/freeze_state.py` decodes from r20j's dump
+(1472 audio tasks vs 5 gfx tasks, `ev9 DP` sharing queue `0x8079a120` with the SP event).
+
+**4. THE ROUND-21 CHANGE (DD-gated, one build, switches for A/B).** At the forced-yield site in
+`rsp/cp0.cpp` (inside the runtime `IsDDPresent()` block): before the ack, write
+`DMEM[0xBF8] = RSP GPR 26 (k0)`, `DMEM[0xBFC] = DMEM[0xFD0]`, and copy the 0xC00-byte DMEM image
+to the header's `yield_data_ptr` using the plugin's own word-indexed RDRAM convention. The ack
+stays round 16's (`CLR_SIG0|SET_SIG1|SET_SIG2`; `R21_KEEP_SIG0=1` was tried and rejected — it
+contradicts the ucode's own 0x5200). Every forced yield is traced (bounded, 16 lines) to
+`files/wd_r21.txt` as `R21Y n= pc= sig0= st= k0= f0= bf8= yptr= typ= flg= saved=`, and the
+running totals ride in `wd_r20.txt` as `R21EMU n= k0= f0=`.
+
+**5. STATUS: NOT YET VERIFIED ON THE RP6.** The device locked itself (secure keyguard) during
+this round, so the round-21 test could not be run: `.fzxwork/r21a` is invalid (Argosy stole the
+VIEW intent, no 64DD was attached — `wd_r20.txt` shows all-zero counters with `R21EMU n=0`).
+The APK with this change is installed and `.fzxwork/r21_run.sh` now pulls `wd_r21.txt`; the run
+needs the device unlocked (the app pauses when it is not the focused activity).
+Decisive checks for that run: `raise_bits DP` > 0 and `RDPDP dp_seen` > 0 (the DP interrupt
+finally firing), non-zero words inside the RDP ring `[0x2D9CD0,0x32DCD0)` in the RAM dump,
+`R21Y ... saved=1` with a `k0` inside RDRAM, the DD bar moving past row 573 in `shot_20s.png`,
+and the gfx thread no longer parked on `0x8079a120`.
+
 **ROUND 20 (goal round 20) — THE LIVE UCODE IS PROPERLY IDENTIFIED (gspF3DEX2_fifo), AND THE
 RDP IS BEING KICKED AT A RING BUFFER THAT IS NEVER WRITTEN.** Branch
 `dd-eos-watchdog-checkpoint`. Evidence: `.fzxwork/r20a` (SIG0 experiment), `.fzxwork/r20c`

@@ -409,11 +409,13 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
    (libultra's osSpTaskYielded only records OS_TASK_YIELDED while SIG0 is still
    visible).  0 = the round-10..20 behaviour, kept for A/B measurement on one
    build.  See the long note at the yield site in RSP_MFC0. */
-#define R21_KEEP_SIG0 1
+#define R21_KEEP_SIG0 0
 
-static unsigned r21_save_n = 0;
+static unsigned r21_save_n = 0, r21_yield_n = 0, r21_log_n = 0;
 static uint32_t r21_save_k0 = 0, r21_save_f0 = 0;
+#define R21_LOG_PATH "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r21.txt"
 extern "C" unsigned r21_emu_save_n(void) { return r21_save_n; }
+extern "C" unsigned r21_emu_yield_n(void) { return r21_yield_n; }
 extern "C" uint32_t r21_emu_save_k0(void) { return r21_save_k0; }
 extern "C" uint32_t r21_emu_save_f0(void) { return r21_save_f0; }
 
@@ -728,11 +730,57 @@ extern "C"
 			   guest's resume, and k0 comes from the live RSP register file
 			   (GPR 26) instead of a stale word. */
 			{
+				/* ROUND 21: PERFORM THE SAVE THE UCODE'S OWN YIELD HANDLER
+				   WOULD HAVE DONE BEFORE HANDING OVER.
+
+				   wd_ucode_inv1.bin (a live IMEM capture) decodes IMEM
+				   0x000 -- the 0x98-byte overlay at ucode+0xF80 -- exactly:
+
+				     0000 j    0x0064
+				     0008 lw   v0,16(at)      # at = 0x0FC0 -> header.ucode
+				     000c addi v1,r0,0xF7F     # 0xF80 bytes
+				     0010 addi a3,r0,0x1080    # IMEM 0x080
+				     0014 mtc0 a3,SP_MEM_ADDR
+				     0018 mtc0 v0,SP_DRAM_ADDR
+				     001c mtc0 v1,SP_RD_LEN    # load the text
+				     0020 mfc0 a0,SP_DMA_BUSY / bne -> wait
+				     002c jal  0x003C          # the yield test
+				     0034 jr   a3              # -> run the text
+				     003c mfc0 t0,SP_STATUS
+				     0040 andi t0,t0,0x80      # SIG0 = SP_STATUS_YIELD
+				     0044 bne  t0,r0,0x0050    # requested -> ack and stop
+				     0054 ori  t0,r0,0x5200
+				     0058 mtc0 t0,SP_STATUS
+				     005c break 0
+
+				   (0x5200 against libultra's write-bit layout = SP_CLR_SIG0 |
+				   SP_SET_SIG1 | SP_SET_SIG2, i.e. clear the request, set
+				   YIELDED + TASKDONE -- so the round-16 ack below is right.)
+
+				   WHAT IS MISSING IS THE SAVE.  The ucode side of the
+				   contract is: on a yield it stores the live k0 and the ucode
+				   base and DMAs 0xC00 bytes of DMEM into the task's
+				   yield_data_ptr, so that libultra's resume
+				   (sptask.c: ucode_data := yield_data_ptr; ucode :=
+				   *(yield_data_ptr + 0xBFC)) has a coherent image and the
+				   ucode's entry can take k0 back out of DMEM[0xBF8].  Our
+				   host-forced preemption cut the task off WITHOUT that, so
+				   the guest resumed a task whose FIFO state and display-list
+				   pointer came from whatever the intervening audio task left
+				   in DMEM (r20j: k0 = 0x152C03C0 / 0, DMEM[0xF0] = the audio
+				   data word 0x0A446669), the resumed walk started outside
+				   RDRAM, its wild DMAs wiped IMEM and the DMEM header with
+				   the game's 0x00010001 fill, and no FULLSYNC ever reached
+				   the RDP -- which is why MI_INTR_DP never fired and the gfx
+				   thread stayed parked on D_800DCAC8. */
 				uint32_t* dmem = (uint32_t*)RSP::rsp.DMEM;
+				uint32_t st_before = *RSP::rsp.SP_STATUS_REG;
 				uint32_t yptr = dmem[0xff8 / 4];
 				uint32_t k0 = rsp->sr[26];
-				dmem[0xbf8 / 4] = k0;                 /* the resume DL pointer */
-				dmem[0xbfc / 4] = dmem[0xfd0 / 4];    /* the resume ucode base */
+				int sig0 = (st_before & SP_STATUS_SIG0) != 0;
+				r21_yield_n++;
+				dmem[0xbf8 / 4] = k0;              /* the resume DL pointer */
+				dmem[0xbfc / 4] = dmem[0xfd0 / 4]; /* the resume ucode base */
 				r21_save_k0 = k0;
 				r21_save_f0 = dmem[0xf0 / 4];
 				/* Same word-indexed convention as rsp_dma_write above. */
@@ -743,6 +791,23 @@ extern "C"
 					for (i = 0; i < 0xc00u / 4u; i++)
 						rd[((yptr & 0x7ffffcu) >> 2) + i] = dmem[i];
 					r21_save_n++;
+				}
+				/* Bounded trace of every forced yield: the run that stalls
+				   must still say whether the guest had requested a yield,
+				   which k0 was saved and whether the write landed. */
+				if (r21_log_n < 16)
+				{
+					FILE* f = fopen(R21_LOG_PATH, (r21_log_n == 0) ? "w" : "a");
+					if (f)
+					{
+						fprintf(f, "R21Y n=%u pc=%03x sig0=%d st=%08x k0=%08x f0=%08x bf8=%08x yptr=%08x typ=%u flg=%08x saved=%u\n",
+						        r21_yield_n, rsp->pc & 0xfff, sig0, st_before, k0,
+						        dmem[0xf0 / 4], dmem[0xbf8 / 4], yptr,
+						        dmem[0xfc0 / 4], dmem[0xfc4 / 4], r21_save_n);
+						fflush(f);
+						fclose(f);
+					}
+					r21_log_n++;
 				}
 			}
 			*RSP::rsp.SP_STATUS_REG |= SP_STATUS_INTR_BREAK | SP_STATUS_HALT;
@@ -785,7 +850,8 @@ extern "C"
 			   R21_KEEP_SIG0=0 restores the round-16 form (clear SIG0) for
 			   A/B measurement. */
 #if R21_KEEP_SIG0
-			*RSP::rsp.SP_STATUS_REG |= SP_STATUS_SIG1 | SP_STATUS_SIG2;
+			if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_SIG0)
+				*RSP::rsp.SP_STATUS_REG |= SP_STATUS_SIG1 | SP_STATUS_SIG2;
 #else
 			if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_SIG0)
 				*RSP::rsp.SP_STATUS_REG =
