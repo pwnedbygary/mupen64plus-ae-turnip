@@ -485,7 +485,7 @@ static void r20_dma_save_note(RSP::CPUState* rsp, uint32_t dram_dst, uint32_t le
 		   SP_WR_LEN -- so the destination is whatever SP_DRAM_ADDR already
 		   holds.  Record where those transfers actually land and whether that
 		   is the ring the DPC kick points at. */
-		if ((rsp_mem_src & 0xfffu) == 0xba8u || (rsp_mem_src & 0xfffu) == 0xdb0u)
+		if (len >= 0x150u)   /* publish-shaped (RDP_CMD_BUFSIZE = 0x158) */
 		{
 			r20_wr_pub_n++;
 			if (ob && oe > ob && dram_dst >= ob && dram_dst < oe)

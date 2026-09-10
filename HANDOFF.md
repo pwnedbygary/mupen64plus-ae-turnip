@@ -96,6 +96,21 @@ wrap/`DPC_START = OSTask.outbuff` handling, a **back-pressure wait on DPC_CURREN
 `sw rdpFifoPos+dmaLen, 0xF0` and the DMEM->RDRAM publish. So the whole protocol is built on
 **DPC_CURRENT advancing**.
 
+**5b. WHAT THE DOCUMENTED SOURCE SETTLES ABOUT THE ENTRY STATE.** `rdpFifoPos` (DMEM 0xF0) is
+part of the ucode's *data section* and is written only in `task_init` (cold), by the flush, and
+never zeroed on the FIFO variant's completion path -- the ring state is meant to survive between
+tasks via DMEM[0xF0] plus the RDP's own DPC registers. `task_yield` stores `taskDataPtr` to
+DMEM[0xBF8] and the ucode pointer to 0xBFC and the resume reads 0xBF8 back, which is independent
+confirmation that round 17's `hdr[0xBF8] = data_ptr` was wrong (already reverted). Measured this
+round: at every gfx task entry DMEM[0xF0] already reads 0x0A446669 (an ID-string fragment, i.e.
+another ucode's data left in DMEM) -- so the ucode takes the WARM path and never runs
+`task_init`, which is the only place that sets DPC_START/DPC_END/rdpFifoPos from the header. That
+is consistent with the ring never being written and with the kicks drifting to garbage. Next
+round must settle *when* 0xF0 becomes nonzero: is the gfx `ucode_data` (gspF3DEX2_fifoDataStart =
+0x779860, 0x800 bytes) actually DMA'd to DMEM 0x000 at task load (the audio one, 0x794E90 ->
+0x000, is visible in `R20F`), and is the value logged at DoRspCycles entry read before or after
+the boot ucode has run.
+
 **6. THE RDP IS SILENTLY DROPPING THE WINDOWS.** `vk_process_commands`
 (`mupen64plus-video-parallel/upstream/parallel_imp.cpp:148`) finishes a call by setting
 `DPC_START = DPC_CURRENT = DPC_END`, but returns early -- leaving the pointers untouched -- in
