@@ -83,6 +83,20 @@ header) is already garbage at any preemption point (`typ=0xDEF3FFFF`, `flg=0x000
 "why is IMEM wrong" but "who clobbers the DMEM 0xFC0 header copy that the ucode's reload path reads
 its source from".**
 
+Where the reload pointers come from, measured in the same run: the ucode keeps a segment descriptor
+at DMEM 0x2E0/0x2E8, and `wd_imem.txt` catches it at both stages — at n=1 it holds **offsets**
+(`00000f80`, `00001018`) and at n=2 it holds **absolute addresses** (`00751540`, `007515d8`), i.e.
+`t.ucode + 0xF80` and `t.ucode + 0x1018` with `t.ucode = 0x7505C0`. So every segment/reload source
+in this ucode is derived from the header's `ucode` field at DMEM 0xFD0 — which is exactly the field
+that read out as 0x6F0000 on the n=5 reload.
+
+**0x6F0000 is itself a usable signature.** As a *physical* address it is guest **0x806F0000**, and
+0x806F0000 is the 64 KiB page containing `Idle_ThreadEntry` (0x806F32EC = `Idle_ThreadEntry+0x134`,
+round 22D) — i.e. the field appears to hold a **page-aligned guest code pointer** (`& ~0xFFFF`).
+That is a specific, falsifiable corruption signature: on the next instrumented run, capture the raw
+32-bit word at DMEM 0xFD0 when it goes bad and the guest PC/RSP pc that wrote it, and check it
+against the "guest pointer with the low half zeroed" hypothesis.
+
 **5. NEXT ROUND (all one build, one run — see §2).** (a) Log, at every `dst=1080` and `dst=1000`
 transfer, the full OSTask header at DMEM 0xFC0..0xFFF and the pointer each reload used, so the
 `src=6f0000` class is caught at its source rather than after the fact. (b) Dump DMEM 0x000..0x8F at
