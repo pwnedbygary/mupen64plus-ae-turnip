@@ -5,6 +5,175 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 26 — ROUND 25's "PIN" IS RETRACTED (it was a truncated log), THE IMEM IS PROVEN
+INTACT, AND THE FAILURE IS RELOCATED TO ONE MEASURED FACT: THE GFX UCODE NEVER PUBLISHES A
+SINGLE BYTE, SO NO `FULLSYNC` EVER REACHES THE RDP AND `MI_INTR_DP` IS NEVER RAISED.**
+
+**1. ROUND 25's `k0 = 0x152C03C0` PIN IS A MEASUREMENT ARTIFACT — WITHDRAWN.**
+`wd_k0.txt` is capped at 200 lines (`r25_k0`'s own budget) and **all 200 lines are the audio
+ucode** (`im0=340a0fc0` on every line — verified: no line in the file has any other `im0`).
+`0x152C03C0` is an ordinary scratch value of `$26` in the *audio* ucode (its `andi`
+chains: `0d1603c0 -> 152c03c0`), and `ff0=00411910` in those lines is the **audio AList**
+(`data_ptr` from the audio task header), not the gfx `data_ptr`.  Round 25's "open
+contradiction" (fc4=4 / ff0=0x284990 before *and* after, yet $26=0x152C03C0) therefore does
+not exist: `lw $26,0xFF0` never produced that value.  **Ignore the whole round-25 pin.**
+
+**2. THE LIVE IMEM IS NOT CORRUPT — round 25's second reading is dead too.**
+`.fzxwork/r25c/d1_imem.bin` was extracted from `wd_sp_break.bin` at the **wrong offset**, and
+its "16 bytes present per 64" pattern sent this round chasing a non-existent DMA stride bug.
+The correct layout of `wd_sp_break.bin` (10066 bytes) is **1874 bytes of text header, then
+0x1000 IMEM, then 0x1000 DMEM** (header length = filesize - 8192).  Extracted that way, the
+IMEM matches RDRAM `0x768E60` **1024/1024 words** — it is a byte-exact copy of the audio
+ucode.  **There is no IMEM corruption and no DMA stride bug.**  (`d1_dmem.bin` is suspect for
+the same reason: re-extract, never reuse.)
+
+**3. THE AUDIO TASK IS HEALTHY AND COMPLETES NORMALLY.** `wd_sp_break.bin` is the RSP capture
+the wait-spin detector takes, and its header says `ttype=2` (audio), `imem0=340a0fc0`,
+`pc=00b8`, `status=00000243` (HALT|BROKE|INTR_BREAK|SIG0).  The audio ucode decodes at
+IMEM 0x0AC..0x0BC as
+```
+0x0AC  ori  $1,$0,0x4000      #= CLEAR_SIGNAL2
+0x0B0  mtc0 $1,SP_STATUS
+0x0B4  break  0               # <-- sets BROKE, halts the RSP
+0x0B8  sll  $0,$0,0           # (break's delay slot) = the captured pc
+0x0BC  beq  $0,$0,0x0BC       # never reached on hardware; only spin if re-un-halted
+```
+i.e. the audio task's own completion path.  `RSPTASK` (wd_rsp.txt) shows 32988 EXITs at
+`pc=00b8 status=00000243` — the pump re-calls `DoRspCycles` on a task that already ended, and
+each call returns immediately at the BROKE test.  Wasteful, not fatal.
+
+**4. THE REAL PIN — THE RSP NEVER WRITES TO RDRAM (measured, four independent ways):**
+* The entire RDP output ring `0x2D9CD0..0x32DCD0` (**336 KiB, 86016 words**) is **ZERO** in the
+  freeze image (`.fzxwork/r25d/ram.bin`, guest 8 MiB).
+* `R20W wr=0 outbuf=0 datalist=0` and `R20P pub=0 ring=0 stale=0` — **zero write DMAs and zero
+  command-block publications in the whole run.**
+* `RDPDP dp_seen=0 dp_hot=0 empty=7388 ring_n=7518 noadv=610 bad=432` — 98% of the 7518 RDP
+  kicks hand parallel-RDP an empty `CURRENT..END` window.
+* `mi_rd_dp=0`, `dp_ack=2`, `raise_bits ... DP=0` — **the guest never once observed a pending
+  DP interrupt.** (`mi_intr=0x11` at the freeze is the last-moment state, not a delivery.)
+* Screen: `r25d/screen.png` is **96.2% pure black** (and byte-identical in composition to
+  r25a's), vs `baseline_fzx_menu.png` at 44.9%.
+* `FRAME loads t0=0 t1gfx=2 t2aud=194 t3=0` — only **2 gfx task loads** in 100 s; everything
+  else is ~180 host-emulated yield/resume cycles of the same task.
+Because parallel-RDP raises DP **only** on an RDP `SyncFull` command
+(`mupen64plus-video-parallel/upstream/parallel_imp.cpp:215-219`), and the command stream is
+empty, the game can never complete a frame.  This is the top of the failure, not the ucode's
+k0.
+
+**5. THE LIVELOCK THAT KEEPS THE RING EMPTY (mechanism, now decoded).** The first wild
+transfer this tree ever latched is
+```
+WILD dir=RD pc=fc4 dram=00fffff8 mem=00000920 len=06d8 cnt=0 skip=0 ... f0=000006cf
+```
+`0xFFFFF8` is `0xFFFFFFFF & 0xFFFFFF & ~7`: the ucode walked from **`0xFFFFFFFF`**, which is
+exactly what `wd_ucode1.bin` shows sitting in `DMEM[0xBF8]` at the **first task entry**
+(`bf8=ffffffff`) — the stale word the *resume* path takes k0 from.  Rounds 18-25 **refused**
+that transfer (`return MODE_CHECK_FLAGS`), which leaves `cr[DMA_CACHE]`/`cr[DMA_DRAM]`
+**un-advanced**, so the ucode re-issued the identical transfer forever:
+`wd_rsp.txt` shows **1329 EXITs at `pc=0x0FC8`** (the `mfc0 $11,SP_DMA_BUSY` poll at the end of
+the DMA helper, IMEM 0xFC8) each burning the **full slice budget (`units=2041`)**, with the RSP
+never advancing.  A refused DMA is a livelock, not a guard: that is why `wr`/`pub` are 0.
+
+**6. FIX TRIED THIS ROUND (DD-gated, diagnostics preserved).** `r14_wild_check` now **latches
+the first offender to `wd_wild.txt` and counts every one, but no longer refuses**: it returns 0
+so the transfer proceeds.  This is exactly what hardware does — `SP_DRAM_ADDR` is 24-bit, so
+`0xFFFFFF` reads from the top of RDRAM — and it cannot reach outside the RDRAM buffer because
+**both** transfer loops already mask every word address (`(source + j) & 0x7FFFFC` in
+`rsp_dma_read`, `(dest + j) & 0x7FFFFC` in `rsp_dma_write`), which is the anti-corruption
+property the refusal was added for.  New counter `r14_wild_count()`, printed by the plugin's
+freeze dump as `R26W wild=<n>` next to `R20W`/`R20P`.
+**MEASURED EFFECT (r26a): the guard was NOT the gfx blocker, but it WAS the audio blocker.**
+`R26W wild=20479` while the *output* ring is still 0 nonzero words of 86016 and `R20W
+outbuf=0` — so the gfx walk is unaffected.  The audio path however came alive:
+`FRAME loads ... t2aud=194 -> 5998` (2/s -> 60/s, the real rate), `R20W wr=0 -> 141798`,
+`R20P pub=0 -> 77865`, `raise_bits AI=195 -> 5979`, and the audio ucode now reads its AList,
+writes processed audio to 0x415xxx/0x416xxx and completes (`D1..D485312`).  **KEEP IT**: it is
+both more faithful to hardware and a real fix.
+
+**7. THE FAILURE, FINALLY, IN ONE SENTENCE: THE GAME'S OWN `G_RDPFULLSYNC` NEVER REACHES THE
+RDP, BECAUSE THE GFX WALK NEVER READS THE DISPLAY LIST THE GAME SUBMITTED.**  The header's
+`data_ptr` (DMEM 0xFF0 = `0x00284990`) points at
+```
+284990: DB060000 00000000   # G_MOVEWORD  G_MW_SEGMENT, segment 0 = 0
+284998: E9000000 00000000   # G_RDPFULLSYNC      <-- THE ONLY THING THAT RAISES MI_INTR_DP
+2849A0: DF000000 00000000   # G_ENDDL
+```
+— a three-command "flush the RDP and tell me when it is done" display list, i.e. exactly the
+DD-boot handshake.  parallel-RDP raises `MI_INTR_DP` **only** when it meets an `RDP::Op::SyncFull`
+command (`mupen64plus-video-parallel/upstream/parallel_imp.cpp:215-219`), so if that `0xE9` never
+enters the command stream the guest waits forever — which is what `mi_rd_dp=0`, `raise_bits DP=0`
+and the 96.2%-black screen are.  **And the ucode does not read that list**: the first DL chunk
+read is `RD pc=fc4 dst=0920 src=2c03c0 len=00a8` (`wd_dmatr.txt` D7319) — `0x2C03C0` is
+**all zeros** — after which the walk follows the FIFO ring region itself
+(`src=2d9cd0,2d9e30,2d9f98,...`, zeros, chunk length growing 0x168,0x170,0x178,...), and by the
+freeze it is issuing 0xA8-byte "chunk reads" from a slowly-advancing address plus 8-byte reads
+from random RDRAM (`src=fab980,6fbf40,e4c500,...`) and one `dst=1110 len=0098 cnt=14` IMEM
+write, with `DMEM[0xF0] = 0xBF5A2F01` (garbage).  It never reaches `G_RDPFULLSYNC`.
+
+**8. THE MAIN LOOP IS NOW DECODED EXACTLY** (r26a's text, IMEM 0x160-0x19C):
+```
+160  lw   $26,0xFF0($0)      # k0 = DMEM[0xFF0] = the header's data_ptr  <<< the ONLY k0 source
+164  addi $11,$0,0x2E8       # overlay B
+168  jal  0xFB4              # load overlay B -> IMEM 0x000 and jump there
+16C  ori  $12,$31,0          # (delay) return = 0x170
+170  addi $19,$0,167         # len-1 = 0xA8  -> a 168-byte display-list chunk
+174  ori  $24,$26,0          # src = k0
+178  jal  0xFD8              # DMA k0 -> DMEM 0x920, 0xA8 bytes   (wd_dmatr: dst=0920 len=00a8)
+17C  addiu $20,$0,0x920      # (delay)
+180  addiu $26,$26,168       # k0 += 168
+184  addi $27,$0,-168
+188  jal  0xFD8              # the publish DMA
+18C  mfc0 $1,SP_STATUS       # (delay)
+190  lw   $25,0x9C8($27)     # = DMEM 0x920 = the chunk's first word (the next command)
+194  beq  $27,$0,0x170       # loop
+198  andi $1,$1,0x80         # (delay) SIG0 = the guest's yield request
+```
+So the DL pointer is *only* DMEM[0xFF0], and 0x2C03C0 must have come out of it (or out of the
+`bf8` resume path at IMEM 0x0BC).  **Open (next round, one run):** log `$26` + DMEM[0xFF0] +
+DMEM[0xBF8] + the caller of the first `dst=0920` DMA for the gfx task only.  Circled hard by the
+data already in hand: `0x2C03C0 == 0x152C03C0 & 0xFFFFFF`, and `0x152C03C0` is an **audio-ucode
+`$26` value** (`wd_k0.txt`, `wd_watch.txt` n=12/14/16/17/18 all show `sr26=152c03c0` with
+`im0=340a0fc0`).
+
+**9. THE TWO UCODES SHARE DMEM, AND THEY USE THE SAME WORDS.** `wd_watch.txt` (r26a) shows the
+**audio** ucode (`prev_pc=08c pc=000 im0=340a0fc0`) writing `dmem[ff0]` back and forth between
+`0x004132D0` and `0x00411910` (its AList) and writing `dmem[bf8]`, `dmem[bfc]`, `dmem[410]`,
+`dmem[418]` -- the *same* words the gfx text uses for `data_ptr` (0xFF0) and its saved resume
+pointer (0xBF8).  The audio task runs 60x/s *between* gfx slices, so any gfx state the host does
+not restore through the yield buffer is overwritten within ~16 ms.  This is the structural
+reason the gfx task keeps restarting from garbage: **the yield buffer is the only channel that
+survives an audio task, so the host save/resume must be exact — and it must happen in the right
+order relative to the audio task.**
+
+**10. WHAT IS *NOT* THE BLOCKER (measured, so do not chase it again).** The
+round-20/21/22 yield-save machinery *is* firing: `wd_r21.txt` reads `latched=1 seq=194/196
+typ=00000001 flg=...04/.05 ucode=007505c0 yptr=0032dcd0 ysz=00000c00 saved=1..12 ok=1
+hdrbad=0` with sane live k0 (`0x00091151`, `0x000200AA`, `0x00286FA0`, `0x0028F190`), i.e. the
+header latch works, `hdr_ok` passes and the save lands.  And the wild-DMA guard (item 6) was not
+it either.  The defect is in *which* k0 the resumed/fresh gfx walk starts from, and the
+audio-ucode DMEM clobber (item 9) is the mechanism to explain it.
+
+**ROUND 25 — THE UCODE LAYOUT IS NOW GROUND TRUTH (rspboot decoded, the descriptor mechanism
+* `wd_sp_break.bin` = text header (len-8192) + 0x1000 IMEM + 0x1000 DMEM.  **A file with no
+  header** cannot be sliced with a fixed offset — parse it.
+* `wd_ucode[123].bin` / `wd_ucode_inv[123].bin` = 8×u32 `WDCD` header + 0x1000 IMEM + 0x1000
+  DMEM (`WDCD, seq, pc_lo, status, ttype, expired, cpu_pc, 0`).
+* Never trust a derived `d1_*` extract: check `imem[0]` against the capture header's `imem0=`
+  before using it.  (This one check would have saved round 25's and part of round 26's work.)
+* The k0/R25K0 watch must skip while `IMEM[0] == 0x340A0FC0` (audio resident) or the whole
+  200-line budget is consumed before the first gfx entry — **that is what produced round 25.**
+* `wd_dmatr.txt` (~485k lines, `D<n> RD|WR pc= dst= src= len= cnt= skip= s0= st= fc0= f0= ff0=
+  bf8= fc4=`, plus a final `X sw_n=... fake_n=...` line) is the single most informative artefact
+  in the tree: it dates every ucode-issued transfer with the DMEM state at that instant.  Filter
+  it by `ff0=<the task's data_ptr>` to isolate one task's transfers.
+* `wd_watch.txt` (`R25W`) logs *every* change of DMEM 0xBF8/0xBFC/0x2E0/0x2E8/0x410/0x418/0xFF0
+  with the writing PC and the writer's `im0` — i.e. it names which ucode wrote a shared word.
+* `wd_r20.txt` (`R20`/`R20F`/`R20W`/`R20P`/`R26W`) classifies the ucode's transfers
+  (datalist/outbuf/low) and counts publications; it is rewritten every 4 s so its *last* state
+  is the freeze state.
+* `wd_rsp.txt` (`RSPTASK ... ENTER/EXIT pc= status= ttype= units=`) histograms where the RSP
+  actually spends its slices; a task stuck at one pc with a full `units=` count is a livelock.
+
 **ROUND 25 — THE UCODE LAYOUT IS NOW GROUND TRUTH (rspboot decoded, the descriptor mechanism
 proved on-device), AND THE FAILURE IS PINNED TO ONE NUMBER: the gfx walk runs with
 `k0 = 0x152C03C0`, which is the AUDIO ucode's display-list pointer, while the header's

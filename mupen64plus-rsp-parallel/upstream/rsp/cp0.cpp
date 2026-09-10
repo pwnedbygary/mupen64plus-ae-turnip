@@ -1140,8 +1140,35 @@ extern "C"
 			}
 		}
 		r14_wild_n++;
-		return 1;
+		/* ROUND 26: LATCH, BUT NO LONGER REFUSE.
+		   Rounds 18-25 refused every out-of-RDRAM transfer.  Round 26
+		   measured what that refusal actually does to the machine:
+
+		     - the gfx task's first DL-chunk read comes out of
+		       `cr[DMA_DRAM] = 0xFFFFFF` (masked to 0xFFFFF8 by the &= ~7
+		       below) -- i.e. the ucode is walking from 0xFFFFFFFF, the
+		       stale DMEM[0xBF8] the audio ucode left behind;
+		     - the refusal leaves BOTH address registers un-advanced, so
+		       the ucode re-issues the same transfer forever;
+		     - measured on the RP6 (r25d): the RSP burns 1329 full slices
+		       at pc=0x0FC8 (the DMA_BUSY poll) with `units=2041` each,
+		       `R20W wr=0` / `R20P pub=0` (the ucode NEVER made a write DMA
+		       in 100 s), the whole 336 KiB output buffer is ZERO, and
+		       `mi_rd_dp=0` (no FULLSYNC ever reaches the RDP).  That is a
+		       livelock, not a guard.
+
+		   Hardware does not refuse: SP_DRAM_ADDR is 24-bit, so 0xFFFFFF
+		   reads from the top of RDRAM and the ucode keeps making progress.
+		   Both transfer loops already mask every word address
+		   (`(source + j) & 0x7FFFFC`, `(dest + j) & 0x7FFFFC`), so allowing
+		   the transfer cannot reach outside the RDRAM buffer -- the
+		   anti-corruption property the refusal was added for is preserved
+		   by the masking, while the livelock goes away.  The first offender
+		   is still latched to wd_wild.txt and every one is still counted
+		   (r14_wild_count(), printed by the freeze dump). DD-gated. */
+		return 0;
 	}
+	extern "C" unsigned r14_wild_count(void) { return r14_wild_n; }
 
 	static int rsp_dma_read(RSP::CPUState *rsp)
 	{

@@ -183,6 +183,18 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 				        r20_wr_total(), r20_wr_outbuf(), r20_wr_datalist());
 				fprintf(f, "R20P pub=%u ring=%u stale=%u\n",
 				        r20_pub_n(), r20_pub_ring(), r20_pub_stale());
+				{
+					/* ROUND 26: out-of-RDRAM ("wild") RSP transfers seen this
+					   run.  Rounds 18-25 REFUSED them (and livelocked: the
+					   address registers never advanced, so the ucode re-issued
+					   the same transfer forever); round 26 lets them through
+					   and lets the per-word `& 0x7FFFFC` masking do the
+					   hardware's own 24-bit wrap.  Read this together with
+					   `R20W wr` and `R20P pub`: if wr/pub are still 0 while
+					   this climbs, the run is still publishing nothing. */
+					extern unsigned r14_wild_count(void);
+					fprintf(f, "R26W wild=%u\n", r14_wild_count());
+				}
 				m = r20_pub_latch_n();
 				for (k = 0; k < m && k < 4; k++)
 				{
