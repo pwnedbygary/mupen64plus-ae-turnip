@@ -144,6 +144,27 @@ stay at the n=1 values across later `R25SW` flips. The alternative (and more har
 shape is to refuse to start task B while task A is loaded-and-pending; either way the invariant
 to restore is **one loaded task owns DMEM 0x000..0x7FF until it is started and finished**.
 
+**10. DO NOT PUT THE FIX AT THE pc-0x080 HOOK (measured).** `r29_unfix_descriptors` is wired
+to the JIT block entry at pc 0x080 and never ran, so `rsp_enter()` did not observe a block
+entry at 0x080 even though rspboot's trampoline (`jr a3`, a3 = 0x1080) must land there. Put the
+repair in the **DMA path** instead: `cp0.cpp`'s SP-DMA handler is where the ucode_data / yield
+image actually lands, so normalise the four descriptor words *in the destination of that
+transfer* (READ into SP 0x000 with len 0x7FF or 0xBFF) — same arithmetic, same gate, but at a
+point that is guaranteed to be observed. Keep `r29_pc_hook` (the pc ring is the only way the
+"restart every slice" reading was ever falsified) but stop relying on it as a hook point.
+
+**11. THE COMPLETE YIELD CYCLE (this is what makes the double-add reachable; keep it in mind
+for round 30).** (a) the gfx task loads fresh: descriptors are ucode_data-relative, the entry's
+fix-up makes them absolute — `R25SW n=1` shows the correct state. (b) the ucode yields; the
+guest's `osSpTaskYielded()` sets `OS_TASK_YIELDED`; the resume restores the saved DMEM, which
+contains the descriptors **already absolute**, and the entry takes its resume path — `flags&1`
+set — which **skips** the fix-up and then **clears the flag itself** (`sw r0,0xFC4(r0)` at pc
+0x0B4). (c) any later start of the same task now sees `flags&1 == 0`, takes the not-yielded
+path, and applies the fix-up to the already-absolute descriptors → 0xEA1B00. On hardware (c)
+cannot happen because after a resume the task runs to completion; here the forced-yield
+preemption manufactures the extra start.
+
+
 
 
 **1. THE RSP DISASSEMBLER EXISTS AGAIN.** `tools/rspdis.py <ram.bin> <rdram_off> <len>
