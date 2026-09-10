@@ -412,6 +412,9 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
 #define R21_KEEP_SIG0 1
 
 static unsigned r21_save_n = 0, r21_yield_n = 0, r21_log_n = 0;
+/* Forced yields whose DMEM 0xFC0 header no longer looked like an OSTask, so the
+   DMEM->yield-buffer image write was skipped instead of landing on garbage. */
+static unsigned r21_hdr_bad_n = 0;
 static uint32_t r21_save_k0 = 0, r21_save_f0 = 0;
 #define R21_LOG_PATH "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r21.txt"
 extern "C" unsigned r21_emu_save_n(void) { return r21_save_n; }
@@ -783,13 +786,33 @@ extern "C"
 				dmem[0xbfc / 4] = dmem[0xfd0 / 4]; /* the resume ucode base */
 				r21_save_k0 = k0;
 				r21_save_f0 = dmem[0xf0 / 4];
+				/* ROUND 21d (measured, not defensive): the OSTask copy at DMEM
+				   0xFC0 is only valid while the running ucode is keeping it
+				   there, and a *forced* preemption lands at an arbitrary point in
+				   the walk.  On the RP6 (r21f) the intercepted poll at pc=0x18C
+				   read back type=0xDEF3FFFF flags=0xFFFFFFFF yield_data_ptr=0, and
+				   the unguarded save then wrote the whole 0xC00-byte DMEM image to
+				   RDRAM offset 0 -- i.e. straight over the guest's boot exception
+				   vector at 0x80000000.  That is a corruption the emulation cannot
+				   survive, so the save is now conditional on the header still
+				   looking like the task that was latched at load time. */
+				uint32_t hdr_type = dmem[0xfc0 / 4];
+				uint32_t hdr_flags = dmem[0xfc4 / 4];
+				uint32_t hdr_ucode = dmem[0xfd0 / 4];
+				uint32_t yphys = yptr & 0x7fffffu;
+				int hdr_ok = (hdr_type >= 1u && hdr_type <= 4u) &&
+				             (hdr_flags != 0xffffffffu) &&
+				             ((hdr_ucode & 0xfff00000u) == 0x80000000u ||
+				              (hdr_ucode & 0x007fffffu) != 0u) &&
+				             (yphys >= 0x1000u) && (yphys <= 0x800000u - 0xc00u);
+				r21_hdr_bad_n += (hdr_ok ? 0 : 1);
 				/* Same word-indexed convention as rsp_dma_write above. */
-				if (RSP::rsp.RDRAM != NULL && (yptr & 0x7fffffu) <= 0x800000u - 0xc00u)
+				if (hdr_ok && RSP::rsp.RDRAM != NULL)
 				{
 					uint32_t* rd = (uint32_t*)RSP::rsp.RDRAM;
 					unsigned i;
 					for (i = 0; i < 0xc00u / 4u; i++)
-						rd[((yptr & 0x7ffffcu) >> 2) + i] = dmem[i];
+						rd[(yphys >> 2) + i] = dmem[i];
 					r21_save_n++;
 				}
 				/* Bounded trace of every forced yield: the run that stalls
@@ -800,10 +823,11 @@ extern "C"
 					FILE* f = fopen(R21_LOG_PATH, (r21_log_n == 0) ? "w" : "a");
 					if (f)
 					{
-						fprintf(f, "R21Y n=%u pc=%03x sig0=%d st=%08x k0=%08x f0=%08x bf8=%08x yptr=%08x typ=%u flg=%08x saved=%u\n",
+						fprintf(f, "R21Y n=%u pc=%03x sig0=%d st=%08x k0=%08x f0=%08x bf8=%08x yptr=%08x typ=%u flg=%08x saved=%u ok=%d hdrbad=%u\n",
 						        r21_yield_n, rsp->pc & 0xfff, sig0, st_before, k0,
 						        dmem[0xf0 / 4], dmem[0xbf8 / 4], yptr,
-						        dmem[0xfc0 / 4], dmem[0xfc4 / 4], r21_save_n);
+						        dmem[0xfc0 / 4], dmem[0xfc4 / 4], r21_save_n,
+						        hdr_ok, r21_hdr_bad_n);
 						fflush(f);
 						fclose(f);
 					}

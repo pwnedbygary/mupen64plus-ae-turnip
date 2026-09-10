@@ -5,6 +5,76 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 22 (goal round 20) — A LOCKED RP6 CAN NOW RUN DD TESTS, AND THE FORCED-YIELD SAVE WAS
+WRITING OVER THE GUEST'S EXCEPTION VECTOR.** Commits `75d4a0c70` (debug manifest overlay) + this
+round's guard in `cp0.cpp`. Evidence: `.fzxwork/r21d/`, `r21e/`, `r21f/` (`r21.txt`, `r20.txt`),
+`.fzxwork/r21f_run.sh`, and the logcat windows quoted below.
+
+**1. THE LOCKED-DEVICE BLOCKER IS SOLVED — do not re-diagnose it.** The RP6 has a secure keyguard
+and no adb path to it (`adbd cannot run as root in production builds`, no `su`,
+`locksettings set-disabled` demands the credential, no fingerprint service). While locked the
+frontend is STOPPED and the core is never scheduled: `/proc/<pid>/stat` utime flat and the stall
+probe prints **A == B** with `count` frozen at `0x00ad409d` (≈0.12 s emulated) — so a "frozen
+machine" dump taken on a locked device is an artefact of the lock, not a guest deadlock. Two
+things had to be true at once:
+
+* `FLAG_ACTIVITY_SHOW_WHEN_LOCKED` (`am start -f 0x00080000`) is **not** enough: GameActivity
+  becomes `ResumedActivity` but `mKeyguardOccluded` stays false and the core still freezes.
+* The activity **attribute** is what occludes. `app/src/debug/AndroidManifest.xml` (debug source
+  set only; the release manifest is untouched) sets `android:showWhenLocked="true"
+  android:turnScreenOn="true"` on `SplashActivity`, `GalleryActivity`, `GameActivity`. Measured:
+  `KeyguardViewMediator: setOccluded(true)` ~0.7 s after launch, occlusion holds until the app
+  exits, `isKeyguardShowing=false`, GameActivity keeps `mCurrentFocus`.
+
+With that the DD route really runs on a locked device: `CoreInterface: Disable core debug due to
+64DD ROM found`, `mupen64plus-video-parallel` (Turnip vulkan) + `mupen64plus-rsp-parallel` load,
+and the machine reaches `count=0x0b65116c` (≈2 s emulated, `c_task=195`, `mi_intr=0x11`,
+`c_ht=7995384`). Runs nevertheless still END ~4-5 s in, two ways: a **clean** shutdown
+(`Cleaning up Android sound plugin` → `VidExtFuncQuit` → `CoreFragment: onFinish` →
+`Process: Sending signal. PID: <pid> SIG: 9`, with `loadingSuccess` true so no `onFailure`), or a
+native signal `WDCRASH sig=7 code=1 fault=0xffffffffffffffff hpc=0xffffffffffffffff hlr=0x1`
+(SIGBUS/BUS_ADRALN with a **wild host jump**) while the guest state looks healthy. One system-side
+foreground thief was seen once (`START u0 {act=android.settings.APP_SEARCH_SETTINGS ...} from uid
+1000` at 13:15:27) but it is NOT the general cause: at 13:18 nothing stole focus and the run still
+died. So the ~4-5 s death is still unexplained — treat it as the next thing to fix.
+
+**2. THE MEASURED DEFECT IN OUR OWN FORCED-YIELD SAVE (fixed this round).** The r21f run wrote
+`wd_r21.txt` for the first time:
+
+```
+R21Y n=1 pc=18c sig0=0 st=00000040 k0=152c0ba0 f0=0000079f bf8=152c0ba0 yptr=00000000
+     typ=3740794879 flg=ffffffff saved=1        (typ = 0xDEF3FFFF)
+R21EMU n=0 k0=00000000 f0=00000000   (wd_r20.txt; R20 ms=167659839, all r20 counters zero)
+```
+
+Read it: the forced yield fires at exactly the intercepted poll (`pc=0x18C`, the body's
+`mfc0 at,SP_STATUS`) with `sig0=0` (host-forced, not a guest request) and the FIFO state intact
+(`f0=0x79F` = rdpFifoPos, vs r20j's clobbered `0x0A446669`) — but **the OSTask copy at DMEM 0xFC0
+is garbage** (`typ=0xDEF3FFFF`, `flg=0xFFFFFFFF`, `yptr=0`) and the live `k0=0x152C0BA0` is
+outside RDRAM, i.e. the walk was already off the rails at preemption. The unguarded save accepted
+`yptr=0` (it passed the `<= 0x800000-0xC00` bound) and wrote the whole 0xC00-byte DMEM image to
+**RDRAM offset 0 = guest 0x80000000, the boot exception vector** — corruption the emulation cannot
+survive, and a plausible cause of both the wild host jump and the ~4-5 s death. The save is now
+conditional (`hdr_ok`: header type 1..4, flags != 0xFFFFFFFF, ucode field RDRAM-like, yield
+pointer inside RDRAM and non-zero) and the trace gained `ok=` and `hdrbad=`. **The DMEM 0xFC0 copy
+is only valid while the running ucode keeps it there; a forced preemption lands anywhere in the
+walk, so never trust it — use the header the plugin latched at load time (`wd_hdr_ring`) instead.**
+
+**3. WHAT IS STILL UNVERIFIED.** The round-21 yield fix (`110633f97`, `129d72618`, `41b25d267`)
+has still not been observed in a run that lived long enough to reach the post-load deadlock
+(~10 s emulated; r20j needed 50 s of host time). Decisive numbers, all in `wd_stall.txt` /
+`wd_r21.txt` / `wd_r20.txt`: `raise_bits DP > 0`, `RDPDP dp_seen > 0`, non-zero ring words in
+`[0x2D9CD0,0x32DCD0)`, `R21Y ... saved=1` with an in-RDRAM `k0`, DD bar past row 573. A/B recipe
+on one build: flip `#define R21_KEEP_SIG0` in `mupen64plus-rsp-parallel/upstream/rsp/cp0.cpp`
+(1 = round-21 handshake, 0 = round-16 form that drops the interrupted gfx task) and re-run
+`r21f_run.sh`; respect the native-rebuild trap (verify the marker string is inside the packaged
+`.so`).
+
+**4. RUN ORDER THAT WORKS ON A LOCKED DEVICE**: `./.fzxwork/r21f_run.sh` (neutralize the
+settings-intelligence search → force-stop → VIEW intent for `F-Zero X (Japan).z64` → poll
+liveness/focus every 5 s → write `files/wd_force.flag` → pull `iplram_force.bin` + `wd_stall.txt`
++ `wd_r21.txt`/`wd_r20.txt`; the package is re-enabled at the end).
+
 **ROUND 21 (goal round 21) — THE YIELD CONTRACT IS NOW READ FROM LIBULTRA SOURCE, AND THE
 MISSING PIECE OF OUR FORCED YIELD IS THE UCODE'S OWN STATE SAVE.** Branch
 `dd-eos-watchdog-checkpoint`, commit `110633f97` (+ this round's follow-up). Evidence: r20j (the
