@@ -87,6 +87,82 @@ zero-length underflow (bad3).
    only come from that fake -- and a resume with an *unsaved* yield buffer is exactly what makes a
    ucode read a garbage saved state.
 
+**ROUND 16 (goal round 16) — FIXED: the yield-resume now reloads the ucode's saved DMEM. The RDP
+comes alive (6 -> 245 kicks, non-empty ranges, MI_INTR_DP raised, framebuffer swaps).**
+Branch `dd-eos-watchdog-checkpoint`, commit `abd7e5192` over `921d439f7`.
+
+**The boot ucode, decoded (this settles round 15's open questions).** The header's `ucode_boot`
+(found in the live task struct: `0x807504F0`, size `0xD0`) is the blob right *before* the gfx text
+at `0x807505C0`; disassembled from the RAM dump it is:
+
+```
+1000 j 0x1064                  1004 addi at,r0,0xFC0      # &OSTask
+1008 lw  v0,16(at) # ucode     100c addi v1,r0,0xF7F      # ucode_size-1
+1010 addi a3,r0,0x1080         1014/1018/101c mtc0 SP_MEM_ADDR/SP_DRAM_ADDR/SP_RD_LEN
+1020..1028 wait SP_DMA_BUSY    102c jal 0x103c            1034 jr a3  # -> IMEM 0x1080
+103c mfc0 t0,SP_STATUS         1040 andi t0,t0,0x80       # SIG0?
+1044 bne -> 0x1050             1054 ori t0,r0,0x5200      # CLR_SIG0|SET_SIG1|SET_SIG2
+1058 mtc0 t0,SP_STATUS          105c break                 # <-- THE YIELD ACK
+1064 lw v0,4(at) # flags       1068 andi v0,v0,0x2        # OS_TASK_DP_WAIT
+106c beq v0,r0,0x108C          1074..1084 jal 0x103c; mfc0 cp0_11 (DPC_STATUS); FREEZE? loop
+108c lw v0,24(at) # ucode_data 1090 lw v1,28(at); 1094 addi v1,v1,-1
+10a4 mtc0 r0,SP_MEM_ADDR       10a8/10ac mtc0 SP_DRAM_ADDR/SP_RD_LEN   # DATA -> DMEM 0
+10bc jal 0x103c                10c4 j 0x1008
+```
+So (a) **the only place a task-side yield is acknowledged is `0x1054` (`0x5200`)** -- the task
+ucode itself never writes SP_SET_SIG1, so the round-10 host fake was the only other SIG1 source;
+(b) the DP_WAIT bit only selects whether the *DP-idle wait loop* runs -- the `ucode_data -> DMEM 0`
+DMA at 0x108C happens either way; (c) libultra's `osSpTaskLoad()` maps `ucode_data =
+yield_data_ptr` for a YIELDED task, i.e. the resumed RSP is meant to be restarted from the DMEM
+image the yielding ucode saved.
+
+**The defect that was killing the machine.** `osSpTaskYielded()` sets `OS_TASK_YIELDED` and clears
+`OS_TASK_DP_WAIT` on the game's gfx task (observed: `wd_hdr15 seq=201 flags=00000005`,
+`bf4=00ae00b0` = a leftover EK *audio* command word, i.e. the intervening audio task had clobbered
+DMEM), and the resumed gfx task then took `k0 = DMEM[0xBF8]` = **0** as its display-list pointer,
+walked RDRAM 0 as GBI, and issued the length-underflow DMA (`SP_RD_LEN=0xFFFFFFFF` -> 4096 bytes
+wrapping through IMEM) that erased the header and ALL of IMEM (round 15's `wd_bad3`).
+
+**The fix (DD-gated, `abd7e5192`).** `parallel.cpp`: at a FRESH task start (`*SP_PC_REG & 0xfff ==
+0`, which slice re-entries never have) whose header is exactly the yielded shape (`type <= 2`,
+`flags & OS_TASK_YIELDED`, `!(flags & OS_TASK_DP_WAIT)`, sane yield ptr/size), copy the yield
+buffer into `DMEM 0..0xBFF` -- the header at 0xFC0+ is untouched. `rsp/cp0.cpp`: the host's
+synthetic yield (round-10 threshold path) now writes the ucode's own ack pattern
+(`|SIG1|SIG2 & ~SIG0`) instead of OR-ing SIG1 and leaving SIG0 set. Both are gated on the DD route.
+Diag: `wd_yld.txt` (`YLD ... stale_f0/stale_bf8 -> rest_f0/rest_bf8/rest_bfc`).
+
+**Measured effect (live clean run, `.fzxwork/r16/live/`).** `wd_yld.txt` fires and lands the
+ucode's real state: `rest_f0=0032dcd0 rest_bf8=0024e260 rest_bfc=00752ae0`; the live RAM dump
+(`ram_live.bin`) confirms the yield buffer holds `[0xF0]=0x13340 [0xBF8]=0x1208
+[0xBFC]=0x752AE0`. Versus round 15 at the same point: **RDP kicks 6 -> 245 and the last kick is a
+non-empty range (`0x15108..0x15340` vs `0x2E3D18..0x2E3D18`), `raise_bits DP` 0 -> 1, gfx task
+loads 2 -> 5, gfx-typed slice entries 1639, and the guest swaps framebuffers
+(`viCurr.framep 801d9800 -> 80200000`)**. The guest's own task structs are intact
+(`ram_live.bin`: `0x2BB0C0` type 1 flags 0x04 ucode_boot `0x807504F0`/0xD0 ucode `0x80752AE0`
+data `0x8077A090`/0x800 stack `0x8032E8D0` out_buff `0x802D9CD0` out_buff_size `0x8032DCD0`
+yield `0x8032DCD0`/0xC00; `0x2BB100` is the same shape with ucode `0x807505C0` and data_ptr
+`0x80284990`/0x18 = the 24-byte sync DL).
+
+**Watch out -- a self-inflicted crash that looks like the known JIT SIGILL.** Round 16's first run
+crashed with SIGILL in anon JIT code ~6s in *because the restore read `RSP::rsp.RDRAM` as a byte
+pointer at word indices*; it copied garbage DMEM and the ucode then DMA'd a garbage overlay into
+IMEM. Use `RSP::cpu.get_state().rdram` (uint32_t*) for the word view of RDRAM.
+
+**ROUND 16 NEXT STEPS (in order):**
+1. **Why is the kick range at `0x15108`?** The ucode's RDP FIFO bounds are supposed to come from
+   the DATA (`ucode_data -> DMEM 0`, whose +0x28/+0x2C are `0x2D9CD0`/`0x32DCD0`) and the header
+   carries the same pair (`output_buff` 0xFE8 / `output_buff_size` 0xFEC = `0x802D9CD0` /
+   `0x8032DCD0`), yet `ram_live.bin` shows `0x15108` (inside the 0x00010001 framebuffer fill) and
+   `0x2D9CD0` zeroed. Trace the ucode's DPC writes (`mtc0 cp0_8/9`) with pc + DMEM[0x28]/[0x2C] and
+   compare with the header fields: a wrong/stale FIFO base makes every flush land in garbage, the
+   RDP never reaches SYNC_FULL, and the frame protocol starves (`raise_bits DP=1` in ~2 minutes vs
+   VI=3348) -- which is exactly the "loading bar does not advance" symptom.
+2. The remaining low-RDRAM walk: `wd_bad1 pc=0fc4 src=000000 dst=09b0 len=0648`,
+   `bad2/bad3 pc=0e1c src=000000 dst=0410 len=0098` -- the DMA into DMEM 0x9B0 ends at 0xFF8 and
+   therefore **clobbers the task header in DMEM** (which is what `wd_hdr15 seq=226 ff0=fff9fff9`
+   sees). Find which task starts with a null data pointer now that the resume path is sound.
+3. Keep verifying the DD gate: rerun the CI interpreter baseline (`emumode=1`) after any RSP change.
+
 **ROUND 14 (goal round 14) — the frame stall decoded: the gfx ucode runs a
 YIELD/RESUME handshake the DD route fakes, and the resumed task parses low RDRAM.**
 Branch `dd-eos-watchdog-checkpoint`, base `0fec82230` (instrumentation) over `baea19d80`.
