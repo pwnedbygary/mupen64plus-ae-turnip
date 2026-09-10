@@ -2011,6 +2011,65 @@ void r31_arm_k0_repair(unsigned want);
 		fclose(f);
 	}
 
+	/* ======================================================================
+	   ROUND 35 (DD route only): THE WRAP THAT DESTROYS THE EXCEPTION VECTOR.
+
+	   MEASURED offline on the archived full-RAM dumps: RDRAM 0x00000180 (the
+	   R4300 general exception vector) holds libultra's prologue
+	   3C1A800C 275AC4C0 in EVERY full-RAM dump from round 3 through round 32,
+	   and RSP microcode (4B8641B3 E9DA0F06 4B914473 E9C40F05 ...) in the
+	   round-33 dump.  In that dump RDRAM 0x0..0x3F8 is byte-identical to cart
+	   ROM 0x63758, i.e. the F3DEX2 ucode's data section, while RDRAM 0x400
+	   upward still holds the game's 0x00010001 fill.  A 0x400-byte body
+	   ending at exactly 0x3F8 is the signature of a WRAP, not of a pointer
+	   that was simply set to 0.
+
+	   The transfer loop below masks every word address with 0x7FFFFC
+	   (hardware-accurate: RDRAM is 8 MiB, so the top of the 24-bit SP address
+	   space mirrors it), therefore a write whose dest register sits near the
+	   TOP of RDRAM carries its tail around into physical 0x0.  With
+	   dest = 0xFFFFF8 -- the stale 0xFFFFFF the previous task leaves in
+	   SP_DRAM_ADDR, see the round-26 note in r14_wild_check -- and len = 0x400
+	   that is exactly 254 words landing on RDRAM 0x0..0x3F8, the observed
+	   damage.
+
+	   Round 12 already had a trigger for "a write that lands in RDRAM's first
+	   page", but it tested the REGISTER value
+	   (`(dst & 0x7FFFFC) >= 0x1000 -> return`), which 0xFFFFF8 fails, so it
+	   never fired once in twenty rounds.  Every guard in this file has
+	   reasoned "the mask keeps the transfer inside RDRAM" -- true, and
+	   irrelevant: inside RDRAM is where the vectors are.
+
+	   So: every wrapped write is logged to wd_lowsp.txt, and the words that
+	   would land below R35_GUARD_LO are SKIPPED rather than deposited, so the
+	   guest's boot/exception page survives.  Plain carts are untouched
+	   (rsp_ares_budget_enabled() is the core's runtime IsDDPresent()). */
+#define R35_GUARD_LO 0x1000u
+
+	static void r35_lowsp_log(RSP::CPUState* rsp, uint32_t dst, uint32_t src,
+	                          uint32_t len, unsigned count, uint32_t skip,
+	                          uint32_t d0, uint32_t span, uint32_t skipped)
+	{
+		static unsigned n = 0;
+		FILE* f;
+		if (n >= 32) return;
+		n++;
+		f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_lowsp.txt",
+		          (n == 1) ? "w" : "a");
+		if (f == NULL) return;
+		fprintf(f, "WDLOWSP n=%u pc=%03x dst=%08x src=%08x len=%04x cnt=%u skip=%03x "
+		           "d0=%08x span=%08x skipped=%u | dm=%08x cache=%08x st=%08x "
+		           "imem0=%08x dmem0=%08x fc0=%08x ff0=%08x bf8=%08x\n",
+		        n, rsp->pc & 0xfffu, dst, src, (unsigned)len, count, (unsigned)skip,
+		        d0, span, skipped,
+		        *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_DRAM],
+		        *rsp->cp0.cr[RSP::CP0_REGISTER_DMA_CACHE],
+		        *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS],
+		        rsp->imem[0], rsp->dmem[0], rsp->dmem[0xfc0 / 4],
+		        rsp->dmem[0xff0 / 4], rsp->dmem[0xbf8 / 4]);
+		fclose(f);
+	}
+
 	static void rsp_dma_write(RSP::CPUState *rsp)
 	{
 		uint32_t length_reg = *rsp->cp0.cr[CP0_REGISTER_DMA_WRITE_LENGTH];
@@ -2051,6 +2110,15 @@ void r31_arm_k0_repair(unsigned want);
 #endif
 
 		unsigned i = 0;
+		/* ROUND 35: how far the per-word wrap can carry this transfer, and the
+		   guard that keeps it out of the guest's boot/exception page. */
+		const uint32_t r35_dst0 = dest;
+		const uint32_t r35_src0 = source;
+		const uint32_t r35_d0 = dest & 0x7FFFFCu;
+		const uint32_t r35_span = length + ((uint32_t)count * (length + skip));
+		const int r35_wraps = rsp_ares_budget_enabled() &&
+		                      ((r35_d0 + r35_span) > 0x800000u);
+		uint32_t r35_skipped = 0;
 		do
 		{
 			unsigned j = 0;
@@ -2060,8 +2128,12 @@ void r31_arm_k0_repair(unsigned want);
 				uint32_t source_addr = (source + j) & 0x1FFC;
 				uint32_t dest_addr = (dest + j) & 0x7FFFFC;
 
-				rsp->rdram[dest_addr >> 2] =
-				    (source_addr & 0x1000) ? rsp->imem[(source_addr & 0xfff) >> 2] : rsp->dmem[source_addr >> 2];
+				if (r35_wraps && dest_addr < R35_GUARD_LO) {
+					r35_skipped++;
+				} else {
+					rsp->rdram[dest_addr >> 2] =
+					    (source_addr & 0x1000) ? rsp->imem[(source_addr & 0xfff) >> 2] : rsp->dmem[source_addr >> 2];
+				}
 
 				j += 4;
 			} while (j < length);
@@ -2069,6 +2141,10 @@ void r31_arm_k0_repair(unsigned want);
 			source += length;
 			dest += length + skip;
 		} while (++i <= count);
+
+		if (r35_wraps || r35_skipped)
+			r35_lowsp_log(rsp, r35_dst0, r35_src0, length, count, skip,
+			              r35_d0, r35_span, r35_skipped);
 
 		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] = source;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] = dest;

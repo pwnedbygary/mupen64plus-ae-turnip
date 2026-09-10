@@ -44,6 +44,7 @@
 #include "device/r4300/idec.h"
 #include "device/rcp/vi/vi_controller.h"
 #include "device/rcp/mi/mi_controller.h"
+#include "device/rcp/pi/pi_controller.h"
 #include "device/rcp/rsp/rsp_core.h"
 #include "device/dd/dd_controller.h"
 #include "main/main.h"
@@ -1060,6 +1061,97 @@ volatile uint32_t wd_c_ai_evt     = 0;   /* ai_controller interrupt events      
 volatile uint32_t wd_c_rsp_run    = 0;   /* RSP DoRspCycles() budget runs           */
 volatile uint32_t wd_c_rsp_full   = 0;   /* ... of which exhausted the budget       */
 
+/* ===========================================================================
+   ROUND 35 (DD route only): WHO DESTROYS THE GUEST'S EXCEPTION VECTOR?
+
+   MEASURED this round, offline, on the archived full-RAM dumps: RDRAM
+   0x00000180 -- the R4300 general exception vector -- holds the standard
+   libultra prologue (3C1A800C 275AC4C0 = `lui k0,0x800C / addiu k0,k0,-0x3b40`;
+   the 0x8074 variant 3C1A8074 275A6800 also occurs) in EVERY full-RAM dump
+   from round 3 through round 32, and holds RSP *microcode* (four COP2 vector
+   ops: 4B8641B3 E9DA0F06 4B914473 E9C40F05 ...) in the round-33 dump -- the
+   only dump in the series that differs.
+
+   The round-33 stall snapshot is exactly what that predicts: CP0 STATUS =
+   0x0000FF03 (IE|EXL both set), EPC frozen at 0x8074651C, the dynarec PC ring
+   2048/2048 entries of 0x80000180, the do_interrupt sample hook (wd_c_sample)
+   FROZEN while gen_interrupt and raise_rcp_interrupt each advance +49 per
+   300 ms, and wd_c_ht advancing 15M blocks/s -- i.e. the CPU takes an
+   interrupt, jumps to 0x80000180, executes microcode that is not MIPS, takes
+   a second exception with EXL already set, and re-enters the vector forever.
+   No interrupt is ever delivered again, so the guest -- whose screen had
+   already been drawn -- stops submitting gfx tasks.  That is the frozen
+   "64DD" screen round 34 proved is the guest's own output.
+
+   So this window is a canary.  (a) A shadow of RDRAM 0x0000..0x07FF is taken
+   while the vector is still valid; (b) the watchdog thread -- which always
+   gets scheduled, unlike the dynarec sample hook -- polls it and dumps the
+   whole machine the first time it diverges; (c) every SP and PI DMA is
+   recorded in a small ring with source/destination/length and guest PC, so
+   the dump names the writer even though the RDRAM store itself may be emitted
+   inline by the dynarec and cannot be hooked. */
+#define WD_LOW_WINDOW 0x800u
+#define WD_LX_RING    64
+
+/* Packaged-binary marker (checked with `strings` on the apk's libmupen64plus-core.so). */
+const char* wd_r35_marker = "R35LOWCANARY";
+
+volatile uint32_t wd_lx_ring[WD_LX_RING][6];
+volatile uint32_t wd_lx_n = 0;
+volatile uint32_t wd_low_n = 0;
+uint32_t wd_low_off = 0, wd_low_was = 0, wd_low_now = 0;
+static uint8_t wd_low_shadow[WD_LOW_WINDOW];
+static int wd_low_armed = 0;
+static int wd_low_seen = 0;
+static int wd_low_dumped = 0;
+
+void wd_lx_add(uint32_t kind, uint32_t a, uint32_t b, uint32_t len, uint32_t pc)
+{
+    uint32_t i;
+    if (g_dev.dd.idisk == NULL) return;
+    i = wd_lx_n++ & (WD_LX_RING - 1);
+    wd_lx_ring[i][0] = kind;
+    wd_lx_ring[i][1] = a;
+    wd_lx_ring[i][2] = b;
+    wd_lx_ring[i][3] = len;
+    wd_lx_ring[i][4] = pc;
+    wd_lx_ring[i][5] = wd_lx_n;
+}
+
+/* Does the RDRAM byte range [addr, addr+len) intersect the low window?
+   Tested on the RAW register value as well as the masked one: a wrapped or
+   KSEG0-tagged address (0x80000000 masks to 0) is exactly the kind of value
+   that lands at physical 0. */
+int wd_low_range(uint32_t addr, uint32_t len)
+{
+    uint32_t a;
+    if (len == 0) return 0;
+    if (len > 0x800000u) len = 0x800000u;
+    if (addr < WD_LOW_WINDOW) return 1;              /* starts inside        */
+    a = addr & 0x7fffffu;
+    if (a < WD_LOW_WINDOW) return 1;                 /* masks into the window*/
+    if (a + len > 0x800000u) return 1;               /* wraps past the end   */
+    if (addr < 0x800000u && addr + len > 0x800000u) return 1;
+    return 0;
+}
+
+void wd_low_note(const char* who, uint32_t a, uint32_t b, uint32_t len, uint32_t pc)
+{
+    static unsigned n = 0;
+    FILE* f;
+    if (g_dev.dd.idisk == NULL) return;
+    wd_lx_add(0x100u, a, b, len, pc);
+    if (n >= 64) { wd_low_n++; return; }
+    n++;
+    wd_low_n++;
+    f = fopen(WD_FILES_DIR "wd_low.txt", (n == 1) ? "w" : "a");
+    if (f) {
+        fprintf(f, "WDLOW n=%u who=%s a=%08x b=%08x len=%08x pc=%08x\n",
+                n, who, a, b, len, pc);
+        fclose(f);
+    }
+}
+
 /* Round 9: dynarec dispatch attribution.  wd_pc_ring is written by BOTH
    get_addr_ht() and dynarec_sample_hook(), so 2048 identical entries cannot
    distinguish "the guest is executing the exception vector at 0x80000180"
@@ -1824,6 +1916,91 @@ static void wd_full_dump(const char* path, uint32_t pc){
     DebugMessage(M64MSG_WARNING, "WDDUMP pc=%08x -> %s", pc, path);
 }
 
+/* Round 35: poll the low-RDRAM canary.  Runs on the watchdog thread.  Returns
+   silently while the guest's own exception vector is intact. */
+static void wd_low_check(void)
+{
+    const uint8_t* dram;
+    uint32_t w180, op;
+    if (g_mem_base == NULL || g_dev.dd.idisk == NULL) return;
+    dram = (const uint8_t*)mem_base_u32(g_mem_base, MM_RDRAM_DRAM);
+    if (dram == NULL) return;
+    memcpy(&w180, dram + 0x180, 4);
+
+    if (!wd_low_armed) {
+        /* libultra installs `lui k0,...` (op 0x0F) or a plain `j` (op 0x02)
+           at the vector.  Anything else means the region is still boot
+           scratch, which is expected to change -- so require the prologue to
+           be present and the whole window stable across two polls before
+           arming, and never trip on the boot-time churn. */
+        op = (w180 >> 26) & 0x3fu;
+        if (op == 0x0fu || op == 0x02u) {
+            if (wd_low_seen &&
+                memcmp(wd_low_shadow, dram, WD_LOW_WINDOW) == 0) {
+                wd_low_armed = 1;
+            } else {
+                memcpy(wd_low_shadow, dram, WD_LOW_WINDOW);
+                wd_low_seen = 1;
+            }
+        } else {
+            wd_low_seen = 0;
+        }
+        return;
+    }
+
+    if (memcmp(wd_low_shadow, dram, WD_LOW_WINDOW) != 0) {
+        uint32_t i, n, pc = 0;
+        struct precomp_instr** pp;
+        FILE* f;
+        if (wd_low_dumped) { wd_low_n++; return; }
+        wd_low_dumped = 1;
+        for (i = 0; i < WD_LOW_WINDOW; i += 4) {
+            if (memcmp(wd_low_shadow + i, dram + i, 4) != 0) {
+                memcpy(&wd_low_was, wd_low_shadow + i, 4);
+                memcpy(&wd_low_now, dram + i, 4);
+                wd_low_off = i;
+                break;
+            }
+        }
+        pp = (wd_r4300 != NULL) ? r4300_pc_struct(wd_r4300) : NULL;
+        if (pp != NULL && *pp != NULL) pc = (*pp)->addr;
+        f = fopen(WD_FILES_DIR "wd_lowdump.txt", "w");
+        if (f) {
+            fprintf(f, "WDLOWDUMP off=%03x was=%08x now=%08x w0_was=%08x w0_now=%08x "
+                       "w180_was=%08x w180_now=%08x guestpc=%08x lx_n=%u\n",
+                    wd_low_off, wd_low_was, wd_low_now,
+                    ((const uint32_t*)wd_low_shadow)[0], ((const uint32_t*)dram)[0],
+                    ((const uint32_t*)wd_low_shadow)[0x180 / 4],
+                    ((const uint32_t*)dram)[0x180 / 4], pc, (unsigned)wd_lx_n);
+            fprintf(f, "SP mem=%08x dram=%08x rd=%08x wr=%08x st=%08x full=%u busy=%u\n",
+                    (unsigned)g_dev.sp.regs[SP_MEM_ADDR_REG],
+                    (unsigned)g_dev.sp.regs[SP_DRAM_ADDR_REG],
+                    (unsigned)g_dev.sp.regs[SP_RD_LEN_REG],
+                    (unsigned)g_dev.sp.regs[SP_WR_LEN_REG],
+                    (unsigned)g_dev.sp.regs[SP_STATUS_REG],
+                    (unsigned)g_dev.sp.regs[SP_DMA_FULL_REG],
+                    (unsigned)g_dev.sp.regs[SP_DMA_BUSY_REG]);
+            fprintf(f, "PI cart=%08x dram=%08x rd=%08x wr=%08x st=%08x intr=%08x\n",
+                    (unsigned)g_dev.pi.regs[PI_CART_ADDR_REG],
+                    (unsigned)g_dev.pi.regs[PI_DRAM_ADDR_REG],
+                    (unsigned)g_dev.pi.regs[PI_RD_LEN_REG],
+                    (unsigned)g_dev.pi.regs[PI_WR_LEN_REG],
+                    (unsigned)g_dev.pi.regs[PI_STATUS_REG],
+                    (unsigned)g_dev.mi.regs[MI_INTR_REG]);
+            n = (wd_lx_n < WD_LX_RING) ? wd_lx_n : WD_LX_RING;
+            for (i = 0; i < n; i++) {
+                uint32_t k = (wd_lx_n - n + i) & (WD_LX_RING - 1);
+                fprintf(f, "  LX k=%08x a=%08x b=%08x len=%08x pc=%08x seq=%u\n",
+                        wd_lx_ring[k][0], wd_lx_ring[k][1], wd_lx_ring[k][2],
+                        wd_lx_ring[k][3], wd_lx_ring[k][4], wd_lx_ring[k][5]);
+            }
+            fclose(f);
+        }
+        wd_full_dump(WD_FILES_DIR "iplram_lowclobber.bin", pc);
+        wd_low_n++;
+    }
+}
+
 static void* wd_thread(void* arg)
 {
     (void)arg;
@@ -1855,6 +2032,10 @@ static void* wd_thread(void* arg)
             wd_full_dump(WD_FILES_DIR "iplram_force.bin", pc);
         }
 
+        /* Round 35: the low-RDRAM canary.  Cheap (a 2 KiB memcmp) and it runs
+           on the one thread that is always scheduled. */
+        wd_low_check();
+
         uint64_t cur = wd_hb;
         if (cur != last) { last = cur; t0 = t; }
         else if ((t.tv_sec - t0.tv_sec) > WD_STALL_SECS) {
@@ -1869,7 +2050,7 @@ static void* wd_thread(void* arg)
                RSP/CPU starvation and stall again, and the run is more useful
                with a live 1 Hz guest-VI/heartbeat series than with none. */
         }
-        usleep(100 * 1000);
+        usleep(10 * 1000);
     }
     return NULL;
 }

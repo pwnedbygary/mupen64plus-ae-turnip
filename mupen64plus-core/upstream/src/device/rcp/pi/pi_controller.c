@@ -39,6 +39,11 @@
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 
+/* Round 35 (defined in device/r4300/cached_interp.c): low-RDRAM canary. */
+int wd_low_range(uint32_t addr, uint32_t len);
+void wd_low_note(const char* who, uint32_t a, uint32_t b, uint32_t len, uint32_t pc);
+void wd_lx_add(uint32_t kind, uint32_t a, uint32_t b, uint32_t len, uint32_t pc);
+
 int validate_pi_request(struct pi_controller* pi)
 {
     if (pi->regs[PI_STATUS_REG] & (PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY)) {
@@ -53,8 +58,7 @@ int validate_pi_request(struct pi_controller* pi)
 static uint32_t   l_ForceAlignmentOfPiDmaCartMask = ~UINT32_C(1);
 
 static void dma_pi_read(struct pi_controller* pi)
-{
-    if (!validate_pi_request(pi))
+{    if (!validate_pi_request(pi))
         return;
 
     uint32_t cart_addr = pi->regs[PI_CART_ADDR_REG] & l_ForceAlignmentOfPiDmaCartMask;
@@ -73,6 +77,16 @@ static void dma_pi_read(struct pi_controller* pi)
     }
 
     pre_framebuffer_read(&pi->dp->fb, dram_addr);
+
+    /* ROUND 35 (DD route only, defined in cached_interp.c): dma_pi_read is the
+       cart/DD -> RDRAM direction, so it is the PI path that can overwrite the
+       guest's exception vector at RDRAM 0x180.  Record it if the destination
+       range touches the low window, with the guest PC. */
+    if (wd_low_range(pi->regs[PI_DRAM_ADDR_REG], length) || wd_low_range(dram_addr, length))
+        wd_low_note("PI", pi->regs[PI_DRAM_ADDR_REG], cart_addr, length,
+                    (uint32_t)*r4300_pc(pi->mi->r4300));
+    wd_lx_add(3u, pi->regs[PI_DRAM_ADDR_REG], cart_addr, length,
+              (uint32_t)*r4300_pc(pi->mi->r4300));
 
     /* PI seems to treat the first 128 bytes differently, see https://n64brew.dev/wiki/Peripheral_Interface#Unaligned_DMA_transfer */
     if (length >= 0x7f && (length & 1))

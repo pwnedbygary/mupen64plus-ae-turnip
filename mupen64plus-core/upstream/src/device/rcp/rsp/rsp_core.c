@@ -51,6 +51,11 @@
    copy landed elsewhere.  hdr_n == 0 means no header DMA ever happened.
    --------------------------------------------------------------------------- */
 volatile uint32_t wd_c_spdma = 0;      /* SP DMAs seen on the DD route       */
+
+/* Round 35 (defined in cached_interp.c): low-RDRAM canary helpers. */
+int wd_low_range(uint32_t addr, uint32_t len);
+void wd_low_note(const char* who, uint32_t a, uint32_t b, uint32_t len, uint32_t pc);
+void wd_lx_add(uint32_t kind, uint32_t a, uint32_t b, uint32_t len, uint32_t pc);
 volatile uint32_t wd_hdr_n = 0;        /* DMAs covering DMEM 0xFC0           */
 uint32_t wd_hdr_dram = 0, wd_hdr_mem = 0, wd_hdr_len = 0, wd_hdr_seq = 0;
 uint32_t wd_hdr_src[16];               /* source words, before the copy      */
@@ -236,6 +241,17 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
     if (g_dev.dd.idisk != NULL)
     {
         wd_c_spdma++;
+        /* ROUND 35: does this transfer touch the low RDRAM window?  The guest's
+           exception vector lives at RDRAM 0x180 and is clobbered with RSP
+           microcode in the round-33 dump (see the round-35 block in
+           cached_interp.c).  A transfer whose SOURCE or DESTINATION lands in
+           the window is the writer; record it with the guest PC. */
+        if (wd_low_range(dma->dramaddr, length * count) ||
+            wd_low_range(dramaddr, length * count))
+            wd_low_note("SP", dma->dramaddr, dma->memaddr, length * count,
+                        (uint32_t)*r4300_pc(sp->mi->r4300));
+        wd_lx_add((dma->dir == SP_DMA_READ) ? 1u : 2u, dma->dramaddr,
+                  dma->memaddr, length * count, (uint32_t)*r4300_pc(sp->mi->r4300));
         if (dma->dir != SP_DMA_READ && (dma->memaddr & 0x1000) == 0
             && (dma->memaddr & 0xfff) <= 0xfc0
             && ((dma->memaddr & 0xfff) + length) > 0xfc0)

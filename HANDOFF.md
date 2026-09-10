@@ -1,11 +1,80 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
 > Auto-generated checkpoint. Read top-to-bottom. The single biggest concrete progress this
-> session: **the missing-DD-ROM root cause is fixed and verified** — the DD ROM and disk now
-> load, so the remaining fault is a *different, later* problem that needs fresh
+> session: **round 35 found, reproduced and fixed the root cause of the frozen frame — an RSP
+> write-DMA whose per-word address wrap deposits its tail on RDRAM 0x0 and destroys the guest's
+> exception vector, livelocking the CPU (see ROUND 35 below).** Earlier: **the missing-DD-ROM root
+> cause is fixed and verified** — the DD ROM and disk now load, so the remaining fault is a
+> *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix. **Round 34 corrects the oldest shared
 > assumption: the "black screen" is not empty — the guest is drawing a static "…64DD…" screen and
 > the display path works (see ROUND 34 below).**
+
+**ROUND 35 — ROOT CAUSE FOUND, REPRODUCED, AND FIXED: AN RSP WRITE-DMA WHOSE PER-WORD ADDRESS
+WRAP CARRIES ITS TAIL ONTO RDRAM 0x0 AND DESTROYS THE GUEST'S EXCEPTION VECTOR, WHICH LIVELOCKS THE
+CPU AND FREEZES THE LAST GOOD FRAME.**
+
+**1. The canary.** RDRAM `0x00000180` is the R4300 general exception vector. It holds libultra's
+prologue `3C1A800C 275AC4C0` (`lui k0,0x800C / addiu k0,k0,-0x3b40`; the `0x8074` form `3C1A8074
+275A6800` also occurs) in **every** archived full-RAM dump from round 3 through round 32 — and holds
+**RSP microcode** (`4B8641B3 E9DA0F06 4B914473 E9C40F05 …`) in the round-33 dump, the only one that
+differs. In that dump RDRAM `0x0..0x3F8` is byte-identical to cart ROM `0x63758` = the F3DEX2 ucode
+blob's data region (its text is ROM `0x61990` == RDRAM `0x7504F0`), while the ucode's *legitimate*
+RDRAM home (`0x7522FC`) is untouched. The round-33 stall snapshot is exactly what that predicts:
+`STATUS=0000FF03` (**EXL set**), EPC frozen at `0x8074651C`, the dynarec PC ring 2048/2048 entries of
+`0x80000180`, the `do_interrupt` sample hook (`wd_c_sample`) **frozen** while `gen_interrupt` and
+`raise_rcp_interrupt` each advance +49 per 300 ms, and `wd_c_ht` at ~15 M blocks/s — the CPU jumps
+into microcode with EXL already set and re-enters the vector forever, so no further interrupt is
+delivered and the guest stops submitting gfx tasks. That *is* round 34's frozen `64DD` screen.
+
+**2. The writer: a wrapped RSP write-DMA (measured, run r35b).**
+```
+WDLOWSP n=1 pc=fc4 dst=007ffff8 src=000019b0 len=0b40 cnt=0 skip=000
+             d0=007ffff8 span=00000b40 skipped=718 | dm=007ffff8 cache=000019b0
+             st=00000040 imem0=00000000 dmem0=00000000 fc0=00010001 ff0=000a000c bf8=10000003
+```
+`rsp_dma_write()` masks **every word address** with `& 0x7FFFFC` (hardware-accurate: RDRAM is 8 MiB
+and the top of the 24-bit SP address space mirrors it), so a write whose `dest` sits near the top of
+RDRAM carries its tail around into physical `0x0`. With `dest = 0x007FFFF8` and `len = 0xB40` the last
+718 words land on RDRAM `0x0..0xB37` — over the vectors. No core SP DMA and no PI DMA is involved:
+`wd_low.txt` (the core-side low-window trap in `do_sp_dma`/`dma_pi_read`) was **never created**.
+
+**3. Why twenty rounds of instrumentation missed it.** Round 12 already had a trigger for "a write
+that lands in RDRAM's first page", but it tested the *register* value
+(`if ((dst & 0x7FFFFC) >= 0x1000) return;`), which `0xFFFFF8`/`0x7FFFF8` fails — so it never fired
+once. Every guard in the tree reasoned "the mask keeps the transfer inside RDRAM", which is true and
+irrelevant: inside RDRAM is where the vectors live.
+
+**4. The fix (DD-gated) and its A/B proof.** `rsp_dma_write()` now skips the words whose wrapped
+address is below `R35_GUARD_LO` (0x1000) and counts them; `rsp_ares_budget_enabled()` is the core's
+runtime `IsDDPresent()`, so plain carts are untouched. Both arms ran the identical r33c combo, and
+the route is deterministic (r35a reproduced r33c to within 4 DMAs of 149 097):
+
+| | r35a (no guard) | r35b (guard) |
+|---|---|---|
+| RDRAM `0x0` / `0x180` | `4A1852A7` / `4B8641B3` — **ucode** | `3C1A8074` / `3C1A8074` — **libultra prologue** |
+| first `0x00010001` word below `0x2000` | `0x13F8` | `0x400` (unchanged) |
+| CP0 `STATUS` | `0000FF03` (**EXL**) | `2000FF01` (**EXL clear**) |
+| `wd_c_sample` delta / 300 ms | **0** | **4** |
+| `wd_c_pi_dma` delta / 300 ms | **0** | **4** |
+
+So the guard does not merely preserve the vector: **the guest takes interrupts and issues PI DMAs
+again**. Round 35a is a fresh, in-tree reproduction of the round-33 corruption.
+
+**5. What is still broken.** The render does not advance (`R20W wr=3124 outbuf=1 datalist=3123`
+is identical in both arms), so the primary gfx fault is separate and survives this fix. But the
+rounded picture is now coherent: the same transfer proves the gfx ucode is issuing DMAs from a
+**garbage state** — at that instant DMEM `0xFC0` (the task-header type word) reads `0x00010001` and
+DMEM `0xBF8` (the ucode's saved display-list pointer) reads `0x10000003`, and its write DMA's
+destination is `0x7FFFF8`. Round 26 already traced the same stale `SP_DRAM_ADDR` (`0xFFFFFF`) to the
+audio ucode's leftovers. **That stale pointer is the thing to fix next: it causes both this
+corruption and the round-20 finding that the FIFO's write DMAs never target the output buffer.**
+
+**6. New artifacts.** `.fzxwork/r35a_run.sh` / `r35b_run.sh` (the A/B), `.fzxwork/r35a/`,
+`.fzxwork/r35b/`; on-device `wd_lowsp.txt` (wrapped write DMAs), `wd_lowdump.txt` (low-RDRAM canary),
+`wd_low.txt` (core-side low-window trap). Canary caveat: its arming test currently trips once during
+boot (`off=354 0→1`, guest PC 0), which consumes its one shot — gate it on `wd_c_do_sp_task` before
+relying on it.
 
 **ROUND 34 — THE SCREEN IS NOT BLANK: WHAT ROUNDS 13..33 CALLED "97% BLACK" IS THE GUEST'S OWN
 STATIC "…64DD…" SCREEN (the core OSD is ruled out by experiment), SO THE DISPLAY PATH IS ALIVE
