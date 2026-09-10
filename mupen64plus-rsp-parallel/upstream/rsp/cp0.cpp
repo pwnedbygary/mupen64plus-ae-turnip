@@ -1900,14 +1900,24 @@ void r31_arm_k0_repair(unsigned want);
 				}
 				else
 				{
-					/* A resume (or any later load of the same task): restore. */
+					/* A resume (or any later load of the same task): restore.
+					   ROUND 32 DISABLES THE WRITE-BACK.  Run 32a measured the
+					   descriptors the ucode itself leaves behind, and they are
+					   NOT corruption: DMEM[0x2E0] legitimately walks
+					   0x751540 -> 0x08E60580 -> 0x059803C0 as the task changes
+					   which segment it is loading, and this restore reverted
+					   every one of those updates every time it ran (fired=4/4
+					   on every task after the first).  Reverting them forces
+					   the ucode to reload the WRONG segment, which is a direct
+					   candidate for the wrong overlay code resident at IMEM
+					   0x000 (measured: the F3DEX2 output-buffer registers s6/s7
+					   are clobbered at the flush and the RDP flush's DMA then
+					   runs backwards).  Kept as a counter so the log still
+					   reports what WOULD have been reverted. */
 					for (r29_i = 0; r29_i < 4u; r29_i++)
 					{
 						if (rsp->dmem[r29_off[r29_i] / 4] != r29_good[r29_i])
-						{
-							rsp->dmem[r29_off[r29_i] / 4] = r29_good[r29_i];
 							r29_fired++;
-						}
 					}
 				}
 				if (r29_fired || r29_base > 0x1000u)

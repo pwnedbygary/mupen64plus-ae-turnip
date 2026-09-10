@@ -3814,3 +3814,43 @@ resident and byte-correct in IMEM, so this is not a stale-memory problem.
 fetch DMA is issued per task and the gfx task still hands back to the audio task, so the
 frame is still black.  Next: with k0 now correct, count the commands consumed before the
 SIG0 yield and find out what ends the walk.
+
+## Round 32 — the RDP ring is empty because the flush's DMA runs backwards
+
+Round 32 instrumented the RDP pipeline itself (not the walk) and measured the
+whole-run DMA census twice (`wd_r32fl.txt` = s6/s7/t3/DMEM[0x0F0] at the entry,
+the handlers and the flush check; `wd_r32wr.txt` = every DMA whose DMEM source
+is the output buffer or whose target is the ring).
+
+Facts, both runs:
+* 3096-3100 write DMAs per run; exactly TWO ever touch the ring: the 8-byte
+  `G_RDPFULLSYNC` flush at task end and the 0xC00-byte yield-state save.
+  **Zero** writes ever come from the output buffer (DMEM 0x0BA8/0x0DB0).
+* The ring pointer DMEM[0x0F0] and DPC_END advance 6+ times by ~0x210 each, so
+  the flush body at pc 0x250..0x2CC **is** running.
+* Its DMA is issued as a READ *from* the ring:
+  `RD dram=002d9cd0 mem=0009b0 len=000210` (17 of them, length growing by 8
+  exactly like the ring pointer).
+* The direction comes from `bltz s4` at pc 0x0FE8 with `s4 = s6 - 0x2158`, so
+  s6 is neither 0xD00 nor 0xF08 at those flushes. The ucode only ever writes
+  `s6 = 0xD00` (init) or `s6 ^= 0x208` (flush), so the value does not come from
+  the ucode: the register is wrong inside the emulator. This is the same defect
+  class as the round-30/31 "the JIT loses the k0 load", which round 31 only
+  patched with a targeted repair.
+* The live ucode text is byte-identical to the disk blob (only IMEM
+  0x080..0x16C differs = the overlay window), so the microcode is not at fault.
+
+Tried and REJECTED this round: round 29's descriptor normalisation reverted the
+four segment descriptors (DMEM 0x2E0/0x2E8/0x410/0x418) on every task after the
+first, firing 4/4, while the live log shows the ucode legitimately walking
+DMEM[0x2E0] 0x751540 -> 0x08E60580 -> 0x059803C0. Disabling that write-back
+(run 32b) changed nothing measurable: still 2 ring writes, 0 from the output
+buffer, ring still 2 non-zero words. The write-back stays disabled because
+reverting the ucode's own descriptor updates is still wrong.
+
+Next (round 33): treat it as a JIT register-state defect. Log the writer of s6
+and s7 instruction by instruction (pcs 0x934/0x93C/0x9FC mfc2 s6, 0xABC
+`add s7,at,t3`, 0xAD4 `add s7,s7,t3` are the only writers), and check them
+against the ares reference in /home/garyb/LLM-Projects/phobos/ares/n64 —
+the DD route must end with s6/s7 still holding the output-buffer pointers when
+pc 0x250 runs.
