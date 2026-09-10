@@ -1313,3 +1313,120 @@ inert.  Evidence: `.fzxwork/r10/plain_mk64.png`.
 0x400), `spw_*.txt`, `rsp_run1.txt`, `rsp_run3.txt` (ttype histogram:
 5267×0x10001, 208×2, 7×1), `ram_run3.bin` (guest thread/queue state),
 `dma_run1.txt` (the 21 repeated audio loads).
+
+## UPDATE 2026-09-10 (goal round 13) — **HARD DEADLOCK FIXED: the RSP was left un-HALTed, so the guest spun forever in `osSpTaskLoad`**
+
+Commit `aefa63caa`.
+
+### 1. What round 12 was actually looking at
+
+Round 12's evidence was rerun and decoded **with the EK symbol table**
+(`.fzxwork/fzerox-decomp/linker_scripts/jp/ek/symbol_addrs.txt` — verified to
+match this build exactly: `__osRunQueue=0x80771E18`,
+`gspF3DEX2_fifoTextStart=0x807505C0`, `AudioSeq_SequencePlayerProcessSequence=
+0x8073FB28`, `sAudioThread/sGameThread/sMainThread/sIdleThread`, `LEOevent_que=
+0x807C53B0`, `LEOcommand_que=0x807C5398`).  What that gives, from
+`.fzxwork/r12/ram_r12.bin` + `wd_stall.txt`:
+
+* `__osRunningThread` = **`sAudioThread`**; `sGameThread` (prio 10) blocked in
+  `osRecvMesg(&D_800DCAC8)`; `sMainThread` (99) on `gMainThreadMesgQueue`
+  (`0x8079A120`, the queue the SP/DP events post to); `sIdleThread` spinning at
+  `0x806f32ec` = `Idle_ThreadEntry+0x134` (`b .`).
+* The frame protocol is `sys_gfx.c func_80067D64()`:
+  recv 0x29 (VI tick) -> build -> **recv 0x2A on `D_800DCAC8`** -> `osViSwapBuffer`
+  -> spin on `osViGetCurrentFramebuffer()` -> `Gfx_SetTask()`.  The 0x2A is sent
+  only by `sys_main.c:396`, on `EVENT_MESG_DP`, i.e. only from the guest's DP
+  handler.  **Everything waits on `MI_INTR_DP`.**
+* The hot block ring was audio (`AudioSeq_*`, `AudioSynth_*`, `AudioLoad_Dma`)
+  plus OS queue code — i.e. a machine that is *running*, not a machine that is
+  stuck, which is why round 12's "RSP poisoned" reading was incomplete.
+
+### 2. The round-13 stall, decoded exactly
+
+`wd_stall.txt` of the round-13 run (`.fzxwork/r13/`):
+
+```
+A epc=8074cd9c count=80000ffa  sp_status=00000040 sp_pc=040015c0
+A c_vi_evt=291 c_vi_ack=291 ... DELTA everything = 0   (VI/AI/SP/PI all stop)
+DELTA3 c_ht=5099515            (the CPU still executes 17M blocks/s)
+RING: 2048/2048 blocks at 0x80746418
+0x80746418 = osSpTaskLoad+0xbc = `beq $v0,-1,0x8074640c` of
+    while (__osSpSetPc(SP_IMEM_START) == -1) {}
+    s32 __osSpSetPc(u32 pc) { if (!(IO_READ(SP_STATUS_REG) & SP_STATUS_HALT)) return -1; }
+```
+
+**The guest deadlocked in libultra's task-load handshake because `SP_STATUS_HALT`
+was clear.**  `do_SP_Task()` clears HALT|BROKE|TASKDONE unconditionally at exit
+(stock mupen64plus), and the only thing that sets HALT back is
+`rsp_interrupt_event()` — guarded by `if (!sp->rsp_task_locked)`.  The 64DD route
+locks every *incomplete* task by design (host-budget yield in the plugin, ucode
+yield), so HALT stayed clear after every preempted slice.  The frozen CP0 COUNT
+is cause and effect at once: no event ever became due again, so
+`rsp_dd_background_pump()` (called from the recompiler's interrupt hook) stopped
+too — the RSP could never finish the task that would have set HALT.
+
+### 3. The fix (both halves DD-gated; plain route bit-for-bit unchanged)
+
+* `do_SP_Task()`: when `rsp_task_locked`, leave `SP_STATUS_HALT` **set** with
+  TASKDONE/BROKE clear — "RSP stopped between slices, task resumable".
+* `rsp_dd_background_pump()`: a suspended task (HALT set, locked, not BROKE) is
+  resumable, so clear HALT for the slice; `do_SP_Task` re-sets it on the way out.
+
+### 4. Verified
+
+| | before (r13 pre-fix) | after (`fix_45s` -> `fix_95s`) |
+|---|---|---|
+| dynarec ring | 2048/2048 blocks in the spin | normal |
+| VI events | 291, frozen | 2684 -> **5914** (60/s, real time) |
+| CP0 COUNT | frozen at 0x80000ffa | advancing |
+| guest framebuffer | 0x80200000, never moves | **0x801d9800** (fb[0]) |
+| screen | middle element only | + bottom status band now drawn |
+| plain cart | — | **clean** (MK64 renders, no stall dump, only 22-byte `wd_smc.txt`) |
+
+### 5. Where it now parks (round 14 target)
+
+`fix_95s.bin`: `__osRunningThread = sIdleThread` (running), run queue empty,
+`sGameThread` still blocked on `D_800DCAC8`, and the new counters say:
+
+```
+loads gfx=1 aud=193   rdpkick=1   (kick_last DPC_START==DPC_END==0x0032DCD0)
+dp_rd=0  dp_ack=2  dp_consumed=0  rb DP=0
+viCurr.framep=801d9800  viNext.framep=801d9800  vievtq=0/5
+```
+
+So: only **one** gfx task is ever loaded and only one RSP-side RDP kick happens
+(and that one has `DPC_START == DPC_END`, i.e. an empty command list — see
+`parallel_imp.cpp`'s expectation that START/END are *physical* addresses), the
+guest acks DP twice, but the guest never sees the DP bit in `MI_INTR` itself
+(`dp_rd=0`), and the VI manager thread is parked on an empty `viEventQueue`
+(`0x807C46C0`) so `viCurr.framep` never changes.  Next: instrument the DP event
+-> guest handler -> `gMainThreadMesgQueue` -> 0x2A chain (and the DPC_START/END
+values of *every* kick, not just the last), and check whether the gfx task is
+being restarted rather than resumed (`Sched_SpTaskResumeGfx()` ->
+`osSpTaskLoad` re-DMAs the boot ucode; the ucode only continues if its own
+yield-save ran — our force-yield may be fabricating that).
+
+### 6. Round-13 instrumentation (all counters, no file I/O on hot paths)
+
+* `wd_hdr_type_n[4]`, `wd_c_gfx_load/aud`, `wd_hdr_ring[32][8]` — task loads by
+  the type word read from the **DMA source** (ucode/ucode_data/data pointers
+  name the task: `0x807505C0`/`0x80779860` = gspF3DEX2_fifo, `0x80768E60` = aspMain).
+* `wd_c_rdp_kick`, `wd_rdp_last_{start,end,mi,sp}` — the RSP's `mtc0 DPC_END`
+  reaching the core's `rsp_info.ProcessRdpList` wrapper.  **This is the only way
+  to count RDP kicks**: parallel-RDP raises DP by writing `*gfx.MI_INTR_REG`
+  directly, so it is invisible to the MI raise/signal counters
+  (`wd_c_raise_bits[5]` read DP=0 for a whole run while the guest was acking DP).
+* `wd_c_mi_rd_dp` (guest read `MI_INTR` with DP set), `wd_c_dp_ack` (guest
+  cleared DP), `wd_c_dp_consumed` (round-10 block conversions).
+* `wd_spw_ring[16][2]`, `wd_c_sp_status_wr`, `wd_c_sp_sig_wr` — guest SP_STATUS
+  write stream and SIG0/SIG1 (yield) traffic.
+* Dumped as `FRAME`/`RDPKICK`/`DPCHAIN` lines in each `wd_stall.txt` snapshot and
+  as `FRAMEPROTO` in the 8MB dump header, plus `TASKRING`/`SPWRING` sections.
+
+### 7. Evidence (round 13)
+
+`.fzxwork/r13/`: `wd_stall.txt` + `ram_r13.bin` (pre-fix hard deadlock),
+`fix_45s.bin` / `fix_95s.bin` / `fix_stall_45s.txt` / `fix_stall_95s.txt`
+(post-fix, 45 s apart), `shot_50s.png` (pre-fix screen), `shot_fix_45s.png` /
+`shot_fix_95s.png` (post-fix screen), `plain_60s.png` (plain-cart regression),
+`run_r13*.log`, `run_r13*.sh`, `plain.log`.
