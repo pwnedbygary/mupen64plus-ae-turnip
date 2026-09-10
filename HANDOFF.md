@@ -5,6 +5,52 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 22B (same round, after the guard + a real unlocked run) — RUNS ARE NOW STABLE AND REACH
+4x FURTHER THAN EVER, BUT THE GFX TASK IS STILL ISSUED ONLY TWICE.** Commit `c4839dec7` (the
+DMEM 0xFC0 guard). Evidence: `.fzxwork/r21g/` (r21/r20 traces, stall, RDRAM, screenshots) and
+`.fzxwork/r21h/` (fresh dump of the still-live run + second screenshot).
+
+**The guard changed the picture completely.** With the wild DMEM->RDRAM-offset-0 write gone, the
+run no longer dies at ~4-5 s: `./.fzxwork/r21f_run.sh` sampled every 5 s for 70 s with
+`emu=1 focus=GameActivity` every time, and the emulator was STILL ALIVE minutes later with a live
+dump taken on demand. Numbers (r21h dump vs the r20j baseline):
+
+| | r20j (pre-r21) | r21h (this build) |
+|---|---|---|
+| `count` (emulated) | `0x36c630eb` ≈ 9.8 s | `0x75b4bfc6` ≈ 37 s (4x) |
+| `c_task` | 1111 | 7705 |
+| audio tasks (`audn`) | 1472 | **7704** |
+| gfx tasks (`gfxn`) | 5 | **2** |
+| `raise_bits` per sample | SP=0 AI=0 VI=49 PI=4130 DP=0 | **dSP=18 dAI=18 dVI=18 dPI=4 dDP=0** |
+| `RDPKICK` | n=1269 | n=634 and **frozen** |
+| `RDPDP dp_seen` | 0 | 0 |
+
+So SP interrupt delivery (the round-21 goal) now works, the audio task stream runs continuously
+(7704 aspMain loads, `ucode=00768e60`, ping-pong `data_ptr` 004132d0/00411910), and the machine
+survives. **What has NOT changed is the deadlock itself**: the gfx task is loaded twice in the
+whole run and never again (`TASKRING n=7706 gfxn=2 audn=7704`), `RDPKICK` is frozen at 634,
+`dDP=0`, and the screen is **pixel-identical** to r20j's 50 s screenshot (`0/518400` sample points
+changed) — a static frame with the guest alive behind it (VI/AI/SP interrupts every sample, the
+run queue empty, all game threads state=8 and the prio-0 idle thread spinning at `0x806f32ec`).
+
+**The forced-yield save currently never fires**: all five forced yields in this run traced
+`ok=0 hdrbad=1..5 saved=0`, i.e. at *every* preemption point the OSTask copy at DMEM 0xFC0 was
+already garbage (`typ=0xDEF3FFFF` twice, then the game's `0x00010001` fill: `typ=65537
+flg=00010001 yptr=00010001`, `dm[0xF0]=00010001`). So the emulated save must take type/flags/
+`yield_data_ptr` from the header the plugin latched at load time (`wd_hdr_ring` carries
+seq/type/ucode/ucdata/data/status/pc) rather than from live DMEM — otherwise the round-21
+mechanism is inert no matter how correct the decoded ucode contract is.
+
+**NEXT (in order):** (1) make the forced-yield save use the latched task header, so `saved=1`
+appears with an in-RDRAM `yield_data_ptr`; (2) then find why the guest stops issuing gfx tasks
+while audio continues — the SP path now completes (SP interrupts are delivered and the audio
+stream proves it), so look at the gfx task's completion/handshake specifically
+(`sp_status=0x40` INTR_BREAK, `spwr`/`sigwr` 23124/15417, and the game's gfx thread parked on its
+message queue); (3) re-check `raise_bits DP > 0` / `RDPDP dp_seen > 0` / non-zero
+`[0x2D9CD0,0x32DCD0)`. Audio health on the host side is not proven yet: `dumpsys
+media.audio_flinger` showed the output in `Standby: yes` with `underruns=63` while the plugin had
+(re)started its 48 kHz/960-frame stream twice at startup.
+
 **ROUND 22 (goal round 20) — A LOCKED RP6 CAN NOW RUN DD TESTS, AND THE FORCED-YIELD SAVE WAS
 WRITING OVER THE GUEST'S EXCEPTION VECTOR.** Commits `75d4a0c70` (debug manifest overlay) + this
 round's guard in `cp0.cpp`. Evidence: `.fzxwork/r21d/`, `r21e/`, `r21f/` (`r21.txt`, `r20.txt`),
