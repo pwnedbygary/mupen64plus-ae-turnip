@@ -21,6 +21,7 @@
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -118,6 +119,10 @@ static GFX_INFO gfx_info;
 static AUDIO_INFO audio_info;
 static CONTROL_INFO control_info;
 static RSP_INFO rsp_info;
+
+/* ROUND 10: the DMEM/IMEM/RDRAM pointers most recently published to the RSP
+   plugin.  See plugin_refresh_rsp_memory_if_moved() below. */
+static unsigned char* l_rsp_mem_published = NULL;
 
 static int l_RspAttached = 0;
 static int l_InputAttached = 0;
@@ -573,8 +578,66 @@ static m64p_error plugin_start_rsp(void)
 
     /* call the RSP plugin  */
     rsp.initiateRSP(rsp_info, NULL);
+    l_rsp_mem_published = rsp_info.DMEM;
 
     return M64ERR_SUCCESS;
+}
+
+/* ROUND 10 -- re-publish the RSP memory base to the RSP plugin when it MOVED.
+
+   mupen64plus hands an RSP plugin raw host pointers (RDRAM/DMEM/IMEM) once, in
+   RSP_INFO at plugin_start_rsp time, and the plugin keeps them for its whole
+   process lifetime.  The register pointers stay valid forever because they
+   point into g_dev (a static global), but the MEMORY base comes from
+   init_mem_base() in CoreStartup and is therefore per emulation session.  When
+   a front-end starts a SECOND session in the same process -- which is exactly
+   what the 64DD "combo boot" does, booting the IPL-ROM session and then the
+   game session -- every memory pointer the plugin still holds refers to the
+   previous session's buffer, and it fails SILENTLY: SP_STATUS still reads live
+   values (g_dev again), while DMEM 0xFC0 reads 0 and IMEM reads all-zero.
+
+   Measured on the RP6 (F-Zero X EK + disk, parallel-RSP, emumode=2): the core
+   DMA'd the F3DEX ucode and saw IMEM[0] = 0x340a0fc0, while the plugin read
+   RSP::rsp.IMEM[0] == 0 for the remaining 2744 RSP entries of the run -- so the
+   RSP executed an empty IMEM, no GFX task ever completed, the RDP was never
+   kicked, and the game's DP event never fired (raise_bits DP=0 for the whole
+   run), leaving the EK's gfx thread parked in osRecvMesg(&D800DCAC8) and the DD
+   loader frozen on its progress bar.
+
+   Self-gating: it acts only when the base actually moved, so a normal single
+   session (every plain cart) takes the early return and is bit-for-bit
+   unaffected.  Called right after init_device(), before any RSP task runs, so
+   re-running the plugin's initiateRSP (which resets SP_PC/SP_STATUS and
+   re-binds the ares CPU's memory) cannot disturb live RSP state. */
+int plugin_refresh_rsp_memory_if_moved(void)
+{
+    unsigned char* dmem;
+
+    if (!l_RspAttached)
+        return 0;
+
+    dmem = (unsigned char *)mem_base_u32(g_mem_base, MM_RSP_MEM);
+    if (dmem == l_rsp_mem_published)
+        return 0;
+
+    rsp_info.RDRAM = (unsigned char *)mem_base_u32(g_mem_base, MM_RDRAM_DRAM);
+    rsp_info.DMEM = dmem;
+    rsp_info.IMEM = (unsigned char *)mem_base_u32(g_mem_base, MM_RSP_MEM + 0x1000);
+
+    {
+        FILE* f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_init.txt", "a");
+        if (f)
+        {
+            fprintf(f, "WDINIT refresh old_dmem=%p old_imem=%p new_dmem=%p new_imem=%p\n",
+                    (void*)l_rsp_mem_published, (void*)(l_rsp_mem_published ? l_rsp_mem_published + 0x1000 : NULL),
+                    (void*)rsp_info.DMEM, (void*)rsp_info.IMEM);
+            fclose(f);
+        }
+    }
+
+    l_rsp_mem_published = rsp_info.DMEM;
+    rsp.initiateRSP(rsp_info, NULL);
+    return 1;
 }
 
 /* global functions */

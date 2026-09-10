@@ -558,6 +558,43 @@ void do_SP_Task(struct rsp_core* sp)
         sp_delay_time = 0;
     }
 
+    /* ROUND 10, 64DD ROUTE ONLY (g_dev.dd.idisk != NULL).
+
+       The RDP completion interrupt must not depend on WHICH branch above ran.
+       parallel-rdp raises MI_INTR_DP itself when it reaches the guest's
+       gDPFullSync (mupen64plus-video-parallel/parallel_imp.cpp: `*gfx.MI_INTR_REG
+       |= DP_INTERRUPT`), and it is reached from the RSP's `mtc0 CMD_END` ->
+       ProcessRdpList.  The stock consumption above lives INSIDE the
+       `sp->mem[0xfc0/4] == 1` branch, and that branch is chosen from DMEM 0xFC0
+       at do_SP_Task ENTRY -- but F3DEX clobbers that header as soon as it runs.
+       On the plain route that is harmless (one DoRspCycles call runs the task to
+       completion, so the gfx branch that entered is the one that observes the
+       kick).  On the 64DD route the task is executed in bounded slices fed by
+       rsp_dd_background_pump(): the entry slice takes the gfx branch, the slice
+       that finally reaches the ucode's DPC_END write reads a clobbered 0xFC0 and
+       takes the audio/other branch -- so MI_INTR_DP is left set and NEVER turned
+       into a CP0 DP_INT event.  Measured live: raise_bits DP=0 for an entire run
+       while the EK's gfx thread sat blocked in osRecvMesg(&D_800DCAC8) waiting
+       for exactly that DP event (its message var D_800DCD10 still held 0x29, the
+       last D_800DCAB0 handoff), which froze the whole frame protocol and with it
+       the DD loader's progress bar.
+
+       Consuming it here is a no-op when the gfx branch already handled it (the
+       bit is cleared there), so the stock path is bit-for-bit unchanged. */
+    if (g_dev.dd.idisk != NULL && (sp->mi->regs[MI_INTR_REG] & MI_INTR_DP))
+    {
+        sp->mi->regs[MI_INTR_REG] &= ~MI_INTR_DP;
+        if (sp->dp->dpc_regs[DPC_STATUS_REG] & DPC_STATUS_FREEZE)
+        {
+            sp->dp->do_on_unfreeze |= DELAY_DP_INT;
+        }
+        else
+        {
+            cp0_update_count(sp->mi->r4300);
+            add_interrupt_event(&sp->mi->r4300->cp0, DP_INT, 4000);
+        }
+    }
+
     sp->rsp_task_locked = 0;
     sp->mi->r4300->cp0.interrupt_unsafe_state &= ~INTR_UNSAFE_RSP;
     if ((sp->regs[SP_STATUS_REG] & (SP_STATUS_HALT | SP_STATUS_BROKE)) == 0)

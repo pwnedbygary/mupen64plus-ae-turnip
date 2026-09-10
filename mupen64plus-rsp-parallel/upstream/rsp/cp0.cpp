@@ -80,6 +80,24 @@ extern "C"
 			// game's side) completes.  This is the CXD4 "CPU host" model:
 			// the CPU took over the timeline.
 			*RSP::rsp.SP_STATUS_REG |= SP_STATUS_INTR_BREAK | SP_STATUS_HALT;
+			/* ROUND 10 (DD-GATED: this whole block only runs when a 64DD
+			   disk is attached).  ACKNOWLEDGE A PENDING LIBULTRA YIELD.
+			   osSpTaskYield() asks the ucode to yield by setting SIG0
+			   (SP_STATUS_YIELD), and libultra's osSpTaskYielded() reports
+			   OS_TASK_YIELDED only when the ucode answers with SIG1
+			   (SP_STATUS_YIELDED).  Forcing the CPU handover WITHOUT that
+			   acknowledgement makes osSpTaskYielded() return 0, so the game
+			   never sets its "gfx task yielded" flag, never calls
+			   Sched_SpTaskResumeGfx(), and the interrupted GFX task is
+			   abandoned forever: the audio task it swung to keeps
+			   re-triggering the yield path while the gfx task is never run
+			   again, so the RDP is never kicked and the game's DP event
+			   never fires (measured on the RP6: 193 audio tasks vs 28 gfx
+			   tasks, the gfx thread parked in osRecvMesg on D_800DCAC8, and
+			   raise_bits DP=0 for the entire run).  Answer the request the
+			   way a real F3DEX2 ucode does at its yield point. */
+			if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_SIG0)
+				*RSP::rsp.SP_STATUS_REG |= SP_STATUS_SIG1;
 			*rsp->cp0.irq |= 1;
 			return MODE_CHECK_FLAGS;
 			}

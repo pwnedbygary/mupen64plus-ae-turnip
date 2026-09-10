@@ -30,6 +30,10 @@
 extern m64p_error plugin_connect(m64p_plugin_type, m64p_dynlib_handle plugin_handle);
 extern m64p_error plugin_start(m64p_plugin_type);
 extern m64p_error plugin_check(void);
+/* Re-publish the RSP memory base (RDRAM/DMEM/IMEM) to the RSP plugin when a new
+   emulation session moved it; returns 1 if it re-published.  No-op when the base
+   did not move, so single-session (plain cart) runs are unaffected. */
+extern int plugin_refresh_rsp_memory_if_moved(void);
 
 enum { NUM_CONTROLLER = 4 };
 extern CONTROL Controls[NUM_CONTROLLER];

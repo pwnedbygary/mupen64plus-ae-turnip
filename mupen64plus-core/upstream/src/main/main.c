@@ -1860,6 +1860,18 @@ m64p_error main_run(void)
                 dd_rom_size,
                 &dd_disk, dd_idisk);
 
+    /* ROUND 10: the RSP plugin is handed raw host memory pointers once, at
+       plugin_start_rsp time, and keeps them for the process lifetime.  When a
+       front-end runs a SECOND emulation session in the same process (the 64DD
+       combo boot: IPL-ROM session, then the game session) the memory base is
+       reallocated and the plugin is left pointing at the previous session's
+       buffer -- silently: SP_STATUS still reads live (it lives in g_dev) while
+       DMEM 0xFC0 reads 0 and IMEM reads all-zero, so the RSP executes an empty
+       IMEM and no GFX task ever completes.  Re-publish before any task runs.
+       Self-gating: no-op unless the base actually moved, so plain carts in a
+       single session are bit-for-bit unaffected. */
+    plugin_refresh_rsp_memory_if_moved();
+
     // Attach rom to plugins
     if (!gfx.romOpen())
     {

@@ -146,10 +146,12 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 			{
 				long long now_ms = wd_now_ms();
 				wd_rsp_log_n++;
-				fprintf(rf, "RSPTASK ms=%lld seq=%u ENTER pc=%04x status=%08x ttype=%u exp=%d imem0=%08x %08x\n",
+				fprintf(rf, "RSPTASK ms=%lld seq=%u ENTER pc=%04x status=%08x ttype=%u exp=%d imem0=%08x %08x pimem=%p pdmem=%p pram=%p cimem=%p\n",
 					now_ms, task_seq, *RSP::rsp.SP_PC_REG & 0xfff, *RSP::rsp.SP_STATUS_REG,
 					ttype, expired,
-					((uint32_t*)RSP::rsp.IMEM)[0], ((uint32_t*)RSP::rsp.IMEM)[1]);
+					((uint32_t*)RSP::rsp.IMEM)[0], ((uint32_t*)RSP::rsp.IMEM)[1],
+					(void*)RSP::rsp.IMEM, (void*)RSP::rsp.DMEM, (void*)RSP::rsp.RDRAM,
+					(void*)RSP::cpu.get_state().imem);
 				/* DIAG (round 6): log the DMEM task header the guest submitted.
 				   A zeroed header means the guest re-started the RSP without an
 				   __osSpTaskLoad (or with an uninitialised OSTask), which makes
