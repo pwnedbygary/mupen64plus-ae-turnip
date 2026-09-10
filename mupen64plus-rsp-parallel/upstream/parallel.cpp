@@ -50,6 +50,14 @@ short MFC0_count[32];
 int SP_STATUS_TIMEOUT;
 } // namespace RSP
 
+/* DIAG: hard cap on the DD RSP task trace.  wd_rsp.txt is written per task
+   entry AND exit; when a ucode dead-waits on SP_STATUS the core re-schedules
+   ~60x/s, and with the DD poll budget lowered each slice got cheap enough that
+   the trace reached 4.5 GB in 75s -- the logging then dominated the emulation
+   thread and invalidated the measurement.  Cap it and stop writing. */
+static unsigned long wd_rsp_log_n = 0;
+#define WD_RSP_LOG_MAX 40000UL
+
 /* DD gate for the JIT-side budget/watchdog emission (rsp_jit.cpp): the core
    provides a RUNTIME IsDDPresent() query (evaluated at task time, after
    init_device set dd.idisk), so plain cart games get structurally-identical
@@ -134,9 +142,10 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 			if (!rf) rf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_rsp.txt", "a");
 			unsigned ttype = ((uint32_t*)RSP::rsp.DMEM)[0xfc0 / 4];
 			int expired = rsp_budget_expired_now();
-			if (rf)
+			if (rf && wd_rsp_log_n < WD_RSP_LOG_MAX)
 			{
 				long long now_ms = wd_now_ms();
+				wd_rsp_log_n++;
 				fprintf(rf, "RSPTASK ms=%lld seq=%u ENTER pc=%04x status=%08x ttype=%u exp=%d imem0=%08x %08x\n",
 					now_ms, task_seq, *RSP::rsp.SP_PC_REG & 0xfff, *RSP::rsp.SP_STATUS_REG,
 					ttype, expired,
@@ -323,8 +332,9 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		{
 			static FILE* rf = NULL;
 			if (!rf) rf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_rsp.txt", "a");
-			if (rf)
+			if (rf && wd_rsp_log_n < WD_RSP_LOG_MAX)
 			{
+				wd_rsp_log_n++;
 				fprintf(rf, "RSPTASK ms=%lld seq=%u EXIT pc=%04x status=%08x irq=%u sem=%08x timed=%d\n",
 					wd_now_ms(),
 					RSP::cpu.get_state().sr[31], RSP::cpu.get_state().pc & 0xfff,

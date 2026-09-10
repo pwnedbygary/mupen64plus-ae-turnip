@@ -625,3 +625,30 @@ The bar freezes at ~6.5-7/8 segments on "DD LOADING". Evidence from this round:
 3. Then the `do_SP_Task` completion contract: at the stall the ucode BREAKs
    (`status` bit 0x2) and the core's DD-gated completion path should raise MI_INTR_SP and set
    TASKDONE — verify the guest actually observes it (`rsp_interrupt_event`, DD-gated only).
+
+### Round-5 addendum — the RSP-side saturation experiment (NEGATIVE result, reverted)
+`parallel.cpp` sets `RSP::SP_STATUS_TIMEOUT = dd_mode ? 0x7fff : 16` (the SP_STATUS
+poll budget before a ucode yields). The DD value means each yield costs **~17 ms of host
+time** (32767 polls), and `do_SP_Task` re-schedules with `sp_delay_time` ~60×/s, so the
+emulation thread is ~100 % inside the RSP — which is why `wd_force.flag` is never consumed.
+
+Tried `SP_STATUS_TIMEOUT = 256` for the DD route (16× the stock 16 polls):
+* it made the yields ~130× cheaper, but **the game still stalls at exactly the same
+  DD-loading bar position, and `wd_force.flag` is still not consumed** — the short poll
+  budget alone does not wake the guest CPU;
+* the side effect was severe: with cheap slices the DIAG trace `wd_rsp.txt` reached
+  **4.5 GB in 75 s** and dominated the thread (FPS 60 → 31). That made the measurement
+  invalid on its own.
+**Reverted the poll-budget change.** Kept a hard cap on the RSP trace
+(`WD_RSP_LOG_MAX = 40000` lines) because the trace can otherwise balloon regardless.
+Before that cap, the DD trace was already writing ~5 MB/s, which is itself contention on
+the emulation thread — worth remembering when reading any RSP-side timing.
+
+**So the post-load stall is NOT RSP throughput.** It is a guest-side wait: no new RSP task
+is ever started (`seq=2764` never advances) and the CPU never dispatches an interrupt.
+Next round should go after *why the guest stops starting tasks* — the round-13 chain
+(SP/DP event queue `0x800dcad0` full and unconsumed, prio-99 SP-consumer thread STOPPED,
+guest game queue `0x800dca40` empty) is the place to look, and the `wd_force.flag`
+mechanism needs a wider trigger (`dynarec_sample_hook` needs `(d_sample & 0x1FFF)==0`,
+which never comes when the CPU takes no interrupts — consider also arming the dump from the
+RSP hook, which runs ~60×/s).
