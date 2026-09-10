@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>   /* access() -- DIAGNOSTIC engine override, see g_wd_dd_route */
 
 #define M64P_CORE_PROTOTYPES 1
 #include "api/callbacks.h"
@@ -1077,6 +1078,14 @@ static void open_eep_file(struct file_storage* fstorage)
     }
 }
 
+/* True once the 64DD IPL ROM has been loaded successfully, i.e. the DD route
+   (cart+disk combo or disk-only IPL boot) is active.  A plain cartridge never
+   loads a DD IPL ROM, so this is 0 for every plain game and for the cart-hack
+   with support64dd=false -- exactly the same population as `dd.idisk != NULL`.
+   Used only to gate the diagnostic engine override below; it changes no
+   emulator behaviour by itself. */
+static int g_wd_dd_route = 0;
+
 static void load_dd_rom(uint8_t* rom, size_t* rom_size, uint8_t* disk_region)
 {
     /* set the DD rom region */
@@ -1137,6 +1146,7 @@ static void load_dd_rom(uint8_t* rom, size_t* rom_size, uint8_t* disk_region)
         return;
     }
 
+    g_wd_dd_route = 1;
     return;
 
 no_dd:
@@ -1803,6 +1813,23 @@ m64p_error main_run(void)
     for (i = GAME_CONTROLLERS_COUNT; i < PIF_CHANNELS_COUNT; ++i) {
         joybus_devices[i] = &g_dev.cart;
         ijoybus_devices[i] = &g_ijoybus_device_cart;
+    }
+
+    /* ------------------------------------------------------------------
+       TEMPORARY DIAGNOSTIC (goal round 4, 2026-09-10) -- engine A/B test.
+       The F-Zero X EK boot failure's first defect is guest $sp going odd by
+       mupen's S8 byte-lane constant (^3).  Whether that is a recompiler bug or
+       a shared-core bug decides the whole fix, and the earlier attempt to
+       answer it failed because a profile key silently did not apply.
+       This override cannot fail silently and cannot reach a plain game:
+         * g_wd_dd_route is only set when the 64DD IPL ROM loaded;
+         * it additionally needs an opt-in marker file in the app's files dir.
+       Remove before shipping.  No effect on plain carts / cart-hack.
+       ------------------------------------------------------------------ */
+    if (g_wd_dd_route && emumode != 1 &&
+        access("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_emumode1.flag", F_OK) == 0) {
+        emumode = 1;
+        DebugMessage(M64MSG_WARNING, "WD: DIAGNOSTIC -- forcing R4300Emulator=1 (cached interpreter)");
     }
 
     init_device(&g_dev,

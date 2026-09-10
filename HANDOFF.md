@@ -441,3 +441,90 @@ a stack switch, not a normal call depth change.
 `run_cached_interpreter` + `iplram_spodd` -> `files/wd_spodd2.txt` gives the **exact** instruction
 that makes `$sp` odd (pc + opcode + a 96-entry (pc, opcode, sp) ring). Then re-run in emumode=2.
 Success criterion is unchanged: `iplram_spodd.bin` never appears.
+
+---
+
+## UPDATE 2026-09-10 (goal round 4) — **ROOT CAUSE FOUND: the ARM64 dynarec executes STALE,
+## PRE-DECRYPTION code of the boot stub. The round-3 "S8 byte-lane `^3`" theory is WRONG.**
+
+### 0. Engine A/B is now real (round 3's attempt silently did not apply)
+`main.c` gained a DD-gated, marker-file-gated engine override (`g_wd_dd_route` is set only when the
+64DD IPL ROM loaded; the override additionally needs `files/wd_emumode1.flag`). With that flag set
+the run is **provably** the cached interpreter: `dynarec_sample_hook` (called *only* from
+`arm64/linkage_arm64.S:do_interrupt`) consumes `files/wd_force.flag`; the flag was **not** consumed
+over 25 s of a running game => the dynarec was not running.
+
+| run | engine | odd `$sp` | guest fault | result |
+|---|---|---|---|---|
+| dynarec | emumode=2 | yes, every run | `WDFAULT vaddr=079b0880` | boot dies |
+| control | **cached interpreter** | **never** | **never** | boots, stalls on the DD-loading screen |
+
+(Interpreter run: ~15 min, 60 FPS, DD-loading bar identical to the dynarec run, **zero**
+`iplram_fault.bin` / `iplram_spodd.bin` / `wd_spodd2.txt` written.)
+
+### 1. The guest code at 0x800bb540 SELF-MODIFIES
+`0x800bb540` is **not** a checksum routine — it is an **in-place decryptor**. Its loop
+(`0x800bb58c..0x800bb5b0`) does `lbu t8,2(v0); lbu t9,3(v0); subu t7,t8,v1; addu t1,t9,t3;
+sb t7,2(v0); sb t1,3(v0)` over `a3 = 0x800bb67c`, 804 bytes. Only the **low halfword** of every word
+changes. Verified byte-for-byte against the cart ROM (`ROM 0x5567c` vs RDRAM `0x800bb67c`):
+
+```
+0x800bb67c: ROM 27bdbb03  ->  RDRAM 27bdfec0     addiu sp,sp,-320
+0x800bb69c: ROM 0c02b007  ->  RDRAM 0c02f3c4     jal   0x800bcf10 (bzero)
+0x800bb6a0: ROM 2405be7f  ->  RDRAM 2405013c     addiu a1,zero,316
+```
+The decrypted `__LeoBootGame2` then calls `bzero(0x800bb540, 316)` — i.e. it **erases its own
+decryptor** (`0x800bb540 + 316 = 0x800bb67c`, exact). **In the fault dump `0x800bb540` is still
+byte-identical to the ROM, so that `bzero` never ran.**
+
+Relocation confirmed again: `RDRAM[v] == cart.z64[v - 0x80000000 - 0x66000]`, byte-swapped.
+
+### 2. The dynarec ran the ENCRYPTED form — three independent, exact matches
+```
+ENCRYPTED 0x27bdbb03 = addiu sp,sp,-17661   -> prior sp must be 0x800d8700  (8-byte aligned ✓)
+DECRYPTED 0x27bdfec0 = addiu sp,sp,-320     -> prior sp would be 0x800d4343 (ODD, impossible ✗)
+observed $sp at the fault                = 0x800d4203  (= 0x800d8700 - 17661, exact)
+```
+```
+ENCRYPTED word @0x800bb69c = 0x0c02b007 = jal 0x800ac01c
+observed CP0 EPC                                    = 0x800ac01c   ✓ exact
+jal return address (0x800bb69c + 8)                 = 0x800bb6a4   ✓ = observed $ra
+observed cause = 0x9000002c (COP1 unusable, CE=1, BD=1) — 0x800ac01c is `jr ra`
+   with a COP1 `add.s` delay slot, so landing there with CU1 clear is exactly this exception.
+```
+`0x800ac01c` is **only** reachable from the encrypted `jal` — the decrypted code has
+`jal 0x800bcf10` in that slot. This is airtight.
+
+### 3. So the odd `$sp` was never a byte-lane bug
+`0x800d4203` is **not** `0x800d4200 ^ 3`; it is `0x800d8700 - 17661`. The low byte `0x03` comes from
+`0x08 - 0x05` in the subtraction (`0xBB03` sign-extended). The S8/`^3` reading in the round-3 section
+was a **coincidence**. The misaligned `lw ra,20(sp)` -> `0x079b0880` and the execute-fault chain are
+merely downstream of any odd `$sp`.
+
+### 4. Where the emulator is wrong
+mupen's new_dynarec reuses a cached translation of `0x800bb67c` compiled **before** the decryptor
+wrote there, and never invalidates it. Concrete suspects, in order:
+1. `new_dynarec.c:store_assemble` calls `do_tlb_w_branch` (the only WRITE_PROTECT test) **only under
+   `using_tlb`**. In the `!using_tlb` path stores to RDRAM take the inline fast path with **no
+   write-protect check at all** — `INTERPRET_STORE` is commented out (`new_dynarec.c:81`).
+2. `new_dynarec_init` maps `0x80000000..0x807FFFFF` to `ram_offset` **without** WRITE_PROTECT, and
+   WRITE_PROTECT is only ever added by `get_dirty()` (`new_dynarec.c:2539`, i.e. only for blocks
+   registered in `jump_dirty`) and by `invalidate_all_pages`/`tlb_speed_hacks`. A block that is
+   compiled and then direct-linked is never write-protected => its page is freely writable.
+In both cases the guest's `sb` simply lands in RDRAM and the stale block survives. Note the DD
+controller *does* call `invalidate_r4300_cached_code` after DD DMAs — that is why DMA-driven SMC
+(cart/DD loads) works while **CPU-store-driven SMC does not**.
+
+### 5. Tools added this round
+`main.c`: DD-gated `R4300Emulator=1` override (`g_wd_dd_route` + `files/wd_emumode1.flag`).
+Inert for plain carts and for the cart-hack; remove or keep as a diagnostic.
+
+### Next step (round 5)
+Make CPU stores to a page holding cached code invalidate it on the DD route — the two candidate
+sites above. Success criterion is unchanged and is now a *fault* criterion:
+**`iplram_fault.bin` never appears and the DD-loading bar passes 8/8.** Recommended probe before
+editing: log `using_tlb` and `memory_map[0x800bb]` at the moment `new_recompile_block` compiles
+`0x800bb67c`, and log every `invalidate_addr` call, to confirm which of (1)/(2) fires.
+Also still open (independent of this bug): the post-load SP/RSP deadlock — the **interpreter run
+did not get past the DD-loading screen either**, so the round-13 queue-full/RSP-halted analysis
+still needs its own fix.
