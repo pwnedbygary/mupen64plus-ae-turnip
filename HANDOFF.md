@@ -5,6 +5,71 @@
 > load, so the remaining black-screen fault is a *different, later* problem that needs fresh
 > diagnosis rather than the prior MI-interrupt fix.
 
+**ROUND 7 (ROOT CAUSE of the post-load stall: the DD SP DMA lost the IMEM bank selector):**
+commit `283a01c67`. The round-6 "wrap fix" (244245731) replaced the bank base with the flat RSP
+memory base, so `memaddr` -- already stripped of bit 12 by `& 0xff8` -- could never select IMEM:
+
+    spmem = (unsigned char*)sp->mem;   /* no bank base */
+    ... spmem[(memaddr & 0x1fff) ^ S8] /* bit 12 already gone -> can never be IMEM */
+
+Upstream re-adds the bank via `spmem = sp->mem + (dma->memaddr & 0x1000)`. Net effect on the DD
+route: **EVERY SP DMA landed in DMEM**, IMEM stayed zero, the RSP executed NOPs, and the guest's
+audio task never completed -> the F-Zero X EK init spin (see below). Evidence is a new DD-gated
+DMA trace (`files/wd_dma.txt`, DMEM/IMEM words after every transfer):
+
+    n=1 mem=04000fc0 dram=007c1c00 len=3f  (osSpTaskLoad header DMA)  after: fc0=00000002 imem0=0
+    n=2 mem=04001000 dram=00768e60 len=fff (boot-ucode load, 4096 B)  after: fc0=00010001 imem0=0 dmem0=340a0fc0
+
+i.e. the whole audio ucode (first word 0x340A0FC0) was written over DMEM 0x000..0xFFF, wiping the
+OSTask header DMA #1 had just loaded, while IMEM stayed 0. `do_SP_Task` then read
+DMEM[0xFC0/4]=0x00010001, classified "other", RSP ran garbage. **After the fix** (same run):
+`fc0=00000002` survives, `imem0=340a0fc0`, header DMA `same=64 diff=0`, 48+ header/ucode pairs
+instead of 1.
+
+**Also fixed: the budget-yield livelock.** The DD host-budget yield sets HALT|INTR_BREAK, but
+`DoRspCycles` then unconditionally cleared HALT (stock CXD4 "task finished" handshake, only valid
+when the ucode really finished). With HALT clear and BROKE clear, `do_SP_Task` reads "RSP still
+running" -> sets `rsp_task_locked` + raises MI_INTR_SP -> libultra's `exceptasm` acknowledges with
+`SP_STATUS=0x8008` (SP_CLR_SIG3|SP_CLR_INTR; verified from the RSP's pc/ra/a0..a3 at
+`0x80746AE4`) -> that passes `update_sp_status`' gate because `rsp_task_locked` is set and HALT is
+clear -> another full 50 ms run. Measured: **1362 RSP runs in 68 s, each 50 ms = 100 % of the
+emulation thread, with only 2 SP DMAs in the whole run.** Now HALT is left set after a budget
+yield; a second new trace (`files/wd_spw.txt`, guest pc/ra/sp/a0..a3 at every SP_STATUS write)
+shows all 132 interrupt-ack writes with `st_before=0x243` (HALT set) so they no longer re-enter.
+
+**Where the guest actually was (decomp-assisted, `.fzxwork/fzerox-decomp`):** the CPU spun at
+`0x806F40B4` in the **EK's own `sys/sys_gfx.c`** (`while (func_80742790() != 2) {}`, the
+`#ifdef EXPANSION_KIT` block right after `Arena_DefaultStartInit()`), waiting for a DD-BGM/audio
+status that only advances when the audio-disk state machine (`external.c` + `audio/disk/lib/load`)
+completes. Its `func_80742790` is `return *(u8*)0x80771C88;`, set to 2 only after three
+`audio/disk/lib/load.c` calls all return 1. The exception-state epc `0x8074651C` is inside
+`libultra/io/sptask.c` (`osSpTaskStartGo`'s `while (__osSpDeviceBusy())` + `__osSpSetStatus(0x125)`),
+which is what identified the `w=0x2B00`/`0x125`/`0x8008` writes.
+
+**Verified after the fix:** 132 loads <-> 132 `osSpTaskStartGo` <-> 132 acks (balanced, healthy);
+RSP task types observed 195x M_AUDTASK + 8x M_GFXTASK (before: none ever); `c_asic` 5234 -> 10604
+and `c_pi` 5786 -> 11650 (roughly twice the DD work); the screen advanced from the F-Zero X EK
+loading bar to the **Nintendo 64DD logo at 59 FPS**.
+**Plain-cart regression PASSES:** Mario Kart 64 Amped Up v3.21 renders the "real N64 console?"
+screen at 60 FPS with no crash, and the DD diagnostics are provably inert (`files/wd_dma.txt` not
+created, `files/wd_smc.txt` = 22-byte header only). The non-DD branches of `do_sp_dma` are now
+byte-identical to upstream again (the bank base is the same expression on both routes); the only
+DD-gated difference is the `& 0xfff` offset wrap inside the selected bank.
+
+**Known remaining issues (NOT regressions - both were previously unreachable because the machine
+livelocked before getting there):** (1) one run died with **SIGILL (ILL_ILLOPC) in the dynarec JIT
+arena** (`[anon:.bss]`) ~50 s in, with `wd_smc.txt` showing the self-modifying region
+`0x800bba34..0x800bbd40` active - the same descrambling/stale-code class as round 5's
+`stop_after_jal` fix (c12de6262); (2) a later run stayed alive 100 s and rendered the 64DD logo but
+still wrote a stall dump. The objective (reach the menu with clean audio on the RP6) is NOT yet met.
+
+**Next (round 8):** (1) reproduce the SIGILL and capture the guest state at the fault (the
+`iplram_*` force dumps + `wd_smc.txt` ring are the tools) - if it is another speculative-JAL /
+descramble stale-code case, extend the round-5 gate; (2) re-check what the 20/s `ttype=65537` RSP
+entries are now that tasks are balanced (audio ucode clobbering DMEM 0xFC0 mid-task is expected
+F3DEX/audio behaviour, so this may be benign); (3) once the boot completes, verify audio quality and
+the menu.
+
 **ROUND 6 (audio budget 100ms → 10ms):** REAL structural progress. The machine now schedules properly: guest CPU reaches the IDLE thread (snapshot header pc=ra=0x806f32ec, sp=0x80795a40) instead of the IRQ storm; the DD-loading bar ADVANCED a segment (5.5/8 → 6.5/8) in one run before settling at the LEO-completion wait. Remaining chain state (wd_state5.bin): sSLLeoMesgQueue (0x8079F978) valid=0, gDmaMesgQueue valid=0, LEOcommand_que valid=0, LEOblock_que valid=1 (manager between commands — the INQUIRY completed, the loader's read command never dispatched); the LEO cmd ring (0x807c6f10, 7-word entries) contains stale boot-fill (0x88776655 markers) — the read command was never cleanly issued. The guest's LEO-lib chain is blocked at every queue layer; the DD controller still sees zero activity (k=5/7/4 = 0). Note: OLD (Sep-1) boot's DD activity (k=7 status read + reads) = the disk-first/old boot-strategy; current = combo/cart-first — the guest's DD chain reaches a different point. 10ms audio budget stays in the tree (nice win: the machine's scheduler works, the bar moves).
 
 **Next (round 7):** (1) trace the guest's LEO-lib command send (which queue/where the loader's read command is dropped — the worker's case-0 SLLeoReadWrite vs the manager's LEOcommand_que); (2) compare the DD-drive's required state at the cart-boot against the mupen poweron (dd_dv_sleep = drive sleeping; command → drive wake/mecha sequence vs ares's DD_Clock_Tick); (3) the boot-strategy (cart-first vs disk-first) impact on the guest's DD chain.
