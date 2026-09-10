@@ -1034,6 +1034,32 @@ volatile uint32_t wd_c_sample     = 0;   /* dynarec: do_interrupt (sample hook) 
 volatile uint32_t wd_c_dd_asic    = 0;   /* DD: ASIC commands issued by the guest */
 volatile uint32_t wd_c_pi_dma     = 0;   /* PI: completed cart DMAs                */
 
+/* Round 8: interrupt-source attribution.  The stall ring shows the guest
+   cycling through 0x80000180 (exception vector) + libultra/os/exceptasm +
+   __osDispatchThread roughly once every 18 dynarec blocks, i.e. the emulated
+   CPU is spending a large slice of its time inside exceptions -- yet
+   gen_interrupt only advances ~40/s and the dynarec's do_interrupt sample
+   hook (wd_c_sample) is FROZEN.  Both facts together mean the exceptions are
+   NOT coming from the emulator's event queue: they come from
+   raise_maskable_interrupt(), which calls exception_general() synchronously
+   from whatever context raised the RCP interrupt.  These counters name the
+   source: how many exceptions are taken in total, how many of them are
+   interrupt-class, and how many RCP raises each MI_INTR bit contributed.
+   DD-gated like the rest (one predictable branch per event on plain carts). */
+volatile uint32_t wd_c_exc_total  = 0;   /* exception_general() entries             */
+volatile uint32_t wd_c_exc_int    = 0;   /* ... of which ExcCode == 0 (interrupt)   */
+volatile uint32_t wd_c_exc_nested = 0;   /* ... taken while EXL/ERL already set     */
+volatile uint32_t wd_c_raise      = 0;   /* raise_rcp_interrupt() calls             */
+volatile uint32_t wd_c_signal     = 0;   /* signal_rcp_interrupt() calls            */
+volatile uint32_t wd_c_raise_bits[8] = {0}; /* per MI_INTR bit: raise+signal count  */
+volatile uint32_t wd_c_cmp_int    = 0;   /* compare_int_handler() calls (CP0 IP7)   */
+volatile uint32_t wd_c_vi_evt     = 0;   /* vi_vertical_interrupt_event() calls     */
+volatile uint32_t wd_c_vi_ack     = 0;   /* guest writes to VI_CURRENT (VI ack)     */
+volatile uint32_t wd_c_vi_last    = 0;   /* MI_INTR bits at the last VI raise       */
+volatile uint32_t wd_c_ai_evt     = 0;   /* ai_controller interrupt events          */
+volatile uint32_t wd_c_rsp_run    = 0;   /* RSP DoRspCycles() budget runs           */
+volatile uint32_t wd_c_rsp_full   = 0;   /* ... of which exhausted the budget       */
+
 /* Host-PC sampler (2026-09-10 round 6).  Every other signal says the emulation
    thread is burning 100% of a core with ZERO progress in gen_interrupt,
    do_SP_Task, rsp_interrupt_event and the dynarec's do_interrupt -- so it is
@@ -1214,11 +1240,30 @@ struct wd_snap {
     uint32_t sp_status, sp_pc, sp_busy, sp_full, sp_sem;
     uint32_t c_task, c_spint, c_genint, c_sample, c_asic, c_pi;
     uint32_t vi_current, vi_field, vi_delay;
+    /* Round 8: exception/int-source attribution + the guest's own libultra VI
+       state.  See the counter block at the top of this file. */
+    uint32_t c_exc, c_exc_int, c_exc_nested, c_raise, c_signal, c_cmp_int;
+    uint32_t c_vi_evt, c_vi_ack;
+    uint32_t raise_bits[8];
+    uint32_t g_vi_curr_framep, g_vi_next_framep, g_vi_curr_state, g_vi_retrace;
+    uint32_t g_vievtq_valid, g_vievtq_count;
 };
+
+/* Read a guest u32 out of RDRAM (the guest sees KSEG0 0x80xxxxxx = phys). */
+static uint32_t wd_guest32(uint32_t vaddr)
+{
+    const uint8_t* mb = (const uint8_t*)g_mem_base;
+    uint32_t phys = (vaddr >= 0x80000000u) ? (vaddr - 0x80000000u) : vaddr;
+    uint32_t w;
+    if (mb == NULL || phys + 4 > 0x800000u) return 0xdeadbeefu;
+    memcpy(&w, mb + phys, 4);
+    return w;
+}
 
 static void wd_take_snap(struct wd_snap* s)
 {
     uint32_t* cp0_regs = r4300_cp0_regs(&wd_r4300->cp0);
+    int i;
     s->cause = cp0_regs[CP0_CAUSE_REG];
     s->status = cp0_regs[CP0_STATUS_REG];
     s->epc = cp0_regs[CP0_EPC_REG];
@@ -1240,6 +1285,30 @@ static void wd_take_snap(struct wd_snap* s)
     s->vi_current = g_dev.vi.regs[VI_CURRENT_REG];
     s->vi_field = g_dev.vi.field;
     s->vi_delay = g_dev.vi.delay;
+    s->c_exc = wd_c_exc_total;
+    s->c_exc_int = wd_c_exc_int;
+    s->c_exc_nested = wd_c_exc_nested;
+    s->c_raise = wd_c_raise;
+    s->c_signal = wd_c_signal;
+    s->c_cmp_int = wd_c_cmp_int;
+    s->c_vi_evt = wd_c_vi_evt;
+    s->c_vi_ack = wd_c_vi_ack;
+    for (i = 0; i < 8; i++) s->raise_bits[i] = wd_c_raise_bits[i];
+    /* Guest libultra VI state.  The addresses are this build's (Base FZX-J):
+       __osViCurr=0x80773110, __osViNext=0x80773114, contexts at 0x807730B0/0x807730E0
+       (layout from libultra's PR/viint.h: state@0, retraceCount@2, framep@4).
+       The game's own frame index lives at 0x8079A360 and gFrameBuffers at
+       0x8079A330 (decomp: framebuffers at 0x801D9800 / 0x80200000). */
+    s->g_vi_curr_framep = wd_guest32(wd_guest32(0x80773110u) + 4u);
+    s->g_vi_next_framep = wd_guest32(wd_guest32(0x80773114u) + 4u);
+    s->g_vi_curr_state = wd_guest32(wd_guest32(0x80773110u)) & 0xffffu;
+    s->g_vi_retrace = (wd_guest32(wd_guest32(0x80773110u)) >> 16) & 0xffffu;
+    /* libultra viEventQueue (created by osCreateViManager, capacity 5):
+       OSMesgQueue { mtqueue@0, fullqueue@4, validCount@8, first@0xC,
+       msgCount@0x10 }.  An empty queue with the vi manager thread blocked on
+       it means no VI retrace message has been delivered to the guest. */
+    s->g_vievtq_valid = wd_guest32(0x807C46C8u);
+    s->g_vievtq_count = wd_guest32(0x807C46D0u);
 }
 
 static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
@@ -1251,6 +1320,18 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
     fprintf(f, "%s c_task=%u c_spint=%u c_genint=%u c_sample=%u c_asic=%u c_pi=%u vi_cur=%08x field=%u delay=%u\n",
         tag, s->c_task, s->c_spint, s->c_genint, s->c_sample, s->c_asic, s->c_pi,
         s->vi_current, s->vi_field, s->vi_delay);
+    /* Round 8: what is generating guest exceptions, and is the guest's VI
+       manager being fed?  raise_bits order = MI_INTR bits
+       0=SP 1=SI 2=AI 3=VI 4=PI 5=DP. */
+    fprintf(f, "%s c_exc=%u c_exc_int=%u c_exc_nested=%u c_raise=%u c_signal=%u c_cmp_int=%u c_vi_evt=%u c_vi_ack=%u\n",
+        tag, s->c_exc, s->c_exc_int, s->c_exc_nested, s->c_raise, s->c_signal, s->c_cmp_int,
+        s->c_vi_evt, s->c_vi_ack);
+    fprintf(f, "%s raise_bits SP=%u SI=%u AI=%u VI=%u PI=%u DP=%u\n",
+        tag, s->raise_bits[0], s->raise_bits[1], s->raise_bits[2],
+        s->raise_bits[3], s->raise_bits[4], s->raise_bits[5]);
+    fprintf(f, "%s guest viCurr.framep=%08x viNext.framep=%08x viCurr.state=%04x retrace=%u vievtq=%u/%u\n",
+        tag, s->g_vi_curr_framep, s->g_vi_next_framep, s->g_vi_curr_state,
+        s->g_vi_retrace, s->g_vievtq_valid, s->g_vievtq_count);
 }
 
 /* One line per /proc/self/task/<tid>: tid comm <full stat line>.  The stat line
@@ -1300,6 +1381,44 @@ static void wd_stall_probe(const char* path)
         (int)(b.c_task - a.c_task), (int)(b.c_spint - a.c_spint),
         (int)(b.c_genint - a.c_genint), (int)(b.c_sample - a.c_sample),
         (int)(b.c_asic - a.c_asic), (int)(b.c_pi - a.c_pi), b.sp_pc ^ a.sp_pc);
+    /* Round 8: the high-rate side of the machine.  genint/sample are the
+       interrupt path; exc/raise are the SYNCHRONOUS exception path taken
+       directly by raise_maskable_interrupt(); vi_evt/vi_ack say whether the
+       guest is dispatching (and acknowledging) VI at all. */
+    fprintf(f, "DELTA2 c_exc=%d c_exc_int=%d c_exc_nested=%d c_raise=%d c_signal=%d c_cmp_int=%d c_vi_evt=%d c_vi_ack=%d\n",
+        (int)(b.c_exc - a.c_exc), (int)(b.c_exc_int - a.c_exc_int),
+        (int)(b.c_exc_nested - a.c_exc_nested), (int)(b.c_raise - a.c_raise),
+        (int)(b.c_signal - a.c_signal), (int)(b.c_cmp_int - a.c_cmp_int),
+        (int)(b.c_vi_evt - a.c_vi_evt), (int)(b.c_vi_ack - a.c_vi_ack));
+    fprintf(f, "DELTA2 raise_bits dSP=%d dSI=%d dAI=%d dVI=%d dPI=%d dDP=%d\n",
+        (int)(b.raise_bits[0] - a.raise_bits[0]), (int)(b.raise_bits[1] - a.raise_bits[1]),
+        (int)(b.raise_bits[2] - a.raise_bits[2]), (int)(b.raise_bits[3] - a.raise_bits[3]),
+        (int)(b.raise_bits[4] - a.raise_bits[4]), (int)(b.raise_bits[5] - a.raise_bits[5]));
+    fprintf(f, "DELTA2 guest viCurr.framep %08x -> %08x (goal fb[0]=801d9800 fb[1]=80200000), vievtq %u/%u -> %u/%u\n",
+        a.g_vi_curr_framep, b.g_vi_curr_framep, a.g_vievtq_valid, a.g_vievtq_count,
+        b.g_vievtq_valid, b.g_vievtq_count);
+    /* Round 8: THE CP0 EVENT QUEUE.  gen_interrupt() dispatches on
+       cp0.q.first->data.type, and the VI_INT handler (case 0) is what re-arms
+       the next vertical interrupt -- so if the VI event is missing from this
+       list, or buried behind events that keep being re-added, c_vi_evt stops
+       advancing and the guest's libultra vi manager thread never receives a
+       retrace.  That is exactly the observed state (c_vi_evt froze at 517 and
+       guest viCurr.framep never leaves 0x80200000), which parks the boot on
+       `while (osViGetCurrentFramebuffer() != gFrameBuffers[i]) {}`.
+       type: 0=VI 1=COMPARE 2=CHECK 3=SI 4=PI 5=SPECIAL 6=AI 7=SP 8=DP
+             9=HW2 10=NMI 12=RSP_DMA 13/14/15=DD MC/BM/DV.
+       delta = event count - CP0 COUNT (negative/0 means it is already due). */
+    {
+        const struct node* e = wd_r4300->cp0.q.first;
+        uint32_t cnt = r4300_cp0_regs(&wd_r4300->cp0)[CP0_COUNT_REG];
+        int n;
+        fprintf(f, "CP0Q count=%08x head=%p\n", cnt, (const void*)e);
+        for (n = 0; e != NULL && n < 16; e = e->next, n++) {
+            fprintf(f, "  EV%d type=%d count=%08x delta=%d\n",
+                n, e->data.type, e->data.count, (int32_t)(e->data.count - cnt));
+        }
+        if (e != NULL) fprintf(f, "  ... (list longer than 16)\n");
+    }
     /* dynarec recent-block ring, oldest first */
     {
         uint32_t i, start = wd_pc_idx;
@@ -1359,6 +1478,22 @@ static void wd_full_dump(const char* path, uint32_t pc){
     fprintf(f, "VISTATE field=%u delay=%u cpsl=%u current=%08x origin=%08x\n",
         g_dev.vi.field, g_dev.vi.delay, g_dev.vi.count_per_scanline,
         g_dev.vi.regs[VI_CURRENT_REG], g_dev.vi.regs[VI_ORIGIN_REG]);
+    /* Round 8: the guest's own libultra VI state, so the dump is
+       self-describing.  framep is what osViGetCurrentFramebuffer() returns and
+       what sys_gfx.c:198 spins on; vievtq is the libultra viEventQueue that
+       the vi manager thread (prio 254) blocks on waiting for a retrace. */
+    fprintf(f, "GUESTVI viCurr.framep=%08x viNext.framep=%08x viCurr.state=%04x retrace=%u vievtq=%u/%u idx=%u fb0=%08x fb1=%08x\n",
+        wd_guest32(wd_guest32(0x80773110u) + 4u),
+        wd_guest32(wd_guest32(0x80773114u) + 4u),
+        wd_guest32(wd_guest32(0x80773110u)) & 0xffffu,
+        (wd_guest32(wd_guest32(0x80773110u)) >> 16) & 0xffffu,
+        wd_guest32(0x807C46C8u), wd_guest32(0x807C46D0u),
+        wd_guest32(0x8079A360u), wd_guest32(0x8079A330u), wd_guest32(0x8079A334u));
+    fprintf(f, "EXCSTATE total=%u int=%u nested=%u raise=%u signal=%u cmp=%u vi_evt=%u vi_ack=%u rb=%u/%u/%u/%u/%u/%u\n",
+        wd_c_exc_total, wd_c_exc_int, wd_c_exc_nested, wd_c_raise, wd_c_signal,
+        wd_c_cmp_int, wd_c_vi_evt, wd_c_vi_ack,
+        wd_c_raise_bits[0], wd_c_raise_bits[1], wd_c_raise_bits[2],
+        wd_c_raise_bits[3], wd_c_raise_bits[4], wd_c_raise_bits[5]);
     dd_trace_dump(f);
     fclose(f);
     /* Round 6: also write the small "what is still moving" probe.  The 8MB
@@ -1373,6 +1508,7 @@ static void* wd_thread(void* arg)
     (void)arg;
     uint64_t last = wd_hb;
     struct timespec t0, t;
+    int force_dumps = 0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     for (;;)
     {
@@ -1380,6 +1516,24 @@ static void* wd_thread(void* arg)
         /* Arm the host-PC sampler once the 64DD route is actually live
            (dd.idisk is only valid after init_device). */
         if (!wd_pcs_armed && g_dev.dd.idisk != NULL) wd_pcs_arm();
+
+        /* Round 8: on-demand dumps from THIS thread.  The original force-flag
+           check lived in dynarec_sample_hook, which stops running exactly when
+           the CPU is starved by the RSP -- i.e. precisely when a dump is
+           wanted (measured: wd_c_sample frozen while the RSP owned 100% of the
+           emulation thread).  The watchdog thread always gets scheduled, so it
+           is the reliable place to poll the flag.  Capped so a stale flag
+           cannot fill the flash. */
+        if (force_dumps < 8 && wd_r4300 != NULL && g_mem_base != NULL
+            && access(WD_FORCE_FLAG, F_OK) == 0) {
+            uint32_t pc = 0;
+            struct precomp_instr** pp = r4300_pc_struct(wd_r4300);
+            force_dumps++;
+            unlink(WD_FORCE_FLAG);
+            if (pp != NULL && *pp != NULL) pc = (*pp)->addr;
+            wd_full_dump(WD_FILES_DIR "iplram_force.bin", pc);
+        }
+
         uint64_t cur = wd_hb;
         if (cur != last) { last = cur; t0 = t; }
         else if ((t.tv_sec - t0.tv_sec) > WD_STALL_SECS) {
@@ -1390,7 +1544,9 @@ static void* wd_thread(void* arg)
                 if (pp != NULL && *pp != NULL) pc = (*pp)->addr;
                 wd_full_dump(WD_FILES_DIR "iplram_wd.bin", pc);
             }
-            break;
+            /* Keep looping (round 8): the heartbeat can resume after a long
+               RSP/CPU starvation and stall again, and the run is more useful
+               with a live 1 Hz guest-VI/heartbeat series than with none. */
         }
         usleep(100 * 1000);
     }

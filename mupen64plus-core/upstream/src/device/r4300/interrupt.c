@@ -409,6 +409,7 @@ void compare_int_handler(void* opaque)
     *cp0_cycle_count = cp0_regs[CP0_COUNT_REG] - r4300->cp0.q.first->data.count;
 
     raise_maskable_interrupt(r4300, CP0_CAUSE_IP7);
+    if (g_dev.dd.idisk != NULL) { extern volatile uint32_t wd_c_cmp_int; wd_c_cmp_int++; }
 }
 
 void check_int_handler(void* opaque)

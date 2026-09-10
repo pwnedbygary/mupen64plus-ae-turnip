@@ -140,6 +140,15 @@ void write_mi_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
  */
 void raise_rcp_interrupt(struct mi_controller* mi, uint32_t mi_intr)
 {
+    /* Round 8 DD-route attribution (see cached_interp.c): which MI_INTR bit is
+       driving the observed guest exception rate.  Plain carts: one branch. */
+    if (g_dev.dd.idisk != NULL) {
+        extern volatile uint32_t wd_c_raise, wd_c_raise_bits[8];
+        int b;
+        wd_c_raise++;
+        for (b = 0; b < 8; b++) if (mi_intr & (1u << b)) wd_c_raise_bits[b]++;
+    }
+
     mi->regs[MI_INTR_REG] |= mi_intr;
 
     if (mi->regs[MI_INTR_REG] & mi->regs[MI_INTR_MASK_REG])
@@ -149,6 +158,13 @@ void raise_rcp_interrupt(struct mi_controller* mi, uint32_t mi_intr)
 /* interrupt execution is scheduled (if not masked) */
 void signal_rcp_interrupt(struct mi_controller* mi, uint32_t mi_intr)
 {
+    if (g_dev.dd.idisk != NULL) {
+        extern volatile uint32_t wd_c_signal, wd_c_raise_bits[8];
+        int b;
+        wd_c_signal++;
+        for (b = 0; b < 8; b++) if (mi_intr & (1u << b)) wd_c_raise_bits[b]++;
+    }
+
     mi->regs[MI_INTR_REG] |= mi_intr;
     r4300_check_interrupt(mi->r4300, CP0_CAUSE_IP2, mi->regs[MI_INTR_REG] & mi->regs[MI_INTR_MASK_REG]);
 }

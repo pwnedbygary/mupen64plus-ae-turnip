@@ -27,6 +27,7 @@
 #include "new_dynarec/new_dynarec.h"
 #include "cached_interp.h"
 #include "recomp.h"
+#include "main/main.h"   /* g_dev, for the 64DD-gated round-8 counters */
 
 #ifdef COMPARE_CORE
 #include "api/debugger.h"
@@ -281,6 +282,18 @@ void TLB_refill_exception(struct r4300_core* r4300, uint32_t address, int w)
 void exception_general(struct r4300_core* r4300)
 {
     uint32_t* cp0_regs = r4300_cp0_regs(&r4300->cp0);
+
+    /* Round 8 DD-route attribution: count every general exception and classify
+       it.  Sampled BEFORE EXL is set so wd_c_exc_nested really reports
+       re-entrancy (an exception taken while EXL/ERL was already set is how a
+       synchronous exception_general() from raise_maskable_interrupt() stomps an
+       in-flight guest exception frame).  Plain carts: one predictable branch. */
+    if (g_dev.dd.idisk != NULL) {
+        extern volatile uint32_t wd_c_exc_total, wd_c_exc_int, wd_c_exc_nested;
+        wd_c_exc_total++;
+        if ((cp0_regs[CP0_CAUSE_REG] & CP0_CAUSE_EXCCODE_MASK) == 0) wd_c_exc_int++;
+        if (cp0_regs[CP0_STATUS_REG] & (CP0_STATUS_EXL | CP0_STATUS_ERL)) wd_c_exc_nested++;
+    }
 
     cp0_update_count(r4300);
     cp0_regs[CP0_STATUS_REG] |= CP0_STATUS_EXL;

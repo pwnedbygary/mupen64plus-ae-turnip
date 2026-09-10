@@ -284,17 +284,29 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		   preempts tight ucode loops on this deadline, and the MFC0
 		   SP_STATUS poll timeout covers the poll-based waits. */
 		unsigned dsp_task_type = ((uint32_t*)RSP::rsp.DMEM)[0xfc0 / 4];
-		/* DIAG/FIX: give audio (type 2) a generous host-run budget too.
-		   Previously audio got 0 = UNBOUNDED, so a ucode that enters a bare
-		   `beq z,z` wait-loop (no SP_STATUS MFC0 poll, so the 32767-poll
-		   timeout never fires) wedges DoRspCycles forever -> the F-Zero X EK
-		   loader hard-freezes on its audio task (confirmed live: audio ucode
-		   at pc=0x00b8 spin, status=0x243, "clean audio" design made it
-		   un-preemptable).  A 100ms deadline lets a normal short audio
-		   command list finish cleanly while bounding a wedged wait-spin.
-		   The budget-yield path below already emits a clean task boundary
-		   (HALT+INTR_BREAK+irq) for non-audio; this makes audio use it too. */
-		rsp_set_budget_deadline_us(dd_mode ? (dsp_task_type == 2 ? 100000 : 50000) : 0);
+		/* Still read for the DD task-type trace below; the deadline no longer
+		   depends on it (see the round-8 note). */
+		(void)dsp_task_type;
+		/* Round 8: the host-run budget was 100ms (audio) / 50ms (everything
+		   else), which was measured to be the machine's real bottleneck.
+		   The F-Zero X EK audio ucode parks in a `beq z,z` wait-loop and
+		   only leaves it when the CPU feeds it more data -- but for as long
+		   as the budget lasts, the emulation thread never returns from
+		   DoRspCycles, so the CPU cannot run.  Measured on the RP6 with
+		   `wd_freeze.txt`: every DoRspCycles call took a full 50-100ms of
+		   WALL time and they ran strictly back-to-back (20/s), i.e. 100% of
+		   the emulation thread inside the RSP, with the dynarec sample hook
+		   (wd_c_sample) frozen because the CPU never got a slice.  That is
+		   what starves the guest: its VI manager thread cannot run, so
+		   `while (osViGetCurrentFramebuffer() != gFrameBuffers[i]) {}` at
+		   sys_gfx.c:198 never completes and the boot parks on the 64DD logo.
+		   On real hardware a spinning RSP does NOT block the CPU, so the
+		   budget must be small enough to interleave: 2ms of host time is
+		   still ~millions of RSP cycles (far more than any real task slice)
+		   while guaranteeing the CPU a turn.  The budget-yield path below
+		   still emits the clean HALT+INTR_BREAK+irq task boundary, so the
+		   guest acks and re-dispatches exactly as with the long deadline. */
+		rsp_set_budget_deadline_us(dd_mode ? 2000 : 0);
 
 		int wd_budget_yield = 0;
 		{

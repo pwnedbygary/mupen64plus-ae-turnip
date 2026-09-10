@@ -136,6 +136,9 @@ void write_vi_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
         return;
 
     case VI_CURRENT_REG:
+        /* Round 8: the guest's VI interrupt acknowledge.  If this counter is
+           frozen while wd_c_vi_evt climbs, the guest is not dispatching VI. */
+        if (g_dev.dd.idisk != NULL) { extern volatile uint32_t wd_c_vi_ack; wd_c_vi_ack++; }
         clear_rcp_interrupt(vi->mi, MI_INTR_VI);
         return;
 
@@ -173,6 +176,7 @@ void write_vi_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
 void vi_vertical_interrupt_event(void* opaque)
 {
     struct vi_controller* vi = (struct vi_controller*)opaque;
+    if (g_dev.dd.idisk != NULL) { extern volatile uint32_t wd_c_vi_evt; wd_c_vi_evt++; }
     if (vi->dp->do_on_unfreeze & DELAY_DP_INT)
         vi->dp->do_on_unfreeze |= DELAY_UPDATESCREEN;
     else
