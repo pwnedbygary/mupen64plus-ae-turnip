@@ -130,7 +130,12 @@ write, with `DMEM[0xF0] = 0xBF5A2F01` (garbage).  It never reaches `G_RDPFULLSYN
 ```
 So the DL pointer is *only* DMEM[0xFF0], and 0x2C03C0 must have come out of it (or out of the
 `bf8` resume path at IMEM 0x0BC).  **Open (next round, one run):** log `$26` + DMEM[0xFF0] +
-DMEM[0xBF8] + the caller of the first `dst=0920` DMA for the gfx task only.  Circled hard by the
+DMEM[0xBF8] + the caller of the first `dst=0920` DMA for the gfx task only.  **AND TRY THE FIX
+THE EVIDENCE NOW SUPPORTS:** re-assert the 64 latched header bytes (DMEM 0xFC0..0xFFF) from the
+core's task-load latch *at StartGo*, immediately before the ucode is allowed to run — DD-gated
+and for the matching task type only, so the audio ucode keeps its own header.  Accept it if
+`wd_dmatr`'s first gfx `dst=0920` transfer reads `src=284990` and a `G_RDPFULLSYNC` (0xE9)
+reaches the ring (watch `R20W outbuf` > 0 and `wd_stall`'s `DPCHAIN mi_rd_dp` > 0).  Circled hard by the
 data already in hand: `0x2C03C0 == 0x152C03C0 & 0xFFFFFF`, and `0x152C03C0` is an **audio-ucode
 `$26` value** (`wd_k0.txt`, `wd_watch.txt` n=12/14/16/17/18 all show `sr26=152c03c0` with
 `im0=340a0fc0`).
