@@ -241,20 +241,93 @@ extern "C"
 	   emulated environment) run indefinitely.  rsp_enter is invoked at
 	   EVERY JIT block boundary; when the budget expires it bails to the
 	   run() return path, which yields to the core ("task still running" ->
-	   rsp_task_locked + SP interrupt; RSP state preserved). */
-	static std::chrono::steady_clock::time_point s_rsp_budget_deadline = std::chrono::steady_clock::time_point::max();
+	   rsp_task_locked + SP interrupt; RSP state preserved).
+
+	   ROUND 17: the budget is now an *executed-instruction* countdown, not a
+	   wall-clock deadline.  The 64DD route's whole behaviour depends on WHERE
+	   inside the ucode a forced yield lands -- each one can fabricate the
+	   libultra yield acknowledgement for a task the ucode never saved, and the
+	   next start then resumes from scratch DMEM.  With a `steady_clock`
+	   deadline those points moved run to run: five runs of near-identical
+	   builds gave 245 / 3 / 2 / 140 RDP kicks and screens ranging from a drawn
+	   frame to black, which makes every experiment unfalsifiable.  Counting
+	   instructions instead pins the slice boundaries to the emulated program,
+	   so the same ROM replays the same slice sequence.
+
+	   The countdown is decremented ONLY by rsp_budget_check(), which the JIT
+	   emits at every 32-instruction boundary inside a block and at every
+	   intra-block label (loop top), so it is a pure function of the executed
+	   control flow.  A wall-clock backstop still exists so a pathological
+	   path that never reaches a check cannot hold the emulation thread, but
+	   it sits far above any real slice so it cannot perturb the sequence.
+
+	   ROUND 18: the countdown unit is the CHECK, not a fabricated instruction
+	   count.  A check is one deterministic event in the emulated program, so
+	   "N checks per slice" is exactly reproducible run to run, and it is
+	   directly measurable against wall time -- the plugin logs checks and
+	   microseconds per slice, which is how the size gets calibrated back to
+	   the 2 ms of RSP work the 64DD route was tuned on.  `rsp_budget_wall_hit`
+	   records whether a slice ended on the wall backstop instead, so a run
+	   whose sequence was perturbed by host timing can never be mistaken for a
+	   deterministic one. */
+	static long long s_rsp_budget_units = -1;      /* < 0: unlimited          */
+	static unsigned long long s_rsp_slice_units = 0; /* checks run this slice */
+	static volatile int s_rsp_budget_wall_hit = 0;
+	static std::chrono::steady_clock::time_point s_rsp_budget_hard_deadline = std::chrono::steady_clock::time_point::max();
+
+	/* Checks per host slice.  The round-17 build ran 1024 checks (262144
+	   countdown / 256) and the route died early with it: measured on the RP6
+	   (r18a, .fzxwork/r18a/slice_stats.py) a full 1024-check slice costs
+	   100 us of wall time -- twenty times shorter than the 2 ms of RSP work
+	   the 64DD route was tuned on -- so the RSP got ~0.1 ms of work per pump
+	   and never finished a task before the guest overwrote the header again.
+	   20480 checks is that same 2 ms, but counted in emulated work instead of
+	   host time, so the slice boundaries stay identical run to run. */
+	#define RSP_BUDGET_SLICE_UNITS 20480LL
+	#define RSP_BUDGET_HARD_CAP_US 250000LL
 
 	extern "C" void rsp_set_budget_deadline_us(long long us)
 	{
+		s_rsp_slice_units = 0;
 		if (us > 0)
-			s_rsp_budget_deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(us);
+		{
+			s_rsp_budget_units = RSP_BUDGET_SLICE_UNITS;
+			s_rsp_budget_wall_hit = 0;
+			s_rsp_budget_hard_deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(RSP_BUDGET_HARD_CAP_US);
+		}
 		else
-			s_rsp_budget_deadline = std::chrono::steady_clock::time_point::max();
+		{
+			s_rsp_budget_units = -1;
+			s_rsp_budget_hard_deadline = std::chrono::steady_clock::time_point::max();
+		}
+	}
+
+	/* DIAG (read from DoRspCycles' exit log): how many budget checks this
+	   slice actually consumed, i.e. the emulated work the slice bought. */
+	extern "C" unsigned long long rsp_slice_units_now(void)
+	{
+		return s_rsp_slice_units;
+	}
+
+	/* DIAG: 1 when the wall backstop, not the check countdown, ended a slice.
+	   Any run that reports this is NOT a deterministic run. */
+	extern "C" int rsp_budget_wall_hit_now(void)
+	{
+		return s_rsp_budget_wall_hit;
 	}
 
 	static bool rsp_budget_expired()
 	{
-		return std::chrono::steady_clock::now() > s_rsp_budget_deadline;
+		if (s_rsp_budget_units < 0)
+			return false;
+		if (s_rsp_budget_units == 0)
+			return true;
+		if (std::chrono::steady_clock::now() > s_rsp_budget_hard_deadline)
+		{
+			s_rsp_budget_wall_hit = 1;
+			return true;
+		}
+		return false;
 	}
 
 	extern "C" int rsp_budget_expired_now(void)
@@ -262,11 +335,23 @@ extern "C"
 		return rsp_budget_expired();
 	}
 
-	/* Host-callable budget check used inside the JIT'd blocks (per-256
-	   instructions): returns true when the run budget expired. */
+	/* Host-callable budget check used inside the JIT'd blocks (per-32
+	   instructions and per loop iteration): returns true when the run budget
+	   expired.  This is the only place the countdown moves, so it is exactly
+	   proportional to the RSP work the slice did. */
 	static jit_uword_t rsp_budget_check()
 	{
-		return rsp_budget_expired() ? 1 : 0;
+		if (s_rsp_budget_units < 0)
+			return 0;
+		s_rsp_slice_units++;
+		if (s_rsp_budget_units > 0)
+		{
+			s_rsp_budget_units--;
+			if (s_rsp_budget_units > 0)
+				return 0;
+			s_rsp_budget_units = 0;
+		}
+		return 1;
 	}
 
 	/* DIAG: freeze heartbeat hook (defined in parallel.cpp). */

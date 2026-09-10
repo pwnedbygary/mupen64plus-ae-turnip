@@ -1814,3 +1814,105 @@ Plain-game regression: every round-17 change is inside a runtime DD gate
 still the original single `gfx.processRDPList()` call and the new core globals
 are only written on the DD path. See `run_plain.sh` output in
 `.fzxwork/r17plain/`.
+
+## UPDATE 2026-09-10 (goal round 18) — **preemption is deterministic now, and the memory wipe that ends every run is a 30-million-transfer RSP runaway**
+
+### 1. Goal 1 of round 17 is done: the RSP slice budget is emulated work, not wall time
+
+`rsp_jit.cpp`'s host-run budget counted *checks* now (`RSP_BUDGET_SLICE_UNITS`,
+decremented once per JIT-emitted budget check -- one per 32 instructions and
+one per intra-block label).  The wall-clock backstop is still there as a hang
+guard but is set far above any real slice, and `rsp_budget_wall_hit` records
+whether it ever fired: **in every run measured this round it never did**
+(`.fzxwork/r18a/slice_stats.py`: 2044 slices, 0 wall hits).
+
+Result, two runs of the same binary 50 s in (`r17f` vs `r17g`, then `r18d` vs
+`r18e`): `c_spint` 21/21, `c_exc` 18635/18635, `c_exc_int` 18633/18633,
+`c_raise` 18129/18129, identical `imem_bad` latch, identical `FRAME`/`RDPKICK`
+counters.  The five-run scatter of round 17 (245/3/2/140 RDP kicks) is gone.
+
+Calibration (`slice_stats.py`): a full 1024-check slice costs **100 us** of wall
+time, i.e. the round-17 slice was ~0.1 ms of RSP work, **twenty times shorter**
+than the 2 ms the DD route was tuned on.  The default is now **20480 checks**
+(measured 12.1 ms median -- the checks/ms ratio varies ~6x with the code mix,
+so the slice is sized by emulated work, deliberately, and the wall time follows).
+
+### 2. That one change put the machine in its best state yet
+
+| @50 s, same ROM/disk | r18a (1024 checks) | r18b (20480 checks) |
+|---|---|---|
+| `raise_bits SP` / `c_spint` | 21 | **194** |
+| `raise_bits VI` | 2993 | **9947** |
+| `dmas` (SP DMA count) | 44 | **388** |
+| gfx task loads (`t1gfx`) | 0 | **1** |
+| `RDPKICK n` | 0 | **229** (last kick `start=0x00010000 end=0x00010870`, a real list) |
+
+### 3. The real killer: a runaway RSP DMA that wipes all of RDRAM
+
+r18b's watchdog RAM dump came back with **1023 of 1024 8 KB blocks identical** --
+all 8 MB of RDRAM holding one repeated 8 KB block.  That block is 64DD disk data
+(its ` RSP Gfx ucode F3DLX.Rej ... 1998 Nintendo` banner matches `F-Zero X.ndd`
+at `0xB22000` in word-swapped form).  The guest then executed the fill as
+instructions -- `0x00010001` is a COP1 `MOVF` -- and burned **32.5 million
+nested COP1-unusable exceptions** at pc `0x80000664` (`COP1SNAP2/3`, guest
+`__osException` vector `0x80000180` also overwritten by the fill).
+
+The RSP-side DMA trace (`r14_ring` -> `wd_dmatr.txt`) names the mechanism: the
+run issued **29 923 608** SP transfers in one session.  Once the ucode's
+display-list pointer walks into the fill, its DMA length register climbs
+without bound (`len=0800,0808,0810,0818,...`) and the transfers mask into RDRAM
+through the `& 0x7FFFFC` wrap in `rsp_dma_write()`, stamping the same source
+data over the whole address space.  The trace's last entries write
+`dst=281b2e80` -- an address register that has left RDRAM entirely, which the
+plugin's own `MTC0` mask never clamps on the accumulated side
+(`*cr[DMA_DRAM] = dest` after `dest += length + skip`).
+
+### 4. Round-18 fix: refuse transfers whose address has left RDRAM (DD-gated)
+
+Verified (`r18d` vs `r18e`, same guarded build, two runs):
+
+| @50 s | r18b (no guard) | r18d | r18e |
+|---|---|---|---|
+| RDRAM dump | **wiped** (1023/1024 blocks identical) | varied | varied |
+| `c_exc` (nested COP1 storm) | **32 551 330** | 18 744 | 18 766 |
+| `c_vi_evt` / `c_vi_ack` | 9947 / 277 (starved) | 2945 / 2946 | 2954 / 2955 |
+| `RDPKICK n` | 229 | **607** | **607** |
+| screen (`shotstat.py`) | YAVG 32 (the fill) | YAVG 5.3 == round 13's known-good `shot_fix_95s.png` profile | same |
+
+and the latch itself is byte-identical in both guarded runs:
+
+```
+WILD dir=RD pc=0fc4 dram=00fffff8 mem=00000920 len=06d8 cnt=0 skip=0
+     status=00000040 imem=900100de 001913c0 0c000487 035b1820
+     dmem0=00000000 fc0=def7ffff ff0=00000000 f0=000006cf
+```
+
+i.e. the ucode is at IMEM `0x0fc4` -- inside F3DEX2's display-list fetch helper --
+holding real ucode code, while its DMA address register has walked to the end of
+the 16 MB address space, and DMEM `0xFC0` reads `0xdef7ffff` (a clobbered
+header, not a task type).  So the walk is already lost by the time it leaves
+RDRAM; refusing the transfer is containment, and `wd_wild.txt` is now the exact
+falsifiable record of *where* it is lost.
+
+`rsp/cp0.cpp`: `r14_wild_check()` latches the first transfer with
+`dram_addr > 0x7FFFFF` into `wd_wild.txt` (pc, both addresses, length/count/skip,
+SP_STATUS, IMEM[0..3], DMEM 0/0xF0/0xFC0/0xFF0) and refuses it; the read path
+returns `MODE_CHECK_FLAGS` so the slice ends immediately, the write path simply
+does not transfer.  Gated on the runtime presence callback
+(`rsp_ares_budget_enabled()`), so plain carts keep the original code path.
+This does not make the game work -- it stops one bad walk from destroying the
+machine, and it names the exact ucode pc where the walk goes wild.
+
+### 5. Next
+
+The machine is reproducible again and the failure is named, so the display-list
+walk can be attacked directly: resume from `wd_wild.txt`'s wild pc `0x0fc4`,
+recover the k0/data_ptr the ucode was walking (DMEM `0xF0` is `0x6cf` -- a
+DMEM-internal FIFO pointer -- while `0xFF0` reads 0, i.e. the header's
+`data_ptr` is *gone*), and compare against what the guest's task struct actually
+held.  Determinism note: the *slice* is deterministic (0 wall-backstop hits, an
+identical latch in both runs) but the number of host clock-ms between two
+pumps is not, so counters can drift by a few units between runs (1643 vs 1644
+`c_task`, 607 vs 607 `RDPKICK`) -- treat runs as comparable, not bit-identical.
+The frame protocol (goal 3) is unchanged: `MI_INTR_DP` still never survives to
+the core's DD-gated conversion (`wd_c_dp_consumed` 0, `raise_bits DP=0`).

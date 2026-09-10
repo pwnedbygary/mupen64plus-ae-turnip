@@ -435,6 +435,68 @@ extern "C"
 	}
 
 #ifdef PARALLEL_INTEGRATION
+	/* ------------------------------------------------------------------
+	   ROUND 18: runaway-DMA containment and latch (64DD route only).
+
+	   Measured on the RP6 (r18b, .fzxwork/r18b/): once the F3DEX2 ucode's
+	   display-list pointer has been corrupted it walks the 0x00010001 fill
+	   as if it were a command list, and the SP DMA length register climbs
+	   without bound (`len=0800,0808,0810,...` in wd_dmatr.txt).  The run
+	   issued **29.9 million** SP transfers -- every one of them masked into
+	   RDRAM by the & 0x7FFFFC wrap in rsp_dma_write/rsp_dma_read -- which
+	   filled all 8 MB of RDRAM with a single repeated 8 KB block taken from
+	   the 64DD disk image (verified byte-level: 1023 of 1024 8 KB blocks
+	   identical, block content found in F-Zero X.ndd), destroying the
+	   guest's code.  The guest then executed the fill as instructions
+	   (0x00010001 = a COP1 MOVF) and burned 32.5 million nested COP1
+	   "unusable" exceptions at pc 0x80000664 -- a state the emulator can
+	   never come back from.
+
+	   Real hardware would corrupt memory the same way, but a machine that
+	   stays debuggable is worth more than one that replicates the
+	   corruption exactly: the first transfer whose address register has left
+	   RDRAM is latched (once, into wd_wild.txt) and every such transfer is
+	   refused, returning MODE_CHECK_FLAGS so the core yields the slice
+	   immediately instead of letting the walk run on.
+
+	   DD GATE (user rule 2026-09-05): this is active only while the runtime
+	   presence callback reports a disk, so plain carts execute the original
+	   path byte for byte and their DMA behaviour is untouched. */
+	#define DD_DRAM_LIMIT 0x7FFFFFu
+	static volatile uint32_t r14_wild_n = 0;      /* refusals, RAM only     */
+	static uint32_t r14_wild_first[6] = {0,0,0,0,0,0}; /* pc, dest, src, len, cnt, skip */
+
+	static int r14_wild_check(RSP::CPUState* rsp, unsigned dir, uint32_t dram_addr,
+	                          uint32_t mem_addr, uint32_t length, unsigned count, uint32_t skip)
+	{
+		if (!rsp_ares_budget_enabled() || dram_addr <= DD_DRAM_LIMIT)
+			return 0;
+		if (r14_wild_n == 0)
+		{
+			FILE* f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_wild.txt", "w");
+			r14_wild_first[0] = rsp->pc & 0xfff;
+			r14_wild_first[1] = dram_addr;
+			r14_wild_first[2] = mem_addr;
+			r14_wild_first[3] = length;
+			r14_wild_first[4] = count;
+			r14_wild_first[5] = skip;
+			if (f)
+			{
+				fprintf(f, "WILD dir=%s pc=%03x dram=%08x mem=%08x len=%04x cnt=%u skip=%u "
+				           "status=%08x imem=%08x %08x %08x %08x dmem0=%08x fc0=%08x ff0=%08x f0=%08x\n",
+				        dir ? "WR" : "RD", rsp->pc & 0xfff, dram_addr, mem_addr,
+				        (unsigned)length, count, (unsigned)skip,
+				        *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS],
+				        rsp->imem[0], rsp->imem[1], rsp->imem[2], rsp->imem[3],
+				        rsp->dmem[0], rsp->dmem[0xfc0 / 4], rsp->dmem[0xff0 / 4],
+				        rsp->dmem[0x0f0 / 4]);
+				fclose(f);
+			}
+		}
+		r14_wild_n++;
+		return 1;
+	}
+
 	static int rsp_dma_read(RSP::CPUState *rsp)
 	{
 		uint32_t length_reg = *rsp->cp0.cr[CP0_REGISTER_DMA_READ_LENGTH];
@@ -468,6 +530,11 @@ extern "C"
 
 		r12_record(rsp, 2, dest, source, length, count, skip);
 		r14_record(rsp, 2, dest, source, length, count, skip);
+
+		/* ROUND-18: refuse the transfer if the ucode's DMA address register
+		   has left RDRAM (runaway walk -- see r14_wild_check). */
+		if (r14_wild_check(rsp, 0, source, dest, length, count, skip))
+			return MODE_CHECK_FLAGS;
 
 		/* ROUND-15: first fetch out of the low 1MB (guest zero page / the
 		   boot framebuffer fill) -- capture the full RSP state once. */
@@ -537,6 +604,14 @@ extern "C"
 
 		r12_record(rsp, 1, dest, source, length, count, skip);
 		r14_record(rsp, 1, dest, source, length, count, skip);
+
+		/* ROUND-18: refuse the transfer if the ucode's DMA address register
+		   has left RDRAM (runaway walk -- see r14_wild_check).  This is the
+		   path the 29.9-million-transfer wipe used.  The caller ignores this
+		   function's result, so refuse by simply not transferring; the
+		   deterministic slice budget still ends the runaway's slice. */
+		if (r14_wild_check(rsp, 1, dest, source, length, count, skip))
+			return;
 
 #ifdef INTENSE_DEBUG
 		fprintf(stderr, "DMA WRITE: (0x%x <- 0x%x) len %u, count %u, skip %u\n", dest & 0x7ffffc, source & 0x1ffc,

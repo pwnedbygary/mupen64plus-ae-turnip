@@ -37,6 +37,10 @@ void DebugMessage(int level, const char *message, ...)
 
 extern "C" void rsp_set_budget_deadline_us(long long us);
 extern "C" int rsp_budget_expired_now(void);
+/* ROUND-18 DIAG: emulated work (budget checks) this slice consumed, and whether
+   the wall-clock backstop -- not the deterministic countdown -- ended it. */
+extern "C" unsigned long long rsp_slice_units_now(void);
+extern "C" int rsp_budget_wall_hit_now(void);
 
 namespace RSP
 {
@@ -488,6 +492,11 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 		   2 ms slice is what makes the DD path progress at all, so it stays
 		   in force for every task type. */
 		rsp_set_budget_deadline_us(dd_mode ? 2000 : 0);
+		/* ROUND-18 DIAG: wall time this slice costs, paired in the exit log with
+		   the budget checks it consumed (see rsp_slice_units_now).  This is the
+		   only clock read on this path -- one per DoRspCycles, never per
+		   instruction. */
+		const auto wd_slice_t0 = std::chrono::steady_clock::now();
 
 		int wd_budget_yield = 0;
 		{
@@ -582,12 +591,15 @@ extern "C" void rsp_watchdog_tick(unsigned pc_lo)
 			if (!rf) rf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_rsp.txt", "a");
 			if (rf && wd_rsp_log_n < WD_RSP_LOG_MAX)
 			{
+				const long long wd_slice_us = std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now() - wd_slice_t0).count();
 				wd_rsp_log_n++;
-				fprintf(rf, "RSPTASK ms=%lld seq=%u EXIT pc=%04x status=%08x irq=%u sem=%08x timed=%d\n",
+				fprintf(rf, "RSPTASK ms=%lld seq=%u EXIT pc=%04x status=%08x irq=%u sem=%08x timed=%d units=%llu us=%lld wall=%d\n",
 					wd_now_ms(),
 					RSP::cpu.get_state().sr[31], RSP::cpu.get_state().pc & 0xfff,
 					*RSP::rsp.SP_STATUS_REG, *RSP::cpu.get_state().cp0.irq & 1,
-					*RSP::rsp.SP_SEMAPHORE_REG, RSP::SP_STATUS_TIMEOUT);
+					*RSP::rsp.SP_SEMAPHORE_REG, RSP::SP_STATUS_TIMEOUT,
+					rsp_slice_units_now(), wd_slice_us, rsp_budget_wall_hit_now());
 				fflush(rf);
 			}
 		}
