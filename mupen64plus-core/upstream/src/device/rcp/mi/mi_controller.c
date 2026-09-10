@@ -79,10 +79,27 @@ void poweron_mi(struct mi_controller* mi)
 }
 
 
+/* ROUND-13 DD DIAG: the DP (RDP-done) delivery chain, guest side.
+
+   parallel-RDP raises the DP interrupt by writing *gfx.MI_INTR_REG |= 0x20
+   DIRECTLY (mupen64plus-video-parallel/upstream/parallel_imp.cpp:215), so it
+   never passes through raise_rcp_interrupt/signal_rcp_interrupt and is
+   invisible to wd_c_raise_bits[].  These two counters close that hole from the
+   guest's end: a read of MI_INTR with the DP bit set is the guest's interrupt
+   handler noticing it, and a write to MI_INIT_MODE with the clear-DP bit
+   (0x800) is the guest's DP handler acknowledging it.  Audio/VI/PI/SP are the
+   control: those counters climb at 60/s on the stalled machine, so the DP pair
+   freezing pins the loss on the RDP completion itself. */
+volatile uint32_t wd_c_mi_rd_dp = 0;   /* guest read MI_INTR with DP set   */
+volatile uint32_t wd_c_dp_ack = 0;     /* guest cleared the DP interrupt   */
+
 void read_mi_regs(void* opaque, uint32_t address, uint32_t* value)
 {
     struct mi_controller* mi = (struct mi_controller*)opaque;
     uint32_t reg = mi_reg(address);
+
+    if (g_dev.dd.idisk != NULL && reg == MI_INTR_REG && (mi->regs[MI_INTR_REG] & MI_INTR_DP))
+        wd_c_mi_rd_dp++;
 
     *value = mi->regs[reg];
 }
@@ -99,6 +116,7 @@ void write_mi_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
     case MI_INIT_MODE_REG:
         if (update_mi_init_mode(&mi->regs[MI_INIT_MODE_REG], value & mask) != 0)
         {
+            if (g_dev.dd.idisk != NULL) wd_c_dp_ack++;
             clear_rcp_interrupt(mi, MI_INTR_DP);
         }
         break;

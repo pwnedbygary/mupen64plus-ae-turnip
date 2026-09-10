@@ -1467,9 +1467,36 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
             wd_cpuw_latch_addr, wd_cpuw_latch_val, wd_cpuw_latch_mask,
             wd_cpuw_imem_latch_addr, wd_cpuw_imem_latch_val);
         fprintf(f, "%s imem_bad=%u word=%08x %08x %08x %08x fc0=%08x pc=%08x status=%08x count=%08x dmas=%u\n",
-            tag, wd_imem_bad, wd_imem_bad_word[0], wd_imem_bad_word[1],
-            wd_imem_bad_word[2], wd_imem_bad_word[3], wd_imem_bad_fc0,
+            tag, wd_imem_bad, wd_imem_bad_word[0], wd_imem_bad_word[1],            wd_imem_bad_word[2], wd_imem_bad_word[3], wd_imem_bad_fc0,
             wd_imem_bad_pc, wd_imem_bad_status, wd_imem_bad_count, wd_imem_bad_spdma);
+    }
+    /* ROUND 13: the frame protocol.  A task-load is classified by the type word
+       in the OSTask the guest DMAd into DMEM 0xFC0 (1=gfx, 2=audio); the RDP
+       kick is the ares RSP's `mtc0 DPC_END` reaching this core's
+       ProcessRdpList wrapper.  Guest thread state (round 12): sGameThread
+       blocked in osRecvMesg(&D_800DCAC8) for message 0x2A == waiting for
+       EVENT_MESG_DP == waiting for MI_INTR_DP.  If gfx loads == 0 the guest
+       never submitted a frame; if gfx loads > 0 but kicks == 0 the RSP never
+       reached DPC_END; if kicks > 0 the RDP ran and the interrupt is what is
+       being lost. */
+    {
+        extern volatile uint32_t wd_hdr_type_n[4], wd_c_gfx_load, wd_c_audio_load;
+        extern volatile uint32_t wd_c_task_etype[4];
+        extern volatile uint32_t wd_c_rdp_kick, wd_c_sp_status_wr, wd_c_sp_sig_wr;
+        extern volatile uint32_t wd_hdr_ring_n, wd_spw_ring_n;
+        extern uint32_t wd_rdp_last_start, wd_rdp_last_end, wd_rdp_last_mi, wd_rdp_last_sp;
+        fprintf(f, "%s FRAME loads t0=%u t1gfx=%u t2aud=%u t3=%u entrytype t0=%u t1=%u t2=%u t3=%u\n",
+            tag, wd_hdr_type_n[0], wd_hdr_type_n[1], wd_hdr_type_n[2], wd_hdr_type_n[3],
+            wd_c_task_etype[0], wd_c_task_etype[1], wd_c_task_etype[2], wd_c_task_etype[3]);
+        fprintf(f, "%s RDPKICK n=%u last start=%08x end=%08x mi=%08x sp_status=%08x spwr=%u sigwr=%u\n",
+            tag, wd_c_rdp_kick, wd_rdp_last_start, wd_rdp_last_end, wd_rdp_last_mi,
+            wd_rdp_last_sp, wd_c_sp_status_wr, wd_c_sp_sig_wr);
+        {
+            extern volatile uint32_t wd_c_mi_rd_dp, wd_c_dp_ack, wd_c_signal, wd_c_raise;
+            extern volatile uint32_t wd_c_dp_consumed;
+            fprintf(f, "%s DPCHAIN mi_rd_dp=%u dp_ack=%u dp_consumed=%u core_signal=%u core_raise=%u\n",
+                tag, wd_c_mi_rd_dp, wd_c_dp_ack, wd_c_dp_consumed, wd_c_signal, wd_c_raise);
+        }
     }
 }
 
@@ -1617,6 +1644,33 @@ static void wd_stall_probe(const char* path)
             fprintf(f, "\n");
         }
     }
+    /* ROUND 13: the last 32 task loads (DMEM 0xFC0 header copies) and the last
+       16 guest SP_STATUS writes, oldest first.  ring idx/serial name the task
+       (ucode == 0x807505C0 / ucode_data == 0x80779860 is gspF3DEX2_fifo, i.e. a
+       gfx task; ucode == 0x80768E60 is aspMain, i.e. audio). */
+    {
+        extern volatile uint32_t wd_hdr_type_n[4], wd_c_gfx_load, wd_c_audio_load;
+        extern volatile uint32_t wd_hdr_ring_n, wd_spw_ring_n;
+        extern uint32_t wd_hdr_ring[32][8], wd_spw_ring[16][2];
+        uint32_t i, start = wd_hdr_ring_n;
+        fprintf(f, "TASKRING n=%u gfxn=%u audn=%u\n", (unsigned)wd_hdr_ring_n,
+                (unsigned)wd_c_gfx_load, (unsigned)wd_c_audio_load);
+        for (i = 0; i < 32; i++)
+        {
+            const uint32_t* e = wd_hdr_ring[(start + i) & 31u];
+            if (e[0] == 0 && e[1] == 0 && e[2] == 0) continue;
+            fprintf(f, "  T seq=%u type=%u ucode=%08x ucdata=%08x data=%08x status=%08x pc=%08x raw=%08x\n",
+                e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
+        }
+        start = wd_spw_ring_n;
+        fprintf(f, "SPWRING n=%u\n", (unsigned)wd_spw_ring_n);
+        for (i = 0; i < 16; i++)
+        {
+            const uint32_t* e = wd_spw_ring[(start + i) & 15u];
+            if (e[0] == 0 && e[1] == 0) continue;
+            fprintf(f, "  W val=%08x pc=%08x\n", e[0], e[1]);
+        }
+    }
     /* live RSP memory: DMEM then IMEM (sp.mem layout: DMEM 0, IMEM 0x1000) */
     fprintf(f, "SPMEM\n");
     fwrite(g_dev.sp.mem, 1, SP_MEM_SIZE, f);
@@ -1682,6 +1736,20 @@ static void wd_full_dump(const char* path, uint32_t pc){
         wd_c_cmp_int, wd_c_vi_evt, wd_c_vi_ack,
         wd_c_raise_bits[0], wd_c_raise_bits[1], wd_c_raise_bits[2],
         wd_c_raise_bits[3], wd_c_raise_bits[4], wd_c_raise_bits[5]);
+    /* ROUND 13: the frame protocol, one line, so the 8MB image is
+       self-describing (see wd_print_snap for what each number means). */
+    {
+        extern volatile uint32_t wd_hdr_type_n[4], wd_c_gfx_load, wd_c_audio_load;
+        extern volatile uint32_t wd_c_task_etype[4];
+        extern volatile uint32_t wd_c_rdp_kick, wd_c_sp_status_wr, wd_c_sp_sig_wr;
+        extern uint32_t wd_rdp_last_start, wd_rdp_last_end, wd_rdp_last_mi, wd_rdp_last_sp;
+        extern volatile uint32_t wd_c_mi_rd_dp, wd_c_dp_ack;
+        fprintf(f, "FRAMEPROTO loads t0=%u gfx=%u aud=%u t3=%u entry t1=%u t2=%u rdpkick=%u kick_last=%08x..%08x mi=%08x spwr=%u sigwr=%u dp_rd=%u dp_ack=%u\n",
+            wd_hdr_type_n[0], wd_hdr_type_n[1], wd_hdr_type_n[2], wd_hdr_type_n[3],
+            wd_c_task_etype[1], wd_c_task_etype[2], wd_c_rdp_kick,
+            wd_rdp_last_start, wd_rdp_last_end, wd_rdp_last_mi,
+            wd_c_sp_status_wr, wd_c_sp_sig_wr, wd_c_mi_rd_dp, wd_c_dp_ack);
+    }
     dd_trace_dump(f);
     fclose(f);
     /* Round 6: also write the small "what is still moving" probe.  The 8MB

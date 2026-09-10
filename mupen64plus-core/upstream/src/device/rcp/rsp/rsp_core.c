@@ -57,6 +57,38 @@ uint32_t wd_hdr_src[16];               /* source words, before the copy      */
 uint32_t wd_hdr_dst[16];               /* DMEM 0xFC0 words, after the copy   */
 volatile uint32_t wd_hdr_same = 0, wd_hdr_diff = 0;
 
+/* ---------------------------------------------------------------------------
+   ROUND-13 DD DIAG: where does the gfx/DP frame protocol break?
+
+   Round 12 decoded the stalled guest exactly: sGameThread (the EK frame/gfx
+   thread, prio 10) is blocked in osRecvMesg(&D_800DCAC8) waiting for message
+   0x2A, which sys_main.c:396 only sends when the main thread (prio 99)
+   receives EVENT_MESG_DP -- i.e. when the guest's DP handler dispatches
+   OS_EVENT_DP -- i.e. only when MI_INTR_DP reaches the CPU.  The RSP path
+   delivers that bit through rsp_info.ProcessRdpList (the ares RSP's
+   `mtc0 DPC_END` -> plugin cp0.cpp -> this core's wrapper -> parallel-RDP,
+   which sets MI_INTR_REG |= DP).  Three numbers decide where the chain dies,
+   and none of them existed before this round:
+
+     wd_hdr_type_n[1]  -- was an M_GFXTASK (DMEM 0xFC0 type 1) ever loaded?
+     wd_c_rdp_kick     -- did the ucode ever reach `mtc0 DPC_END`?
+     wd_c_sp_*         -- what SP_STATUS/yield traffic does the guest emit?
+
+   Counters only: no file I/O on any hot path.  Everything is printed by the
+   watchdog dump (cached_interp.c wd_print_snap / wd_full_dump). */
+volatile uint32_t wd_hdr_type_n[4] = {0, 0, 0, 0};  /* task loads by type    */
+volatile uint32_t wd_c_task_etype[4] = {0, 0, 0, 0}; /* do_SP_Task entry type */
+volatile uint32_t wd_c_gfx_load = 0, wd_c_audio_load = 0;
+volatile uint32_t wd_hdr_ring_n = 0;
+uint32_t wd_hdr_ring[32][8];  /* seq,type,ucode,ucode_data,data,status,pc,resv */
+volatile uint32_t wd_spw_ring_n = 0;
+uint32_t wd_spw_ring[16][2];  /* last SP_STATUS writes: value, guest pc      */
+volatile uint32_t wd_c_sp_status_wr = 0, wd_c_sp_sig_wr = 0;
+/* Written by the core-side ProcessRdpList wrapper (plugin/plugin.c). */
+volatile uint32_t wd_c_rdp_kick = 0;
+volatile uint32_t wd_c_dp_consumed = 0;   /* DP bits converted to CP0 events */
+uint32_t wd_rdp_last_start = 0, wd_rdp_last_end = 0, wd_rdp_last_mi = 0, wd_rdp_last_sp = 0;
+
 /* ROUND 11 DD DIAG: CPU writes into SP memory (write_rsp_mem), counted and
    latched in memory only; and the first moment the RSP's IMEM is observed to
    hold the game's cleared-buffer fill pattern.  All of it is printed by the
@@ -151,6 +183,28 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
             wd_hdr_seq = wd_c_spdma;
             for (k = 0; k < 16; k++)
                 wd_hdr_src[k] = ((uint32_t*)(void*)dram)[((dma->dramaddr & 0x7fffff) >> 2) + k];
+            /* ROUND 13: a header copy IS a task load (libultra's osSpTaskLoad
+               DMAs the 64-byte OSTask into DMEM 0xFC0).  Classify by the type
+               word read from the SOURCE, before the ucode can clobber it, and
+               keep the last 32 loads with the ucode/data pointers that name the
+               task (gspF3DEX2_fifoTextStart=0x807505C0 / gspF3DEX2_fifoDataStart
+               =0x80779860 for gfx, aspMainTextStart=0x80768E60 for audio). */
+            {
+                uint32_t ty = wd_hdr_src[0] & 3u;
+                uint32_t* e = wd_hdr_ring[wd_hdr_ring_n & 31u];
+                wd_hdr_type_n[ty]++;
+                if (ty == 1) wd_c_gfx_load++;
+                else if (ty == 2) wd_c_audio_load++;
+                e[0] = wd_hdr_seq;
+                e[1] = ty;
+                e[2] = wd_hdr_src[4];   /* ucode                        */
+                e[3] = wd_hdr_src[6];   /* ucode_data                   */
+                e[4] = wd_hdr_src[12];  /* data_ptr                     */
+                e[5] = (uint32_t)sp->regs[SP_STATUS_REG];
+                e[6] = (uint32_t)*r4300_pc(sp->mi->r4300);
+                e[7] = wd_hdr_src[0];   /* raw type word                */
+                wd_hdr_ring_n++;
+            }
         }
     }
     if (dma->dir == SP_DMA_READ)
@@ -331,6 +385,21 @@ static void fifo_pop(struct rsp_core* sp)
 
 static void update_sp_status(struct rsp_core* sp, uint32_t w)
 {
+    /* ROUND 13 DD DIAG (counters only): the EK frame protocol hands the RSP a
+       gfx task, asks it to yield (SP_SET_SIG0/SIG1 forms), resumes it, and only
+       then expects the DP interrupt.  Record the SP_STATUS write stream so a
+       stall dump shows whether the guest ever gets past `osSpTaskStartGo`, and
+       whether the SIG0/SIG1 yield handshake happens at all. */
+    if (g_dev.dd.idisk != NULL)
+    {
+        uint32_t* e = wd_spw_ring[wd_spw_ring_n & 15u];
+        wd_c_sp_status_wr++;
+        if (w & 0xc00u) wd_c_sp_sig_wr++;   /* clear/set SIG0 (YIELD)   */
+        if (w & 0x3000u) wd_c_sp_sig_wr++;  /* clear/set SIG1 (YIELDED) */
+        e[0] = w;
+        e[1] = (uint32_t)*r4300_pc(sp->mi->r4300);
+        wd_spw_ring_n++;
+    }
     /* ROUND-7 DD DIAG: identify the guest code that drives the 20 RSP
        starts/second.  osSpTaskLoad and osSpTaskStartGo are the only libultra
        functions that write SP_STATUS in the clear-halt/clear-broke form, and
@@ -582,6 +651,15 @@ extern volatile uint32_t wd_c_sp_int_evt;
 void do_SP_Task(struct rsp_core* sp)
 {
     if (g_dev.dd.idisk != NULL) wd_c_do_sp_task++;
+    if (g_dev.dd.idisk != NULL)
+    {
+        /* ROUND 13: which task type the core *thinks* it is running.  The
+           header is clobbered by the ucode after the first slice, so this is a
+           lower bound per task -- the authoritative per-task classification is
+           wd_hdr_type_n[] above (taken from the task-load DMA source). */
+        uint32_t et = ((uint32_t*)sp->mem)[0xfc0 / 4];
+        wd_c_task_etype[et & 3u]++;
+    }
     uint32_t save_pc = sp->regs2[SP_PC_REG] & ~0xfff;
     /* Entry SP_STATUS — distinguish "ucode yielded during THIS run" (was
        running at entry, HALT set by the plugin's poll-yield at exit) from
@@ -712,6 +790,10 @@ void do_SP_Task(struct rsp_core* sp)
        bit is cleared there), so the stock path is bit-for-bit unchanged. */
     if (g_dev.dd.idisk != NULL && (sp->mi->regs[MI_INTR_REG] & MI_INTR_DP))
     {
+        /* ROUND 13: count every DP bit this block converts.  Zero here while
+           wd_c_rdp_kick climbs would mean the RDP is being kicked but the
+           video plugin is not reaching the guest's DPC_END. */
+        wd_c_dp_consumed++;
         sp->mi->regs[MI_INTR_REG] &= ~MI_INTR_DP;
         if (sp->dp->dpc_regs[DPC_STATUS_REG] & DPC_STATUS_FREEZE)
         {
@@ -792,8 +874,46 @@ void do_SP_Task(struct rsp_core* sp)
         sp->mi->regs[MI_INTR_REG] &= ~MI_INTR_SP;
     }
 
-    sp->regs[SP_STATUS_REG] &=
-        ~(SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT);
+    /* ROUND 13, 64DD ROUTE ONLY — leave the RSP *HALTED* whenever a task is
+       still in flight.
+
+       libultra's osSpTaskLoad() begins with
+
+           while (__osSpSetPc(SP_IMEM_START) == -1) {}
+           s32 __osSpSetPc(u32 pc) { if (!(IO_READ(SP_STATUS_REG) & SP_STATUS_HALT)) return -1; ... }
+
+       i.e. the guest will spin forever unless SP_STATUS_HALT is set.  On the
+       stock route that is guaranteed by rsp_interrupt_event(), which sets
+       TASKDONE|BROKE|HALT -- but only `if (!sp->rsp_task_locked)`, and on the
+       64DD route every incomplete task is locked by design (host-budget yield:
+       rsp_core.c above; ucode yield: the block above).  The unconditional
+       stock clear below then wiped HALT and nothing ever set it again, so the
+       guest deadlocked the whole machine in that one spin loop.
+
+       Measured on the RP6 (round 13, wd_stall.txt): the dynarec block ring was
+       2048/2048 blocks at 0x80746418 == osSpTaskLoad+0xbc, i.e. exactly this
+       loop; CP0 COUNT froze with it, so no VI/AI/SP event ever fired again and
+       rsp_dd_background_pump() (driven from the recompiler's interrupt hook)
+       stopped with it -- a hard deadlock, not a slow-down.  SP_STATUS was
+       0x00000040 (INTR_BREAK only, HALT clear) with the RSP parked at
+       SP_PC=0x040015c0 inside the gfx ucode.
+
+       HALT-set is also the truthful hardware state: the RSP is between slices,
+       not executing.  TASKDONE stays clear (the task is NOT done) and BROKE
+       stays clear (it did not break), so osSpTaskYielded()/the guest's state
+       machine see an unfinished, resumable task; the resume path is the
+       guest's own Sched_SpTaskResumeGfx() -> osSpTaskStart() (which clears
+       HALT) or rsp_dd_background_pump(). */
+    if (g_dev.dd.idisk != NULL && sp->rsp_task_locked)
+    {
+        sp->regs[SP_STATUS_REG] &= ~(SP_STATUS_TASKDONE | SP_STATUS_BROKE);
+        sp->regs[SP_STATUS_REG] |= SP_STATUS_HALT;
+    }
+    else
+    {
+        sp->regs[SP_STATUS_REG] &=
+            ~(SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT);
+    }
 }
 
 /* 64DD ROUTE ONLY: background pump for an unfinished RSP task.
@@ -824,7 +944,13 @@ void rsp_dd_background_pump(void)
     if (g_dev.dd.idisk == NULL) return;               /* plain carts: inert */
     wd_check_imem_sane(&g_dev.sp);
     if (!g_dev.sp.rsp_task_locked) return;            /* no task in flight   */
-    if (g_dev.sp.regs[SP_STATUS_REG] & (SP_STATUS_HALT | SP_STATUS_BROKE)) return;
+    if (g_dev.sp.regs[SP_STATUS_REG] & SP_STATUS_BROKE) return;
+    /* ROUND 13: a task that do_SP_Task left suspended (HALT set, not BROKE,
+       still locked) is resumable -- that HALT is what keeps the guest's
+       osSpTaskLoad() from deadlocking.  Clear it for this slice only: the
+       plugin's DoRspCycles() refuses to run while HALT is set, and do_SP_Task
+       re-sets it on the way out while the task is still unfinished. */
+    g_dev.sp.regs[SP_STATUS_REG] &= ~SP_STATUS_HALT;
     if ((++n & 3u) != 0) return;                      /* amortize the clock  */
     clock_gettime(CLOCK_MONOTONIC, &now);
     if (last.tv_sec != 0) {

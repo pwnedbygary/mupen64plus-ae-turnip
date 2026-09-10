@@ -539,6 +539,36 @@ static int rsp_is_dd_present(void)
     return (g_dev.dd.idisk != NULL) ? 1 : 0;
 }
 
+/* ---------------------------------------------------------------------------
+   ROUND-13 DD DIAG: count the RDP kicks that come from the RSP side.
+
+   Every RDP command list produced by the gfx ucode is handed to the video
+   plugin exactly here: the ares RSP executes the ucode's `mtc0 DPC_END`, its
+   cp0.cpp calls RSP::rsp.ProcessRdpList, and that pointer is this core's
+   rsp_info.ProcessRdpList.  parallel-RDP then raises the DP interrupt by
+   writing *gfx.MI_INTR_REG |= 0x20 -- a DIRECT write to g_dev.mi's register,
+   so it is invisible to the raise/signal counters in mi_controller.c (which
+   only see core-originated interrupts).  Without this wrapper there was no
+   way to tell "the ucode never reached DPC_END" from "the RDP ran but the
+   guest never saw the interrupt" -- the two have completely different fixes.
+
+   Counting is DD-gated; the wrapped call is exactly what the pointer was
+   before, so plain games are behaviourally unchanged (one extra tail call). */
+static void rsp_process_rdp_list(void)
+{
+    if (g_dev.dd.idisk != NULL)
+    {
+        extern volatile uint32_t wd_c_rdp_kick;
+        extern uint32_t wd_rdp_last_start, wd_rdp_last_end, wd_rdp_last_mi, wd_rdp_last_sp;
+        wd_c_rdp_kick++;
+        wd_rdp_last_start = g_dev.dp.dpc_regs[DPC_START_REG];
+        wd_rdp_last_end = g_dev.dp.dpc_regs[DPC_END_REG];
+        wd_rdp_last_mi = g_dev.mi.regs[MI_INTR_REG];
+        wd_rdp_last_sp = g_dev.sp.regs[SP_STATUS_REG];
+    }
+    gfx.processRDPList();
+}
+
 static m64p_error plugin_start_rsp(void)
 {
     /* fill in the RSP_INFO data structure */    rsp_info.RDRAM = (unsigned char *)mem_base_u32(g_mem_base, MM_RDRAM_DRAM);
@@ -565,7 +595,7 @@ static m64p_error plugin_start_rsp(void)
     rsp_info.CheckInterrupts = EmptyFunc;
     rsp_info.ProcessDlistList = gfx.processDList;
     rsp_info.ProcessAlistList = audio.processAList;
-    rsp_info.ProcessRdpList = gfx.processRDPList;
+    rsp_info.ProcessRdpList = rsp_process_rdp_list;
     rsp_info.ShowCFB = gfx.showCFB;
     /* ares forceSynchronize + runtime DD query, wired for every game:
        the parallel-RSP plugin keys its ares-derived work (yield protocol,
