@@ -1914,6 +1914,22 @@ static void wd_stall_probe(const char* path)
             fprintf(f, " %08x", wd68_pcp_ring[(wd68_pcp_n - n68 + i) & 63u]);
         fprintf(f, "\n");
     }
+    /* ROUND-69: the dispatch trace -- samples taken while the guest PC was
+       inside __osDispatchThread: pc, __osRunQueue, __osRunningThread,
+       sAudioThread.state, sAudioThread saved EPC.  Reconstructs the lost
+       context switch from the inside (HANDOFF 4c). */
+    {
+        extern uint32_t wd69_disp_ring[64][5];
+        extern volatile uint32_t wd69_disp_n;
+        uint32_t n69 = wd69_disp_n < 64 ? wd69_disp_n : 64;
+        fprintf(f, "WD_DISPDSP n=%u\n", wd69_disp_n);
+        for (uint32_t i = 0; i < n69; i++)
+        {
+            const uint32_t* e = wd69_disp_ring[(wd69_disp_n - n69 + i) & 63u];
+            fprintf(f, "  D pc=%08x runq=%08x running=%08x aud_state=%08x aud_epc=%08x\n",
+                    e[0], e[1], e[2], e[3], e[4]);
+        }
+    }
     /* ROUND 49: SP MEMORY IN ONE LINE.
        Until now the only way to see this was the raw 8 KiB image in the big
        dump (SPMEM, a bare fwrite), which needs a python pass to read -- so the

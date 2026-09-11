@@ -138,6 +138,64 @@ existing watchdog probe. The AUDIO thread's thread-struct state
 watch.** Also still open from §4: the libleo presence check (STATUS low 16
 bits must be 0), non-instant PI DMA, and the DD RTC seeding.
 
+### 4c. R69 MEASURED ADDENDUM (2026-09-11 15:45): the attached “DD LOADING” screen is the same post-reboot scheduler stall; dispatch state is internally inconsistent
+
+The RP6 capture supplied at `15:45:43` (the attached screenshot with the
+64DD/DD LOADING artwork) is **not a return to the old pre-r66 audio-slice
+stall**. The installed debug APK was updated at `15:05:39`, matching the
+locally built APK; its packaged parallel-RSP library contains the r66 markers
+(`pcsync`, `sppc`, and `r66_budget_exit_pc` diagnostics). The on-device
+`files/wd_stall.txt` and `files/iplram_wd.bin` were written at `15:45`, the
+same run as the screenshot. The picture is therefore the DD boot's retained
+loading artwork after its soft reboot, not proof that the first loading phase
+did not complete.
+
+The `wd_stall.txt` header reproduces the r67/r68 terminal state exactly:
+
+* `c_asic=10604`, `c_task=2`, and `c_spint=0`; the DD transfer and the one
+  audio task happened, but no SP completion was delivered after the reboot.
+* `imem_bad=1`; both SP banks are all `0x00010001` (`imem_fill=1024`), with
+  `sp_status=000000c0` and `sp_pc=04001024`. The r67 safety latch has
+  correctly stopped the background pump (`DELTA5 PUMP n=0`), rather than
+  executing the boot wipe as RSP instructions.
+* The CPU is stationary at `0x806f32ec`. Disassembly of the captured RAM
+  proves that instruction is `b 0x806f32ec` in
+  `Idle_ThreadEntry+0x134`; it is an intentional idle loop, not a loading
+  routine. The 300-ms stall window has zero SP/DD/PI/pump deltas.
+
+The r69 offline disassembly sharpens the scheduler diagnosis. The current
+dump's dynarec trace contains `AudioThread_CreateTaskImpl`,
+`Audio_SetupCreateTask`, `Audio_ThreadEntry`, `osRecvMesg`,
+`__osEnqueueAndYield`, `__osDispatchThread+0xc`, and the exception path. So
+the AUDIO thread **did run and created the task**; it is not simply starved
+before its entry point. `__osDispatchThread` at `0x80746f64` pops
+`__osRunQueue`, stores the selected pointer in `__osRunningThread`, writes
+`OS_STATE_RUNNING` at offset `0x10`, restores the context, and finishes with
+`eret` at `0x807470dc`.
+
+The stable terminal thread words do not agree with that contract:
+
+```
+__osRunQueue      @ 80771e18 = 80771e10  (the priority -1 tail; queue empty)
+__osRunningThread @ 80771e20 = 80799670  (IDLE, priority 0)
+sIdleThread       @ 80799670: state=2 (RUNNABLE), PC=806f32ec
+sAudioThread      @ 807999d0: state=4 (RUNNING),  PC=80750384
+                                      queue=80771e18, next=80799670
+```
+
+Correction to §4b: the `0004` at AUDIO+0x10 is the big-endian `state` field
+(`OS_STATE_RUNNING`), **not** its flags field. Since the run queue is already
+empty, AUDIO was removed from it; yet the globally recorded running thread is
+IDLE and the CPU is executing IDLE's loop. That is an impossible stable
+libultra state after a completed dispatch. The leading hypothesis is now a
+post-reboot context-switch divergence in the CPU dynarec around
+`__osDispatchThread`'s restore/`eret` path (or a lost update in that exact
+sequence), rather than a DD data-path, RSP-pump, or loading-renderer defect.
+It remains a hypothesis until one dispatch is recorded instruction-by-
+instruction, including the selected thread, the stores to `__osRunningThread`
+and `state`, the EPC supplied to `eret`, and the address returned by the
+dynarec's `ERET_new` path.
+
 ### 5. Honest status against the objective
 
 **Real, user-visible progress for the first time in the campaign**: the

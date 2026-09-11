@@ -325,6 +325,13 @@ volatile uint32_t wd65w_n = 0;
    boundary), printed by the stall probe as WD_PCREG. */
 uint32_t wd68_pcp_ring[64];
 volatile uint32_t wd68_pcp_n = 0;
+/* ROUND-69: the dispatch trace.  While the guest PC is inside
+   __osDispatchThread (0x80746f64..0x807470e0), every pump fire records the
+   four words that decide the impossible-scheduler-state question (HANDOFF
+   4c): the run-queue head, __osRunningThread, sAudioThread.state (+0x10) and
+   sAudioThread's saved EPC (+0x11c).  Printed by the stall probe. */
+uint32_t wd69_disp_ring[64][5];
+volatile uint32_t wd69_disp_n = 0;
 
 static void wd65_watch_check(struct rsp_core* sp, unsigned site)
 {
@@ -1491,6 +1498,20 @@ void rsp_dd_background_pump(void)
            directly.  Printed by the stall probe (WD_PCREG). */
         wd68_pcp_ring[wd68_pcp_n & 63u] = (uint32_t)*r4300_pc(g_dev.sp.mi->r4300);
         wd68_pcp_n++;
+        {
+            uint32_t gpc = wd68_pcp_ring[(wd68_pcp_n - 1) & 63u];
+            if (gpc >= 0x80746f64u && gpc <= 0x807470e0u)
+            {
+                const uint32_t* dram = (const uint32_t*)(void*)g_dev.ri.rdram->dram;
+                uint32_t* e = wd69_disp_ring[wd69_disp_n & 63u];
+                e[0] = gpc;
+                e[1] = dram[(0x80771e18 & 0x7fffff) >> 2];   /* __osRunQueue */
+                e[2] = dram[(0x80771e20 & 0x7fffff) >> 2];   /* __osRunningThread */
+                e[3] = dram[((0x807999d0 + 0x10) & 0x7fffff) >> 2];  /* sAudioThread.state */
+                e[4] = dram[((0x807999d0 + 0x11c) & 0x7fffff) >> 2]; /* sAudioThread saved EPC */
+                wd69_disp_n++;
+            }
+        }
         wd_c_pump_n++;
     }
 
