@@ -108,6 +108,36 @@ removed the fill-as-code distraction but the guest's own blocking remains.
 4. Keep the r66/r67 fix set under regression: Mario Tennis (plain),
    emumode=1 CI baseline, cart-hack support64dd=false.
 
+### 4b. R68 MEASURED ADDENDUM: the logo stall is the WHOLE OS idle -- and the scheduler never dispatches a runnable thread
+
+The r68 probe (committed `c56611778`: the pump samples the guest PC at every
+block boundary into a 64-entry ring, printed by the stall probe as
+`WD_PCREG`) answers §4.1: at the logo stall the distribution is ~100%
+`0x806f32ec` = **Idle_ThreadEntry+0x134 (the OS idle/dispatch loop)** with
+rare `0x80747094` (__osException region). The boot code is NOT blocked
+mid-init -- **the whole guest OS is idle**: every thread parked (MAIN on
+EVENT_MESG_SP with `c_spint=0`, AUDIO at osStartThread+0x134, GAME on
+[D_800DCAC8], the LEO thread on LEOcommand_que, RESET on gResetMesgQueue),
+VI at 60/s, nothing runnable... **except the AUDIO thread (prio 20) IS
+marked runnable on `__osRunQueue` (`flags=0004`, `queue=0x80771e18`) while
+the prio-0 IDLE thread keeps running** -- and libultra's Idle_ThreadEntry IS
+the dispatcher. A runnable higher-priority thread that never gets dispatched
+points at either (a) a broken run-queue linkage (the thread's `queue` pointer
+says __osRunQueue but the list's head is the prio -1 SYSTEM dummy -- i.e. it
+was dequeued for dispatch and the switch never completed), or (b) the
+dispatch comparison never re-runs because the dispatcher is wedged at
+Idle_ThreadEntry+0x134 waiting for an interrupt that only *raises* (VI) but
+never *schedules*.
+
+**r69 therefore: disassemble Idle_ThreadEntry+0x134's block and
+__osDispatchThread's selection loop from the r67 RDRAM dump
+(`.fzxwork/r67/iplram_force.bin`, word-swapped -- use ram_tools), and log one
+`__osDispatchThread` pass (the queue walk + the chosen thread) with the
+existing watchdog probe. The AUDIO thread's thread-struct state
+(`0x807999d0`) and the queue head at `0x80771e18` are the two words to
+watch.** Also still open from §4: the libleo presence check (STATUS low 16
+bits must be 0), non-instant PI DMA, and the DD RTC seeding.
+
 ### 5. Honest status against the objective
 
 **Real, user-visible progress for the first time in the campaign**: the
