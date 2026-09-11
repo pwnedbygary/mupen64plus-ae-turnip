@@ -346,6 +346,47 @@ static void r19_imem_note(RSP::CPUState* rsp, uint32_t dst, uint32_t src, uint32
 			fprintf(f, " %08x", rsp->dmem[k]);
 		}
 		fprintf(f, "\n");
+		/* ROUND 41: WHO PUT THE OVERLAY ADDRESS IN THE REGISTER.
+
+		   Round 40 named the wrong value: the gfx overlay is DMA'd from
+		   0x753AF8 on the first pass and from 0xEA65D8 = 0x753AF8 + 0x752AE0
+		   (the ucode base) on the second -- an address that had the base
+		   added twice.  Round 40 also proved it is NOT the plugin doing the
+		   add on delivery (the R40_NORM normalisation fires and changes
+		   nothing), and the two candidate sources -- the DMEM 0x2E0/0x2E8
+		   descriptor and the OSTask header -- both hold *other* values at
+		   the instant of the load.  So the add happens in the RSP's own
+		   code, in a register, and the only way to see it is the register
+		   file plus the whole of DMEM at the moment the transfer is issued.
+
+		   DMEM is dumped in full (1024 words) so the word that holds the
+		   *offset* (0x1018 the first time, 0x753AF8 the second) can be
+		   found by diffing one latch against the next, and all 32 GPRs are
+		   dumped so the add itself -- base in one register, offset in
+		   another, sum being transferred -- is readable directly.  Still
+		   DD-gated and still at most eight times per run. */
+		fprintf(f, "  gpr");
+		for (k = 0; k < 32; k++)
+		{
+			if ((k & 7) == 0)
+				fprintf(f, "\n   r%02d:", k);
+			fprintf(f, " %08x", rsp->sr[k]);
+		}
+		fprintf(f, "\n  rdram750000:");
+		for (k = 0; k < 0x4000 / 4; k++)
+		{
+			if ((k & 7) == 0)
+				fprintf(f, "\n   %06x:", 0x750000 + k * 4);
+			fprintf(f, " %08x", rsp->rdram ? rsp->rdram[(0x750000 + k * 4) / 4] : 0u);
+		}
+		fprintf(f, "\n  dmemall");
+		for (k = 0; k < 0x1000 / 4; k++)
+		{
+			if ((k & 7) == 0)
+				fprintf(f, "\n   %03x:", k * 4);
+			fprintf(f, " %08x", rsp->dmem[k]);
+		}
+		fprintf(f, "\n");
 	}
 	fclose(f);
 }
@@ -448,11 +489,12 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
 {
 	FILE* f;
 	/* ROUND 39: DD route only.  This is reached on every DPC_START/DPC_END
-	   write of every game; bounded (16 records), but a plain cart should not
-	   pay any file I/O for a 64DD diagnostic. */
+	   write of every game.  ROUND 51: the cap was 16, which stopped long
+	   before the failure; the plugin's own window log dies at flush ~151,
+	   so the record must cover the whole run.  Raised to 400. */
 	if (!rsp_ares_budget_enabled())
 		return 0;
-	if (r19_cmd_n >= 16)
+	if (r19_cmd_n >= 400)
 		return 0;
 	f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_cmd.txt",
 	          r19_cmd_n ? "a" : "w");
@@ -636,7 +678,7 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
    absolute value is produced LATER, inside the task, not by this delivery.
    Kept as a switch with the note attached so the next round starts from the
    measurement instead of repeating it. */
-#define R40_NORM 0
+#define R40_NORM 1
 
 static unsigned r21_save_n = 0, r21_yield_n = 0, r21_log_n = 0;
 /* Forced yields whose DMEM 0xFC0 header no longer looked like an OSTask, so the
@@ -1774,6 +1816,57 @@ void r31_arm_k0_repair(unsigned want);
 		r36_prev_dst = dst; r36_prev_src = src; r36_prev_len = len;
 	}
 
+	/* ------------------------------------------------------------------
+	   ROUND 51 PROBE: WHO WRITES THE OSTask HEADER IN DMEM?
+
+	   MEASURED (r50 freeze dump `wd_r30dm.bin`, verified again this round):
+	   at the deadlock DMEM 0xF90..0xFFF is 28 words of 0x00010001 -- the
+	   whole OSTask header copy at 0xFC0 (type/flags/ucode/ucode_data/
+	   dram_stack/output_buff/data_ptr) is gone.  The plugin's own RDP
+	   window log then shows it fed a buffer whose base is exactly
+	   `0x00010001 & 0x00FFFFF8` = 0x00010000, i.e. the ucode built its RDP
+	   pointer out of the destroyed header.
+
+	   A READ DMA is the only way RDRAM filler can land on the header, and
+	   one candidate is already on record in the r36hdr ring:
+	   `RD dst=00000fb0 src=004114f0 len=0020` -- 0xFB0 + 0x20 = 0xFD0,
+	   straight across the header.  This probe names such a transfer exactly
+	   (pc + all four DMA registers + the source words) instead of inferring
+	   it from a ring dump.
+
+	   Read-only, DD route only, capped at 24 entries. */
+	static unsigned r51_hdr_n = 0;
+	static void r51_hdr_probe(RSP::CPUState* rsp, uint32_t dst, uint32_t src,
+	                          uint32_t len, unsigned count, uint32_t skip)
+	{
+		FILE* f;
+		uint32_t d = dst & 0x1fffu;
+		if (!rsp_ares_budget_enabled() || r51_hdr_n >= 24u)
+			return;
+		if (d >= 0x1000u || d + len < 0xfc4u)
+			return;                    /* does not reach the OSTask copy */
+		r51_hdr_n++;
+		f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r51hdr.txt",
+		          (r51_hdr_n == 1u) ? "w" : "a");
+		if (f == NULL)
+			return;
+		fprintf(f, "R51HDR n=%u pc=%03x dst=%08x src=%08x len=%04x cnt=%u skip=%u\n",
+		        r51_hdr_n, rsp->pc & 0xfffu, dst, src, (unsigned)len, count, (unsigned)skip);
+		fprintf(f, "  src0=%08x %08x %08x %08x\n",
+		        rsp->rdram[(src & 0x7ffffcu) >> 2], rsp->rdram[((src + 4) & 0x7ffffcu) >> 2],
+		        rsp->rdram[((src + 8) & 0x7ffffcu) >> 2], rsp->rdram[((src + 12) & 0x7ffffcu) >> 2]);
+		fprintf(f, "  dmem fb0=%08x fc0=%08x fc4=%08x fc8=%08x fcc=%08x fd0=%08x fd4=%08x "
+		           "fd8=%08x fdc=%08x fe0=%08x fe8=%08x ff0=%08x\n",
+		        rsp->dmem[0xfb0 / 4], rsp->dmem[0xfc0 / 4], rsp->dmem[0xfc4 / 4],
+		        rsp->dmem[0xfc8 / 4], rsp->dmem[0xfcc / 4], rsp->dmem[0xfd0 / 4],
+		        rsp->dmem[0xfd4 / 4], rsp->dmem[0xfd8 / 4], rsp->dmem[0xfdc / 4],
+		        rsp->dmem[0xfe0 / 4], rsp->dmem[0xfe8 / 4], rsp->dmem[0xff0 / 4]);
+		fprintf(f, "  gpr ra=%08x sp=%08x s3=%08x s4=%08x s6=%08x s7=%08x k0=%08x t8=%08x st=%08x\n",
+		        rsp->sr[31], rsp->sr[29], rsp->sr[19], rsp->sr[20], rsp->sr[22], rsp->sr[23],
+		        rsp->sr[26], rsp->sr[24], *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS]);
+		fclose(f);
+	}
+
 	static int rsp_dma_read(RSP::CPUState *rsp)
 	{
 		uint32_t length_reg = *rsp->cp0.cr[CP0_REGISTER_DMA_READ_LENGTH];
@@ -1803,6 +1896,10 @@ void r31_arm_k0_repair(unsigned want);
 		   ROUND 24.)
 		   DD route only: plain games keep the stock clamp exactly
 		   (user rule 2026-09-05). */
+		/* ROUND 49 A/B (negative): the DD route skips this clamp, so an
+		   overrunning transfer wraps.  Re-enabling the clamp was tested and
+		   changed NOTHING (window still grew to 47496 B, base still stuck at
+		   0x00010000), so the wrap is not the driver.  Left as upstream. */
 		if (!rsp_ares_budget_enabled() &&
 		    ((*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0xFFF) + length) > 0x1000)
 			length = 0x1000 - (*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0xFFF);
@@ -1817,6 +1914,8 @@ void r31_arm_k0_repair(unsigned want);
 		   START address for the descriptor normalisation (the first attempt
 		   tested the post-loop value and therefore never matched). */
 		const uint32_t r29_dma_dest0 = dest;
+		/* ROUND 51: name the transfer if it lands on the OSTask copy. */
+		r51_hdr_probe(rsp, dest, source, length, count, skip);
 
 		/* ==================================================================
 		   ROUND 30 FIX (DD route only) -- REPAIR THE LOST k0 AT THE FETCH.
@@ -2164,7 +2263,10 @@ void r31_arm_k0_repair(unsigned want);
 		if (rsp_ares_budget_enabled() && (r29_dma_dest0 & 0x1000u) == 0u &&
 		    (r29_dma_dest0 & 0xFFFu) == 0u && (length + skip) >= 0x420u)
 		{
-			static const unsigned r29_off[4] = { 0x2e0u, 0x2e8u, 0x410u, 0x418u };
+			/* ROUND 41: added 0x280/0x288 for ucode 0x752AE0 which uses
+			   DMEM 0x280/0x288 (not 0x2E0/0x2E8) as overlay descriptors.
+			   Both pairs normalise identically. */
+			static const unsigned r29_off[6] = { 0x280u, 0x288u, 0x2e0u, 0x2e8u, 0x410u, 0x418u };
 			uint32_t r29_base = rsp->dmem[0xfd0 / 4];
 			if (r29_base >= 0x1000u && r29_base < 0x800000u)
 			{
@@ -2205,40 +2307,55 @@ void r31_arm_k0_repair(unsigned want);
 				   into DMEM 0, the entry adds the base a second time, and the
 				   overlay load goes wild.
 
-				   THE REPAIR: normalise the four descriptors back to
-				   ucode-relative form at the moment a ucode_data-sized READ
-				   delivers them into DMEM 0 -- i.e. before the entry can read
-				   them.  `while (v >= base) v -= base` recovers the relative
-				   value for any number of accidental adds, and is a NO-OP on a
-				   genuine fresh load, whose descriptors are the ucode_data
-				   constants 0xF80/0x1018/0x1188/0x250 and are far below any
-				   ucode base.  This is round 29's stated fix; round 29's CODE
-				   implemented a different rule (force the latched constants
-				   back) whose write-back round 32 correctly disabled after
-				   measuring that the slots legitimately change -- the
-				   normalisation below preserves those changes, because it only
-				   removes the base, and only on delivery.
+				   THE REPAIR: normalise the descriptors back to ucode-relative
+				   form at the moment a ucode_data-sized READ delivers them into
+				   DMEM 0 -- i.e. before the entry can read them.
+				   `while (v >= base) v -= base` recovers the relative value for
+				   any number of accidental adds, and is a NO-OP on a genuine
+				   fresh load, whose descriptors are the ucode_data constants
+				   0xF80/0x1018 and are far below any ucode base.
+
+				   ROUND 41: the original r40 test (R40_NORM=1) normalised only
+				   DMEM 0x2E0/0x2E8/0x410/0x418 -- the descriptors of ucode
+				   0x7505C0 (task A).  But ucode 0x752AE0 (task B, the DD
+				   game's actual gfx ucode) uses DMEM 0x280/0x288 for its own
+				   overlay descriptors, which the round-40 normalisation never
+				   touched.  The wild DMA (0xEA65D8) was traced to the
+				   double-add at 0x288: 0x753AF8 + 0x752AE0 = 0xEA65D8.  Adding
+				   0x280/0x288 to r29_off closes this gap.
 
 				   DD-gated by rsp_ares_budget_enabled() (the core's runtime
 				   IsDDPresent()) like every other change in this file, so plain
 				   carts keep the stock handler byte for byte.  R40_NORM=0
 				   restores the previous behaviour for one-build A/B. */
 				{
+					/* ROUND 41: the plain `while (v >= base)` loop from round 40
+					   also fires on LIVE ucode state at DMEM 0x2E0/0x2E8 that
+					   legitimately exceeds the base -- e.g. 0x07100D08 from the
+					   yield buffer's DMEM snapshot.  Eight subtractions still
+					   leave it above the threshold and corrupt it, which feeds
+					   stale addresses into the walk.  FIX: after subtracting base
+					   enough times, ACCEPT only if the result is below 0x2000 --
+					   the maximum overlay-text/data offset for any F3DZEX2 ucode.
+					   This catches any number of accidental base-adds (the loop
+					   runs up to 8 times) while rejecting all live data, whose
+					   residual after subtraction is still well above 0x2000. */
 					static unsigned r40_norm_ev = 0, r40_norm_w = 0;
 					unsigned r40_i, r40_ch = 0;
-					for (r40_i = 0; r40_i < 4u; r40_i++)
+					for (r40_i = 0; r40_i < 6u; r40_i++)
 					{
 						unsigned r40_idx = r29_off[r40_i] / 4u;
 						uint32_t r40_v = rsp->dmem[r40_idx];
+						uint32_t r40_try = r40_v;
 						unsigned r40_g = 0;
-						while (r40_v >= r29_base && r40_g < 8u)
+						while (r40_try >= r29_base && r40_g < 8u)
 						{
-							r40_v -= r29_base;
+							r40_try -= r29_base;
 							r40_g++;
 						}
-						if (r40_g)
+						if (r40_g && r40_try < 0x2000u)
 						{
-							rsp->dmem[r40_idx] = r40_v;
+							rsp->dmem[r40_idx] = r40_try;
 							r40_ch++;
 						}
 					}
@@ -2252,8 +2369,9 @@ void r31_arm_k0_repair(unsigned want);
 							                 r40_norm_ev == 1u ? "w" : "a");
 							if (nf)
 							{
-								fprintf(nf, "R40NORM n=%u base=%08x src=%06x len=%05x ch=%u now %08x %08x %08x %08x\n",
+								fprintf(nf, "R40NORM n=%u base=%08x src=%06x len=%05x ch=%u now %08x %08x %08x %08x %08x %08x\n",
 								        r40_norm_ev, r29_base, source & 0xFFFFFFu, length, r40_ch,
+								        rsp->dmem[0x280 / 4], rsp->dmem[0x288 / 4],
 								        rsp->dmem[0x2e0 / 4], rsp->dmem[0x2e8 / 4],
 								        rsp->dmem[0x410 / 4], rsp->dmem[0x418 / 4]);
 								fclose(nf);

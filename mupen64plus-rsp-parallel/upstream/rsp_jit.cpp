@@ -565,14 +565,17 @@ extern "C"
 		   handful of times per task, so every change is logged -- the first
 		   run of this instrument capped each word at 12 and lost exactly the
 		   F3DEX2 task load it was built to see. */
-		static const unsigned offa[26] = {
+		static const unsigned offa[30] = {
 			0xFC0, 0xFC4, 0xFC8, 0xFCC, 0xFD0, 0xFD4, 0xFD8, 0xFDC,
 			0xFE0, 0xFE4, 0xFE8, 0xFEC, 0xFF0, 0xFF4, 0xFF8, 0xFFC,
-			0x2E0, 0x2E4, 0x2E8, 0x2EC,
-			0x410, 0x414, 0x418, 0x41C,
-			0xBF8, 0xBFC,
+			/* ROUND 51: 0xF90..0xFBF is the 48 bytes BELOW the OSTask copy
+			   and is where the 28-word 0x00010001 run actually starts
+			   (measured: every run's freeze dump has 0xF80 = 0/x0 and
+			   0xF90..0xFFF = 0x00010001).  It was never watched. */
+			0xF90, 0xF94, 0xF98, 0xF9C, 0xFA0, 0xFA4, 0xFA8, 0xFAC,
+			0xFB0, 0xFB4, 0xFB8, 0xFBC, 0xBF8, 0xBFC,
 		};
-		static uint32_t last[26];
+		static uint32_t last[30];
 		static unsigned last_im0 = 0, last_im1 = 0;
 		static unsigned prev_pc = 0;
 		static int init = 0;
@@ -580,9 +583,17 @@ extern "C"
 		auto &st = static_cast<CPU *>(cpu)->get_state();
 		unsigned i;
 
-		if (n >= 400 && nsw >= 60)
+		if (n >= 4000 && nsw >= 200)
 			return;
 
+		/* ROUND 51: the old cap (n >= 400) was exhausted by the 0x2E0/0x410
+		   descriptor churn within the first seconds, so the ONE transition
+		   this instrument exists to catch -- the header at 0xFC0..0xFFF
+		   turning into 0x00010001 -- was never logged.  Measured this round:
+		   the window log dies at flush 137 and the header is still a valid
+		   gfx task at that point; the all-0x00010001 header appears only
+		   afterwards.  The cap is raised 10x and the noisy descriptor tier is
+		   dropped (it is covered by the rdsc fields of wd_watch/wd_r25). */
 		/* Event B: the live ucode changed (a task load or an in-ucode swap).
 		   Logged as one block so the whole visible state travels together. */
 		if (init && (st.imem[0] != last_im0 || st.imem[1] != last_im1) && nsw < 60) {
@@ -652,7 +663,7 @@ extern "C"
 			last26 = st.sr[26];
 		}
 
-		for (i = 0; i < 26; i++) {
+		for (i = 0; i < 30; i++) {
 			uint32_t v = st.dmem[offa[i] >> 2];
 			if (!init) {
 				last[i] = v;

@@ -70,4 +70,8 @@ void raise_rcp_interrupt(struct mi_controller* mi, uint32_t mi_intr);
 void signal_rcp_interrupt(struct mi_controller* mi, uint32_t mi_intr);
 void clear_rcp_interrupt(struct mi_controller* mi, uint32_t mi_intr);
 
+/* ROUND 42: DD-route DP-interrupt delivery, wired to gfx_info.CheckInterrupts
+   (plugin.c).  Gated to the DD route; a no-op for plain carts. */
+void dd_check_interrupts(void);
+
 #endif

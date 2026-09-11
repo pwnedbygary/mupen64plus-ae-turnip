@@ -193,3 +193,33 @@ void clear_rcp_interrupt(struct mi_controller* mi, uint32_t mi_intr)
     r4300_check_interrupt(mi->r4300, CP0_CAUSE_IP2, mi->regs[MI_INTR_REG] & mi->regs[MI_INTR_MASK_REG]);
 }
 
+/* ROUND 42: DD-route DP-interrupt delivery.
+
+   The parallel-RDP raises the DP interrupt by writing
+   *gfx.MI_INTR_REG |= 0x20 DIRECTLY into the core's MI controller register
+   (plugin.c wires gfx_info.MI_INTR_REG to &g_dev.mi.regs[MI_INTR_REG]) and
+   then calls gfx.CheckInterrupts().  Upstream sets that to EmptyFunc
+   (plugin.c), so the DP bit is latched in MI_INTR_REG but the RCP CAUSE bit is
+   never raised and no CHECK_INT is ever queued -- the CPU's guest thread keeps
+   spinning on EVENT_MESG_DP (the r36-named post-load deadlock).  A faithful
+   model (Ares/Phobos MI::poll) re-consults the masked interrupt and pends the
+   RCP line to the CPU at the moment the DP raises it.
+
+   This mirrors that: re-check the masked interrupt so the RCP CAUSE bit is
+   latched and a CHECK_INT event is queued for the CPU thread to consume.
+   It does NOT run the guest handler here (that would be wrong on the RDP
+   thread); the CPU thread takes it on its next interrupt poll.  Gated to the
+   DD route (g_dev.dd.idisk != NULL) so plain carts keep the stock EmptyFunc
+   behaviour byte for byte. */
+void dd_check_interrupts(void)
+{
+    if (g_dev.dd.idisk == NULL)
+        return;
+
+    struct r4300_core* r4300 = &g_dev.r4300;
+    struct mi_controller* mi = &g_dev.mi;
+
+    r4300_check_interrupt(r4300, CP0_CAUSE_IP2,
+        mi->regs[MI_INTR_REG] & mi->regs[MI_INTR_MASK_REG]);
+}
+

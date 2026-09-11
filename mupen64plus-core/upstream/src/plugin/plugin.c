@@ -281,7 +281,14 @@ static m64p_error plugin_start_gfx(void)
     gfx_info.VI_V_BURST_REG = &(g_dev.vi.regs[VI_V_BURST_REG]);
     gfx_info.VI_X_SCALE_REG = &(g_dev.vi.regs[VI_X_SCALE_REG]);
     gfx_info.VI_Y_SCALE_REG = &(g_dev.vi.regs[VI_Y_SCALE_REG]);
-    gfx_info.CheckInterrupts = EmptyFunc;
+    /* ROUND 42: DD-route DP-interrupt delivery.  The parallel-RDP raises the DP
+       interrupt by writing *gfx.MI_INTR_REG |= 0x20 directly into the core MI
+       controller, then calls gfx.CheckInterrupts().  Upstream sets that to
+       EmptyFunc, so the RCP CAUSE bit is never latched and the CPU's guest
+       thread spins on EVENT_MESG_DP (the F-Zero X post-load deadlock).  Wire it
+       to the DD-gated re-check; plain carts get a no-op and keep stock
+       behaviour. */
+    gfx_info.CheckInterrupts = dd_check_interrupts;
 
     gfx_info.version = 2; //Version 2 added SP_STATUS_REG and RDRAM_SIZE
     gfx_info.SP_STATUS_REG = &g_dev.sp.regs[SP_STATUS_REG];

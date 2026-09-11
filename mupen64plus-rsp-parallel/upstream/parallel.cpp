@@ -534,6 +534,24 @@ static void r29_unfix_descriptors(void)
 
 		r33_last_pc = p;
 
+		/* ROUND 44 PROBE: is the hook even called, and what do the arming
+		   words hold?  Bounded to the first 200 calls. */
+		{
+			static unsigned pr = 0;
+			if (pr < 200u)
+			{
+				pr++;
+				FILE* pf = fopen(R30_FILE "wd_r44probe.txt", pr == 1u ? "w" : "a");
+				if (pf)
+				{
+					fprintf(pf, "R44PR n=%u pc=%03x fc0=%08x fd0=%08x dd=%d\n",
+					        pr, p, dm[0xfc0 / 4], dm[0xfd0 / 4],
+					        RSP::rsp.IsDDPresent ? (int)RSP::rsp.IsDDPresent() : -1);
+					fclose(pf);
+				}
+			}
+		}
+
 		/* ROUND 33: WHO SETS SIG0?  The F3DEX2 body tests SP_STATUS & 0x80 at
 		   IMEM 0x1A8 and, when it is set, takes the YIELD path (0xFAC -> the
 		   0x98-byte END overlay -> flush + save k0 to DMEM[0xBF8] + break).
@@ -664,12 +682,16 @@ static void r29_unfix_descriptors(void)
 		sr = RSP::cpu.get_state().sr;
 		snprintf(buf, sizeof(buf),
 		         "R30T n=%u pc=%03x k0=%08x k1=%08x t8=%08x t9=%08x at=%08x v0=%08x "
-		         "v1=%08x ra=%08x s3=%08x s4=%08x st=%08x f0=%08x fc4=%08x bf8=%08x "
+		         "v1=%08x ra=%08x s3=%08x s4=%08x s6=%08x s7=%08x st=%08x "
+		         "dpc=%08x dpe=%08x dps=%08x f0=%08x fc4=%08x bf8=%08x "
 		         "ff0=%08x fd0=%08x im0=%08x\n",
 		         r30_n, p, (uint32_t)sr[26], (uint32_t)sr[27], (uint32_t)sr[24],
 		         (uint32_t)sr[25], (uint32_t)sr[1], (uint32_t)sr[2], (uint32_t)sr[3],
-		         (uint32_t)sr[31], (uint32_t)sr[19], (uint32_t)sr[20],
-		         *RSP::rsp.SP_STATUS_REG, dm[0x0f0 / 4], dm[0xfc4 / 4],
+		         (uint32_t)sr[31], (uint32_t)sr[19], (uint32_t)sr[20], (uint32_t)sr[22], (uint32_t)sr[23],
+		         *RSP::rsp.SP_STATUS_REG,
+		         (uint32_t)*RSP::rsp.DPC_CURRENT_REG, (uint32_t)*RSP::rsp.DPC_END_REG,
+		         (uint32_t)*RSP::rsp.DPC_STATUS_REG,
+		         dm[0x0f0 / 4], dm[0xfc4 / 4],
 		         dm[0xbf8 / 4], dm[0xff0 / 4], dm[0xfd0 / 4],
 		         ((const uint32_t*)RSP::rsp.IMEM)[0]);
 		r30_line(buf);

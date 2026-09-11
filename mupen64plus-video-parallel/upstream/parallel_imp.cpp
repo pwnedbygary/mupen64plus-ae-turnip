@@ -76,6 +76,47 @@ static void r39_drop_note(uint32_t cur, uint32_t end, unsigned length, unsigned 
 	fclose(f);
 }
 
+/* ROUND 47: log EVERY ProcessRDPList call and the window it actually sees.
+   The RSP-block-boundary samples in the RSP trace cannot answer this: the EK
+   ucode kicks DPC_END and then spins on DPC_CURRENT, so a satisfied spin and a
+   never-delivered kick look identical there.  This is the plugin's own view. */
+#define R47_WIN_FILE "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r47win.txt"
+
+static void r47_win_note(uint32_t cur, uint32_t end, int length)
+{
+	static unsigned n = 0;
+	FILE* f;
+	if (n >= 400)
+		return;
+	n++;
+	f = fopen(R47_WIN_FILE, (n == 1) ? "w" : "a");
+	if (f == NULL)
+		return;
+	fprintf(f, "R47WIN n=%u cur=%08x end=%08x bytes=%d cmds=%d%s\n",
+	        n, cur, end, length, length > 0 ? length >> 3 : 0,
+	        length <= 0 ? " EMPTY" : "");
+	fclose(f);
+}
+
+/* ROUND 48: the incomplete-trailing-command branch. */
+#define R48_INC_FILE "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r48inc.txt"
+
+static void r48_inc_note(uint32_t cur, uint32_t end, int cmd_cur, int cmd_ptr, int cmd_length, uint32_t command)
+{
+	static unsigned n = 0;
+	FILE* f;
+	if (n >= 200)
+		return;
+	n++;
+	f = fopen(R48_INC_FILE, (n == 1) ? "w" : "a");
+	if (f == NULL)
+		return;
+	fprintf(f, "R48INC n=%u cur=%08x end=%08x cmd_cur=%d cmd_ptr=%d cmd_len=%d cmd=%02x "
+	           "leftover_cmds=%d\n",
+	        n, cur, end, cmd_cur, cmd_ptr, cmd_length, command, cmd_ptr - cmd_cur);
+	fclose(f);
+}
+
 static unique_ptr<RDP::CommandProcessor> frontend;
 static unique_ptr<Device> device;
 static unique_ptr<Context> context;
@@ -214,6 +255,7 @@ void vk_process_commands()
 		const uint32_t DP_END = *GET_GFX_INFO(DPC_END_REG) & 0x00FFFFF8;
 
 		int length = DP_END - DP_CURRENT;
+		r47_win_note(DP_CURRENT, DP_END, length);
 		if (length <= 0)
 			return;
 
@@ -337,6 +379,11 @@ void vk_process_commands()
 
 			if (cmd_ptr - cmd_cur - cmd_length < 0)
 			{
+				/* ROUND 48: does this branch fire?  If it does, the trailing
+				   command is DISCARDED while DPC_CURRENT is still advanced to
+				   DPC_END -- so the ucode re-sends it next flush and the window
+				   grows by one 8-byte command every time. */
+				r48_inc_note(DP_CURRENT, DP_END, cmd_cur, cmd_ptr, cmd_length, command);
 				*GET_GFX_INFO(DPC_START_REG) = *GET_GFX_INFO(DPC_CURRENT_REG) = *GET_GFX_INFO(DPC_END_REG);
 				return;
 			}

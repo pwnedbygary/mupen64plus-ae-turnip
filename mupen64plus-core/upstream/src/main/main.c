@@ -913,15 +913,31 @@ static void apply_speed_limiter(void)
 
     if(l_MainSpeedLimit && sleepTime > 0 && sleepTime < maxSleepNeeded*SpeedFactorMultiple)
     {
+        /* ROUND 57: account for the limiter.  It runs on the emulation thread
+           (new_vi <- gen_interrupt VI_INT), so its sleeps are the only reason
+           the core thread can be idle while the guest advances slowly; without
+           this total the two are indistinguishable in every other counter. */
+        extern volatile uint32_t wd_c_lim_calls, wd_c_lim_us, wd_c_lim_max, wd_c_vi_delay;
+        unsigned int slept_us = 0;
+        /* Gated to the DD route per the 2026-09-05 rule: plain carts take one
+           predictable branch and keep the stock limiter byte for byte. */
+        int wd_lim = (g_dev.dd.idisk != NULL);
+        wd_c_vi_delay = g_dev.vi.delay;
         while(sleepTime >= 0) {
-            SDL_Delay((unsigned int) sleepTime);
+            unsigned int ms = (unsigned int) sleepTime;
+            SDL_Delay(ms);
 
             CurrentFPSTime = SDL_GetTicks();
             elapsedRealTime = CurrentFPSTime - StartFPSTime;
             sleepTime = totalElapsedGameTime - elapsedRealTime;
+            slept_us += ms * 1000u;
+        }
+        if (wd_lim) {
+            wd_c_lim_calls++;
+            wd_c_lim_us += slept_us;
+            if (slept_us > wd_c_lim_max) wd_c_lim_max = slept_us;
         }
     }
-
 
 #if defined(PROFILE)
     timed_section_end(TIMED_SECTION_IDLE);

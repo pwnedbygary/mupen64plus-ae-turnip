@@ -1,6 +1,361 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
-## ROUND 40 (latest) -- THE CAMPAIGN WAS AIMED AT THE WRONG COMPONENT
+## ROUND 57 -- FOUND IT: THE DD-ROUTE RSP PUMP WAS EATING 95% OF THE CPU THREAD
+
+**The guest's emulated clock was running 11.3x slower than its own VI schedule
+because `rsp_dd_background_pump()` handed the emulation thread to the RSP for
+~95% of every 300 ms. Capping its duty cycle raised the guest clock from
+4.61 MHz to 48.67 MHz (10.6x) and made `cycles per VI` exactly `vi->delay`.**
+
+Two numbers, both ratios of counters sampled at the same instants, so they are
+phase-independent and directly comparable:
+
+| | pump uncapped (r57) | pump capped (r57c) |
+|---|---|---|
+| guest clock (dCOUNT/dt) | **4.61 MHz** | **48.67 MHz** |
+| VI rate | 64.5 /s | 60.0 /s |
+| **cycles per VI** | **71,470** | **811,090** |
+| `vi->delay` | 811,092 | 811,092 |
+
+`71,470` vs `811,092` means the guest was interrupted **11.3x more often than
+its own timebase allowed** -- it spent its whole budget servicing interrupts
+instead of running. With the cap, `811,090` == `vi->delay` to six digits: the
+guest's CP0 clock now advances exactly one VI period per VI. **That is the
+first time in this campaign that the emulated machine's timebase has been
+self-consistent.**
+
+### The measurement that found it
+
+Round 56's stated next step (time `handler->dma_read` / `pre_framebuffer_read`)
+was run and **refutes round 56's own hypothesis**: over a whole 6-minute run the
+PI handlers cost `rd_n=75 rd_us=15` (75 transfers, 15 microseconds total) and
+`wr_n=17884 wr_us=48092 wr_max=477` (48 ms in 6 minutes, worst single transfer
+477 us). The PI path is free; the "~71 ms between cart reads" was never in the
+DMA handler.
+
+What the new accounting *did* show, in one 300 ms window
+(`.fzxwork/r57b/t090_stall.txt`):
+
+```
+DELTA5 CORE state=1 d_utime=19 d_stime=0 (of 30 ticks/300ms) lim_calls=0 ...
+DELTA5 PUMP n=38 call=9 us=169870 max=250035 (core d_utime+d_stime=190000 us)
+```
+
+* core thread: 190 ms of CPU per 300 ms wall
+* `apply_speed_limiter()`: **never ran** (`lim_calls=0`) -- nothing is throttling
+* `rsp_dd_background_pump()` -> `do_SP_Task()`: **170 ms of those 190 ms**
+* worst single RSP slice: **250 ms**
+
+Also from the same window: `dynarec_gen_interrupt()` is called only ~125x/s
+(`PUMP n=38`/300 ms), which is why `c_ht` and `c_sample` are misleading as
+"block rate" counters -- there is no recompiler block counter in this tree.
+
+### Why the pump was the thief
+
+`rsp_dd_background_pump()` is called from `dynarec_gen_interrupt()`, i.e. from
+the CPU thread's per-block interrupt check (new_dynarec.c:3164). Its gate was a
+**fixed 3 ms floor** with a comment claiming "~40% RSP / 60% CPU" -- but it never
+measured what a slice costs. Each admitted slice ran `do_SP_Task()`, which took
+~19 ms (and up to 250 ms), so the real split was 95/5.
+
+### The fix (DD route only, already landed)
+
+`rsp_dd_background_pump()` now scales its gate to the *measured* cost of the
+previous slice: a new slice may start only once `RSP_DD_PUMP_DUTY` (2) times
+that cost has elapsed. The RSP still gets every slice it got before, just
+spread further apart, so the behaviour the pump exists for (keep an unfinished
+task running while `do_SP_Task` re-sets `SP_STATUS.HALT` on the way out) is
+preserved rather than removed. Measured effect: core 190 ms -> 110 ms per
+300 ms, pump 170 ms -> 97 ms, `lim_calls` still 0, **no change in guest
+behaviour** (cart-read progress over the first 90 s is 12087->12748 uncapped
+vs 12087->12750 capped).
+
+### What the guest is actually doing (unchanged, and NOT a deadlock)
+
+The PI ledger (new, kind 2 = `dma_pi_write` = `PI_WR_LEN` = libultra `OS_READ`
+= cart -> RDRAM, guest PC `0x8074C170` inside `__osEPiRawStartDma`) shows the
+guest reading **the whole 16 MB cartridge, 0x400 bytes at a time**, into a
+rolling ~1 MB RDRAM window (`dram` wraps at `0x36c550..0x472a10`, `cart` at
+`0x1098xxxx..0x109fxxxx`):
+
+```
+  2 109aaa90 0046e210 00000400 8074c170 5
+  2 109aae60 0046e610 00000400 8074c170 8
+```
+
+`wr_n` reached 17884 = **1.09 full cart passes**; the source/destination windows
+are identical at t150, t330 and t999 of the r57 run. So the guest is in a
+closed, cyclic read loop -- but it is *running*, not stalled: VI 60/s, AI 60/s,
+209 audio tasks completed, the screen is the static "NINTENDO 64DD" logo with
+`gfx=3` (only three gfx tasks ever).
+
+### Provenance / how to reproduce
+
+* Build: `GRADLE_USER_HOME=$PWD/.gradle_home ./gradlew :app:assembleDebug --offline`
+* Runs: `.fzxwork/r57_run.sh` (6 min, 5 samples), `r57b_run.sh` (uncapped, 90 s),
+  `r57c_run.sh` (capped, 90 s). Artifacts: `.fzxwork/r57/`, `r57b/`, `r57c/`.
+* New DD-gated instrumentation, all printed by the watchdog:
+  `wd_pir_add`/`PI LEDGER` (direction, cart, dram, length, guest PC, us),
+  `DELTA5 CORE` (core-thread utime/stime from `/proc/self/task/<tid>/stat`,
+  tid latched in `wd_attach()`), `DELTA5 PUMP`, `DELTA5 PI`.
+
+### NEXT ROUND (the question is now narrow)
+
+The guest clock is correct and 60% of the core is free, yet the cart-read rate
+stayed at ~10/s. **So the loop is paced by neither CPU nor the RSP** -- find
+what paces it with a 10/s heartbeat. First: re-measure `cycles per VI` and the
+read rate at `RSP_DD_PUMP_DUTY = 1` and `0.5` to see whether the RSP is still on
+the critical path at all; then check whether the guest's loop consumes a VI per
+iteration (5-6 VI per read is what the numbers suggest).
+
+## ROUND 56 -- ROUND 55'S CENTRAL CLAIM IS WRONG: THE GATE BYTE IS 1, NOT 0
+
+**Read this before round 55's section: its "the EK work thread never starts"
+result was an endianness error, and the `b .` it treated as the fault is the
+normal libultra boot-thread idle loop.** Everything below round 55 that depends
+on "the work thread never runs" is void; the rest of r55 (the 0x00010001
+identification, the byte-exact disk copy, the DELTA probe, the motor note)
+still stands.
+
+* **THE BYTE AT `0x8076C788` IS `0x01`.** mupen64plus keeps RDRAM byte-swapped:
+  the N64 byte at vaddr `A` is at `rdram[(A & ~3) + (3 - (A & 3))] == rdram[A ^ 3]`
+  (this is the same convention that makes the dump disassemble as big-endian
+  MIPS). The dump word at `0x8076C788` is `0x01000000`, so the byte `lb $t2,
+  -0x3878($t2)` loads is its **most significant** byte = `0x01`. Round 55 read
+  the *least* significant byte and concluded the gate was clear. It is set:
+  `beql $t2, $zero, 0x806F32E4` is **not taken**, the code falls through to
+  `jal 0x80750250` = `osStartThread(0x80799820)`.
+
+* **THEREFORE THE `b .` AT `0x806F32EC` IS NOT A FAULT.** Both paths (gate set
+  or clear) reach `osSetThreadPri(NULL, 0); b .` — it is the standard libultra
+  end-of-boot idiom: the boot thread drops to priority 0 and spins, and the
+  scheduler switches away whenever a higher-priority thread is runnable.
+  Sampling `epc == 0x806F32EC` only proves the CPU was in the idle thread at
+  that instant. **EPC is not diagnostic here, and round 55's "terminal state"
+  section is retracted in full.**
+
+* **THE EK WORK THREAD EXISTS AND IS BLOCKED ON ITS OWN QUEUE.** Thread census
+  read straight out of `r55/iplram_force.bin` (every `OSThread` whose `queue`
+  field points back at a `OSMesgQueue.mtqueue` that points at it, i.e. verified
+  in both directions):
+
+  | prio | thread struct | blocked on queue | slots | msgs consumed |
+  |------|---------------|------------------|-------|---------------|
+  | 254  | `0x807C3510`  | `0x807C46C0` (viEventQueue) | 5 | 0 |
+  | 250  | `0x8079FE98`  | `0x807A0848` | 1 | 0 |
+  | 150  | `0x807C20A0`  | `0x8079A090` | 64 | 34 |
+  | 149  | `0x807C4838`  | `0x807C5398` | 16 | 9 |
+  | 100  | `0x80799D30` id 7 | `0x8079A138` | 1 | 0 |
+  | **99** | **`0x80799820` id 3** | **`0x8079A120`** | 16 | 2 |
+  | 30   | `0x80799EE0` id 6 | `0x807C6E90` | 8 | 1 |
+  | 10   | `0x80799B80` id 5 | `0x8079A108` | 1 | 0 |
+
+  Thread id 3 — the one round 55 claimed "is never started" — is **started and
+  parked on a 16-slot queue having consumed 2 messages.** The whole game is
+  asleep waiting for messages; the CPU runs the prio-0 boot-thread idle loop
+  because nothing else is runnable. That is the actual failing state to attack.
+
+* **CORRECTION TO THE r55 SCRIPT COMMENT.** `.fzxwork/r55_run.sh` opens with
+  "the guest is in a 12,000/s 64DD ASIC loop (wd_stall c_asic/c_pi delta =
+  3677-3679 per 300ms at the freeze)". The r55 run measured `c_asic = 0`. The
+  comment is a pre-run hypothesis that was never reconciled with the FINDINGS.
+
+* **THE SCREEN IS A STATIC `NINTENDO 64DD` LOGO, AND THE MACHINE IS NOT
+  DEADLOCKED.** Two runs (`r56/runA_*`, `r56/runB_*`) captured the screen for
+  the first time: the 64DD boot logo, pixel-identical at 60 s and 90 s and
+  across runs (the FPS overlay is what changed the PNG hashes). The two runs
+  agree on **every** counter, so the earlier "run-to-run variance" was an
+  artefact. Three dumps inside one run (t45/t105/t165) show the DD trace ring
+  tail is a stream of `pi_end_of_dma_event` entries (ring kind 6, `a =
+  PI_CART_ADDR`) carrying **cart→RDRAM** transfers of **~960 bytes each at a
+  steady 14.3/s** (13.4 KB/s), with `PI_CART_ADDR` scanning a ~370 KB window of
+  the cart (`0x1098C000`→`0x109E6000`, rising then falling — not a monotone
+  sweep). In the same window `c_ht` = 14 k block dispatches/s, `c_asic=0`,
+  `dAI=17`, `dVI=18`: **the guest is idle 99.9 % of the time and the loader is
+  crawling, not hung.** Round 55's and 54's "freeze" readings must be replaced
+  by "slow loader on a static splash". Full detail: `.fzxwork/r56/FINDINGS.md`.
+* **THE CART DATA PATH IS WIRED CORRECTLY.** `cart_rom_dma_read()` is a no-op
+  in this tree (it only serves the writable-ROM hack), but that is *not* the
+  read path: cart→RDRAM goes `dma_pi_write` → `cart_dom3_dma_write` →
+  `cart_rom_dma_write` (`cart_rom.c:304/313`), which copies. Checked and
+  cleared.
+* **NEXT MEASUREMENT (do not guess).** Find the ~71 ms between two cart reads:
+  time `handler->dma_read/dma_write` and `pre_framebuffer_read`
+  (`pi_controller.c:81/135` — on parallel-RDP a dirty-page hit is a GPU
+  read-back) with `clock_gettime`, count FB read-back hits, and print both in
+  the watchdog line behind an opt-in flag, DD-route only.
+* **NEW DUMP CAPABILITY.** `GUESTVI`/`FRAMEPROTO` in `cached_interp.c` make the
+  8 MB image self-describing about the guest's own libultra state: the
+  ViManager pointer (`0x80773110`), `viEventQueue` at `0x807C46C0`, and the task
+  counters. Any future thread-state question can be answered from a dump alone.
+
+* **THE 64DD DRIVE-SLEEP NOTE STILL NEEDS ITS OWN TEST.** `reg[02] =
+  0x01180000` (DISK_PRES|MTR_N_SPIN|HEAD_RTRCT) with `reg[04] = 0` is exactly
+  what ares's drive state machine reaches while idle (`motorActive` ->
+  `motorStandby` -> `motorStop` are all *normal* transitions), so "asleep" is
+  not by itself evidence of a defect. ares's `Motor_Mode` timer is only armed
+  when `!standbyDelayDisable`, and in ares `io.data.bit(24)` is always 0 on a
+  16-bit `data`, so **ares never auto-sleeps a drive after a seek**. If the
+  in-tree auto-standby is to be changed, change it to match that, gate it to
+  `g_dev.dd.idisk != NULL`, and A/B it with two runs per side.
+
+## ROUND 55 -- THE FREEZE IS A GUEST `b .`; 0x00010001 IS THE DD'S OWN COMMAND WORD
+
+**Full detail: `.fzxwork/r55/FINDINGS.md`. Read it before trusting rounds 47-54.**
+
+Five results, all measured on this build with a new capability (a full dump
+actually taken *while frozen*, and a MIPS disassembler for it).
+
+* **`0x00010001 == DD_CMD_SEEK_READ` (`dd_controller.c:88`).** Rounds 47-51
+  built a whole theory on it being unexplained "RDRAM filler that a ucode DMA
+  read into IMEM". It is a stored constant: the 64DD ASIC's seek-read command
+  word, which the guest hammers into its LEO command buffer. **That theory is
+  dead.**
+
+* **THE TERMINAL STATE IS AN UNCONDITIONAL SELF-LOOP IN GUEST CODE.**
+  `iplram_force.bin` at the freeze PC is `1000ffff  b 0x806F32EC`, reached
+  immediately after `osSetThreadPri(NULL, 0)`. `epc = 0x806F32EC` in *both*
+  300 ms-apart stall samples. The enclosing function (prologue `0x806F31B8`)
+  sets the frame-buffer list, creates the VI manager, **creates `OSThread` id 3
+  (entry `0x806F2B04`, priority 99, stack `0x80795E70`) and SKIPS
+  `osStartThread` because the gate byte `0x8076C788 == 0`.** The thread that
+  owns five message queues and the dispatcher at `0x806F2F80` therefore never
+  runs.
+
+* **THE GUEST IS IDLE, NOT THRASHING, AT THE FREEZE.** Stall DELTA over 300 ms:
+  `c_asic=0 c_pi=4 c_genint=41 dVI=17`, `c_ht=4168`. So the 12 000/s
+  `DD_ASIC_CMD_STATUS` read storm in the DD trace ring is the **boot phase**,
+  not the frozen state — round 54's "the guest polls the ASIC for ever" is the
+  trace's tail read as if it were live.
+
+* **THE 64DD DRIVE IS ASLEEP AT THE FREEZE, AND THE IN-TREE MITIGATION MISSES
+  IT.** `reg[DD_ASIC_CMD_STATUS] = 0x01180000` = DISK_PRES|MTR_N_SPIN|HEAD_RTRCT
+  with `reg[DD_ASIC_BM_STATUS_CTL] = 0`. `dd_dv_int_handler` only keeps the
+  motor active when `BM_STATUS_RUNNING` is set — its own comment describes this
+  exact failure and it is not covered.
+
+* **THE EK IS DISK CODE AND IT ARRIVES BYTE-EXACT.** RDRAM `0x6F31B8` is not in
+  the cart (`F-Zero X (Japan).z64` offset `0x6F31B8` holds `a100014d…`); the
+  32 bytes at RDRAM `0x6F3280` are in `dd_disk.ndd` at `0x00A9B580` (big-endian
+  order), and the DD trace independently shows `lba=584 offset=00a9ab00`.
+  RDRAM `0x6F3280..0x707280` is a byte-exact word-swapped copy of ndd
+  `0x00A9B580..0x00AAF580` — **0 of 65 536 bytes differ.** The DD data path is
+  not corrupting the image.
+
+* **THE RSP IS PARKED.** `sp_pc=0x04001000` (IMEM 0), `SP_STATUS=0xC0`,
+  `rdpkick last start=end=00010000`, `mi=0x20` DP pending, and the whole run
+  submitted **3 gfx tasks vs 209 audio tasks**. Graphics stopped after three
+  tasks while audio kept going — downstream of the thread that never starts.
+
+**New capability:** `.fzxwork/mipsdis.py` disassembles the watchdog's 8 MB
+RDRAM dump (capstone MIPS32-LE). **`wd_force.flag` works** — `wd_thread` polls
+it every 10 ms; no round before 55 ever set it, which is why no round before 55
+had a dump of the frozen state or the DD trace ring.
+
+**Correction to my own round-51 note:** it claims `wd_pdma.txt` etc. "exist in
+no round directory from r44 onward". That is false — r51/r52/r53/r54 all have
+them (39 966/0/0/0 bytes). Only r44-r50 lack them, so the r49-specific
+conclusion still stands but the blanket statement did not.
+
+**Highest-value next step:** resolve the gate byte `0x8076C788` — nothing in the
+8 MB image writes it (the only instruction with immediate `0xC788` in the low
+half is the *load* at `0x806F32C8`), so either its writer was never loaded or it
+is a libultra/LEO global the boot path should have set. **Take two runs per
+configuration**: this build still alternates between a parked guest (r49,
+r52-r55) and an actively-cycling one (r48, r50, r51), so no single-run A/B here
+means anything.
+
+## ROUND 51 -- THE RECORD CORRECTED; THE CAUSAL DIRECTION REVERSED
+
+**Full detail: `.fzxwork/r51/FINDINGS.md`. Read it before trusting rounds 40-49.**
+
+Round 51 was spent re-verifying the previous round against primary artifacts.
+Four claims do not survive; two new ones are measured.
+
+* **ROUND 49'S CENTRAL EVIDENCE WAS STALE, NOT MEASURED.** Its `wd_pdma.txt`
+  ("the ucode's read DMA grows +8 per flush"), `wd_wild.txt` ("is EMPTY") and
+  `wd_imem.txt`/`wd_cmd.txt` **do not exist in r44-r50** (corrected in round 55:
+  r51-r54 do have them — see the round-55 section).
+  The newest copies on disk are `r36c/wd_pdma.txt` (round 36) and `r19a/…`
+  (round 19). `r49_run.sh` never captured them. r49's own `wd_r47win.txt` is
+  395 bytes (7 lines); the "n=137 -> n=234" narrative in that note is
+  `r48/wd_r47win.txt`. **The +8-growth chain is not established.**
+
+* **THE RDP WINDOW IS REBASED TO 0, AND *THEN* THE HEADER ROTS -- NOT THE
+  REVERSE.** The plugin's own log (byte-identical n=1..150 in r48/r50/r51):
+  137 clean flushes of 8 bytes each at 0x2d9cd0+k, then
+  `n=138 cur=00000000`, a 0x640-step walk through low RDRAM, the 47496-byte
+  window at n=149, and `cur=end=00010000 EMPTY` for ever from n=151.
+  `0x00010000 == 0x00010001 & 0x00FFFFF8`. **Meanwhile `wd_watch.txt` shows the
+  DMEM OSTask copy at 0xFC0 is still a COMPLETE, CORRECT gfx task while the ring
+  is already broken** (`n=8/n=9`: `type=1 ucode=00752AE0 output_buff=002D9CD0
+  data_ptr=0024E260`), and `wd_hdr.txt` shows the guest's OSTask **in RDRAM**
+  is still perfect. The all-0x00010001 header appears only at the NEXT ucode
+  swap. "The RSP flush reads the ring base out of the clobbered OSTask copy" is
+  therefore backwards.
+
+* **NO RSP DMA WRITES THE HEADER (new probe `wd_r51hdr.txt`).** Every READ DMA
+  whose DMEM destination reaches the header is now logged with pc + all four DMA
+  registers; 24 fired and **all end at 0xF90 or 0xFA0**. None reaches 0xFC0.
+  The 0xF90..0xFFF fill does not come from a DMA, and it is not the DD disk
+  either (a 4 MB sample of `dd_disk.ndd` holds 143 words of 0x00010001 and
+  737 192 of 0xFFFFFFFF).
+
+* **ALL THREE `wd_r36hdr.txt` "OSTask clobber" EVENTS ARE FALSE POSITIVES.**
+  Its `ok` test needs `type==1` and the dump is taken *before* the in-flight
+  transfer. n=1/n=2 are audio loads (type 2), n=3 is a gfx task whose word 0
+  read 0 at that instant with the other 15 words valid.
+
+* **MEASURED ON THIS BUILD, NOT INHERITED: `wd_wild.txt` is empty** (r51, r52,
+  r53, r54) -- the round-28..41 wild overlay DMA really is gone.
+
+* **RUN-MODE VARIANCE MUST BE CONTROLLED BEFORE ANY A/B IS BELIEVABLE.** The
+  same build gives either a 234-line window log (r48/r50/r51) or a 7-line one
+  (r49/r52/r53/r54, with a *perfectly healthy* header and ring at the stop).
+  `wd_r52fl`/`wd_stall` differ between runs, so guest timing is nondeterministic.
+  **The r48-vs-r50 "DMA clamp" A/B is therefore meaningless** -- r50's 400-line
+  non-empty log vs r48's 234-line EMPTY log is almost certainly the two run
+  modes, not the clamp. The clamp stays reverted.
+
+**Instrumentation added this round (DD-gated, read-only):** `wd_r51hdr.txt`
+(header-destination DMA probe, `cp0.cpp`); the `R19CMD` DPC-register log cap
+raised 16 -> 400 (`cp0.cpp`) so it covers a whole run instead of stopping at the
+first 16 kicks; `r25_dmem_watch` (`rsp_jit.cpp`) cap raised 400 -> 4000, its
+noisy 0x2E0/0x410 descriptor tier dropped, and **0xF90..0xFBF added to the
+watched set** -- the 48 bytes below the OSTask copy, which is exactly where the
+28-word 0x00010001 run starts and which nothing had ever watched.
+
+**THE TERMINAL EVENT IS NAMED (r54, new watcher on 0xF90..0xFBF).**
+
+```
+R25W  n=398 prev_pc=540 pc=700 dmem[fd0] 00768e60 -> 0588058a
+R25SW n=10 prev_pc=fd8 pc=fc4 im0=900100de -> 02f65822   hdr = valid gfx task
+R25SW n=11 prev_pc=fd8 pc=058 im0=02f65822 -> 00010001   hdr 00010001 x16
+```
+
+**IMEM[0] and IMEM[1] become 0x00010001 at the same instant as the whole header
+region** (r51's run read `im0 -> ffffffff` there). 0x00010001 in IMEM is not a
+stored constant and not DD-disk filler: a **ucode/overlay DMA read an RDRAM
+region holding 0x00010001 into IMEM**. So the terminal chain is:
+
+1. the ucode's overlay loader picks a source in RDRAM that holds 0x00010001;
+2. its DMA writes that filler into IMEM (the program) and over DMEM 0xF90..0xFFF;
+3. the RSP then executes 0x00010001 (a COP1 `movf`, a no-op) for ever;
+4. no `DPC_END` is written again -> the plugin's window stays EMPTY (the n=151
+   state), no DP interrupt is raised, the guest blocks, the 64DD screen stays.
+
+That is the fix target. Note DMEM 0xFD0 was left at `0588058A` by the *previous*
+(pc 0x700, audio) ucode: 0xFC0..0xFFF is SHARED SCRATCH between the gfx and audio
+ucodes, so "the header is junk" is only meaningful at a task-load boundary --
+which is why it has repeatedly been mistaken for a cause.
+
+**Highest-value next step:** log every **IMEM-destined** READ DMA (dest bit 12
+set) with pc + all four DMA registers, in the window around the `R25SW n=11`
+swap, and dump IMEM just before it. That names the loader instruction and the
+descriptor it read. Take **two runs per configuration** (see the run-mode
+variance above).
+
+## ROUND 40 -- THE CAMPAIGN WAS AIMED AT THE WRONG COMPONENT
 
 **Read this first; it supersedes the "who is at fault" conclusions of rounds 17-39.**
 

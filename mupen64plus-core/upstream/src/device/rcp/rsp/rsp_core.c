@@ -132,6 +132,12 @@ uint32_t wd_rdp_first[16][6];
 volatile uint32_t wd_c_loadguard_set = 0, wd_c_loadguard_skip = 0;
 static int wd_pump_call = 0;
 
+/* ROUND 57: measured cost of the last background-pump RSP slice, in us, and
+   the duty cycle that caps how much of the emulation thread the pump may own.
+   See rsp_dd_background_pump() for the measurement that made this necessary. */
+static unsigned int wd_pump_last_us = 0;
+#define RSP_DD_PUMP_DUTY 2   /* RSP may start a slice after 2x the last one */
+
 /* ROUND 11 DD DIAG: CPU writes into SP memory (write_rsp_mem), counted and
    latched in memory only; and the first moment the RSP's IMEM is observed to
    hold the game's cleared-buffer fill pattern.  All of it is printed by the
@@ -1133,6 +1139,13 @@ void rsp_dd_background_pump(void)
     long long d;
     uint32_t* cp0_regs;
 
+    /* ROUND 57: how often is the CPU thread pulled into this, and how much
+       host time does the RSP slice it runs actually consume?  The counter is
+       advanced before any early-out so `n` is a true block-boundary count on
+       the DD route -- there is no other counter for that in the recompiler. */
+    extern volatile uint32_t wd_c_pump_n, wd_c_pump_call, wd_c_pump_us, wd_c_pump_max;
+    if (g_dev.dd.idisk != NULL) wd_c_pump_n++;
+
     if (g_dev.dd.idisk == NULL) return;               /* plain carts: inert */
     wd_check_imem_sane(&g_dev.sp);
     if (!g_dev.sp.rsp_task_locked) return;            /* no task in flight   */
@@ -1180,13 +1193,56 @@ void rsp_dd_background_pump(void)
           + (long long)(now.tv_nsec - last.tv_nsec);
         if (d < 3000000LL) return;                    /* ~40% RSP / 60% CPU  */
     }
+
+    /* ROUND 57 — THE PUMP WAS EATING THE WHOLE CPU THREAD.
+
+       The 3 ms gate above is a *fixed* floor and says nothing about what the
+       slice it admits actually costs, so the intended "~40% RSP / 60% CPU"
+       split was never enforced.  Measured on the device (r57b, 300 ms window,
+       .fzxwork/r57b/t090_stall.txt):
+
+           DELTA5 CORE  d_utime=19 d_stime=0      -> 190 ms of a 300 ms window
+           DELTA5 PUMP  n=38 call=9 us=169870     -> 170 ms of those 190 ms
+                                    max=250035    -> one slice took 250 ms!
+
+       i.e. do_SP_Task slices issued by this pump consumed ~90-97% of the
+       emulation thread, and the guest CPU was left with ~5%: CP0 COUNT
+       advanced 4.61 MHz (an N64 is 93.75 MHz) while the guest clocked only
+       ~71k cycles per VI.  The guest was not deadlocked at all -- it was
+       being starved by its own workaround, which is why the 64DD logo frame
+       never advanced and why every other counter in the machine looked idle.
+
+       The cap below makes the pump's duty cycle proportional instead of
+       fixed: a new slice may start only once RSP_DD_PUMP_DUTY times the
+       *measured cost of the previous slice* has elapsed.  With DUTY=2 the RSP
+       gets at most ~1/3 of the thread and the CPU keeps the rest, while every
+       slice the RSP used to get it still gets -- only spread further apart --
+       so the task-completion behaviour this pump exists to provide (the RSP
+       must keep running while SP_STATUS.HALT is re-set by do_SP_Task on the
+       way out) is preserved rather than removed.  DD route only. */
+    if (wd_pump_last_us > 0) {
+        long long need = (long long)wd_pump_last_us * 1000LL * RSP_DD_PUMP_DUTY;
+        if (last.tv_sec != 0 && d < need) return;
+    }
     last = now;
     /* Same CPU counter bookkeeping do_SP_Task's other callers rely on. */
     cp0_regs = r4300_cp0_regs(&g_dev.r4300.cp0);
     cp0_update_count(&g_dev.r4300);
     if (cp0_regs[CP0_COUNT_REG] != 0) { /* keep the compiler honest */ }
     wd_pump_call = 1;
-    do_SP_Task(&g_dev.sp);
+    {
+        struct timespec pt0, pt1;
+        unsigned int us;
+        clock_gettime(CLOCK_MONOTONIC, &pt0);
+        do_SP_Task(&g_dev.sp);
+        clock_gettime(CLOCK_MONOTONIC, &pt1);
+        us = (unsigned int)((pt1.tv_sec - pt0.tv_sec) * 1000000
+                          + (pt1.tv_nsec - pt0.tv_nsec) / 1000);
+        wd_pump_last_us = us;
+        wd_c_pump_call++;
+        wd_c_pump_us += us;
+        if (us > wd_c_pump_max) wd_c_pump_max = us;
+    }
     wd_pump_call = 0;
 }
 

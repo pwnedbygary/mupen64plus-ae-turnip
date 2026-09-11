@@ -38,11 +38,30 @@
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
+#include <time.h>
 
 /* Round 35 (defined in device/r4300/cached_interp.c): low-RDRAM canary. */
 int wd_low_range(uint32_t addr, uint32_t len);
 void wd_low_note(const char* who, uint32_t a, uint32_t b, uint32_t len, uint32_t pc);
 void wd_lx_add(uint32_t kind, uint32_t a, uint32_t b, uint32_t len, uint32_t pc);
+
+/* Round 57 (defined in device/r4300/cached_interp.c): PI-DMA ledger.  Records
+   direction, cartridge address, RDRAM address, length, the guest PC that
+   issued it, and how long the handler took.  The DD trace ring carries only
+   PI_CART_ADDR, which cannot tell a one-pass stream from an endless re-read,
+   and nothing about where host time inside the transfer goes. */
+void wd_pir_add(uint32_t kind, uint32_t cart, uint32_t dram, uint32_t len,
+                uint32_t pc, uint32_t us);
+extern volatile uint32_t wd_pir_rd_n, wd_pir_wr_n;
+extern volatile uint32_t wd_pir_rd_us, wd_pir_wr_us;
+extern volatile uint32_t wd_pir_rd_max, wd_pir_wr_max;
+
+static uint64_t wd_now_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)(ts.tv_nsec / 1000);
+}
 
 int validate_pi_request(struct pi_controller* pi)
 {
@@ -76,8 +95,6 @@ static void dma_pi_read(struct pi_controller* pi)
         return;
     }
 
-    pre_framebuffer_read(&pi->dp->fb, dram_addr);
-
     /* ROUND 35 (DD route only, defined in cached_interp.c): dma_pi_read is the
        cart/DD -> RDRAM direction, so it is the PI path that can overwrite the
        guest's exception vector at RDRAM 0x180.  Record it if the destination
@@ -91,7 +108,26 @@ static void dma_pi_read(struct pi_controller* pi)
     /* PI seems to treat the first 128 bytes differently, see https://n64brew.dev/wiki/Peripheral_Interface#Unaligned_DMA_transfer */
     if (length >= 0x7f && (length & 1))
         length += 1;
+
+    /* ROUND 57 (DD route only): the handler and the framebuffer pre-hook are
+       timed separately -- on the parallel-RDP a dirty-page hit inside
+       pre_framebuffer_read() is a GPU read-back, so it must not be charged to
+       the transfer itself.  Plain carts take the two predictable branches and
+       nothing else. */
+    int wd_timing = (pi->dd != NULL && pi->dd->idisk != NULL);
+    uint64_t t0 = wd_timing ? wd_now_us() : 0;
+    pre_framebuffer_read(&pi->dp->fb, dram_addr);
+    uint64_t t1 = wd_timing ? wd_now_us() : 0;
     unsigned int cycles = handler->dma_read(opaque, dram, dram_addr, cart_addr, length);
+    if (wd_timing) {
+        uint64_t t2 = wd_now_us();
+        uint32_t us = (uint32_t)(t2 - t1) + (uint32_t)(t1 - t0);
+        wd_pir_rd_n++;
+        wd_pir_rd_us += us;
+        if (us > wd_pir_rd_max) wd_pir_rd_max = us;
+        wd_pir_add(1u, cart_addr, dram_addr, length,
+                   (uint32_t)*r4300_pc(pi->mi->r4300), us);
+    }
 
     /* 64DD domain transfers complete instantly in emulation; handle them
        without setting PI_STATUS_DMA_BUSY to avoid deadlock in the game's
@@ -140,7 +176,20 @@ static void dma_pi_write(struct pi_controller* pi)
         length += 1;
     if (length <= 0x80)
         length -= dram_addr & 0x7;
+
+    /* ROUND 57 (DD route only): same ledger as the read direction. */
+    int wd_timing = (pi->dd != NULL && pi->dd->idisk != NULL);
+    uint64_t t0 = wd_timing ? wd_now_us() : 0;
     unsigned int cycles = handler->dma_write(opaque, dram, dram_addr, cart_addr, length);
+    if (wd_timing) {
+        uint64_t t1 = wd_now_us();
+        uint32_t us = (uint32_t)(t1 - t0);
+        wd_pir_wr_n++;
+        wd_pir_wr_us += us;
+        if (us > wd_pir_wr_max) wd_pir_wr_max = us;
+        wd_pir_add(2u, cart_addr, dram_addr, length,
+                   (uint32_t)*r4300_pc(pi->mi->r4300), us);
+    }
 
     post_framebuffer_write(&pi->dp->fb, dram_addr, length);
 

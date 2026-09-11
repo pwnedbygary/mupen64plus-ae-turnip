@@ -30,6 +30,7 @@
 #include <time.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <sys/syscall.h>
 #include <fcntl.h>
 
 #define __STDC_FORMAT_MACROS
@@ -1062,6 +1063,131 @@ volatile uint32_t wd_c_rsp_run    = 0;   /* RSP DoRspCycles() budget runs       
 volatile uint32_t wd_c_rsp_full   = 0;   /* ... of which exhausted the budget       */
 
 /* ===========================================================================
+   ROUND 57 (DD route only): WHO IS EATING THE CORE THREAD, AND IS THE CART
+   STREAM MAKING PROGRESS?
+
+   Round 56 left two open questions that no existing counter could answer:
+
+   (a) The DD-trace ring tail is a pure stream of pi_end_of_dma_event entries
+       whose PI_CART_ADDR walks a ~462 KB window of the *cartridge*
+       (0x109880b0..0x109f90b0) with a ~960-byte stride, then restarts at the
+       bottom.  The trace records only PI_CART_ADDR and PI_STATUS, so it cannot
+       distinguish "streaming one big region into RDRAM" (progress) from
+       "re-reading the same region into the same buffer forever" (a loop).
+       The ledger below records the RDRAM destination, the direction, the
+       length and the guest PC of every PI DMA, plus how long the handler
+       itself took -- which is where round 56 suspected the ~71 ms between
+       cart reads was going.
+
+   (b) The core thread's host CPU time is unmeasured.  apply_speed_limiter()
+       runs ON the emulation thread (new_vi -> gen_interrupt case VI_INT) and
+       sleeps to hold 60 VI/s of wall clock, so "the guest is slow" and "the
+       thread is asleep" are the same statement unless the split is measured.
+       wd_core_tid is latched in wd_attach() (which runs on the core thread)
+       and the watchdog thread polls /proc/self/task/<tid>/stat for it, so the
+       periodic probe reports the core thread's utime/stime delta and kernel
+       state across the same 300 ms window as every other DELTA. */
+#define WD_PIR_RING 1024
+
+volatile uint32_t wd_pir_ring[WD_PIR_RING][6]; /* dir,cart,dram,len,pc,us */
+volatile uint32_t wd_pir_n      = 0;
+volatile uint32_t wd_pir_rd_n   = 0;     /* cart/DD -> RDRAM DMAs issued     */
+volatile uint32_t wd_pir_wr_n   = 0;     /* RDRAM -> cart/DD DMAs issued     */
+volatile uint32_t wd_pir_rd_us  = 0;     /* total us inside handler->dma_read  */
+volatile uint32_t wd_pir_wr_us  = 0;
+volatile uint32_t wd_pir_rd_max = 0;     /* worst single transfer, us        */
+volatile uint32_t wd_pir_wr_max = 0;
+volatile uint32_t wd_c_lim_calls = 0;    /* apply_speed_limiter() calls       */
+volatile uint32_t wd_c_lim_us    = 0;    /* total us slept inside it          */
+volatile uint32_t wd_c_lim_max   = 0;    /* worst single sleep, us            */
+volatile uint32_t wd_c_vi_delay  = 0;    /* g_dev.vi.device as the core sees it */
+
+/* Round 57: the DD-route background RSP pump.  rsp_dd_background_pump() is
+   called from dynarec_gen_interrupt(), i.e. from the CPU thread's per-block
+   interrupt check, and it runs do_SP_Task() from there every ~3 ms of wall
+   time when a task is locked.  If the RSP ucode is spinning (waiting for the
+   RDP) each of those slices burns host time on the CPU thread, which would
+   explain the only really anomalous measurement of this round: the core thread
+   at ~80% of a core while the guest clock advances at 4.6 MHz and every other
+   counter (PI DMAs, gen_interrupt, block dispatches) is tiny. */
+volatile uint32_t wd_c_pump_n    = 0;    /* pump INVOCATIONS (= block boundaries) */
+volatile uint32_t wd_c_pump_call = 0;    /* ... of which ran do_SP_Task           */
+volatile uint32_t wd_c_pump_us   = 0;    /* total us inside those do_SP_Task calls*/
+volatile uint32_t wd_c_pump_max  = 0;
+
+const char* wd_r57_marker = "R57PILEDGER";
+
+void wd_pir_add(uint32_t kind, uint32_t cart, uint32_t dram, uint32_t len,
+                uint32_t pc, uint32_t us)
+{
+    uint32_t i;
+    if (g_dev.dd.idisk == NULL) return;
+    i = wd_pir_n++ & (WD_PIR_RING - 1);
+    wd_pir_ring[i][0] = kind;
+    wd_pir_ring[i][1] = cart;
+    wd_pir_ring[i][2] = dram;
+    wd_pir_ring[i][3] = len;
+    wd_pir_ring[i][4] = pc;
+    wd_pir_ring[i][5] = us;
+}
+
+static void wd_pir_dump(FILE* f)
+{
+    uint32_t i, n, start;
+    if (f == NULL) return;
+    n = (wd_pir_n < WD_PIR_RING) ? wd_pir_n : WD_PIR_RING;
+    start = (wd_pir_n < WD_PIR_RING) ? 0 : (wd_pir_n - WD_PIR_RING);
+    fprintf(f, "=== PI LEDGER (%u of %u, ring=%u) ===\n",
+            n, (unsigned)wd_pir_n, (unsigned)WD_PIR_RING);
+    fprintf(f, "PISUM rd_n=%u rd_us=%u rd_max=%u wr_n=%u wr_us=%u wr_max=%u "
+               "lim_calls=%u lim_us=%u lim_max=%u vi_delay=%u\n",
+            (unsigned)wd_pir_rd_n, (unsigned)wd_pir_rd_us, (unsigned)wd_pir_rd_max,
+            (unsigned)wd_pir_wr_n, (unsigned)wd_pir_wr_us, (unsigned)wd_pir_wr_max,
+            (unsigned)wd_c_lim_calls, (unsigned)wd_c_lim_us, (unsigned)wd_c_lim_max,
+            (unsigned)wd_c_vi_delay);
+    for (i = 0; i < n; i++) {
+        const volatile uint32_t* e = wd_pir_ring[(start + i) & (WD_PIR_RING - 1)];
+        fprintf(f, "  %u %08x %08x %08x %08x %u\n",
+                (unsigned)e[0], (unsigned)e[1], (unsigned)e[2],
+                (unsigned)e[3], (unsigned)e[4], (unsigned)e[5]);
+    }
+}
+
+/* Round 57: the core thread's own tid + kernel-visible CPU time. */
+static pid_t wd_core_tid = 0;
+
+static int wd_read_core_stat(uint64_t* utime, uint64_t* stime, char* state)
+{
+    char path[64], buf[1024];
+    FILE* g;
+    char* p;
+    int i;
+    *utime = *stime = 0;
+    *state = '?';
+    if (wd_core_tid <= 0) return 0;
+    snprintf(path, sizeof(path), "/proc/self/task/%d/stat", (int)wd_core_tid);
+    g = fopen(path, "r");
+    if (g == NULL) return 0;
+    if (fgets(buf, sizeof(buf), g) == NULL) { fclose(g); return 0; }
+    fclose(g);
+    p = strrchr(buf, ')');
+    if (p == NULL) return 0;
+    p++;
+    /* p now points at " S 1790 ..."; field 3 = state, 14/15 = utime/stime. */
+    for (i = 0; i < 3 && *p; i++) p++;
+    *state = p[0];
+    p += 2;
+    /* skip ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt */
+    for (i = 0; i < 10; i++) {
+        while (*p == ' ') p++;
+        while (*p && *p != ' ') p++;
+    }
+    *utime = strtoull(p, &p, 10);
+    *stime = strtoull(p, &p, 10);
+    return 1;
+}
+
+/* ===========================================================================
    ROUND 35 (DD route only): WHO DESTROYS THE GUEST'S EXCEPTION VECTOR?
 
    MEASURED this round, offline, on the archived full-RAM dumps: RDRAM
@@ -1454,6 +1580,12 @@ struct wd_snap {
     uint32_t g_vi_curr_framep, g_vi_next_framep, g_vi_curr_state, g_vi_retrace;
     uint32_t g_vievtq_valid, g_vievtq_count;
     uint32_t c_ht, c_cop1;
+    /* Round 57: core-thread host CPU accounting + PI ledger totals. */
+    uint64_t core_utime, core_stime;
+    char     core_state;
+    uint32_t pir_rd_n, pir_wr_n, pir_rd_us, pir_wr_us, pir_rd_max, pir_wr_max;
+    uint32_t lim_calls, lim_us, lim_max;
+    uint32_t pump_n, pump_call, pump_us, pump_max;
 };
 
 /* Read a guest u32 out of RDRAM (the guest sees KSEG0 0x80xxxxxx = phys). */
@@ -1518,6 +1650,23 @@ static void wd_take_snap(struct wd_snap* s)
     s->g_vievtq_count = wd_guest32(0x807C46D0u);
     s->c_ht = wd_c_ht;
     s->c_cop1 = wd_c_cop1;
+    /* Round 57: the core thread's host CPU time, straight from the kernel, so
+       "the guest advances slowly" can be split into "the thread is burning CPU"
+       versus "the thread is asleep in the speed limiter". */
+    wd_read_core_stat(&s->core_utime, &s->core_stime, &s->core_state);
+    s->pir_rd_n = wd_pir_rd_n;
+    s->pir_wr_n = wd_pir_wr_n;
+    s->pir_rd_us = wd_pir_rd_us;
+    s->pir_wr_us = wd_pir_wr_us;
+    s->pir_rd_max = wd_pir_rd_max;
+    s->pir_wr_max = wd_pir_wr_max;
+    s->lim_calls = wd_c_lim_calls;
+    s->lim_us = wd_c_lim_us;
+    s->lim_max = wd_c_lim_max;
+    s->pump_n = wd_c_pump_n;
+    s->pump_call = wd_c_pump_call;
+    s->pump_us = wd_c_pump_us;
+    s->pump_max = wd_c_pump_max;
 }
 
 static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
@@ -1715,6 +1864,31 @@ static void wd_stall_probe(const char* path)
        is executing between faults (pure emulator-side loop). */
     fprintf(f, "DELTA3 c_ht=%d c_cop1=%d\n",
         (int)(b.c_ht - a.c_ht), (int)(b.c_cop1 - a.c_cop1));
+    /* ROUND 57: THE CORE THREAD ITSELF.  utime/stime are kernel jiffies
+       (USER_HZ=100 on Android) consumed by the thread that runs run_r4300(),
+       so a 300 ms window can hold at most 30 ticks.  30/30 means the thread is
+       CPU-bound and the guest's slowness is emulation cost; 1-2/30 means the
+       thread is asleep and the guest is being throttled.  `state` is the
+       kernel state at the B sample (R=run, S=sleep, D=uninterruptible). */
+    fprintf(f, "DELTA5 CORE state=%c d_utime=%d d_stime=%d (of 30 ticks/300ms) "
+               "lim_calls=%d lim_us=%d lim_max=%d\n",
+        b.core_state, (int)(b.core_utime - a.core_utime), (int)(b.core_stime - a.core_stime),
+        (int)(b.lim_calls - a.lim_calls), (int)(b.lim_us - a.lim_us), (int)b.lim_max);
+    /* ROUND 57: PI ledger totals over the same window + worst-case handler. */
+    fprintf(f, "DELTA5 PI rd=%d rd_us=%d rd_max=%d wr=%d wr_us=%d wr_max=%d vi_delay=%u\n",
+        (int)(b.pir_rd_n - a.pir_rd_n), (int)(b.pir_rd_us - a.pir_rd_us), (int)b.pir_rd_max,
+        (int)(b.pir_wr_n - a.pir_wr_n), (int)(b.pir_wr_us - a.pir_wr_us), (int)b.pir_wr_max,
+        (unsigned)b.vi_delay);
+    /* ROUND 57: the background RSP pump.  pump_n counts every call of
+       rsp_dd_background_pump() (i.e. every CPU block boundary on the DD route);
+       pump_call counts the ones that actually ran do_SP_Task(); pump_us is the
+       host time those consumed.  Compare d_us (in DELTA5 CORE) against the sum
+       of lim_us and pump_us: whatever is left is the guest's own execution. */
+    fprintf(f, "DELTA5 PUMP n=%d call=%d us=%d max=%d (core d_utime+d_stime=%d us)\n",
+        (int)(b.pump_n - a.pump_n), (int)(b.pump_call - a.pump_call),
+        (int)(b.pump_us - a.pump_us), (int)b.pump_max,
+        (int)((b.core_utime - a.core_utime) + (b.core_stime - a.core_stime)) * 10000);
+    wd_pir_dump(f);
     /* Round 8: THE CP0 EVENT QUEUE.  gen_interrupt() dispatches on
        cp0.q.first->data.type, and the VI_INT handler (case 0) is what re-arms
        the next vertical interrupt -- so if the VI event is missing from this
@@ -1908,6 +2082,7 @@ static void wd_full_dump(const char* path, uint32_t pc){
             wd_c_sp_status_wr, wd_c_sp_sig_wr, wd_c_mi_rd_dp, wd_c_dp_ack);
     }
     dd_trace_dump(f);
+    wd_pir_dump(f);
     fclose(f);
     /* Round 6: also write the small "what is still moving" probe.  The 8MB
        image above proves the guest state; this proves which side of the
@@ -2098,6 +2273,10 @@ void wd_attach(struct r4300_core* r4300)
 {
     if (wd_r4300 == NULL) {
         wd_r4300 = r4300;
+        /* Round 57: latch the CORE thread's tid here -- wd_attach() is called
+           from run_r4300() on the emulation thread, so this is the thread whose
+           CPU time the periodic probe has to attribute. */
+        wd_core_tid = (pid_t)syscall(SYS_gettid);
         pthread_t t;
         if (pthread_create(&t, NULL, wd_thread, NULL) == 0) {
             pthread_detach(t);
