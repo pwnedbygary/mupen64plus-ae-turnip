@@ -1501,7 +1501,19 @@ extern "C" void r29_pc_hook(unsigned pc_lo)
 			if (wd_legacy < 0)
 				wd_legacy = (access("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_ddlegacy.flag", F_OK) == 0);
 			if (dd_mode && !wd_legacy)
-				rsp_set_budget_deadline_us(2000, wd_t2 ? 256 : 512);
+				/* ROUND-73: audio slices restored to the pre-r62 long budget.
+				   The r62 short slices (256 units) predate the r66 PC-persistence
+				   fix: measured on the RP6, the first boot's audio task needs
+				   ~330ms of emulated work and ran ~100x too slow, so the loader's
+				   soft reboot wiped it mid-yield and the stale
+				   sSpTaskState=SP_TASK_YIELDING/sSpTaskActive=true (0x8076c760/
+				   0x8076c764, read from guest memory) swallowed every post-reboot
+				   AUDIO_TASK_SET -- the logo-screen silence.  With state.pc now
+				   persisting across slices, a long audio slice lets the task
+				   complete its yield/finish BEFORE the boot's wipe, exactly as on
+				   hardware.  GFX keeps the short 512-unit slices (their preemption
+				   behavior was load-bearing for the frame protocol). */
+				rsp_set_budget_deadline_us(wd_t2 ? 20000 : 2000, wd_t2 ? 20480 : 512);
 			else
 				rsp_set_budget_deadline_us(dd_mode ? (wd_t2 ? 2000 : 20000) : 0,
 				                           dd_mode ? (wd_t2 ? 20480 : 262144) : 0);
