@@ -37,6 +37,53 @@
 #include "plugin/plugin.h"
 #include "api/callbacks.h"
 
+#if defined(__unix__) || defined(__APPLE__) || defined(__ANDROID__)
+#include <unistd.h>
+#endif
+
+/* ---------------------------------------------------------------------------
+   files/wd_spstock.flag -- A/B switch for the 64DD route's SP model.
+
+   ABSENT (default) = the DD route's campaign behaviour: a background RSP pump
+   driven from every CPU block boundary, core-synthesized SP interrupts for
+   ucode yields and breaks, and a forced HALT between slices.
+
+   PRESENT = stock upstream semantics for the DD route as well: no pump, no
+   synthesized SP interrupt (only the stock rsp_interrupt_event path), no
+   forced HALT.  This exists so the DD route can be measured against the model
+   every other route uses, i.e. to decide whether the campaign's SP heuristics
+   help or hurt.  It changes nothing on the plain-cart route.
+   --------------------------------------------------------------------------- */
+int wd_sp_stock(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        cached = 0;
+#if defined(__unix__) || defined(__APPLE__) || defined(__ANDROID__)
+        cached = (access("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_spstock.flag",
+                         F_OK) == 0);
+#endif
+    }
+    return cached;
+}
+
+/* files/wd_ddlegacy.flag -- select the campaign's older DD SP model (a
+   do_SP_Task-driven pump plus core-synthesized SP interrupts and a forced
+   HALT between slices) instead of the default hardware-shaped one.  Kept only
+   so the two can be A/B'd on the device; nothing else reads it. */
+int wd_dd_legacy(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        cached = 0;
+#if defined(__unix__) || defined(__APPLE__) || defined(__ANDROID__)
+        cached = (access("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_ddlegacy.flag",
+                         F_OK) == 0);
+#endif
+    }
+    return cached;
+}
+
 /* ---------------------------------------------------------------------------
    ROUND-7 DD DIAG: who loads the RSP task header, and does it survive?
    libultra's osSpTaskLoad DMAs the 64-byte OSTask into DMEM 0xFC0 (from its
@@ -1021,7 +1068,7 @@ void do_SP_Task(struct rsp_core* sp)
 
        Consuming it here is a no-op when the gfx branch already handled it (the
        bit is cleared there), so the stock path is bit-for-bit unchanged. */
-    if (g_dev.dd.idisk != NULL && (sp->mi->regs[MI_INTR_REG] & MI_INTR_DP))
+    if (g_dev.dd.idisk != NULL && wd_dd_legacy() && (sp->mi->regs[MI_INTR_REG] & MI_INTR_DP))
     {
         /* ROUND 13: count every DP bit this block converts.  Zero here while
            wd_c_rdp_kick climbs would mean the RDP is being kicked but the
@@ -1039,6 +1086,31 @@ void do_SP_Task(struct rsp_core* sp)
         }
     }
 
+    if (g_dev.dd.idisk != NULL && !wd_dd_legacy())
+    {
+        /* ROUND 62 (default DD model): signal only the transition INTO
+           halt/break.  With short slices the RSP is still running at the end
+           of almost every call, so the stock rule ("not halted -> raise")
+           fabricates one interrupt per slice -- measured on the RP6 as 6057
+           SP interrupts for a single guest task, the storm the guest's SP
+           handler then spins in. */
+        int wd_was_running = (wd_status_entry & (SP_STATUS_HALT | SP_STATUS_BROKE)) == 0;
+        int wd_stopped = (sp->regs[SP_STATUS_REG] & (SP_STATUS_HALT | SP_STATUS_BROKE)) != 0;
+        if (wd_stopped)
+        {
+            sp->rsp_task_locked = 0;
+            sp->mi->r4300->cp0.interrupt_unsafe_state &= ~INTR_UNSAFE_RSP;
+            if (wd_was_running)
+                sp->mi->regs[MI_INTR_REG] |= MI_INTR_SP;
+        }
+        else
+        {
+            sp->rsp_task_locked = 1;
+            sp->mi->r4300->cp0.interrupt_unsafe_state |= INTR_UNSAFE_RSP;
+        }
+    }
+    else
+    {
     sp->rsp_task_locked = 0;
     sp->mi->r4300->cp0.interrupt_unsafe_state &= ~INTR_UNSAFE_RSP;
     if ((sp->regs[SP_STATUS_REG] & (SP_STATUS_HALT | SP_STATUS_BROKE)) == 0)
@@ -1061,9 +1133,12 @@ void do_SP_Task(struct rsp_core* sp)
         if (g_dev.dd.idisk == NULL)
             sp->mi->regs[MI_INTR_REG] |= MI_INTR_SP;
     }
+    }
     /* DD-ONLY ares-derived completion/yield delivery (gated: plain cart
-       games must keep the pre-ares rsp_interrupt_event path exactly). */
-    if (g_dev.dd.idisk != NULL)
+       games must keep the pre-ares rsp_interrupt_event path exactly).
+       wd_sp_stock() switches the whole DD-only delivery off (see the flag's
+       comment at the top of this file). */
+    if (g_dev.dd.idisk != NULL && wd_dd_legacy())
     {
     /* ares-style SP_STATUS force-synchronize (ares n64/rsp/io.cpp: the RSP
        yields on its SP_STATUS signal-poll by setting INTR_BREAK|HALT + irq).
@@ -1137,7 +1212,7 @@ void do_SP_Task(struct rsp_core* sp)
        machine see an unfinished, resumable task; the resume path is the
        guest's own Sched_SpTaskResumeGfx() -> osSpTaskStart() (which clears
        HALT) or rsp_dd_background_pump(). */
-    if (g_dev.dd.idisk != NULL && sp->rsp_task_locked)
+    if (g_dev.dd.idisk != NULL && wd_dd_legacy() && sp->rsp_task_locked)
     {
         sp->regs[SP_STATUS_REG] &= ~(SP_STATUS_TASKDONE | SP_STATUS_BROKE);
         sp->regs[SP_STATUS_REG] |= SP_STATUS_HALT;
@@ -1166,6 +1241,55 @@ void do_SP_Task(struct rsp_core* sp)
    do_SP_Task is used rather than rsp.doRspCycles() so a slice that finally
    reaches the ucode's BREAK delivers the stock completion (SP_INT event ->
    rsp_interrupt_event -> MI_INTR_SP -> the guest's RSP handler). */
+/* ROUND 62 -- THE HARDWARE-SHAPED RSP SLICE (default DD model).
+
+   On hardware the RSP is a coprocessor that keeps executing while the CPU
+   executes: SP_STATUS.HALT/BROKE belong to the RSP, the CPU only writes the
+   SP_STATUS command bits, and the SP interrupt is asserted by the RSP itself
+   (a BREAK with INTR_BREAK).  mupen64plus runs the RSP inside do_SP_Task, on
+   the emulation thread, which makes that concurrency impossible; the DD route
+   has been papering over it ever since with do_SP_Task re-entries that also
+   drag in the gfx-task side effects (new_frame, framebuffer protect/unprotect,
+   DP-interrupt consumption) and a forced HALT.
+
+   This slice is the concurrency without the interpretation: run the RSP for a
+   bounded amount of emulated work straight through the plugin, then hand the
+   thread back to the CPU.  The ucode's polls of SP_STATUS / DMEM / RDRAM then
+   see CPU progress a few thousand RSP cycles later, which is what the yield
+   handshake (SIG0/SIG1) needs, and nothing here fabricates a task boundary. */
+static void rsp_dd_slice(void)
+{
+    struct rsp_core* sp = &g_dev.sp;
+    uint32_t status = sp->regs[SP_STATUS_REG];
+
+    /* A halted or broken RSP is not executing: nothing to run, and it is not
+       holding the SP busy either. */
+    if (status & (SP_STATUS_HALT | SP_STATUS_BROKE)) {
+        sp->rsp_task_locked = 0;
+        sp->mi->r4300->cp0.interrupt_unsafe_state &= ~INTR_UNSAFE_RSP;
+        return;
+    }
+
+    rsp.doRspCycles(0xffffffff);   /* the plugin's emulated-work budget ends it */
+
+    status = sp->regs[SP_STATUS_REG];
+    if (status & (SP_STATUS_HALT | SP_STATUS_BROKE))
+    {
+        /* The RSP stopped during this slice: that is the task boundary, and
+           the only thing hardware signals.  Slices end with the RSP still
+           running all the time; signalling those fabricates a completion for
+           a task that is merely between slices. */
+        sp->rsp_task_locked = 0;
+        sp->mi->r4300->cp0.interrupt_unsafe_state &= ~INTR_UNSAFE_RSP;
+        raise_rcp_interrupt(sp->mi, MI_INTR_SP);
+    }
+    else
+    {
+        sp->rsp_task_locked = 1;
+        sp->mi->r4300->cp0.interrupt_unsafe_state |= INTR_UNSAFE_RSP;
+    }
+}
+
 void rsp_dd_background_pump(void)
 {
     static uint32_t n = 0;
@@ -1182,7 +1306,53 @@ void rsp_dd_background_pump(void)
     if (g_dev.dd.idisk != NULL) wd_c_pump_n++;
 
     if (g_dev.dd.idisk == NULL) return;               /* plain carts: inert */
+    if (wd_sp_stock()) return;                        /* stock SP semantics  */
     wd_check_imem_sane(&g_dev.sp);
+
+    if (!wd_dd_legacy()) {
+        /* ROUND 62 (default): drive the RSP whenever it is enabled, i.e. by
+           the same condition hardware uses -- HALT clear and not broken.  No
+           task-type interpretation, no forced HALT, no synthetic interrupt. */
+        if (g_dev.sp.regs[SP_STATUS_REG] & (SP_STATUS_HALT | SP_STATUS_BROKE))
+            return;
+        /* Duty cycle: the RSP may start a slice only once RSP_DD_PUMP_DUTY
+           times the *measured cost of the last slice* has elapsed, so the
+           emulation thread is shared (RSP ~1/(1+DUTY), CPU the rest) no matter
+           how fast or slow a slice turns out to be.  Without this the CPU is
+           starved outright -- measured on the RP6 (r62/new): VI 165 in 90 s
+           (1.8/s, against 60/s) with the RSP holding the whole thread. */
+        if ((++n & 3u) != 0) return;                  /* amortize the clock  */
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (last.tv_sec != 0) {
+            d = (long long)(now.tv_sec - last.tv_sec) * 1000000000LL
+              + (long long)(now.tv_nsec - last.tv_nsec);
+            if (wd_pump_last_us > 0) {
+                long long need = (long long)wd_pump_last_us * 1000LL * RSP_DD_PUMP_DUTY;
+                if (d < need) return;
+            } else if (d < 1000000LL) {
+                return;                              /* 1 ms floor before the first measurement */
+            }
+        }
+        last = now;
+        cp0_update_count(&g_dev.r4300);
+        wd_pump_call = 1;
+        {
+            struct timespec pt0, pt1;
+            unsigned int us;
+            clock_gettime(CLOCK_MONOTONIC, &pt0);
+            rsp_dd_slice();
+            clock_gettime(CLOCK_MONOTONIC, &pt1);
+            us = (unsigned int)((pt1.tv_sec - pt0.tv_sec) * 1000000
+                              + (pt1.tv_nsec - pt0.tv_nsec) / 1000);
+            wd_pump_last_us = us;
+            wd_c_pump_call++;
+            wd_c_pump_us += us;
+            if (us > wd_c_pump_max) wd_c_pump_max = us;
+        }
+        wd_pump_call = 0;
+        return;
+    }
+
     if (!g_dev.sp.rsp_task_locked) return;            /* no task in flight   */
     if (g_dev.sp.regs[SP_STATUS_REG] & SP_STATUS_BROKE) return;
 
@@ -1220,6 +1390,9 @@ void rsp_dd_background_pump(void)
        osSpTaskLoad() from deadlocking.  Clear it for this slice only: the
        plugin's DoRspCycles() refuses to run while HALT is set, and do_SP_Task
        re-sets it on the way out while the task is still unfinished. */
+    if (!wd_dd_legacy()) {                            /* ROUND 62: new model */
+        return;                                       /* (handled above)     */
+    }
     g_dev.sp.regs[SP_STATUS_REG] &= ~SP_STATUS_HALT;
     if ((++n & 3u) != 0) return;                      /* amortize the clock  */
     clock_gettime(CLOCK_MONOTONIC, &now);

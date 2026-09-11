@@ -1922,6 +1922,7 @@ void* ERET_new(void)
        pending interrupt right here when it is eligible (EXL just cleared by the
        ERET, IE set, hardware CAUSE bit set). */
     if (g_dev.dd.idisk != NULL   /* 64DD combo game only */
+        && wd_dd_legacy()
         && state->pending_exception == 0
         && get_event(&r4300->cp0.q, CHECK_INT) == NULL
         && (state->cp0_regs[CP0_STATUS_REG] & state->cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00))
@@ -3188,6 +3189,7 @@ void dynarec_gen_interrupt(void)
        the guest sleeps in its idle loop.  Re-check here and take it when
        eligible (mirrors the cached-interpreter recheck in interrupt.c). */
     if (g_dev.dd.idisk != NULL   /* 64DD combo game only */
+        && wd_dd_legacy()
         && get_event(&r4300->cp0.q, CHECK_INT) == NULL
         && (state->cp0_regs[CP0_STATUS_REG] & state->cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00))
         && (state->cp0_regs[CP0_STATUS_REG] & (CP0_STATUS_IE | CP0_STATUS_EXL | CP0_STATUS_ERL)) == CP0_STATUS_IE) {

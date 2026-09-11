@@ -42,6 +42,7 @@
 #include "device/r4300/r4300_core.h"
 #include "device/r4300/recomp.h"
 #include "device/rcp/ai/ai_controller.h"
+#include "device/rcp/rsp/rsp_core.h"   /* wd_sp_stock() */
 #include "device/rcp/vi/vi_controller.h"
 #include "main/main.h"
 #include "main/savestates.h"
@@ -686,6 +687,7 @@ void gen_interrupt(struct r4300_core* r4300)
      */
     if (r4300->emumode < 2
         && g_dev.dd.idisk != NULL
+        && wd_dd_legacy()
         && get_event(&r4300->cp0.q, CHECK_INT) == NULL
         && (cp0_regs[CP0_STATUS_REG] & cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00))
         && (cp0_regs[CP0_STATUS_REG] & (CP0_STATUS_IE | CP0_STATUS_EXL | CP0_STATUS_ERL)) == CP0_STATUS_IE)

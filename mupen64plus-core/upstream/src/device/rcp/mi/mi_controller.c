@@ -27,6 +27,7 @@
 #include "device/r4300/interrupt.h"
 #include "device/r4300/r4300_core.h"
 #include "main/main.h"   /* g_dev, for the 64DD gate */
+#include "device/rcp/rsp/rsp_core.h"  /* wd_sp_stock() */
 
 static int update_mi_init_mode(uint32_t* mi_init_mode, uint32_t w)
 {
@@ -140,6 +141,7 @@ void write_mi_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
         {
             uint32_t* cp0_regs = r4300_cp0_regs(&mi->r4300->cp0);
             if (g_dev.dd.idisk != NULL   /* 64DD combo game only */
+                && wd_dd_legacy()
                 && get_event(&mi->r4300->cp0.q, CHECK_INT) == NULL
                 && (cp0_regs[CP0_STATUS_REG] & cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00))
                 && (cp0_regs[CP0_STATUS_REG] & (CP0_STATUS_IE | CP0_STATUS_EXL | CP0_STATUS_ERL)) == CP0_STATUS_IE)
