@@ -555,6 +555,7 @@ SOURCE = \
     $(SRCDIR)/device/pif/n64_cic_nus_6105.c \
     $(SRCDIR)/device/pif/pif.c \
     $(SRCDIR)/device/r4300/cached_interp.c \
+    $(SRCDIR)/device/r4300/n64dd_dispatch_diag.c \
     $(SRCDIR)/device/r4300/cp0.c \
     $(SRCDIR)/device/r4300/cp1.c \
     $(SRCDIR)/device/r4300/idec.c \

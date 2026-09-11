@@ -42,6 +42,7 @@
 #include "api/m64p_types.h"
 #include "device/r4300/r4300_core.h"
 #include "device/r4300/cp0.h"
+#include "device/r4300/n64dd_dispatch_diag.h"
 #include "device/r4300/idec.h"
 #include "device/rcp/vi/vi_controller.h"
 #include "device/rcp/mi/mi_controller.h"
@@ -96,8 +97,15 @@ void cached_interp_##name(void) \
     { \
         (*r4300_pc_struct(r4300))++; \
         r4300->delay_slot=1; \
+        const uint32_t n64dd_delay_pc = (*r4300_pc_struct(r4300))->addr; \
+        if (g_dev.dd.idisk != NULL) \
+            n64dd_dispatch_diag_step(r4300, n64dd_delay_pc, \
+                                     N64DD_DISPATCH_DIAG_DELAY_PRE); \
         UPDATE_DEBUGGER(); \
         (*r4300_pc_struct(r4300))->ops(); \
+        if (g_dev.dd.idisk != NULL) \
+            n64dd_dispatch_diag_step(r4300, n64dd_delay_pc, \
+                                     N64DD_DISPATCH_DIAG_DELAY_POST); \
         cp0_update_count(r4300); \
         r4300->delay_slot=0; \
         if (take_jump && !r4300->skip_jump) \
@@ -129,8 +137,15 @@ void cached_interp_##name##_OUT(void) \
     { \
         (*r4300_pc_struct(r4300))++; \
         r4300->delay_slot=1; \
+        const uint32_t n64dd_delay_pc = (*r4300_pc_struct(r4300))->addr; \
+        if (g_dev.dd.idisk != NULL) \
+            n64dd_dispatch_diag_step(r4300, n64dd_delay_pc, \
+                                     N64DD_DISPATCH_DIAG_DELAY_PRE); \
         UPDATE_DEBUGGER(); \
         (*r4300_pc_struct(r4300))->ops(); \
+        if (g_dev.dd.idisk != NULL) \
+            n64dd_dispatch_diag_step(r4300, n64dd_delay_pc, \
+                                     N64DD_DISPATCH_DIAG_DELAY_POST); \
         cp0_update_count(r4300); \
         r4300->delay_slot=0; \
         if (take_jump && !r4300->skip_jump) \
@@ -1862,6 +1877,8 @@ static void wd_stall_probe(const char* path)
     fprintf(f, "WDSTALL v1\n");
     wd_print_snap(f, "A", &a);
     wd_print_snap(f, "B", &b);
+    /* Narrow DD-only dispatcher/context rings; no guest state changes. */
+    n64dd_dispatch_diag_dump(f);
     fprintf(f, "DELTA c_task=%d c_spint=%d c_genint=%d c_sample=%d c_asic=%d c_pi=%d sp_pc=%08x\n",
         (int)(b.c_task - a.c_task), (int)(b.c_spint - a.c_spint),
         (int)(b.c_genint - a.c_genint), (int)(b.c_sample - a.c_sample),
@@ -2397,6 +2414,9 @@ void dynarec_sample_hook(uint32_t pc)
     static int d_stall_dumped = 0;
     static int wd_force_dumped = 0;
     wd_c_sample++;
+    /* DD-only boundary sample.  The diagnostic source performs its own gate. */
+    if (g_dev.dd.idisk != NULL)
+        n64dd_dispatch_diag_boundary(&g_dev.r4300, pc);
     wd_pc_ring[wd_pc_idx++ & (WD_PC_RING - 1)] = pc;
     /* Heartbeat: on the 64DD route advance it on EVERY sample.  The old
        `(d_sample & 0xFFFFF)==0` fired once per million calls, i.e. never
@@ -2446,6 +2466,9 @@ void run_cached_interpreter(struct r4300_core* r4300)
         {
             struct precomp_instr* pin = *r4300_pc_struct(r4300);
             uint32_t pc_here = pin->addr;
+            if (g_dev.dd.idisk != NULL)
+                n64dd_dispatch_diag_step(r4300, pc_here,
+                                         N64DD_DISPATCH_DIAG_PRE);
             if (g_dev.dd.idisk != NULL && !wd_spodd2_dumped) {
                 uint32_t idx = wd_i_idx & (WD_IRING - 1);
                 wd_i_pc[idx] = pc_here;
@@ -2454,6 +2477,9 @@ void run_cached_interpreter(struct r4300_core* r4300)
                 wd_i_idx = wd_i_idx + 1;
             }
             pin->ops();
+            if (g_dev.dd.idisk != NULL)
+                n64dd_dispatch_diag_step(r4300, pc_here,
+                                         N64DD_DISPATCH_DIAG_POST);
             if (g_dev.dd.idisk != NULL && !wd_spodd2_dumped) {
                 if (r4300_regs(r4300)[29] & 3) {
                     wd_spodd2_dumped = 1;

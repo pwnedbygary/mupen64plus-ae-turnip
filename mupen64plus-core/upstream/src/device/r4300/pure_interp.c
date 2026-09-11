@@ -29,6 +29,8 @@
 #include "api/callbacks.h"
 #include "api/debugger.h"
 #include "api/m64p_types.h"
+#include "device/device.h"
+#include "device/r4300/n64dd_dispatch_diag.h"
 #include "device/r4300/r4300_core.h"
 #include "osal/preproc.h"
 
@@ -36,6 +38,7 @@
 #include "debugger/dbg_debugger.h"
 #endif
 
+extern struct device g_dev;
 
 static void InterpretOpcode(struct r4300_core* r4300);
 
@@ -58,7 +61,14 @@ static void InterpretOpcode(struct r4300_core* r4300);
       { \
         r4300->interp_PC.addr += 4; \
         r4300->delay_slot=1; \
+        const uint32_t n64dd_delay_pc = r4300->interp_PC.addr; \
+        if (g_dev.dd.idisk != NULL) \
+          n64dd_dispatch_diag_step(r4300, n64dd_delay_pc, \
+                                   N64DD_DISPATCH_DIAG_DELAY_PRE); \
         InterpretOpcode(r4300); \
+        if (g_dev.dd.idisk != NULL) \
+          n64dd_dispatch_diag_step(r4300, n64dd_delay_pc, \
+                                   N64DD_DISPATCH_DIAG_DELAY_POST); \
         cp0_update_count(r4300); \
         r4300->delay_slot=0; \
         if (take_jump && !r4300->skip_jump) \
@@ -717,12 +727,19 @@ void run_pure_interpreter(struct r4300_core* r4300)
 
    while (!*r4300_stop(r4300))
    {
+      uint32_t pc_here = *r4300_pc(r4300);
 #ifdef COMPARE_CORE
      CoreCompareCallback();
 #endif
 #ifdef DBG
      if (g_DebuggerActive) update_debugger(*r4300_pc(r4300));
 #endif
+      if (g_dev.dd.idisk != NULL)
+         n64dd_dispatch_diag_step(r4300, pc_here,
+                                  N64DD_DISPATCH_DIAG_PRE);
      InterpretOpcode(r4300);
+      if (g_dev.dd.idisk != NULL)
+         n64dd_dispatch_diag_step(r4300, pc_here,
+                                  N64DD_DISPATCH_DIAG_POST);
    }
 }

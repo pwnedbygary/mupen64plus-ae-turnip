@@ -21,6 +21,7 @@
 
 #include "r4300_core.h"
 #include "cached_interp.h"
+#include "n64dd_dispatch_diag.h"
 #if defined(COUNT_INSTR)
 #include "instr_counters.h"
 #endif
@@ -365,6 +366,7 @@ int r4300_read_aligned_dword(struct r4300_core* r4300, uint32_t address, uint64_
  */
 int r4300_write_aligned_word(struct r4300_core* r4300, uint32_t address, uint32_t value, uint32_t mask)
 {
+    const uint32_t virtual_address = address;
     if ((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)) {
 
         invalidate_r4300_cached_code(r4300, address, 4);
@@ -381,6 +383,8 @@ int r4300_write_aligned_word(struct r4300_core* r4300, uint32_t address, uint32_
     address &= UINT32_C(0x1ffffffc);
 
     mem_write32(mem_get_handler(r4300->mem, address), address & ~UINT32_C(3), value, mask);
+    if (g_dev.dd.idisk != NULL)
+        n64dd_dispatch_diag_store(r4300, virtual_address, address, 4, value, mask, 0);
 
     return 1;
 }
@@ -388,6 +392,7 @@ int r4300_write_aligned_word(struct r4300_core* r4300, uint32_t address, uint32_
 /* Write aligned dword to memory */
 int r4300_write_aligned_dword(struct r4300_core* r4300, uint32_t address, uint64_t value, uint64_t mask)
 {
+    const uint32_t virtual_address = address;
     /* XXX: unaligned dword accesses should trigger a address error,
      * but inaccurate timing of the core can lead to unaligned address on reset
      * so just emit a warning and keep going (rate-limited to avoid a JNA
@@ -417,6 +422,8 @@ int r4300_write_aligned_dword(struct r4300_core* r4300, uint32_t address, uint64
     const struct mem_handler* handler = mem_get_handler(r4300->mem, address);
     mem_write32(handler, address + 0, value >> 32,      mask >> 32);
     mem_write32(handler, address + 4, (uint32_t) value, (uint32_t) mask      );
+    if (g_dev.dd.idisk != NULL)
+        n64dd_dispatch_diag_store(r4300, virtual_address, address, 8, value, mask, 0);
 
     return 1;
 }

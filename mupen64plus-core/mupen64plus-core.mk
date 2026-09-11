@@ -76,6 +76,7 @@ LOCAL_SRC_FILES :=                                              \
     $(SRCDIR)/plugin/dummy_video.c                              \
     $(SRCDIR)/plugin/plugin.c                                   \
     $(SRCDIR)/device/r4300/cached_interp.c                      \
+    $(SRCDIR)/device/r4300/n64dd_dispatch_diag.c                \
     $(SRCDIR)/device/r4300/cp0.c                                \
     $(SRCDIR)/device/r4300/cp1.c                                \
     $(SRCDIR)/device/r4300/instr_counters.c                     \

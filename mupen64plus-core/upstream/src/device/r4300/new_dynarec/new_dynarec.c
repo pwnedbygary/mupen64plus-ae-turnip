@@ -44,6 +44,7 @@
 #include "device/r4300/cp0.h"
 #include "device/r4300/cp1.h"
 #include "device/r4300/interrupt.h"
+#include "device/r4300/n64dd_dispatch_diag.h"
 #include "device/r4300/tlb.h"
 #include "device/r4300/fpu.h"
 #include "device/rcp/mi/mi_controller.h"
@@ -1896,6 +1897,15 @@ void* ERET_new(void)
     struct new_dynarec_hot_state* state = &r4300->new_dynarec_hot_state;
 
     cp0_update_count(r4300);
+    if (g_dev.dd.idisk != NULL)
+        /*
+         * The generated jump_eret ABI does not carry the guest ERET
+         * instruction PC here.  state->pcaddr can be the last helper PC, so
+         * do not label it as the ERET source; the EPC/target below remains
+         * exact.
+         */
+        n64dd_dispatch_diag_eret(r4300, UINT32_C(0xffffffff),
+                                 state->cp0_regs[CP0_EPC_REG]);
     /* ROUND-70: the ERET ledger (DD route only): which guest pc each eret
        resumes, so the lost context switch at the logo stall can be
        attributed directly (eret to 0x806f32ec = the loaded boot's spin
@@ -2761,6 +2771,11 @@ extern void wd_pc_record(uint32_t vaddr);
 
 void *get_addr_ht(u_int vaddr)
 {
+  /* Every new-dynarec architecture reaches this C boundary when handing
+     execution to a translated block.  This complements the ARM64
+     interrupt/sample hook and keeps boundary coverage architecture-neutral. */
+  if (g_dev.dd.idisk != NULL)
+    n64dd_dispatch_diag_boundary(&g_dev.r4300, vaddr);
   wd_pc_record(vaddr);
   /* Round 9 (DD route): the true dispatch trace.  wd_pc_ring is polluted by
      dynarec_sample_hook, so it cannot show whether the guest actually runs the

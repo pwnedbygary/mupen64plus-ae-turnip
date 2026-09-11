@@ -234,6 +234,9 @@
     <ClCompile Include="..\..\src\device\r4300\cached_interp.c">
       <Filter>device\r4300</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\src\device\r4300\n64dd_dispatch_diag.c">
+      <Filter>device\r4300</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\src\device\r4300\cp0.c">
       <Filter>device\r4300</Filter>
     </ClCompile>
@@ -549,6 +552,9 @@
       <Filter>device\pif</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\device\r4300\cached_interp.h">
+      <Filter>device\r4300</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\device\r4300\n64dd_dispatch_diag.h">
       <Filter>device\r4300</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\device\r4300\cp0.h">
