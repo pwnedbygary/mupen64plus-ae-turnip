@@ -321,6 +321,10 @@ static unsigned wd65_cpuw_lines = 0;   /* write_rsp_mem announce cap */
    the file cap was doing. */
 uint32_t wd65w_ring[64][4];
 volatile uint32_t wd65w_n = 0;
+/* ROUND-68: guest-PC distribution sampled at every pump fire (block
+   boundary), printed by the stall probe as WD_PCREG. */
+uint32_t wd68_pcp_ring[64];
+volatile uint32_t wd68_pcp_n = 0;
 
 static void wd65_watch_check(struct rsp_core* sp, unsigned site)
 {
@@ -1479,7 +1483,16 @@ void rsp_dd_background_pump(void)
        advanced before any early-out so `n` is a true block-boundary count on
        the DD route -- there is no other counter for that in the recompiler. */
     extern volatile uint32_t wd_c_pump_n, wd_c_pump_call, wd_c_pump_us, wd_c_pump_max;
-    if (g_dev.dd.idisk != NULL) wd_c_pump_n++;
+    if (g_dev.dd.idisk != NULL)
+    {
+        /* ROUND-68: where the guest is when the pump fires.  The loaded
+           DD-boot code lives at 0x80600000+ (no decomp symbols) -- a PC
+           distribution over the stall window names the blocked loop
+           directly.  Printed by the stall probe (WD_PCREG). */
+        wd68_pcp_ring[wd68_pcp_n & 63u] = (uint32_t)*r4300_pc(g_dev.sp.mi->r4300);
+        wd68_pcp_n++;
+        wd_c_pump_n++;
+    }
 
     if (g_dev.dd.idisk == NULL) return;               /* plain carts: inert */
     if (wd_sp_stock()) return;                        /* stock SP semantics  */

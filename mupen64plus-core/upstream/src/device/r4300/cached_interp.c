@@ -1901,6 +1901,19 @@ static void wd_stall_probe(const char* path)
         (int)(b.pump_n - a.pump_n), (int)(b.pump_call - a.pump_call),
         (int)(b.pump_us - a.pump_us), (int)b.pump_max,
         (int)((b.core_utime - a.core_utime) + (b.core_stime - a.core_stime)) * 10000);
+    /* ROUND-68: guest-PC distribution over the stall window (the pump fires
+       at every recompiler block boundary; the loaded DD-boot code at
+       0x80600000+ has no decomp symbols, so the raw addresses are the
+       deliverable -- group them offline). */
+    {
+        extern uint32_t wd68_pcp_ring[64];
+        extern volatile uint32_t wd68_pcp_n;
+        uint32_t n68 = wd68_pcp_n < 64 ? wd68_pcp_n : 64;
+        fprintf(f, "WD_PCREG n=%u:", wd68_pcp_n);
+        for (uint32_t i = 0; i < n68; i++)
+            fprintf(f, " %08x", wd68_pcp_ring[(wd68_pcp_n - n68 + i) & 63u]);
+        fprintf(f, "\n");
+    }
     /* ROUND 49: SP MEMORY IN ONE LINE.
        Until now the only way to see this was the raw 8 KiB image in the big
        dump (SPMEM, a bare fwrite), which needs a python pass to read -- so the
