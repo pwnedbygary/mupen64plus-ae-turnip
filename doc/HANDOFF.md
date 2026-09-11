@@ -66,6 +66,36 @@ run shows the boot parked WITHOUT either. r72:
    re-order the latch re-arm to also trigger on a scheduler submit attempt.
 4. The moment the logo clears, check the DD RTC (Error 48) and audio quality.
 
+### 3b. r71 end-of-round refinement: the spinning thread is ID 6 -- the thread that took over the loaded code
+
+Long-run verification (~10 min) did NOT clear the logo (the visual state is
+stable; PI DMAs +2400 and c_sample doubled -- some progress, then stop), and
+the thread identities are now pinned:
+
+* `__osRunningThread = 0x80799ee0` (live trace) = **thread id 6** ("SYS6" in
+  the ek_state labels, prio 30, parked on a LEO-related queue
+  `0x807c6e90 = gLeoRezeroFunc+4` pre-reboot). **ID 6 is the thread that
+  called LeoBootGame and took over the loaded code's entry** -- the CPU at
+  0x806f32ec (94% of samples) is ID 6 executing the loaded code's `b .`
+  spin. Its context's saved pc (osRecvMesg+0x68) is a stale pre-dispatch
+  value; a running thread's context is not saved.
+* The AUDIO synthesis engine (thread id 4, prio 20) advanced through
+  `AudioSynth_InitNextRingBuf`, `Audio_GuitarSeqStart`,
+  `AudioSynth_LoadReverbSamples`, `osAiSetNextBuffer` -- **the loaded code's
+  audio startup IS progressing, in preemption windows**, and its next steps
+  lead to the first task submission (which also re-arms the r67 latch).
+* The schedule flow per sys_main.c: MAIN's EVENT_MESG_VI handler sends
+  EVENT_MESG_NEXT_AUDIO_TASK to gAudioTaskMesgQueue (0x8079a0d8); the AUDIO
+  thread builds/submits; MAIN's EVENT_MESG_SP handler advances the state
+  machine. MAIN waits for the SP event; the SP event needs a task; the task
+  needs the scheduler's remaining setup to finish in its preemption windows.
+
+**r72 decision point:** measure HOW LONG the audio startup actually needs
+(the saved-pc sequence over a 10-min run -- the WD71TR extra field already
+logs it), and whether it converges to the submission or stalls at a specific
+synthesis step. If it stalls: the stall step's blocking condition is the
+fix target. If it converges: the earlier runs were simply too short.
+
 ---
 
 ## ROUND 70 (goal round 62) -- the ERET ledger: the dispatcher pops a DEAD audio-thread struct (state=0, garbage context) every interrupt; the scheduler can never run
