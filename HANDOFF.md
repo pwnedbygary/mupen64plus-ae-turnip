@@ -112,13 +112,14 @@ line   763  entry#   374  pc=0000 st=000000c0 ttype=0 imem0=00009d40 nzi=238 nzd
 * **Entry 374**: IMEM went from 971 -> **238** non-zero words, DMEM from 503 -> 193, and
   `imem0` became `00009d40 6e900000` (neither the ucode's `340a0fc0 8d420018`, nor the
   guest's `0x00010001` fill).
-* **Entries 374-13194 (the log cap, reached at `ms=242257264`) are byte-identical**: every
+* **Entries 374 onward -- 12 869 of them, until the trace cap at `ms=242257264` -- are byte-identical**: every
   slice returns `units=512` (or 256) exhausted, `wall=0`, `irq=0`, status still `0xC0`.
   **The RSP never halts, never breaks, and never signals anything again.** The remaining
   ~97 s of the run are that no-op loop plus a guest waiting for an interrupt.
 
 **What finishes an audio task in this ucode** (disassembled offline from the RDRAM dump;
-the ucode is at RDRAM `0x768e60`, 4096 bytes, DMA'd to IMEM by `osSpTaskLoad`):
+the ucode is at RDRAM `0x768e60` — `aspMainTextStart` per the decomp, i.e. the stock
+libultra `aspMain`, 4096 bytes, DMA'd to IMEM by `osSpTaskLoad`):
 
 ```
 000  ori   $t2,$zero,0xfc0        ; task header base
@@ -288,16 +289,45 @@ carries a large ares-derived RSP (`RSP::cpu`, `rsp/cp0.cpp`, `rsp/cp0.cr[...]`,
 `cp0.irq` aliasing `MI_INTR_REG`), so the port is a *reconciliation* of that code with the
 core's SP/MI model, not a fresh import.
 
+### 6b. Re-verify this round's claims before building on them (10 minutes, no device needed)
+
+Everything in §1-§4 except the RP6 counters can be re-derived offline from `.fzxwork/r63/`
+(the same artifacts the round used). If any of these disagree, trust the file, not this text:
+
+```bash
+cd /home/garyb/LLM-Projects/mupen64plus-ae-turnip
+sed -n '1,12p' .fzxwork/r63/wd_spw.txt          # the 7 SP writes; n=5/6/7 are load/startgo/yield
+grep -o 'status=[0-9a-f]* ttype=[0-9] exp=[0-9] imem0=[0-9a-f]* [0-9a-f]* nzi=[0-9]* nzd=[0-9]*' \
+    .fzxwork/r63/rsp.txt | uniq -c        # the 3 step changes: 1 / 371 / 1 / 12869 entries
+sed -n '1,6p'   .fzxwork/r63/pdma.txt           # the rogue transfer (R12DMA idx=3781)
+.fzxwork/ram_tools.py sym 0x80750384            # osStartThread+0x134
+.fzxwork/ram_tools.py ucode 0xac 8              # SIG2 write + break: the ucode's completion
+.fzxwork/ram_tools.py find 0x00010001           # the fill; note 0x768e60 is NOT in this set
+grep -cE 'RD .*dst=1[0-9a-f]{3} ' .fzxwork/r63/dmatr.txt   # 0: no core DMA ever wrote IMEM
+```
+
 ### 7. Traps that have already cost rounds (read before touching a dump)
 
 1. **The full-RDRAM dumps are byte-swapped inside each 32-bit word.** `iplram_force.bin` is
    8 MB of `g_mem_base`; guest word at `0x80xxxxxx` = `bswap32(file[off])`, i.e. read the
    four bytes reversed. Proof: ASCII (`F-ZERO` at file 0xc1cc0, `Mario` at 0x7745df) and
-   sane disassembly only appear after the swap. A helper that de-swizzles and disassembles
-   with capstone is in `.fzxwork/r63/` (`mips.py`, plus `ram_guest.bin` already converted).
+   sane disassembly only appear after the swap. **Use `.fzxwork/ram_tools.py`** (new this
+   round) instead of hand-rolling it again:
+
+   ```bash
+   .fzxwork/ram_tools.py wrap                 # proves the swap on this dump
+   .fzxwork/ram_tools.py sym  0x80750384      # -> osStartThread+0x134
+   .fzxwork/ram_tools.py dis  0x80750384 24   # guest instructions (capstone, mips32 BE)
+   .fzxwork/ram_tools.py ucode 0xac 8         # the audio ucode loaded at RDRAM 0x768e60
+   .fzxwork/ram_tools.py find 340a0fc0        # -> 0x80768e60 = aspMainTextStart
+   RAM_DUMP=.fzxwork/r62_stock/... .fzxwork/ram_tools.py rd 0x80000400 8
+   ```
 2. `python3 .fzxwork/ek_sym.py <hex-addr> ...` resolves guest addresses against the vendored
    F-Zero X EK decomp (`symbol_addrs*.txt`, main + overlays). This is what turned
-   `0x80750384` from "a spin" into "`osStartThread+0x134`".
+   `0x80750384` from "a spin" into "`osStartThread+0x134`", and it also names the game's own
+   functions: the EK's audio microcode at RDRAM `0x768e60` is **`aspMainTextStart`**, i.e.
+   the stock libultra `aspMain`, so its completion protocol is the documented one, not a
+   Nintendo one-off.
 3. The plugin's trace files are **capped** (`WD_RSP_LOG_MAX`): `wd_rsp.txt` stops at
    `ms=242257264`, i.e. ~1.5 s into a ~98 s run. Never read its tail as "the state at dump
    time" -- compare `ms=`/`seq=` first. (`wd_rsp.txt` reached the cap because the frozen
@@ -335,9 +365,11 @@ Flags in `$D` (all optional, presence = on): `wd_trace.flag`, `wd_deep.flag`,
 
 ### 9. Diagnostic file inventory (this run, `.fzxwork/r63/`; fresh copies pulled this round)
 
-**`.fzxwork/` is in `.gitignore`** — the artifacts below live on the workstation only, not in
-the repository. A fresh clone gets the code, the harness scripts and the vendored F-Zero X
-decomp, but no dumps; regenerate them with §8.
+**`.fzxwork/` is in `.gitignore`** — the run artifacts below, the vendored F-Zero X decomp
+(`.fzxwork/fzerox-decomp`) and the harness scripts all live on the workstation only. A fresh
+clone gets the emulator source, and nothing else from this section; re-run §8 to regenerate
+the dumps. Only `.fzxwork/ram_tools.py` and `.fzxwork/ek_sym.py` are force-added to git,
+because they are the two files a reader needs to make sense of a dump.
 
 | file | what it is |
 |---|---|
