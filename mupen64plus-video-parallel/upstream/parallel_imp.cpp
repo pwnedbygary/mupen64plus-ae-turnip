@@ -54,10 +54,10 @@ static uint32_t cmd_data[0x00040000 >> 2];
    `offset &= 0xFFFFF8` allows reads up to 16 MiB, i.e. off the end of the
    RDRAM allocation.
 
-   R39_CHUNK=0 restores the upstream behaviour for A/B (and latches every
+   R39_CHUNK=0 restores the upstream behavior for A/B (and latches every
    dropped window to files/wd_rdpdrop.txt so the mechanism stays measurable).
    A plain cart's windows are a few hundred commands, so this path is not
-   reached at all; nothing here changes plain-game behaviour.
+   reached at all; nothing here changes plain-game behavior.
    ======================================================================== */
 #define R39_CHUNK 1
 #define R39_DROP_FILE "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_rdpdrop.txt"

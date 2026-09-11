@@ -44,7 +44,7 @@
 /* ---------------------------------------------------------------------------
    files/wd_spstock.flag -- A/B switch for the 64DD route's SP model.
 
-   ABSENT (default) = the DD route's campaign behaviour: a background RSP pump
+   ABSENT (default) = the DD route's campaign behavior: a background RSP pump
    driven from every CPU block boundary, core-synthesized SP interrupts for
    ucode yields and breaks, and a forced HALT between slices.
 
@@ -313,7 +313,7 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
        never completed.
 
        (2) WRAP.  A transfer must wrap inside the selected 4 KiB bank rather
-       than walking into the neighbouring bank (upstream lets it run past the
+       than walking into the neighboring bank (upstream lets it run past the
        end).  Masking each access with `& 0xfff` reproduces the hardware wrap;
        for every DMA observed so far the offset stays below 0x1000 anyway, so
        this only matters for a whole-bank load that starts mid-bank. */
@@ -951,7 +951,7 @@ void do_SP_Task(struct rsp_core* sp)
        against what the last header DMA actually wrote there.  `same` means
        the copy landed and survived (so the guest handed us this header);
        `diff` means something overwrote it after the DMA (the ucode itself,
-       which is the known F3DEX behaviour), and `hdr_n == 0` means no header
+       which is the known F3DEX behavior), and `hdr_n == 0` means no header
        DMA ever reached DMEM 0xFC0 at all. */
     if (g_dev.dd.idisk != NULL)
     {
@@ -1425,7 +1425,7 @@ void rsp_dd_background_pump(void)
        *measured cost of the previous slice* has elapsed.  With DUTY=2 the RSP
        gets at most ~1/3 of the thread and the CPU keeps the rest, while every
        slice the RSP used to get it still gets -- only spread further apart --
-       so the task-completion behaviour this pump exists to provide (the RSP
+       so the task-completion behavior this pump exists to provide (the RSP
        must keep running while SP_STATUS.HALT is re-set by do_SP_Task on the
        way out) is preserved rather than removed.  DD route only. */
     if (wd_pump_last_us > 0) {

@@ -212,7 +212,7 @@ void clear_rcp_interrupt(struct mi_controller* mi, uint32_t mi_intr)
    It does NOT run the guest handler here (that would be wrong on the RDP
    thread); the CPU thread takes it on its next interrupt poll.  Gated to the
    DD route (g_dev.dd.idisk != NULL) so plain carts keep the stock EmptyFunc
-   behaviour byte for byte. */
+   behavior byte for byte. */
 void dd_check_interrupts(void)
 {
     if (g_dev.dd.idisk == NULL)

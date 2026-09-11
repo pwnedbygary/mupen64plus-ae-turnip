@@ -108,7 +108,7 @@ struct r14_ent {
 	unsigned dir; uint32_t pc, dst, src, len, cnt, skip, s0, st, fc0;
 	/* ROUND 15: the two DMEM words the F3DEX2/F3DLX2 entry code keys its
 	   fresh/warm/resume decision on, sampled per transfer:
-	     DMEM[0x0F0] = the "already initialised" marker (the ucode stores the
+	     DMEM[0x0F0] = the "already initialized" marker (the ucode stores the
 	                   RDP end pointer there on a cold start),
 	     DMEM[0xFF0] = the task header's data_ptr, which the ucode loads into
 	                   k0 for its display-list walk.
@@ -583,7 +583,7 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
 #define R20_GRACE 64u
 
 /* 1 = preempt a FIFO task by asking for a yield (SIG0) and letting the ucode
-   save itself; 0 = the round-10..19 behaviour (fabricate INTR_BREAK|HALT and
+   save itself; 0 = the round-10..19 behavior (fabricate INTR_BREAK|HALT and
    the ack).  Kept as a switch so the two models can be measured back to back
    on one build. */
 /* ROUND 27 (DD route only): ENABLED.  Rounds 10..26 preempted the gfx task by
@@ -655,14 +655,14 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
    yield save (DMEM[0xBF8] = live k0, DMEM[0xBFC] = ucode base, DMEM[0..0xBFF] ->
    the header's yield_data_ptr) and answer with SIG1|SIG2 while LEAVING SIG0 set
    (libultra's osSpTaskYielded only records OS_TASK_YIELDED while SIG0 is still
-   visible).  0 = the round-10..20 behaviour, kept for A/B measurement on one
+   visible).  0 = the round-10..20 behavior, kept for A/B measurement on one
    build.  See the long note at the yield site in RSP_MFC0. */
 #define R21_KEEP_SIG0 1
 
-/* ROUND 40 (DD route only): 1 = normalise the F3DEX2 ucode_data descriptors
+/* ROUND 40 (DD route only): 1 = normalize the F3DEX2 ucode_data descriptors
    (DMEM 0x2E0/0x2E8/0x410/0x418) back to ucode-relative form whenever a
    ucode_data-sized READ delivers them into DMEM 0, so the entry's fix-up
-   cannot add the ucode base a second time.  0 = previous behaviour, kept for
+   cannot add the ucode base a second time.  0 = previous behavior, kept for
    a one-build A/B.
    MEASURED AND DEFAULTED OFF (run r40f, emumode=2, the DD route): the repair
    DOES fire (`wd_r40norm.txt`: n=1 base=00752ae0 src=77a890 len=00800 ch=2,
@@ -1099,7 +1099,7 @@ void r31_arm_k0_repair(unsigned want);
 	   the stock readback byte for byte.  The raw readback is still counted
 	   and latched so the divergence stays measurable in wd_r20.txt.
 
-	   R28_LEN_READBACK=0 restores the round-27 behaviour for A/B. */
+	   R28_LEN_READBACK=0 restores the round-27 behavior for A/B. */
 	static volatile unsigned r28_len_n = 0, r28_len_nz = 0;
 	static volatile uint32_t r28_len_raw = 0, r28_len_pc = 0;
 
@@ -1431,7 +1431,7 @@ void r31_arm_k0_repair(unsigned want);
 			   (SP_STATUS_YIELD), and libultra's osSpTaskYielded() reports
 			   OS_TASK_YIELDED only when the ucode answers with SIG1
 			   (SP_STATUS_YIELDED).  Forcing the CPU handover WITHOUT that
-			   acknowledgement makes osSpTaskYielded() return 0, so the game
+			   acknowledgment makes osSpTaskYielded() return 0, so the game
 			   never sets its "gfx task yielded" flag, never calls
 			   Sched_SpTaskResumeGfx(), and the interrupted GFX task is
 			   abandoned forever: the audio task it swung to keeps
@@ -1475,7 +1475,7 @@ void r31_arm_k0_repair(unsigned want);
 			   only `if (status & SP_STATUS_YIELD)`, and that flag is what makes
 			   sys_main.c:347 keep sGfxTaskYielded and call
 			   Sched_SpTaskResumeGfx() later.  With SIG0 cleared the game drops
-			   the interrupted gfx task instead (round-16 behaviour; measured in
+			   the interrupted gfx task instead (round-16 behavior; measured in
 			   r20j as 1472 audio tasks vs 5 gfx tasks, raise_bits DP=0).
 			   SIG1 (SP_STATUS_YIELDED) is added on top because
 			   osSpTaskYielded() takes its *result* from that bit and the ucode
@@ -1624,7 +1624,7 @@ void r31_arm_k0_repair(unsigned want);
 
 	   DD GATE (user rule 2026-09-05): this is active only while the runtime
 	   presence callback reports a disk, so plain carts execute the original
-	   path byte for byte and their DMA behaviour is untouched. */
+	   path byte for byte and their DMA behavior is untouched. */
 	#define DD_DRAM_LIMIT 0x7FFFFFu
 	static volatile uint32_t r14_wild_n = 0;      /* refusals, RAM only     */
 	static uint32_t r14_wild_first[6] = {0,0,0,0,0,0}; /* pc, dest, src, len, cnt, skip */
@@ -1953,7 +1953,7 @@ void r31_arm_k0_repair(unsigned want);
 		   (wd_rsp.txt), the 336 KiB RDP ring stays zero and no frame ever
 		   reaches the RDP.
 
-		   THE REPAIR: the F3DEX2 fetch is an exact, recognisable DMA shape --
+		   THE REPAIR: the F3DEX2 fetch is an exact, recognizable DMA shape --
 		   dest DMEM 0x920, length 0xA8 -- and the header says unambiguously
 		   where the walk must start: flags&1 (OS_TASK_YIELDED) selects the
 		   ucode's own saved pointer DMEM[0xBF8], otherwise data_ptr
@@ -2265,7 +2265,7 @@ void r31_arm_k0_repair(unsigned want);
 		{
 			/* ROUND 41: added 0x280/0x288 for ucode 0x752AE0 which uses
 			   DMEM 0x280/0x288 (not 0x2E0/0x2E8) as overlay descriptors.
-			   Both pairs normalise identically. */
+			   Both pairs normalize identically. */
 			static const unsigned r29_off[6] = { 0x280u, 0x288u, 0x2e0u, 0x2e8u, 0x410u, 0x418u };
 			uint32_t r29_base = rsp->dmem[0xfd0 / 4];
 			if (r29_base >= 0x1000u && r29_base < 0x800000u)
@@ -2307,7 +2307,7 @@ void r31_arm_k0_repair(unsigned want);
 				   into DMEM 0, the entry adds the base a second time, and the
 				   overlay load goes wild.
 
-				   THE REPAIR: normalise the descriptors back to ucode-relative
+				   THE REPAIR: normalize the descriptors back to ucode-relative
 				   form at the moment a ucode_data-sized READ delivers them into
 				   DMEM 0 -- i.e. before the entry can read them.
 				   `while (v >= base) v -= base` recovers the relative value for
@@ -2315,7 +2315,7 @@ void r31_arm_k0_repair(unsigned want);
 				   fresh load, whose descriptors are the ucode_data constants
 				   0xF80/0x1018 and are far below any ucode base.
 
-				   ROUND 41: the original r40 test (R40_NORM=1) normalised only
+				   ROUND 41: the original r40 test (R40_NORM=1) normalized only
 				   DMEM 0x2E0/0x2E8/0x410/0x418 -- the descriptors of ucode
 				   0x7505C0 (task A).  But ucode 0x752AE0 (task B, the DD
 				   game's actual gfx ucode) uses DMEM 0x280/0x288 for its own
@@ -2327,7 +2327,7 @@ void r31_arm_k0_repair(unsigned want);
 				   DD-gated by rsp_ares_budget_enabled() (the core's runtime
 				   IsDDPresent()) like every other change in this file, so plain
 				   carts keep the stock handler byte for byte.  R40_NORM=0
-				   restores the previous behaviour for one-build A/B. */
+				   restores the previous behavior for one-build A/B. */
 				{
 					/* ROUND 41: the plain `while (v >= base)` loop from round 40
 					   also fires on LIVE ucode state at DMEM 0x2E0/0x2E8 that
@@ -2519,7 +2519,7 @@ void r31_arm_k0_repair(unsigned want);
 		/* ROUND 33: NO FILTER.  Round 32's filter let an unrelated 0x170-byte
 		   overlay copy (DMEM 0xC80/0xE20 -> RDRAM 0x415xxx) fill the 300-line
 		   cap, so the flush's own DMA was never recorded and "the ring is
-		   never written" was an artefact of the census.  Log them all, with
+		   never written" was an artifact of the census.  Log them all, with
 		   the issuer pc and the ring pointer. */
 		r32_wrn++;
 		f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r32wr.txt",

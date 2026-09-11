@@ -151,7 +151,7 @@ void do_SP_Task(struct rsp_core* sp);
 /* 64DD only: feed an unfinished RSP task a bounded slice from the CPU side. */
 void rsp_dd_background_pump(void);
 
-/* A/B switch for the 64DD route's SP model: 0 = campaign behaviour (pump +
+/* A/B switch for the 64DD route's SP model: 0 = campaign behavior (pump +
    core-synthesized SP interrupts + forced HALT), 1 = stock upstream semantics.
    Set by files/wd_spstock.flag; the plain-cart route is unaffected either way. */
 int wd_sp_stock(void);

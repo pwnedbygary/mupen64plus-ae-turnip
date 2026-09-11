@@ -1099,7 +1099,7 @@ static void open_eep_file(struct file_storage* fstorage)
    loads a DD IPL ROM, so this is 0 for every plain game and for the cart-hack
    with support64dd=false -- exactly the same population as `dd.idisk != NULL`.
    Used only to gate the diagnostic engine override below; it changes no
-   emulator behaviour by itself. */
+   emulator behavior by itself. */
 static int g_wd_dd_route = 0;
 
 static void load_dd_rom(uint8_t* rom, size_t* rom_size, uint8_t* disk_region)

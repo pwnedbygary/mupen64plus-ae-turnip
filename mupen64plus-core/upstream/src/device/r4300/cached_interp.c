@@ -2351,7 +2351,7 @@ void dynarec_sample_hook(uint32_t pc)
        `(d_sample & 0xFFFFF)==0` fired once per million calls, i.e. never
        at the observed 10-300 calls/s, so the stall thread always fired 4s
        after emulation start and every "stall" dump was really a boot
-       dump.  Plain carts keep the old behaviour (they never dump). */
+       dump.  Plain carts keep the old behavior (they never dump). */
     if (g_dev.dd.idisk != NULL) wd_hb++;
     else if ((d_sample & 0xFFFFF) == 0) wd_hb++;
     d_sample++;

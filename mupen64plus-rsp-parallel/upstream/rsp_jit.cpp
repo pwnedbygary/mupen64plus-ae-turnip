@@ -79,8 +79,8 @@ void CPU::invalidate_imem()
    0x411998), and the display-list walk starts outside RDRAM.
 
    Round 30 marked dirty_blocks on every IMEM DMA word and saw NO change: the
-   mark is honoured only by the NEXT slice's invalidate_code(), by which time
-   the entry has already run.  The mark must be honoured at the instant the
+   mark is honored only by the NEXT slice's invalidate_code(), by which time
+   the entry has already run.  The mark must be honored at the instant the
    next block is looked up.
 
    The fix below is a generation counter bumped by the RSP's own IMEM-writing
@@ -342,9 +342,9 @@ extern "C"
 	   rsp_task_locked + SP interrupt; RSP state preserved).
 
 	   ROUND 17: the budget is now an *executed-instruction* countdown, not a
-	   wall-clock deadline.  The 64DD route's whole behaviour depends on WHERE
+	   wall-clock deadline.  The 64DD route's whole behavior depends on WHERE
 	   inside the ucode a forced yield lands -- each one can fabricate the
-	   libultra yield acknowledgement for a task the ucode never saved, and the
+	   libultra yield acknowledgment for a task the ucode never saved, and the
 	   next start then resumes from scratch DMEM.  With a `steady_clock`
 	   deadline those points moved run to run: five runs of near-identical
 	   builds gave 245 / 3 / 2 / 140 RDP kicks and screens ranging from a drawn
@@ -922,7 +922,7 @@ Func CPU::get_jit_block(uint32_t pc)
 {
 	pc &= IMEM_SIZE - 1;
 
-	/* ROUND 31: honour an IMEM rewrite by the RSP's own DMA immediately.  See
+	/* ROUND 31: honor an IMEM rewrite by the RSP's own DMA immediately.  See
 	   the long note above invalidate_code().  Content-compared, so a task load
 	   of unchanged code is free. */
 	if (s_rsp31_imem_gen != s_rsp31_imem_gen_seen)

@@ -1,6 +1,395 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
-## ROUND 58 (goal round 49) -- **ROUND 57'S HEADLINE WAS A MEASUREMENT ARTEFACT. THE MACHINE WAS NEVER CPU-STARVED. AND THE RSP HAS NO PROGRAM AT ALL.**
+## ROUND 63 (goal round 57) -- THE FREEZE ANATOMY, EXACTLY: a 344 ms audio task, one rogue DMA, and an SP interrupt the guest waits on forever
+
+> Written to be read cold (this round was handed off to a different model). Every
+> claim below is either **measured on the RP6 in this tree** (with the artifact it
+> came from) or explicitly marked **HYPOTHESIS** / **RETRACTED**. Nothing is carried
+> over from an earlier round's narration without re-checking it against a file.
+
+### 0. Tree state, and how to get back to it
+
+| item | value |
+|---|---|
+| branch | `dd-eos-watchdog-checkpoint` |
+| HEAD | `a026b4803` "r62: hardware-shaped RSP slices for the DD route (default), old pump kept as an A/B flag" |
+| remotes | `origin` = github.com/pwnedbygary/mupen64plus-ae-turnip, `upstream` = fzurita/mupen64plus-ae |
+| device | RP6, serial `49016109`, package `org.mupen64plusae.turnip.pwnedbygary.debug` |
+| ROM/disk | `F-Zero X (Japan).z64` + `F-Zero X.ndd`, launched through the content:// URI in `.fzxwork/r62_ab.sh` |
+| run config | `emumode=2` (recompiler), parallel-RDP Vulkan + parallel-RSP, 8 MB (expansion pak), DD present |
+
+`a026b4803` touched: `rsp_core.c` (+181), `rsp_core.h` (+9), and one gate line each in
+`mi_controller.c`, `interrupt.c`, `new_dynarec.c` (those three make the `wd_ddlegacy.flag`
+A/B switch restore the old pump behavior everywhere, not just in the SP code).
+
+A spelling pass (this round, user request: "ARTEFACT is misspelled") normalized
+`artefact -> artifact` and the British spellings in **this project's own** prose/comments
+(`behavior`, `initialize`, `normalize`, `acknowledgment`, `honor`, `neighbor`,
+`recognizable`, `synchronize`). Vendored trees (`ndkLibs/freetype`, `lightning/`, upstream
+`n64_cic_nus_6105.c/.h`, the `values-en-rGB` localization) were deliberately left alone.
+
+### 1. THE ANSWER TO "WHAT IS THE GUEST BLOCKED ON" -- measured, this round
+
+The campaign has been asking this for 50+ rounds. It is now nailed down from three
+independent directions that agree.
+
+**1a. The guest's own state machine is parked waiting for the SP event.**
+An F-Zero X decompilation with symbol maps is vendored at
+`.fzxwork/fzerox-decomp` (resolve any guest address with
+`python3 .fzxwork/ek_sym.py 80750384 ...`). With it:
+
+* The stall dump's `epc=80750384` is **`osStartThread+0x134`, the `__osRestoreInt(saveMask)`
+  call at the end of `osStartThread`** -- i.e. the guest is being interrupted at the exact
+  instant it re-enables interrupts, on every one of its ~133 interrupts/second. It is not
+  "spinning" there; it is living there between VI/AI interrupts.
+* `src/sys/sys_main.c:171` registers `osSetEventMesg(OS_EVENT_SP, &gMainThreadMesgQueue, EVENT_MESG_SP)`.
+  `sys_main.c:343` is the main-thread loop `osRecvMesg(&gMainThreadMesgQueue, &msg, OS_MSG_BLOCK)`.
+  Its SP-task state machine (`sys_main.c:344-368`) advances **only** on `EVENT_MESG_SP`.
+* The last three SP writes the guest ever made (`.fzxwork/r63/wd_spw.txt`, all 7 writes are
+  in that file) were, in order:
+
+  | n | pc | a0 (value written) | decoded | caller symbol |
+  |---|---|---|---|---|
+  | 5 | 8074feec | `00002b00` | SET_INTR_BREAK, CLR_SIG0/1/2, then `__osSpSetPc(0x04001000)` | `osSpTaskLoad+0x90` |
+  | 6 | 8074feec | `00000125` | CLR_HALT, CLR_BROKE, CLR_SSTEP, SET_INTR_BREAK | `osSpTaskStartGo+0x28` |
+  | 7 | 8074feec | `00000400` | SET_SIG0 | `osSpTaskYield+0x8` |
+
+  (0x8074fee0 is `__osSpSetStatus`; the trace's `pc` is the delay-slot store.) At write 6,
+  DMEM 0xFC0 = **2** (M_AUDTASK: an audio task) and 2 SP DMAs had completed.
+
+  So the guest: loaded an **audio** task, started it, then -- because `sys_main.c`'s
+  `EVENT_MESG_AUDIO_TASK_SET` branch saw `sSpTaskActive && state != SP_TASK_YIELDING` --
+  called `Sched_SpTaskYield()` -> `osSpTaskYield()` -> SIG0, and set `sSpTaskState =
+  SP_TASK_YIELDING`. **From that moment the main thread can only move again when
+  `EVENT_MESG_SP` arrives, i.e. when the RSP completion raises MI_INTR_SP.**
+
+**1b. The rest of the machine is healthy and idle.** In the stall dump
+(`.fzxwork/r62_new/t090_stall.txt`, and `.fzxwork/r63/ram_force.bin`):
+
+```
+A c_task=2 c_spint=0 c_genint=17791689 c_sample=2303 c_asic=10604 c_pi=12741
+A mi_intr=00000000 mi_mask=0000003f sp_status=000000c0 sp_pc=04001000
+A raise_bits SP=0 SI=14 AI=5245 VI=5375 PI=12741 DP=0
+A guest viCurr.framep=801d9800 viNext.framep=801d9800 viCurr.state=0001 retrace=25 vievtq=0/5
+DELTA c_task=0 c_spint=0 c_asic=0 c_pi=+4   (300 ms window)
+DELTA2 raise_bits dSP=0 dSI=0 dAI=18 dVI=18 dPI=4
+```
+
+* `MI_INTR = 0` -- **no SP interrupt is even pending** at the stall.
+* `SP_STATUS = 0xC0` = INTR|SIG0, **HALT clear and BROKE never set**, for the whole frozen run.
+* VI is at 60/s, AI at 60/s, the DD ASIC is finished and idle (`c_asic=10604`, unchanged).
+* The game thread is in `func_80067D64`'s `while (osViGetCurrentFramebuffer() != gFrameBuffers[D_800DCD00]) {}`
+  (`src/sys/sys_gfx.c`) -- it asked for a buffer swap and the swap never came, because the
+  main thread that drives the frame pipeline is parked in (1a).
+
+**1c. Only ONE task ever entered the SP, and it was the audio task.** `FRAMEPROTO loads
+t0=0 gfx=0 aud=1 t3=0 ... rdpkick=0`. **No graphics task was ever loaded and the RDP was
+never kicked.** Everything downstream (no menu, no framebuffer swap, no rendering) follows
+from the main thread being parked in `SP_TASK_YIELDING`.
+
+### 2. The RSP-side timeline of the freeze -- measured, to the millisecond
+
+The plugin's own task-entry trace (`.fzxwork/r63/rsp.txt`, 39 983 lines, written by
+`parallel.cpp:983`) is step-function in only three places:
+
+```
+line    22  entry#     1  pc=0000 st=00000040 ttype=2 imem0=340a0fc0 nzi=971 nzd=761
+line    23  entry#     2  pc=0000 st=000000c0 ttype=2 imem0=340a0fc0 nzi=971 nzd=405
+line   761  entry#   373  pc=0000 st=000000c0 ttype=0 imem0=340a0fc0 nzi=971 nzd=503
+line   763  entry#   374  pc=0000 st=000000c0 ttype=0 imem0=00009d40 nzi=238 nzd=193
+```
+
+* **Entries 1-372 are healthy.** IMEM holds the real audio ucode (`imem0=340a0fc0`,
+  971 non-zero words of 1024), DMEM 0xFC0 = 2, status 0xC0 (SIG0 = the guest's yield
+  request). The RSP's PC history (`R29TRACE` in `wd_r29pc.txt`) shows it walking the
+  audio AList loop at PCs `0x058..0x0B34` and issuing real audio DMAs (2645 reads /
+  1131 writes to the output buffers in the core's trace).
+* **Entry 373** (`ms=242256143`, i.e. **344 ms after the first entry**): DMEM 0xFC0 became
+  **0** (`ttype=0`), while IMEM was still intact. The RSPHDR line at that instant shows
+  DMEM 0xFC0..0xFFF holding *the RSP's own register values* (`ucode=067c067e ucosz=06800680
+  udata=06820684 udsz=06840686 ...` == the `v0/v1/...` printed by the R29PC hook), not an
+  OSTask.
+* **Entry 374**: IMEM went from 971 -> **238** non-zero words, DMEM from 503 -> 193, and
+  `imem0` became `00009d40 6e900000` (neither the ucode's `340a0fc0 8d420018`, nor the
+  guest's `0x00010001` fill).
+* **Entries 374-13194 (the log cap, reached at `ms=242257264`) are byte-identical**: every
+  slice returns `units=512` (or 256) exhausted, `wall=0`, `irq=0`, status still `0xC0`.
+  **The RSP never halts, never breaks, and never signals anything again.** The remaining
+  ~97 s of the run are that no-op loop plus a guest waiting for an interrupt.
+
+**What finishes an audio task in this ucode** (disassembled offline from the RDRAM dump;
+the ucode is at RDRAM `0x768e60`, 4096 bytes, DMA'd to IMEM by `osSpTaskLoad`):
+
+```
+000  ori   $t2,$zero,0xfc0        ; task header base
+004  lw    $v0,0x18($t2)          ; data_ptr
+008  lw    $v1,0x1c($t2)          ; data_size
+00c  mtc0  $zero,SP_SEMAPHORE
+010  jal   0x4001ad4              ; process AList
+...
+058  <AList dispatch loop head>   ; 8 bytes/command (the RSP's trace circles here)
+088  break                        ; aEndList handler
+08c  bgtz  $fp,0x58               ; more commands?
+...
+0ac  ori   $at,$zero,0x4000       ; SP_SET_SIG2
+0b0  mtc0  $at,SP_STATUS          ; <-- the ucode's task-done signal
+0b4  break                        ; <-- THE completion: BREAK
+0bc  b     0xbc                   ; (parked loop, never reached after break)
+```
+
+The ucode contains **no IMEM-writing DMA at all** (every `mtc0 SP_MEM_ADDR` in it targets
+DMEM: 0x0000, 0x02f0, 0x0330, 0x03c0, 0x08e0, 0x0c80, 0x0e20) and no store that clears
+0xFC0. So neither the header clear nor the IMEM replacement came from the ucode's own
+*intended* code path -- see section 4.
+
+### 3. The missing SP interrupt -- mechanism, and where the code is
+
+On hardware, the sequence that should end this task is:
+
+```
+guest: osSpTaskStartGo -> SP_STATUS = CLR_HALT|CLR_BROKE|CLR_SSTEP|SET_INTR_BREAK   (done, write 6)
+RSP:   ... finishes the AList -> SP_SET_SIG2 ; BREAK                               (never observed)
+HW:    BREAK sets SP_STATUS BROKE|HALT; because INTR_BREAK is set -> MI_INTR_SP
+guest: exception handler sees MI_INTR_SP, posts EVENT_MESG_SP on gMainThreadMesgQueue
+guest: main thread leaves SP_TASK_YIELDING -> Sched_SpTaskStartAudio / resume gfx
+```
+
+Measured in our emulator: `HALT`/`BROKE` never appear in `SP_STATUS` (`0xC0` forever),
+`MI_INTR = 0`, `c_spint = 0`, `raise_bits SP = 0`. **The SP interrupt is never delivered.**
+
+Two independent code paths share this problem, and both need checking:
+
+1. **The core's DD delivery rule.** `rsp_core.c:1089-1111` (round 62, the current default)
+   raises `MI_INTR_SP` **only on the transition into HALT|BROKE**:
+   `wd_was_running && wd_stopped -> MI_INTR_REG |= MI_INTR_SP`. If nothing ever reports
+   HALT|BROKE, this rule can never fire -- which is exactly what `c_spint=0` measures.
+   The legacy/`wd_dd_legacy.flag` branch below it (`rsp_core.c:1112-1176`) is the older
+   "raise whenever not halted" rule plus the ares-derived force-synchronize/break
+   delivery; `wd_spstock.flag` restores pure stock semantics.
+2. **The plugin writes MI_INTR itself.** `parallel.cpp:1705`:
+   `RSP::cpu.get_state().cp0.irq = RSP::rsp.MI_INTR_REG;` -- the ares-derived CPU's `irq`
+   line **is** the core's `MI_INTR_REG`, bit 0 == `MI_INTR_SP`. The plugin's
+   `rsp_status_write` (`rsp/cp0.cpp:1519+`) sets `*irq |= 1` on `SP_SET_INTR` and
+   `*irq &= ~1` on `SP_CLR_INTR`, and the synthetic-yield block at `rsp/cp0.cpp:1490-1500`
+   does `*SP_STATUS_REG = (status|SIG1|SIG2) & ~SIG0; *irq |= 1;` when the ucode polls
+   `SP_STATUS` and sees SIG0.
+   **HYPOTHESIS (leading, not yet proven):** a poke into `MI_INTR_REG` from the RSP thread
+   is not accompanied by `add_interrupt_event(SP_INT, ...)`, so the CPU only sees it if it
+   happens to re-check, and any later `*irq &= ~1` (or the core's `rsp_interrupt_event`
+   consumer at `rsp_core.c:1178-1183`) can swallow it before the guest's handler runs.
+   This is the single highest-value thing to instrument next (§6, E2).
+
+Note what is **not** the problem any more: it is not the pump, not the slice budget, not a
+CPU-starved guest, not a fabricated-interrupt storm. Those were the previous three rounds'
+headlines and they are all resolved or measured away (see §5).
+
+### 4. THE ROGUE DMA -- and the one arithmetic fact that contradicts the obvious story
+
+The last thing the RSP does before the freeze is issue one transfer (`.fzxwork/r63/pdma.txt`,
+the R12 ring; identical record in `wd_wrap.txt` and `wd_wild.txt`):
+
+```
+R12DMA dump=1 idx=3781 trig=RD dst=00000000 src=00820680 len=1672 cnt=64 skip=104 s0=00010001 s1=00010001
+  ... preceding ring entries are the normal audio traffic (dst 0x02f0/0x0c80/0x0e20, WR to 0x415xxx/0x416xxx) ...
+  live pc=0000 status=000000c0 imem0=340a0fc0 8d420018 dmem0=00000001 fc0=00000000
+R19WRAP DMEM->IMEM dst=0000 len=0688 cnt=64 skip=104 end=1a888 pc=000
+WILD dir=RD pc=000 dram=00820680 mem=00000000 len=0688 cnt=64 skip=104 status=000000c0 imem=340a0fc0 8d420018 8d43001c 40803800 dmem0=00000001 fc0=00000000 ff0=004132d0 f0=0a446669
+```
+
+Reading it: an **RDRAM -> SP** transfer, source `0x820680` (out of the 8 MB RDRAM -- the
+`WILD` latch fires on exactly that), destination SP `0x0000`, 65 chunks of 0x688 bytes with
+skip 0x68. Its destination span is `0x0000 .. 0x1C888`, i.e. **all of DMEM, all of IMEM, and
+past the end of both**.
+
+At the instant of the transfer, IMEM still held the ucode (`340a0fc0 ...`) but DMEM 0xFC0
+was **already 0**, so the header clear precedes the transfer. By the next RSP entry, both
+banks are the sparse garbage of entry 374.
+
+**Why this story cannot be the whole truth:** with in-range masking (`src & 0x7FFFFC` =
+`0x020680`) the source is 0x00010001 fill -- verified: `wd_*` RDRAM at 0x020680 is
+`00010001 00010001 ...`, and the ring itself recorded `s0=s1=00010001`. A masked copy would
+therefore leave DMEM **and** IMEM full of 0x00010001 (1024 non-zero words in each bank).
+Observed instead: 238 and 193 non-zero words, with values like `00009d40`, `6e900000`,
+`00888888`, `00012000`, `00001bff` -- **the signature of host memory (pointers, sparse),
+not of guest data.**
+
+* **RETRACTED this round:** "the rogue DMA wiped IMEM with the guest's fill". The
+  destination shape is right, the *content* does not match. Do not re-run that check; the
+  numbers are in `.fzxwork/r63/` (`ram_force.bin` is the frozen RDRAM image,
+  `ram_guest.bin` the de-swizzled one).
+* **Also checked and negative:** the core's own CPU-side SP DMA path is *not* the writer.
+  `wd_dmatr.txt` has all 3776 transfers of the run: **0** with a destination in IMEM
+  (0x1000-0x1FFF) and **0** into DMEM 0xFC0, and the last one still saw `fc0=00000002`.
+  `wd_dma2.txt` shows only 4 distinct clean transfer shapes for the whole run.
+* **Still open, and the decisive question:** *who writes IMEM and DMEM 0xFC0 at t=344 ms?*
+  Candidates, in order of suspicion:
+  1. The plugin's DMA copy loop reading **past the end of its `rdram` buffer** (an
+     out-of-range source that the `& 0x7FFFFC` mask fails to contain on that path), which
+     would read host heap -> sparse garbage. This fits the *content* exactly and the
+     *destination* shape exactly.
+  2. The plugin's `rdram`/`imem`/`dmem` pointers no longer aliasing the core's `sp->mem`
+     (`pimem == cimem == 0x79363c1000`, `pdmem = 0x79363c0000` in every trace line --
+     they agree at task entry, which is *not* proof they agree at write time).
+  3. A path that writes `*rsp->imem` directly, outside both the core's DMA and the plugin's
+     guarded DMA (the campaign's field `r19_imem_note` was written for exactly this and its
+     file `wd_imem.txt` **does not exist in this run** -- either it never fired or
+     `rsp_ares_budget_enabled()` was false; verify the gate before trusting its silence).
+
+### 5. What was measured and settled in the immediately preceding rounds (do not redo)
+
+Round-62 A/B on the RP6 (F-Zero X (J) + .ndd, emumode=2, parallel RDP/RSP). `c_task`,
+`c_spint` and `spwr` are the counters in the stall dump:
+
+| SP model for the DD route | c_task | c_spint | guest SP_STATUS writes | outcome |
+|---|---|---|---|---|
+| legacy: pump via `do_SP_Task` (`wd_ddlegacy.flag`) | 1626 | 213 | 642 | stall |
+| stock upstream semantics (`wd_spstock.flag`) | 1042859 | 1042858 | 1046387 | livelock |
+| new model, 1st cut (no pacing gate) | 6057 | 6057 | 6063 | CPU starved, VI 1.8/s |
+| **new model, current default** | **2** | **0** | **7** | full speed (VI 60/s), guest parks |
+
+Also settled and worth not re-litigating:
+
+* The guest clock is fine: CP0 COUNT runs at the **VI clock, 48.68 MHz** (not 93.75 MHz --
+  `vi_controller.c`'s `vi_clock_from_tv_standard` and `dd_controller.c`'s `46875000 * seconds`
+  both say so). Measured 96-104 % of real hardware in every configuration.
+* The DD disk data path is **byte-correct**: `ds_buf` == RDRAM destination == `.ndd`
+  sector, per-word byte order included (`ds_buf 7780043c..` == `ram[0x6f4f00]` ==
+  `.ndd 0x3c048077..` reversed per word). The old "wild DMA source" hunt was chasing a
+  mis-read test, not a data bug.
+* DD device progress is identical in every configuration (`c_asic=10604`), so the 64DD
+  ASIC/mecha is *not* where the run diverges.
+
+### 6. Next steps, in the order I would do them
+
+**E1 - finish the memory question (§4).** Instrument the plugin's DMA copy loop
+(`rsp/cp0.cpp`, the RD branch around line 2111-2150) to record, for the **first** write whose
+`dest_addr & 0x1000` is set: the loop index `j`, the raw `source`/`source_addr`, the `word`
+actually read, the first 4 resulting `imem[]` words, and `(uintptr_t)rsp->rdram`,
+`rsp->imem`, `rsp->dmem`. Also log `dest_addr & 0x1000` writes *refused* by any guard, and
+any write whose `source_addr + 4` exceeds the RDRAM size. That single capture distinguishes
+case 1 from case 2 above. ~20 lines, DD-gated, one run.
+
+**E2 - finish the interrupt question (§3, independent of E1).** In the plugin, log every
+write to `*rsp->cp0.irq` (set *and* clear) with `pc`, the SP_STATUS write value that caused
+it, and the resulting MI_INTR_REG; and in the core log every `MI_INTR_SP` set/clear with the
+caller (`rsp_core.c:1178`, `rsp_interrupt_event`) plus whether `add_interrupt_event(SP_INT)`
+was scheduled. Then the question "was the SP interrupt ever raised, and who ate it?" is
+answered by a single run instead of by inference.
+
+**E3 - the guest-visible contract, once E1/E2 are fixed.** Watch `EVENT_MESG_SP`: does the
+main thread leave `SP_TASK_YIELDING`, does `Sched_SpTaskStartAudio`/`ResumeGfx` run, does the
+first **gfx** task appear (`FRAMEPROTO gfx` becomes non-zero, `rdpkick` non-zero), does the
+framebuffer swap, does `viCurr.framep` change.
+
+**E4 - only if the in-tree route stalls again:** the objective explicitly authorizes porting
+the working Ares/Phobos N64DD + RSP + interrupt-delivery model from
+`/home/garyb/LLM-Projects/phobos/ares/n64` into this tree. Note that this plugin *already*
+carries a large ares-derived RSP (`RSP::cpu`, `rsp/cp0.cpp`, `rsp/cp0.cr[...]`,
+`cp0.irq` aliasing `MI_INTR_REG`), so the port is a *reconciliation* of that code with the
+core's SP/MI model, not a fresh import.
+
+### 7. Traps that have already cost rounds (read before touching a dump)
+
+1. **The full-RDRAM dumps are byte-swapped inside each 32-bit word.** `iplram_force.bin` is
+   8 MB of `g_mem_base`; guest word at `0x80xxxxxx` = `bswap32(file[off])`, i.e. read the
+   four bytes reversed. Proof: ASCII (`F-ZERO` at file 0xc1cc0, `Mario` at 0x7745df) and
+   sane disassembly only appear after the swap. A helper that de-swizzles and disassembles
+   with capstone is in `.fzxwork/r63/` (`mips.py`, plus `ram_guest.bin` already converted).
+2. `python3 .fzxwork/ek_sym.py <hex-addr> ...` resolves guest addresses against the vendored
+   F-Zero X EK decomp (`symbol_addrs*.txt`, main + overlays). This is what turned
+   `0x80750384` from "a spin" into "`osStartThread+0x134`".
+3. The plugin's trace files are **capped** (`WD_RSP_LOG_MAX`): `wd_rsp.txt` stops at
+   `ms=242257264`, i.e. ~1.5 s into a ~98 s run. Never read its tail as "the state at dump
+   time" -- compare `ms=`/`seq=` first. (`wd_rsp.txt` reached the cap because the frozen
+   machine logs one entry pair per slice forever.)
+4. `wd_now_ms()` is device uptime (CLOCK_MONOTONIC), not run time. The freeze is at
+   `242256143 - 242255805 = 338 ms` after the first RSP entry.
+5. Gradle silently **skips the native rebuild** if you only change C/C++ (round 19's trap):
+   build with an explicit clean/`--rerun-tasks` or verify the `.so` timestamp before
+   trusting a run.
+6. Every DD-specific change must be gated at runtime on `g_dev.dd.idisk != NULL`
+   (user rule 2026-09-05); plain carts, cart-hack with `support64dd=false`, and Mario Tennis
+   are the regression set. The CI `emumode=1` baseline must keep working.
+
+### 8. Operational recipe (exactly what was run this round)
+
+```bash
+# build + install + run one configuration + collect screenshots and the stall dump
+cd /home/garyb/LLM-Projects/mupen64plus-ae-turnip
+./gradlew :app:assembleDebug -q                     # see trap 5 above
+.fzxwork/r62_ab.sh new        # default model; also: stock | legacy  (A/B flags)
+# results land in .fzxwork/r62_<mode>/{logcat.txt,t030.png,t060.png,t090.png,t090_stall.txt}
+
+# live device state (the emulator is usually still running: pidof <pkg>)
+A="adb -s 49016109"; P=org.mupen64plusae.turnip.pwnedbygary.debug; D=/data/data/$P/files
+$A shell "run-as $P ls -la $D"                      # all wd_* diagnostics
+$A shell "run-as $P cat $D/wd_spw.txt"              # every guest SP_STATUS write, with pc/ra
+$A shell "run-as $P cat $D/wd_rsp.txt" > rsp.txt    # RSP task-entry trace (capped, see trap 3)
+$A shell "run-as $P cat $D/iplram_force.bin" > ram.bin   # 8 MB RDRAM + text header/trailer
+$A shell "run-as $P touch $D/wd_force.flag"         # ask for a fresh stall dump now
+```
+
+Flags in `$D` (all optional, presence = on): `wd_trace.flag`, `wd_deep.flag`,
+`wd_corelog.flag`, `wd_force.flag` (watchdog dump on demand), `wd_ddlegacy.flag` (old
+`do_SP_Task` pump + old interrupt rules), `wd_spstock.flag` (pure stock SP semantics).
+
+### 9. Diagnostic file inventory (this run, `.fzxwork/r63/`; fresh copies pulled this round)
+
+**`.fzxwork/` is in `.gitignore`** — the artifacts below live on the workstation only, not in
+the repository. A fresh clone gets the code, the harness scripts and the vendored F-Zero X
+decomp, but no dumps; regenerate them with §8.
+
+| file | what it is |
+|---|---|
+| `wd_spw.txt` | **all 7** guest SP_STATUS writes with pc/ra/sp/a0-a3/status-before/DMEM 0xFC0/DMA count |
+| `wd_rsp.txt` | plugin task-entry/exit trace: pc, status, header type, IMEM/DMEM non-zero counts, pointers |
+| `wd_r29pc.txt` | RSP PC ring + `R29DM` (DMEM key words), `R29TBL`, `R29IM` (IMEM words), `R29TRACE` |
+| `wd_dmatr.txt` | the core's complete SP DMA trace (3776 transfers) — the run's full DMA history |
+| `wd_dma.txt` / `wd_dma2.txt` | the first two DMAs (header + ucode), core-vs-plugin memory agreement |
+| `wd_pdma.txt` | R12 ring: the ucode-issued transfers around the rogue DMA (`idx=3781`) |
+| `wd_wild.txt` / `wd_wrap.txt` | the out-of-RDRAM latch and the DMEM->IMEM bank-wrap latch |
+| `wd_hdr15.txt` | per-entry OSTask header + DMEM key words for gfx/audio entries |
+| `ram_force.bin` | 8 MB RDRAM (word-byte-swapped, see trap 1) + a text header with CP0/SP/VI/MI/guest-VI state + DD trace + PI ledger |
+| `wd_stall.txt` | two machine samples 300 ms apart: counters, deltas, thread CPU, dynarec block ring |
+
+### 10. Code map (everything this round touched or measured)
+
+| what | where |
+|---|---|
+| DD SP model, current default (round 62) | `mupen64plus-core/upstream/src/device/rcp/rsp/rsp_core.c:1089-1111` |
+| legacy / stock A/B branches | `rsp_core.c:1112-1176`, `rsp_core.c:47` (`wd_dd_legacy`), `rsp_core.h:154` |
+| CPU-side SP_STATUS write decode + MI raise | `rsp_core.c:570-690` (`w & 0x10` -> `signal_rcp_interrupt`) |
+| guest SP-write ring (`wd_spw.txt`) | `rsp_core.c:573-615` |
+| SP_INT event consumer (clears MI_INTR_SP) | `rsp_core.c:1178-1183` |
+| the three A/B gate touch points | `mi_controller.c`, `interrupt.c`, `new_dynarec.c` (one line each) |
+| plugin task-entry trace (`wd_rsp.txt`) | `mupen64plus-rsp-parallel/upstream/parallel.cpp:959-1050` |
+| plugin slice budget (`rsp_set_budget_deadline_us`) | `parallel.cpp:1477-1500` (the uncommitted-then-committed round-62 default) |
+| `cp0.irq` == core `MI_INTR_REG` bridge | `parallel.cpp:1705`, used at `parallel.cpp:1579/1617` |
+| plugin SP_STATUS write (RSP side) | `mupen64plus-rsp-parallel/upstream/rsp/cp0.cpp:1519+` |
+| synthetic yield (SIG0 -> SIG1|SIG2 + irq) | `cp0.cpp:1490-1500` |
+| plugin DMA: RD branch + bank-limited wrap | `cp0.cpp:2066-2150` (wrap at 2113-2126, gated on `rsp_ares_budget_enabled()`) |
+| plugin DMA: WR branch | `cp0.cpp:2556-2640` |
+| out-of-RDRAM latch (`wd_wild.txt`) | `cp0.cpp:1600-1689` (`r14_wild_check`; note: latches but does **not** refuse) |
+| IMEM-store guard / IMEM-DMA note (`wd_imem.txt`) | `cp0.cpp:59-67`, `cp0.cpp:300-330` |
+| F-Zero X decomp + symbol resolution | `.fzxwork/fzerox-decomp`, `.fzxwork/ek_sym.py` |
+| run harness | `.fzxwork/r62_ab.sh` |
+
+### 11. Honest status against the objective
+
+The objective is "load fully, reach the menu, run with clean audio on the RP6, DD changes
+gated, zero plain-game regression". Current state: the game **loads fully** (DD handshake,
+sector reads and the ASIC sequence all complete and are byte-verified) and the emulator now
+runs the guest at full speed with a hardware-shaped SP model — but **the game does not reach
+the menu**, because the audio task's completion never reaches the guest as an SP interrupt
+(§1-§3) and the RSP's memory is destroyed 344 ms into that task by a writer that is *not* the
+guest, *not* the core's DMA path, and *not* the ucode's designed DMA path (§4).
+
+The two open items are independent, both are one instrumented run away from an answer, and
+neither requires a band-aid: E1 names the writer of IMEM/0xFC0, E2 names the consumer of the
+SP interrupt. Fixing E2 alone should let the frame pipeline start (a gfx task, an RDP kick,
+a framebuffer swap); fixing E1 is what makes the RSP's work survive long enough to matter.
+
+## ROUND 58 (goal round 49) -- **ROUND 57'S HEADLINE WAS A MEASUREMENT ARTIFACT. THE MACHINE WAS NEVER CPU-STARVED. AND THE RSP HAS NO PROGRAM AT ALL.**
 
 ### 1. The correction: the guest was already at full speed
 
@@ -238,11 +627,11 @@ measured what a slice costs. Each admitted slice ran `do_SP_Task()`, which took
 `rsp_dd_background_pump()` now scales its gate to the *measured* cost of the
 previous slice: a new slice may start only once `RSP_DD_PUMP_DUTY` (2) times
 that cost has elapsed. The RSP still gets every slice it got before, just
-spread further apart, so the behaviour the pump exists for (keep an unfinished
+spread further apart, so the behavior the pump exists for (keep an unfinished
 task running while `do_SP_Task` re-sets `SP_STATUS.HALT` on the way out) is
 preserved rather than removed. Measured effect: core 190 ms -> 110 ms per
 300 ms, pump 170 ms -> 97 ms, `lim_calls` still 0, **no change in guest
-behaviour** (cart-read progress over the first 90 s is 12087->12748 uncapped
+behavior** (cart-read progress over the first 90 s is 12087->12748 uncapped
 vs 12087->12750 capped).
 
 ### What the guest is actually doing (unchanged, and NOT a deadlock)
@@ -358,7 +747,7 @@ still stands.
   the first time: the 64DD boot logo, pixel-identical at 60 s and 90 s and
   across runs (the FPS overlay is what changed the PNG hashes). The two runs
   agree on **every** counter, so the earlier "run-to-run variance" was an
-  artefact. Three dumps inside one run (t45/t105/t165) show the DD trace ring
+  artifact. Three dumps inside one run (t45/t105/t165) show the DD trace ring
   tail is a stream of `pi_end_of_dma_event` entries (ring kind 6, `a =
   PI_CART_ADDR`) carrying **cart→RDRAM** transfers of **~960 bytes each at a
   steady 14.3/s** (13.4 KB/s), with `PI_CART_ADDR` scanning a ~370 KB window of
@@ -556,7 +945,7 @@ variance above).
   same parallel-RDP, same recompiler -- with `rspSetting=rsp-cxd4-lle` instead of
   `rsp-parallel`, i.e. the stock faithful LLE interpreter, which has none of this tree's
   fabricated yields -- freezes at the SAME screen. The t=10 s screenshots of the two runs are
-  **byte-identical** (`md5 0b4b3e111ff391867734028b5917ce24`). Every RSP-side artefact this
+  **byte-identical** (`md5 0b4b3e111ff391867734028b5917ce24`). Every RSP-side artifact this
   campaign has chased (the 18M wild-DMA storm, `saved_k0=152e03c0`, the dropped RDP window, the
   k0 repair, the forced-yield save) is a **consequence** of the frozen state, not a cause.
 
@@ -568,7 +957,7 @@ variance above).
   `CoreInterface.coreStartup()` installs the core's debug callback **only when the 64DD IPL ROM
   is ABSENT** (upstream AE, 2020), so for a 64DD game every core message is discarded: the
   `DDCMD` ASIC command log, the 64DD device's own errors, plugin load failures, every
-  `M64MSG_ERROR`/`M64MSG_WARNING`. The tree now honours an opt-in `files/wd_corelog.flag`
+  `M64MSG_ERROR`/`M64MSG_WARNING`. The tree now honors an opt-in `files/wd_corelog.flag`
   (DD route only; plain carts take exactly the branch they always took) -- and with it on the
   DD route is readable for the first time in 40 rounds.
 
@@ -805,7 +1194,7 @@ bad=0` — 139 of 144 kicks left `DPC_CURRENT` behind.
   `n=3 ring_n=149`), `wd_lowsp.txt` identical, `R20W wr=3120` vs `3124` out of ~19M DMAs. Removing it
   is still right for the *device*: `wd_dmatr.txt` had reached **2.9 GB** in the app's files dir
   (`du` = 2.8 GB) in a single 150 s run.
-* **The yielded-resume OSTask fields are correct libultra behaviour, not corruption.**
+* **The yielded-resume OSTask fields are correct libultra behavior, not corruption.**
   `fzerox-decomp src/libultra/io/sptask.c:58-64`: for an `OS_TASK_YIELDED` task,
   `tp->t.ucode_data = tp->t.yield_data_ptr; tp->t.ucode_data_size = tp->t.yield_data_size;` and
   `flags &= ~OS_TASK_YIELDED`. The live task at RDRAM `0x7C1C00`
@@ -821,7 +1210,7 @@ bad=0` — 139 of 144 kicks left `DPC_CURRENT` behind.
   fetch really does land in **DMEM** 0x9B0, which is what its own `lw t9,0xA58(k1)` reads.
 * **The EK uses SIG0/SIG1/SIG2 for the yield handshake** — `include/PR/rcp.h:243-251`:
   `SP_SET_YIELD = SP_SET_SIG0`, `SP_STATUS_YIELDED = SP_STATUS_SIG1`,
-  `SP_SET_TASKDONE = SP_SET_SIG2`. That is exactly the SIG0/SIG1 behaviour round 33 measured.
+  `SP_SET_TASKDONE = SP_SET_SIG2`. That is exactly the SIG0/SIG1 behavior round 33 measured.
 
 **4. Environment/measurement fix (overdue).** Every per-transfer trace is now opt-in behind
 `files/wd_trace.flag`; absent the flag only the once-per-second summaries run. `rsp_diag_trace()` in
@@ -1016,7 +1405,7 @@ explain the black screen; they differ in 554 words (disk ID + patches) only.
 
 **1. RETRACTED: round 32's "the flush's DMA runs the WRONG WAY / s6 is corrupted in the JIT".**
 The ucode dispatch table at DMEM 0x36E is a **halfword** table and round 32 read it little-endian.
-Read the way the RSP's `lhu` reads it (big-endian halfword, verified against the traced behaviour —
+Read the way the RSP's `lhu` reads it (big-endian halfword, verified against the traced behavior —
 the FULLSYNC `t9=0xE9000000` really does land on pc 0x20C) the table is plain GBI:
 
     0xDB G_MOVEWORD -> 0x038     0xDC G_MOVEMEM -> 0x120    0xDD -> 0xFAC
@@ -1031,7 +1420,7 @@ s6-0x158 = the buffer base), and `WR pc=fc4 dst=2d9cd0 src=000ba8 len=0008` in t
 flush doing exactly the right thing. Round 32's write census was unsound for a second reason: its
 filter (src in [0xBA8,0xF08) or dst in the ring) also admits an unrelated 0x170-byte overlay copy
 from DMEM 0xC80/0xE20 to RDRAM 0x415xxx, which filled the 300-line cap — so "no write ever reaches
-the ring" was an artefact of the census, not a measurement.
+the ring" was an artifact of the census, not a measurement.
 
 **2. THE PROTOCOL, now read from the vendored decomp instead of inferred** (`.fzxwork/fzerox-decomp`,
 `src/libultra/io/sptaskyield.c`, `sptaskyielded.c`, `sptask.c`, `src/sys/sys_main.c`, `PR/rcp.h`):
@@ -1159,7 +1548,7 @@ every slice". **It does not.** A pc ring added this round (`rsp_enter` → `r29_
 gated) recorded every JIT block entry for a whole 105 s run: the RSP reaches pc 0 **six**
 times, all of them the *audio* task's legitimate task-start entries. Those 3372 lines are
 `DoRspCycles` calls that read a stale `SP_PC_REG` (and mostly return at the HALT/BROKE check
-without running at all). Artefacts: `.fzxwork/r29a/wd_r29pc.txt` (R29PC/R29DM/R29TBL/R29TRACE)
+without running at all). Artifacts: `.fzxwork/r29a/wd_r29pc.txt` (R29PC/R29DM/R29TBL/R29TRACE)
 and `wd_r29sp.bin` (live IMEM||DMEM).
 
 **6. THE FIX (DD-gated, `parallel.cpp` `r29_unfix_descriptors()`).** At the instant the text
@@ -1277,7 +1666,7 @@ byte-for-byte unchanged for plain carts and the cart-hack route.
 to the JIT block entry at pc 0x080 and never ran, so `rsp_enter()` did not observe a block
 entry at 0x080 even though rspboot's trampoline (`jr a3`, a3 = 0x1080) must land there. Put the
 repair in the **DMA path** instead: `cp0.cpp`'s SP-DMA handler is where the ucode_data / yield
-image actually lands, so normalise the four descriptor words *in the destination of that
+image actually lands, so normalize the four descriptor words *in the destination of that
 transfer* (READ into SP 0x000 with len 0x7FF or 0xBFF) — same arithmetic, same gate, but at a
 point that is guaranteed to be observed. Keep `r29_pc_hook` (the pc ring is the only way the
 "restart every slice" reading was ever falsified) but stop relying on it as a hook point.
@@ -1286,7 +1675,7 @@ point that is guaranteed to be observed. Keep `r29_pc_hook` (the pc ring is the 
 to the JIT block entry at pc 0x080 and never ran, so `rsp_enter()` did not observe a block
 entry at 0x080 even though rspboot's trampoline (`jr a3`, a3 = 0x1080) must land there. Put the
 repair in the **DMA path** instead: `cp0.cpp`'s SP-DMA handler is where the ucode_data / yield
-image actually lands, so normalise the four descriptor words *in the destination of that
+image actually lands, so normalize the four descriptor words *in the destination of that
 transfer* (READ into SP 0x000 with len 0x7FF or 0xBFF) — same arithmetic, same gate, but at a
 point that is guaranteed to be observed. Keep `r29_pc_hook` (the pc ring is the only way the
 "restart every slice" reading was ever falsified) but stop relying on it as a hook point.
@@ -1420,7 +1809,7 @@ WILD dir=RD pc=020 dram=00ea1b98 mem=00001000 len=0170    (0xEA1B98 masks to RDR
 FIFO's code has been overwritten".**  The 0x00010001 pattern is the same one round 12 found in
 the DMEM header.
 
-**7. NEXT (round 29).**  Two concrete questions, both answerable from artefacts already on
+**7. NEXT (round 29).**  Two concrete questions, both answerable from artifacts already on
 disk:
    1. **Whatever writes 0xEA1B00 into DMEM 0x2E0 is the trigger** — it is the value that makes
       the ucode load disk data over itself.  Find the store (`sw ..., 0x2E0(r0)` sites in the
@@ -1673,7 +2062,7 @@ audio-ucode DMEM clobber (item 9) is the mechanism to explain it.
 * The k0/R25K0 watch must skip while `IMEM[0] == 0x340A0FC0` (audio resident) or the whole
   200-line budget is consumed before the first gfx entry — **that is what produced round 25.**
 * `wd_dmatr.txt` (~485k lines, `D<n> RD|WR pc= dst= src= len= cnt= skip= s0= st= fc0= f0= ff0=
-  bf8= fc4=`, plus a final `X sw_n=... fake_n=...` line) is the single most informative artefact
+  bf8= fc4=`, plus a final `X sw_n=... fake_n=...` line) is the single most informative artifact
   in the tree: it dates every ucode-issued transfer with the DMEM state at that instant.  Filter
   it by `ff0=<the task's data_ptr>` to isolate one task's transfers.
 * `wd_watch.txt` (`R25W`) logs *every* change of DMEM 0xBF8/0xBFC/0x2E0/0x2E8/0x410/0x418/0xFF0
@@ -2010,7 +2399,7 @@ constant for 0x180..0xFFF *including* the last line (`1FC0: 95740006 359f0000 40
 * A second, **deliberately empty** kick path sets `DPC_START = DPC_END = DMEM[0xFEC]`
   (IMEM 0x10C-0x114) and records `DMEM[0xF0] = that value`. **This is the "empty
   `start=cur=end=0032DCD0`" form that dominates the RDPBAD/RDPF tables — it is by design, not a
-  bug.** The RDPBAD `cur=FFFFFFF8` symptom is a separate, later artefact.
+  bug.** The RDPBAD `cur=FFFFFFF8` symptom is a separate, later artifact.
 * Consequence: since the RDP is told to consume RDRAM up to a write pointer that sits inside
   `gTaskOutputBuffer`, the ucode MUST have DMA-written the command stream below it.
 
@@ -2341,7 +2730,7 @@ and no adb path to it (`adbd cannot run as root in production builds`, no `su`,
 `locksettings set-disabled` demands the credential, no fingerprint service). While locked the
 frontend is STOPPED and the core is never scheduled: `/proc/<pid>/stat` utime flat and the stall
 probe prints **A == B** with `count` frozen at `0x00ad409d` (≈0.12 s emulated) — so a "frozen
-machine" dump taken on a locked device is an artefact of the lock, not a guest deadlock. Two
+machine" dump taken on a locked device is an artifact of the lock, not a guest deadlock. Two
 things had to be true at once:
 
 * `FLAG_ACTIVITY_SHOW_WHEN_LOCKED` (`am start -f 0x00080000`) is **not** enough: GameActivity
@@ -2435,9 +2824,9 @@ capture is **rspboot**, and round 16 was reading the right code.
 
 *The body* (`gspF3DEX2_fifo`, RDRAM 0x7505C0 -> IMEM 0x080, PC = 0x080 + (rdram-0x7505C0)):
 
-    0098 lw  t3,0x0F0(r0)     # rdpFifoPos ("already initialised" marker)
+    0098 lw  t3,0x0F0(r0)     # rdpFifoPos ("already initialized" marker)
     009C lw  t4,0x0FC4(r0)    # header.flags
-    00A4 beq t3,r0,0x00C0     # ==0 -> (re)initialise the DPC ring from the header
+    00A4 beq t3,r0,0x00C0     # ==0 -> (re)initialize the DPC ring from the header
     00A8 mtc0 at,SP_STATUS    # delay slot: 0x2800 = CLR_SIG3|CLR_SIG2
     00B0 beq t4,r0,0x012C     # flags&1 == 0 -> WARM (k0 = header.data_ptr, 0x0160)
     00B4 sw  r0,0x0FC4(r0)
@@ -2542,7 +2931,7 @@ bytes; `.fzxwork/rsp_dis.py`'s CP0 name table also called registers 8/9 "SP_PC"/
 
 and the YIELDED resume takes `k0` from exactly that word (`j 0x0164` with `lw k0,0xBF8(r0)` in
 the delay slot). Round 17's `hdr[0xBF8/4] = data_ptr` therefore **destroys the resume pointer the
-ucode itself wrote**. Removed (parallel.cpp; measured behaviourally neutral on its own:
+ucode itself wrote**. Removed (parallel.cpp; measured behaviorally neutral on its own:
 t1gfx=6/aud=198 both ways, RDPKICK 3171 vs 2538).
 
 **3. "Ask the ucode for a yield" (host sets SIG0) was TRIED AND MEASURED BADLY.**
@@ -2657,7 +3046,7 @@ live IMEM/DMEM out of a `wd_ucode*.bin` capture; RSP CP0 map: 0-3 DMA regs, 4 SP
 `RSP::rsp.ProcessRdpList()`, NOT a magic SP_STATUS bit).
 * Task entry = IMEM 0x1080 (the boot at 0x1000 loads DATA+`0xF80` of TEXT to IMEM 0x1080, then
   `jr 0x1080`). Entry logic: `t3 = DMEM[0x0F0]` (the RDP end pointer the ucode stores on a cold
-  start = "already initialised" marker), `t4 = DMEM[0x0FC4]` (the header's flags word).
+  start = "already initialized" marker), `t4 = DMEM[0x0FC4]` (the header's flags word).
   `DMEM[0xF0]==0` -> FRESH path; `!=0 && !(flags&1)` -> WARM path; `!=0 && (flags&OS_TASK_YIELDED)`
   -> **RESUME**: `k0 = DMEM[0x0BF8]` (the DL pointer the yield path saved), and libultra has
   already loaded the *yield buffer* as the task's ucode DATA. The FRESH/WARM paths take
@@ -3073,7 +3462,7 @@ DD LOADING screen at 60 FPS because the frontend re-presents the last frame. Obj
 **Round 9 next steps:** (1) make the VI event survive — find who drops it (the `VI_INT` case in
 `gen_interrupt` deliberately does *not* remove the event; `vi_vertical_interrupt_event` removes the
 queue **head** and re-adds with `add_interrupt_event_count`, so any intervening head insertion
-desynchronises it) and re-arm it on the DD route when it goes missing; (2) trace how the PC reached
+desynchronizes it) and re-arm it on the DD route when it goes missing; (2) trace how the PC reached
 `0x80000408` (the round-5 stale-code / descramble class again, or a jump through the fill value) —
 `wd_pc_ring` + `iplram_force.bin` via the now-working `wd_force.flag` are the tools; (3) re-check the
 SP re-dispatch rate now that the budget is 2 ms: `c_task` went 20/s → ~500/s, so each budget yield is
@@ -3141,7 +3530,7 @@ still wrote a stall dump. The objective (reach the menu with clean audio on the 
 `iplram_*` force dumps + `wd_smc.txt` ring are the tools) - if it is another speculative-JAL /
 descramble stale-code case, extend the round-5 gate; (2) re-check what the 20/s `ttype=65537` RSP
 entries are now that tasks are balanced (audio ucode clobbering DMEM 0xFC0 mid-task is expected
-F3DEX/audio behaviour, so this may be benign); (3) once the boot completes, verify audio quality and
+F3DEX/audio behavior, so this may be benign); (3) once the boot completes, verify audio quality and
 the menu.
 
 **ROUND 6 (audio budget 100ms → 10ms):** REAL structural progress. The machine now schedules properly: guest CPU reaches the IDLE thread (snapshot header pc=ra=0x806f32ec, sp=0x80795a40) instead of the IRQ storm; the DD-loading bar ADVANCED a segment (5.5/8 → 6.5/8) in one run before settling at the LEO-completion wait. Remaining chain state (wd_state5.bin): sSLLeoMesgQueue (0x8079F978) valid=0, gDmaMesgQueue valid=0, LEOcommand_que valid=0, LEOblock_que valid=1 (manager between commands — the INQUIRY completed, the loader's read command never dispatched); the LEO cmd ring (0x807c6f10, 7-word entries) contains stale boot-fill (0x88776655 markers) — the read command was never cleanly issued. The guest's LEO-lib chain is blocked at every queue layer; the DD controller still sees zero activity (k=5/7/4 = 0). Note: OLD (Sep-1) boot's DD activity (k=7 status read + reads) = the disk-first/old boot-strategy; current = combo/cart-first — the guest's DD chain reaches a different point. 10ms audio budget stays in the tree (nice win: the machine's scheduler works, the bar moves).
@@ -3838,7 +4227,7 @@ RSPHDR … type=65537 flags=65537 boot=00010001 bootsz=00010001 ucode=00010001
         ucosz=00010001 udata=00010001 udsz=00010001 stack=00010001 stksz=00010001
         obuf=00010001 obsz=00010001
 ```
-`0x00010001` is **this emulator's uninitialised-RDRAM fill** — it is what lives at
+`0x00010001` is **this emulator's uninitialized-RDRAM fill** — it is what lives at
 `0x80000400` upwards (RDRAM runs of it: `0x80000400..0x8000432c`, `0x800067d0..0x80010158`, …).
 So `do_SP_Task` reads `ttype = 0x00010001` (neither 1 nor 2), the RSP's boot ucode reads
 `ucode = 0x00010001` from `DMEM[0xFD0]` and DMA-reads **4 KiB of fill from RDRAM
@@ -3863,7 +4252,7 @@ indexes `spmem[memaddr^S8]` from a base fixed by the *initial* `SP_MEM_ADDR & 0x
 **increments `memaddr` without masking**. For the same 0x1080/0xF7F transfer the counter
 runs 0x080..0x107F, i.e. **128 bytes past the end of the 8 KiB `sp->mem`**: the wrapped tail
 (`IMEM[0x000..0x07F]`, which is the ucode's last 0x80 bytes) is never written and 128 bytes
-of the neighbouring arena are clobbered. Now masks each access (`memaddr & 0x1fff`,
+of the neighboring arena are clobbered. Now masks each access (`memaddr & 0x1fff`,
 `dramaddr & 0x7fffff`) on the DD route.
 
 ### 4. Measured effect of the fixes
@@ -3880,7 +4269,7 @@ instead of walking fill, but the game is still stuck because the task header it 
 still all `0x00010001` (§2) and it still burns 50 ms per task.
 
 ### 5. Next step (round 7) — who fills the guest's OSTask with `0x00010001`?
-The guest's `OSTask` (and everything it points at) reads as uninitialised RDRAM fill. That is
+The guest's `OSTask` (and everything it points at) reads as uninitialized RDRAM fill. That is
 the single remaining blocker. Concretely:
 1. **Log the CPU-side SP DMA** (`do_sp_dma`, DD-gated): memaddr/dramaddr/length/dir for every
    transfer, correlated with the `RSPHDR` lines. That will show whether the guest ever DMAs a
@@ -3969,7 +4358,7 @@ reaches the ucode's `BREAK` delivers the stock completion
   /lr and the guest pcaddr/GPRs/CP0: a JIT SIGILL leaves no C backtrace.
   (Runs with the round-9 *probe* build did crash with `SIGILL` inside
   `anon:.bss` — the JIT arena — but the crash did not reproduce with the plain
-  round-8/round-9 fix builds, so it is a probe-timing artefact until proven
+  round-8/round-9 fix builds, so it is a probe-timing artifact until proven
   otherwise.)
 
 ### 4. Where the machine stands now (DD LOADING screen, 59-60 FPS, bar ~6.5/8)
@@ -4018,7 +4407,7 @@ gives every framebuffer wait in the EK build:
 Two corrections to earlier rounds:
 * the frame index really is **0x8079A360** (the decomp's `D_800DCD00` name maps
   elsewhere in this build);
-* `0x0001000100010001` is **not** uninitialised RDRAM — it is
+* `0x0001000100010001` is **not** uninitialized RDRAM — it is
   `func_806F33D0` (`0x806f33d0`), the EK's own framebuffer clear
   (`*var_v1-- = 0x0001000100010001` in `sys_main.c`, `for (i=0;i<3;i++)`), which
   is exactly why `0x80000400` (gFrameBuffer3) is full of it.
@@ -4421,7 +4810,7 @@ Five runs of near-identical builds, five outcomes:
 The one mechanical cause we can name: **the 2 ms budget is wall-clock**
 (`rsp_set_budget_deadline_us`), so how many slices a task takes, and *where*
 inside the ucode each forced yield lands, changes run to run. Every forced
-yield can fabricate a libultra yield acknowledgement for a task the ucode never
+yield can fabricate a libultra yield acknowledgment for a task the ucode never
 saved, which then resumes from scratch DMEM. That is the structure behind the
 variance.
 
@@ -4448,7 +4837,7 @@ variance.
 `rdpdp_evidence.txt`, `stall_50s/95s.txt`, `ram_50s/95s.bin`, `wd_dmatr.txt`.
 `.fzxwork/r17c/` (empty kicks), `.fzxwork/r17d/` (the reverted budget
 experiment), `.fzxwork/r17e/` (baseline restored + `wd_yld.txt` showing the k0
-fix firing). Round-16 artefacts stay in `.fzxwork/r16/`.
+fix firing). Round-16 artifacts stay in `.fzxwork/r16/`.
 
 Plain-game regression: every round-17 change is inside a runtime DD gate
 (`g_dev.dd.idisk != NULL` / `IsDDPresent()`); `plugin.c`'s plain branch is
@@ -4833,7 +5222,7 @@ ever reaches the RDP.
 
 ## 4. The fix (DD route only, cp0.cpp `rsp_dma_read`)
 
-The display-list fetch is an exactly recognisable DMA shape (dest DMEM 0x920, length 0xA8)
+The display-list fetch is an exactly recognizable DMA shape (dest DMEM 0x920, length 0xA8)
 and the header says unambiguously where the walk must start: `flags&1` (OS_TASK_YIELDED)
 selects the ucode's own DMEM[0xBF8], otherwise `data_ptr` DMEM[0xFF0].  A change in DMEM
 0xFC0..0xFFC (written only by the CPU-side osSpTaskLoad DMA) marks a new task invocation;
@@ -4886,7 +5275,7 @@ resident and byte-correct in IMEM, so this is not a stale-memory problem.
 **Fixed and verified this round:**
 
 * `rsp_jit.cpp` + `cp0.cpp` -- the JIT clears its resident blocks the moment the RSP
-  rewrites its own IMEM (a generation counter bumped by the IMEM DMA, honoured at the next
+  rewrites its own IMEM (a generation counter bumped by the IMEM DMA, honored at the next
   block lookup).  `blocks[pc>>2]` is only hash-checked when it is NULL, and `run()` clears
   the table only once per slice, so a ucode swap followed by `jr a3` inside one slice used
   to execute the previous program.  On the DD route the clear is unconditional; plain carts

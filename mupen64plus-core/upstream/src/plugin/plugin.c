@@ -287,7 +287,7 @@ static m64p_error plugin_start_gfx(void)
        EmptyFunc, so the RCP CAUSE bit is never latched and the CPU's guest
        thread spins on EVENT_MESG_DP (the F-Zero X post-load deadlock).  Wire it
        to the DD-gated re-check; plain carts get a no-op and keep stock
-       behaviour. */
+       behavior. */
     gfx_info.CheckInterrupts = dd_check_interrupts;
 
     gfx_info.version = 2; //Version 2 added SP_STATUS_REG and RDRAM_SIZE
@@ -560,7 +560,7 @@ static int rsp_is_dd_present(void)
    guest never saw the interrupt" -- the two have completely different fixes.
 
    Counting is DD-gated; the wrapped call is exactly what the pointer was
-   before, so plain games are behaviourally unchanged (one extra tail call). */
+   before, so plain games are behaviorally unchanged (one extra tail call). */
 static void rsp_process_rdp_list(void)
 {
     if (g_dev.dd.idisk != NULL)
