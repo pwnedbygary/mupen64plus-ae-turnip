@@ -96,6 +96,46 @@ logs it), and whether it converges to the submission or stalls at a specific
 synthesis step. If it stalls: the stall step's blocking condition is the
 fix target. If it converges: the earlier runs were simply too short.
 
+### 3c. r72 measured: the audio thread LOOPS, it does not converge
+
+The long run (~15 min) stalls at the same visual state, and the WD71TR tail
+shows a REPEATING cycle, not forward progress:
+
+```
+RUNNING -> WAITING at saved pc 0x8072f8b4 (AudioSynth_LoadReverbSamples+0x28)
+RUNNABLE/RUNNING at 0x8073a8bc (osAiSetNextBuffer+0x1c)
+RUNNABLE/RUNNING at 0x8072e69c (AudioSynth_InitNextRingBuf+0x23c)
+RUNNABLE at 0x80746068 (osRecvMesg) ... repeat
+```
+
+The audio scheduler wakes (~0.3 wakes/s -- the boot spinner at prio 30
+throttles it), processes one frame's worth of synthesis setup (reverb load,
+AI buffer set, ring-buffer init -- the per-frame work is REAL and reaching
+osAiSetNextBuffer), then blocks again. `c_sample` grows ~4/300ms (AI
+activity at a trickle), `c_pi` grows (frame data movement), CURHDR stays
+seq=1 (no RSP task submitted), c_spint=0 (no SP completion). The scheduler's
+per-frame work never reaches Sched_SpTaskStartAudio because its wake rate is
+throttled ~200x by the prio-30 spin thread.
+
+The pre-spin call is now identified: the boot thread executes
+`osSetThreadPri(NULL, 0)` (jal at 0x806f32e4, a0=0/a1=0) immediately before
+the `b .` -- the standard libultra idle drop (sys_main.c:437's pattern).
+**The spin thread is the loaded code's IDLE thread** (it dropped to prio 0 by
+design; a stale prio read of 30 on a different sample was a mis-attributed
+thread). The wake throttling is therefore NOT a priority inversion: the idle
+thread at prio 0 only runs when nothing else is queued, and the 94% idle
+samples mean the scheduler is BLOCKED, not starved. The scheduler blocks
+because its wake messages (NEXT_AUDIO_TASK from MAIN per VI) arrive at ~0.3/s
+instead of ~60/s -- **the VI→MAIN→scheduler message path itself delivers at
+1/200th rate**, which is the actual r73 question (the VI manager's forward
+path, the scheduler queue's NOBLOCK drops, or MAIN's own wake rate).
+
+**r73: measure MAIN's wake rate directly** (a transition watch on
+gMainThreadMesgQueue's fill count at 0x8079a120+0xC, plus the VI manager's
+forward counter), and count osSendMesg NOBLOCK failures on
+gAudioTaskMesgQueue. If MAIN wakes at 60/s, the throttle is in the scheduler
+queue; if MAIN wakes at 0.3/s, the VI→MAIN event path is the defect.
+
 ---
 
 ## ROUND 70 (goal round 62) -- the ERET ledger: the dispatcher pops a DEAD audio-thread struct (state=0, garbage context) every interrupt; the scheduler can never run
