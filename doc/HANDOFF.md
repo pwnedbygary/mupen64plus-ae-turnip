@@ -198,6 +198,39 @@ prio-150 thread blocked on a queue with a pending command that the
 dispatch never delivers points at the same class of scheduler-state
 corruption as 4c, now in the loaded code's OS.
 
+### 4b. r75 MEASURED: the message buffers show the deadlock exactly; the remaining defect is the break-without-SIG2
+
+MAIN's queue message buffer (0x8079a280) alternates **`0x1a` (EVENT_MESG_VI)
+and `0x16` (EVENT_MESG_AUDIO_TASK_SET)** -- the audio engine's "command list
+ready" messages ARE arriving and MAIN IS processing them. MAIN's
+AUDIO_TASK_SET handler with the stale state does:
+`if (sSpTaskActive) { if (sSpTaskState != YIELDING) Sched_SpTaskYield(); }`
+-- with sSpTaskActive=true and sSpTaskState=YIELDING the yield is SKIPPED and
+there is no else: **the message is swallowed, no task is submitted.**
+
+The VI registration decodes correctly (osViSetEvent(gMainThreadMesgQueue,
+EVENT_MESG_VI=0x1a, 1) at sys_main.c:173; the context's state word 0x0019 is
+the normal VI state bitfield and retraceCount=1 -- every-retrace delivery),
+so MAIN wakes every frame and the message flow is at full rate.
+
+The last RSP task ended in `sp_status=0xC3` = HALT|BROKE|SIG0|INTR_BREAK --
+**a BREAK without SIG1|SIG2**. Per the round-64 contract, that raise is
+correctly skipped (the guest's __osException would post OS_EVENT_SP_BREAK,
+which nothing waits on), so MAIN's YIELDING case never receives the SP event
+that would have advanced it (`osSpTaskYielded + Sched_SpTaskStartAudio`).
+
+**r75/r76: why does a task BREAK without writing SIG2?** -- the completed
+tasks all wrote SIG2 (the SIG log); the last one broke silently. Candidates:
+the audio manager's task-stop path (a deliberate break on the yield request
+that our SIG-gated raise then swallows), or an RSP-side fault. Instrument
+the RSP's break: log pc/sr/cause at every BREAK (the DDDIAG eret hook
+pattern), DD-gated. **The MAIN-side alternative:** the state machine's
+YIELDING case waits for an SP event that the contract-gated raise will never
+deliver for a silent break -- the fix may be raising on INTR_BREAK breaks
+and letting the guest's SP_BREAK path (osSpTaskYielded's polling!) recover
+the yielded task, matching ares (BREAK + interruptOnBreak -> raise
+unconditionally).
+
 ---
 
 ## ROUND 70 (goal round 62) -- the ERET ledger: the dispatcher pops a DEAD audio-thread struct (state=0, garbage context) every interrupt; the scheduler can never run
