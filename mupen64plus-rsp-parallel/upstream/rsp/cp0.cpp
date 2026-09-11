@@ -322,7 +322,7 @@ static void r19_imem_note(RSP::CPUState* rsp, uint32_t dst, uint32_t src, uint32
 	/* ROUND 25: the whole OSTask header as the ucode sees it, plus the low
 	   DMEM page (the boot ucode's opcode-dispatch table lives in the first
 	   0x100 bytes of the ucode DATA segment, which is DMA'd to DMEM 0x000 --
-	   see HANDOFF.md round 25), plus the descriptor area.  This fires at
+	   see doc/HANDOFF.md round 25), plus the descriptor area.  This fires at
 	   most 8 times per run, at the exact instant an IMEM-writing DMA is
 	   issued, i.e. the one moment at which "what the loader read" and "what
 	   the ucode had left in DMEM" can both be seen. */
@@ -1892,7 +1892,7 @@ void r31_arm_k0_repair(unsigned want);
 		   other transfer -- do not cite this one.  (Round 23 additionally
 		   mis-attributed the constant 0xF7F to `t.ucode_boot`: the boot ucode
 		   this ROM actually submits is 0x80768E60 with size 0x1000, and
-		   0x807504F0 is a different, rspboot-shaped blob.  See HANDOFF.md
+		   0x807504F0 is a different, rspboot-shaped blob.  See doc/HANDOFF.md
 		   ROUND 24.)
 		   DD route only: plain games keep the stock clamp exactly
 		   (user rule 2026-09-05). */
