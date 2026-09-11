@@ -516,7 +516,7 @@ static void r29_unfix_descriptors(void)
 	   writes from DMEM 0xC80/0xE20 to RDRAM 0x415xxx (a copy of the 0x170-byte
 	   OVERLAY, whose source happens to sit inside that window).  With the cap
 	   at 300 the census was therefore filled by that stream and the flush's own
-	   DMA was never recorded; "no write ever reaches the ring" was an artefact.
+	   DMA was never recorded; "no write ever reaches the ring" was an artifact.
 	   Round 33 logs EVERY write DMA unfiltered, tagged with the last block-
 	   entry pc (rsp_enter is the only trustworthy pc source -- rsp->pc is not
 	   maintained by the JIT) and with DMEM[0xF0] (the ring pointer).
@@ -747,7 +747,7 @@ extern "C" void r29_pc_hook(unsigned pc_lo)
 	r29_ring[r29_seq & (R29_RING - 1u)] = p;
 	r29_seq++;
 
-	/* The F3DEX2 text entry is about to run: normalise the descriptors. */
+	/* The F3DEX2 text entry is about to run: normalize the descriptors. */
 	if (p == 0x080u) { r29_unfix_descriptors(); return; }
 
 	if (p != 0u) return;
@@ -1014,7 +1014,7 @@ extern "C" void r29_pc_hook(unsigned pc_lo)
 				}
 				/* DIAG (round 6): log the DMEM task header the guest submitted.
 				   A zeroed header means the guest re-started the RSP without an
-				   __osSpTaskLoad (or with an uninitialised OSTask), which makes
+				   __osSpTaskLoad (or with an uninitialized OSTask), which makes
 				   the ucode DMA from a null pointer and leaves the RSP executing
 				   zeroed IMEM until the host budget expires. */
 				if (ttype != 1 && ttype != 2 && wd_rsp_log_n < WD_RSP_LOG_MAX)
@@ -1477,8 +1477,27 @@ extern "C" void r29_pc_hook(unsigned pc_lo)
 		   freeze watchdog stay armed for both. */
 		{
 			unsigned wd_t2 = (dsp_task_type == 2u);
-			rsp_set_budget_deadline_us(dd_mode ? (wd_t2 ? 2000 : 20000) : 0,
-			                           dd_mode ? (wd_t2 ? 20480 : 262144) : 0);
+			/* ROUND 62: DEFAULT = SHORT EMULATED-WORK SLICES.
+			   The core's default DD model (rsp_dd_slice() in rsp_core.c) runs
+			   the RSP from the CPU scheduler and hands the thread straight
+			   back, so what a slice costs here IS the interleave granularity.
+			   The 20480/262144-unit budgets date from the do_SP_Task-pump era
+			   (one slice = a whole 2 ms/20 ms of RSP work, measured at up to
+			   250 ms of host time); a ucode polling SP_STATUS/DMEM/RDRAM for
+			   CPU progress cannot see any progress inside one of those.  256/512
+			   budget checks is a few thousand RSP instructions -- the same order
+			   as the ucode's own poll loops -- so the CPU gets a turn while the
+			   ucode is still polling, as it does on hardware.
+			   files/wd_ddlegacy.flag restores the old long slices (with the old
+			   do_SP_Task pump); it exists only for A/B measurement. */
+			static int wd_legacy = -1;
+			if (wd_legacy < 0)
+				wd_legacy = (access("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_ddlegacy.flag", F_OK) == 0);
+			if (dd_mode && !wd_legacy)
+				rsp_set_budget_deadline_us(2000, wd_t2 ? 256 : 512);
+			else
+				rsp_set_budget_deadline_us(dd_mode ? (wd_t2 ? 2000 : 20000) : 0,
+				                           dd_mode ? (wd_t2 ? 20480 : 262144) : 0);
 		}
 		/* ROUND-18 DIAG: wall time this slice costs, paired in the exit log with
 		   the budget checks it consumed (see rsp_slice_units_now).  This is the
@@ -1619,7 +1638,7 @@ extern "C" void r29_pc_hook(unsigned pc_lo)
 		   CPU so the audio task it is waiting on can never complete.  Keeping
 		   HALT set makes the acknowledge write a no-op and leaves the RSP
 		   halted until the guest starts a new task, which is the real-hardware
-		   behaviour. */
+		   behavior. */
 		if (!(dd_mode && wd_budget_yield))
 			*RSP::rsp.SP_STATUS_REG &= ~SP_STATUS_HALT;
 
