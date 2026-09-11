@@ -1591,6 +1591,10 @@ struct wd_snap {
     uint32_t pir_rd_n, pir_wr_n, pir_rd_us, pir_wr_us, pir_rd_max, pir_wr_max;
     uint32_t lim_calls, lim_us, lim_max;
     uint32_t pump_n, pump_call, pump_us, pump_max;
+    /* ROUND-69/70: the DD ASIC interrupt state + the cart line (IP3).  The
+       DD's MECHA/BM level interrupts were invisible in every prior stall
+       dump (raise_bits has no DD column). */
+    uint32_t dd_asic_status, dd_cause_ip3, cause_ip_bits;
 };
 
 /* Read a guest u32 out of RDRAM (the guest sees KSEG0 0x80xxxxxx = phys). */
@@ -1615,6 +1619,12 @@ static void wd_take_snap(struct wd_snap* s)
     s->count = cp0_regs[CP0_COUNT_REG];
     s->mi_intr = g_dev.mi.regs[MI_INTR_REG];
     s->mi_mask = g_dev.mi.regs[MI_INTR_MASK_REG];
+    /* ROUND-69/70: the DD ASIC's MECHA/BM interrupt bits and the live CAUSE
+       IP bits (IP3 = the cart line the DD raises on).  CAUSE IP bits are
+       0xff00; IP3 = 0x0800. */
+    s->dd_asic_status = g_dev.dd.idisk != NULL ? g_dev.dd.regs[DD_ASIC_CMD_STATUS] : 0;
+    s->cause_ip_bits = cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00);
+    s->dd_cause_ip3 = (s->cause_ip_bits & UINT32_C(0x0800)) != 0;
     s->sp_status = g_dev.sp.regs[SP_STATUS_REG];
     s->sp_pc = g_dev.sp.regs2[SP_PC_REG];
     s->sp_busy = g_dev.sp.regs[SP_DMA_BUSY_REG];
@@ -1678,6 +1688,8 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
 {
     fprintf(f, "%s cause=%08x status=%08x epc=%08x badvaddr=%08x count=%08x\n",
         tag, s->cause, s->status, s->epc, s->badvaddr, s->count);
+    fprintf(f, "%s dd_asic_status=%08x cause_ip_bits=%08x dd_ip3=%u (MECHA_INT=0x02000000 BM_INT=0x04000000)\n",
+        tag, s->dd_asic_status, s->cause_ip_bits, s->dd_cause_ip3);
     fprintf(f, "%s mi_intr=%08x mi_mask=%08x sp_status=%08x sp_pc=%08x sp_busy=%08x sp_full=%08x sp_sem=%08x\n",
         tag, s->mi_intr, s->mi_mask, s->sp_status, s->sp_pc, s->sp_busy, s->sp_full, s->sp_sem);
     fprintf(f, "%s c_task=%u c_spint=%u c_genint=%u c_sample=%u c_asic=%u c_pi=%u vi_cur=%08x field=%u delay=%u\n",
@@ -1914,21 +1926,31 @@ static void wd_stall_probe(const char* path)
             fprintf(f, " %08x", wd68_pcp_ring[(wd68_pcp_n - n68 + i) & 63u]);
         fprintf(f, "\n");
     }
-    /* ROUND-69: the dispatch trace -- samples taken while the guest PC was
-       inside __osDispatchThread: pc, __osRunQueue, __osRunningThread,
-       sAudioThread.state, sAudioThread saved EPC.  Reconstructs the lost
-       context switch from the inside (HANDOFF 4c). */
+    /* ROUND-69/70: the dispatch trace -- samples taken while the guest PC
+       was inside __osDispatchThread: pc, __osRunQueue, __osRunningThread,
+       sAudioThread.state|flags, sAudioThread saved pc, sIdleThread.state.
+       Reconstructs the lost context switch from the inside (HANDOFF 4c). */
     {
-        extern uint32_t wd69_disp_ring[64][5];
+        extern uint32_t wd69_disp_ring[64][6];
         extern volatile uint32_t wd69_disp_n;
         uint32_t n69 = wd69_disp_n < 64 ? wd69_disp_n : 64;
         fprintf(f, "WD_DISPDSP n=%u\n", wd69_disp_n);
         for (uint32_t i = 0; i < n69; i++)
         {
             const uint32_t* e = wd69_disp_ring[(wd69_disp_n - n69 + i) & 63u];
-            fprintf(f, "  D pc=%08x runq=%08x running=%08x aud_state=%08x aud_epc=%08x\n",
-                    e[0], e[1], e[2], e[3], e[4]);
+            fprintf(f, "  D pc=%08x runq=%08x running=%08x aud=%08x/%08x idle_st=%08x\n",
+                    e[0], e[1], e[2], e[3], e[4], e[5]);
         }
+    }
+    /* ROUND-70: the ERET ledger -- the guest pc of the last 64 erets. */
+    {
+        extern uint32_t wd70_eret_ring[64];
+        extern volatile uint32_t wd70_eret_n;
+        uint32_t n70 = wd70_eret_n < 64 ? wd70_eret_n : 64;
+        fprintf(f, "WD_ERET n=%u:", wd70_eret_n);
+        for (uint32_t i = 0; i < n70; i++)
+            fprintf(f, " %08x", wd70_eret_ring[(wd70_eret_n - n70 + i) & 63u]);
+        fprintf(f, "\n");
     }
     /* ROUND 49: SP MEMORY IN ONE LINE.
        Until now the only way to see this was the raw 8 KiB image in the big

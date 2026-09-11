@@ -325,13 +325,18 @@ volatile uint32_t wd65w_n = 0;
    boundary), printed by the stall probe as WD_PCREG. */
 uint32_t wd68_pcp_ring[64];
 volatile uint32_t wd68_pcp_n = 0;
-/* ROUND-69: the dispatch trace.  While the guest PC is inside
+/* ROUND-69/70: the dispatch trace.  While the guest PC is inside
    __osDispatchThread (0x80746f64..0x807470e0), every pump fire records the
-   four words that decide the impossible-scheduler-state question (HANDOFF
-   4c): the run-queue head, __osRunningThread, sAudioThread.state (+0x10) and
-   sAudioThread's saved EPC (+0x11c).  Printed by the stall probe. */
-uint32_t wd69_disp_ring[64][5];
+   decisive words (EK OSThread layout per ek_state.py: prio=+4, queue=+8,
+   state|flags=+0x10, context at +0x20, saved pc at +0x11C): the run-queue
+   head, __osRunningThread, sAudioThread.state|flags, sAudioThread saved pc,
+   and sIdleThread.state|flags.  Printed by the stall probe. */
+uint32_t wd69_disp_ring[64][6];
 volatile uint32_t wd69_disp_n = 0;
+/* ROUND-70: the ERET ledger -- every guest ERET's EPC while the DD route is
+   stalled, so "which thread did the eret resume" is answered directly. */
+uint32_t wd70_eret_ring[64];
+volatile uint32_t wd70_eret_n = 0;
 
 static void wd65_watch_check(struct rsp_core* sp, unsigned site)
 {
@@ -1507,8 +1512,9 @@ void rsp_dd_background_pump(void)
                 e[0] = gpc;
                 e[1] = dram[(0x80771e18 & 0x7fffff) >> 2];   /* __osRunQueue */
                 e[2] = dram[(0x80771e20 & 0x7fffff) >> 2];   /* __osRunningThread */
-                e[3] = dram[((0x807999d0 + 0x10) & 0x7fffff) >> 2];  /* sAudioThread.state */
-                e[4] = dram[((0x807999d0 + 0x11c) & 0x7fffff) >> 2]; /* sAudioThread saved EPC */
+                e[3] = dram[((0x807999d0 + 0x10) & 0x7fffff) >> 2];  /* sAudioThread.state|flags */
+                e[4] = dram[((0x807999d0 + 0x11c) & 0x7fffff) >> 2]; /* sAudioThread saved pc */
+                e[5] = dram[((0x80799670 + 0x10) & 0x7fffff) >> 2];  /* sIdleThread.state|flags */
                 wd69_disp_n++;
             }
         }

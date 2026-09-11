@@ -1896,6 +1896,18 @@ void* ERET_new(void)
     struct new_dynarec_hot_state* state = &r4300->new_dynarec_hot_state;
 
     cp0_update_count(r4300);
+    /* ROUND-70: the ERET ledger (DD route only): which guest pc each eret
+       resumes, so the lost context switch at the logo stall can be
+       attributed directly (eret to 0x806f32ec = the loaded boot's spin
+       loop; eret to 0x80750384 = the AUDIO thread's osStartThread tail).
+       Bounded ring, printed by the stall probe. */
+    if (g_dev.dd.idisk != NULL)
+    {
+        extern uint32_t wd70_eret_ring[64];
+        extern volatile uint32_t wd70_eret_n;
+        wd70_eret_ring[wd70_eret_n & 63u] = state->cp0_regs[CP0_EPC_REG];
+        wd70_eret_n++;
+    }
     if (state->cp0_regs[CP0_STATUS_REG] & CP0_STATUS_ERL)
     {
         DebugMessage(M64MSG_ERROR, "error in ERET");
