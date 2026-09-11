@@ -144,6 +144,10 @@ class CoreInterface
     private static final String DD_ROM_NAME = "dd_rom.n64";
     private static final String DD_DISK_NAME = "dd_disk.ndd";
     private File mWorkingPath = null;
+    /* WD DIAGNOSTIC (round 40): the app's private files dir -- the same
+       directory the native side calls WD_FILES_DIR and where every wd_*.flag
+       lives. */
+    private File mFlagsDir = null;
 
     private final HashMap<CoreTypes.m64p_plugin_type, Pointer> mPluginContext = new HashMap<>();
 
@@ -227,7 +231,6 @@ class CoreInterface
 
     void setWorkingPath(String path) {
         mWorkingPath = new File(path);
-
         mDdRom = mWorkingPath + "/" + DD_ROM_NAME;
         mDdDisk = mWorkingPath + "/"; // Need to add the actual disk name later
 
@@ -235,6 +238,11 @@ class CoreInterface
             mGbRomPaths.put(player, mWorkingPath + "/player" + player + "_" + GB_ROM_NAME);
             mGbRamPaths.put(player, mWorkingPath + "/player" + player + "_" + GB_RAM_NAME);
         }
+    }
+
+    /* WD DIAGNOSTIC (round 40): see the wd_corelog.flag note in coreStartup(). */
+    void setFlagsDir(File dir) {
+        mFlagsDir = dir;
     }
 
     private void DebugCallback(Pointer Context, int level, String message)
@@ -545,8 +553,24 @@ class CoreInterface
         mCoreContext.setString(0, coreContextText);
 
         CoreLibrary.DebugCallback debugCallback = null;
+        /* WD DIAGNOSTIC (round 40).  Upstream AE drops the core's debug
+           callback whenever a 64DD IPL ROM is present, so EVERY core-side
+           message is silently discarded for a 64DD game: the DDCMD ASIC
+           command log, the 64DD device's own errors, plugin load failures and
+           every M64MSG_ERROR/WARNING the core raises.  The DD route has been
+           debugged with no core log at all.
+           Opt-in via files/wd_corelog.flag.  Without the flag this is exactly
+           the upstream behaviour, and plain carts take the branch they always
+           took (no DD ROM -> callback installed as before). */
+        boolean wdCoreLog = (mFlagsDir != null &&
+                new File(mFlagsDir, "wd_corelog.flag").exists()) ||
+                (userDataPath != null &&
+                new File(userDataPath, "wd_corelog.flag").exists());
         if (!new File(mDdRom).exists()) {
             Log.i(TAG, "DDROM file does not exists:" + mDdRom);
+            debugCallback = mDebugCallBackCore;
+        } else if (wdCoreLog) {
+            Log.i(TAG, "WD: core debug ENABLED for the 64DD route (wd_corelog.flag)");
             debugCallback = mDebugCallBackCore;
         } else {
             Log.i(TAG, "Disable core debug due to 64DD ROM found");

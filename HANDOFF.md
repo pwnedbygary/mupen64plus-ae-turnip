@@ -1,6 +1,87 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
-## ROUND 39 (latest) -- the run's real state, and two emulator defects fixed
+## ROUND 40 (latest) -- THE CAMPAIGN WAS AIMED AT THE WRONG COMPONENT
+
+**Read this first; it supersedes the "who is at fault" conclusions of rounds 17-39.**
+
+* **THE RSP PLUGIN IS NOT THE CAUSE (measured, run r40a).** The same DD route, same core,
+  same parallel-RDP, same recompiler -- with `rspSetting=rsp-cxd4-lle` instead of
+  `rsp-parallel`, i.e. the stock faithful LLE interpreter, which has none of this tree's
+  fabricated yields -- freezes at the SAME screen. The t=10 s screenshots of the two runs are
+  **byte-identical** (`md5 0b4b3e111ff391867734028b5917ce24`). Every RSP-side artefact this
+  campaign has chased (the 18M wild-DMA storm, `saved_k0=152e03c0`, the dropped RDP window, the
+  k0 repair, the forced-yield save) is a **consequence** of the frozen state, not a cause.
+
+* **THE VIDEO/RDP PLUGIN IS NOT THE CAUSE EITHER (measured, run r40b).** `videoPlugin=GLideN64`
+  (its own Granite RDP, not parallel-RDP) with `rspSetting=rsp-parallel`: same freeze, same
+  screen metrics for 180 s.
+
+* **THE DD ROUTE HAS HAD NO CORE LOG AT ALL, FOR THE WHOLE CAMPAIGN.**
+  `CoreInterface.coreStartup()` installs the core's debug callback **only when the 64DD IPL ROM
+  is ABSENT** (upstream AE, 2020), so for a 64DD game every core message is discarded: the
+  `DDCMD` ASIC command log, the 64DD device's own errors, plugin load failures, every
+  `M64MSG_ERROR`/`M64MSG_WARNING`. The tree now honours an opt-in `files/wd_corelog.flag`
+  (DD route only; plain carts take exactly the branch they always took) -- and with it on the
+  DD route is readable for the first time in 40 rounds.
+
+* **THE DISK BOOT WORKS, AND IT IS FAST (measured, run r40e).** With the log on, the whole LEO
+  sequence is visible:
+
+      cmd=09 CLR_RSTFLG -> cmd=1b READ_PROGRAM_VERSION -> cmd=0b SET_DTYPE (data=00130000)
+      -> 75x cmd=01 RD_SEEK, tracks walking 0x13c..0x16f, 0x172, 0x22f
+
+  with **75 block transfers started and 75 completed** (`DDBM << block done`), reading the disk
+  in about **three seconds**. The `DDBM` lines are new this round: `DDCMD` only ever logged the
+  CMD_STATUS half of the protocol, so the half that actually moves the data had never been
+  visible. **The disk load is neither broken nor slow, and it is not what freezes.**
+
+* **AFTER THE LOAD THE RSP SPINS AND THE GUEST GOES QUIET (measured, r40e).** The last DD event
+  is at t~3 s; nothing DD-related happens for the remaining 147 s. Meanwhile the RSP plugin
+  reads `dma=19337813 datalist=214 outbuf=116 low=1048612 save=1 saved_k0=152e03c0` and
+  `R26W wild=18284003` -- 18.3 million out-of-RDRAM transfers, i.e. the RSP burns the emulation
+  thread while the 64DD logo sits on screen.
+
+* **THE WILD ADDRESS IS NAMED (measured, run r40e, `files/wd_imem.txt`, emumode=2):**
+
+      R19IMEM n=5 pc=000 dst=1000 src=753af8 len=0170
+      R19IMEM n=7 pc=000 dst=1080 src=752ae0 len=0f80   <- the ucode text, correct
+      R19IMEM n=8 pc=020 dst=1000 src=ea65d8 len=0170   <- WILD
+
+  n=5 and n=8 are the SAME 0x170-byte overlay load into IMEM 0x000, and
+  `0x753AF8 + 0x752AE0` (the header's `ucode` base) `== 0xEA65D8` exactly: **the entry's
+  ucode_data fix-up added the ucode base to a descriptor that was already absolute.** The RSP
+  copies 0x170 bytes from the 24-bit-masked `0x6A65D8` over its own overlay at IMEM 0x000,
+  executes that as code and never returns. `files/wd_wild.txt` latches the same transfer
+  (`dir=RD pc=020 dram=00ea65d8 mem=00001000 len=0170`).
+
+* **NEGATIVE RESULT (run r40f, `R40_NORM`).** Repairing the *delivery* -- normalising DMEM
+  0x2E0/0x2E8/0x410/0x418 back to ucode-relative form whenever a ucode_data-sized READ lands
+  them in DMEM 0 -- DOES fire, including on the resume image (`src=32e8d0`), but the failure is
+  bit-for-bit unchanged (`wild=18284003` vs `18284001`). The words such a delivery actually
+  carries in those slots are live display-list data (`0e62bb08`/`0e9abb08`), not
+  `base + offset`, so the absolute value is produced **later, inside the task**. The switch is
+  kept, defaulted OFF, with the measurement attached so round 41 does not repeat it.
+
+* **BLOCKER FOR THE NEXT ROUND: forcing emumode=1 now SIGSEGVs at startup.**
+  `files/wd_emumode1.flag` + the DD route dies with a null dereference (fault addr 0x28) in
+  `libmupen64plus-core.so` immediately after `WD: DIAGNOSTIC -- forcing R4300Emulator=1`, so the
+  cached-interpreter dump machinery (RDRAM image + DD trace ring + stall probe) is unusable.
+  The recompiler -- the objective's own mode -- has **no dump hooks at all** (they live in
+  `cached_interp.c`), which is why the mode that matters has been un-instrumented for 40 rounds.
+
+* **PLAIN-CART REGRESSION CONTROL PASSES (run r40g, this round's build).** Mario Tennis renders
+  at `game_ink` 49.27 % / 57.04 % with the screen animating (t=45 s black is the scene change),
+  and the run creates **no `wd_*` file at all**. The round-40 changes are: the opt-in core-log
+  flag (flag-gated), the `DDBM` log lines (DD-route only), and `R40_NORM` (defaulted off).
+
+* **NEXT (round 41)**: find the write that puts the ABSOLUTE `0x753AF8` into the slot the
+  overlay loader reads. Latch DMEM 0x2E0/0x2E8 at every IMEM load together with the RSP pc and
+  the recent writes to those words, and diff the good load (n=5, from 0x753AF8) against the bad
+  one (n=8, from 0xEA65D8) **in the same run**. Then either repair that write, or take the
+  objective's authorised escape hatch and port ares's RSP model, where this host-side DMEM image
+  handling does not exist.
+
+## ROUND 39 -- the run's real state, and two emulator defects fixed
 
 **Read this first; it supersedes the round-36 "DP deadlock" framing.**
 

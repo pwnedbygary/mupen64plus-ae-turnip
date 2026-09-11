@@ -563,6 +563,12 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
             FileUtil.makeDirs(workingDir);
             mCoreInterface.setWorkingPath(workingDir);
+            /* WD DIAGNOSTIC (round 40): the app's private files dir is where
+               every wd_*.flag / wd_*.txt diagnostic already lives (WD_FILES_DIR
+               in the native core).  The core's debug callback is chosen in
+               coreStartup() before the core runs, so that flag has to be
+               readable from Java. */
+            mCoreInterface.setFlagsDir(getApplicationContext().getFilesDir());
             FileUtil.makeDirs(mGlobalPrefs.textureDumpDir);
 
             SparseArray<String> gbRomPaths = new SparseArray<>(4);

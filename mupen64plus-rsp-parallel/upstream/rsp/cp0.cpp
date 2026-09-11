@@ -617,6 +617,27 @@ static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
    build.  See the long note at the yield site in RSP_MFC0. */
 #define R21_KEEP_SIG0 1
 
+/* ROUND 40 (DD route only): 1 = normalise the F3DEX2 ucode_data descriptors
+   (DMEM 0x2E0/0x2E8/0x410/0x418) back to ucode-relative form whenever a
+   ucode_data-sized READ delivers them into DMEM 0, so the entry's fix-up
+   cannot add the ucode base a second time.  0 = previous behaviour, kept for
+   a one-build A/B.
+   MEASURED AND DEFAULTED OFF (run r40f, emumode=2, the DD route): the repair
+   DOES fire (`wd_r40norm.txt`: n=1 base=00752ae0 src=77a890 len=00800 ch=2,
+   n=2 base=00752ae0 src=32e8d0 len=00c00 ch=2 -- the second is the resume
+   image, exactly the delivery this was aimed at) but the failure is bit-for-bit
+   unchanged: `dma=19337813` / `R26W wild=18284003` against the pre-change run's
+   `dma=19337817` / `R26W wild=18284001`.  The reason is visible in the log: the
+   words a ucode_data delivery actually carries in those slots are live display
+   -list data (`0e62bb08`/`0e9abb08`, i.e. 0x120C1208-style vertex pairs), not
+   `base + offset`, so the subtraction cannot recover a descriptor from them and
+   only risks mangling live state -- exactly what round 32 warned about.  The
+   double-add is real (0x753AF8 + 0x752AE0 == 0xEA65D8 is exact), but the
+   absolute value is produced LATER, inside the task, not by this delivery.
+   Kept as a switch with the note attached so the next round starts from the
+   measurement instead of repeating it. */
+#define R40_NORM 0
+
 static unsigned r21_save_n = 0, r21_yield_n = 0, r21_log_n = 0;
 /* Forced yields whose DMEM 0xFC0 header no longer looked like an OSTask, so the
    DMEM->yield-buffer image write was skipped instead of landing on garbage. */
@@ -2147,6 +2168,100 @@ void r31_arm_k0_repair(unsigned want);
 			uint32_t r29_base = rsp->dmem[0xfd0 / 4];
 			if (r29_base >= 0x1000u && r29_base < 0x800000u)
 			{
+#if R40_NORM
+				/* ============================================================
+				   ROUND 40 -- THE DOUBLE-ADD REPAIR, AND THE MEASUREMENT THAT
+				   NAMED IT.
+
+				   MEASURED THIS ROUND (run r40e, emumode=2, the DD route, the
+				   RSP plugin's IMEM-load latch `wd_imem.txt`):
+
+				     R19IMEM n=5 pc=000 dst=1000 src=753af8 len=0170
+				     R19IMEM n=7 pc=000 dst=1080 src=752ae0 len=0f80   <- text
+				     R19IMEM n=8 pc=020 dst=1000 src=ea65d8 len=0170   <- WILD
+
+				   n=5 and n=8 are the SAME 0x170-byte overlay load (IMEM 0x000),
+				   from 0x753AF8 and from 0xEA65D8 -- and
+
+				       0x753AF8 + 0x752AE0 (the header's `ucode`) == 0xEA65D8
+
+				   exactly, i.e. **the ucode base was added to a descriptor that
+				   was already absolute**.  The RSP then copies 0x170 bytes of
+				   whatever sits at the masked 0x6A65D8 over its own overlay at
+				   IMEM 0x000, executes it as code, and never returns -- the
+				   `R26W wild` storm (18.6M in this run) and the frozen 64DD
+				   screen are that loop.  `files/wd_wild.txt` latches the same
+				   address: `dir=RD pc=020 dram=00ea65d8 mem=00001000 len=0170`.
+
+				   WHY THE DESCRIPTOR IS ALREADY ABSOLUTE: the F3DEX2 entry
+				   fix-up converts the four ucode_data descriptors at DMEM
+				   0x2E0/0x2E8/0x410/0x418 from ucode-relative to absolute by
+				   adding the base.  Those words are live ucode state (round 32
+				   measured them walking 0x751540 -> 0x08E60580 -> 0x059803C0),
+				   so a task that is suspended AFTER the conversion -- which is
+				   exactly what the DD route's libultra yield/resume dance does
+				   between the gfx and audio tasks -- carries ABSOLUTE values
+				   into the saved DMEM image.  The resume loads that image back
+				   into DMEM 0, the entry adds the base a second time, and the
+				   overlay load goes wild.
+
+				   THE REPAIR: normalise the four descriptors back to
+				   ucode-relative form at the moment a ucode_data-sized READ
+				   delivers them into DMEM 0 -- i.e. before the entry can read
+				   them.  `while (v >= base) v -= base` recovers the relative
+				   value for any number of accidental adds, and is a NO-OP on a
+				   genuine fresh load, whose descriptors are the ucode_data
+				   constants 0xF80/0x1018/0x1188/0x250 and are far below any
+				   ucode base.  This is round 29's stated fix; round 29's CODE
+				   implemented a different rule (force the latched constants
+				   back) whose write-back round 32 correctly disabled after
+				   measuring that the slots legitimately change -- the
+				   normalisation below preserves those changes, because it only
+				   removes the base, and only on delivery.
+
+				   DD-gated by rsp_ares_budget_enabled() (the core's runtime
+				   IsDDPresent()) like every other change in this file, so plain
+				   carts keep the stock handler byte for byte.  R40_NORM=0
+				   restores the previous behaviour for one-build A/B. */
+				{
+					static unsigned r40_norm_ev = 0, r40_norm_w = 0;
+					unsigned r40_i, r40_ch = 0;
+					for (r40_i = 0; r40_i < 4u; r40_i++)
+					{
+						unsigned r40_idx = r29_off[r40_i] / 4u;
+						uint32_t r40_v = rsp->dmem[r40_idx];
+						unsigned r40_g = 0;
+						while (r40_v >= r29_base && r40_g < 8u)
+						{
+							r40_v -= r29_base;
+							r40_g++;
+						}
+						if (r40_g)
+						{
+							rsp->dmem[r40_idx] = r40_v;
+							r40_ch++;
+						}
+					}
+					if (r40_ch)
+					{
+						r40_norm_ev++;
+						r40_norm_w += r40_ch;
+						if (r40_norm_ev <= 24u)
+						{
+							FILE* nf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r40norm.txt",
+							                 r40_norm_ev == 1u ? "w" : "a");
+							if (nf)
+							{
+								fprintf(nf, "R40NORM n=%u base=%08x src=%06x len=%05x ch=%u now %08x %08x %08x %08x\n",
+								        r40_norm_ev, r29_base, source & 0xFFFFFFu, length, r40_ch,
+								        rsp->dmem[0x2e0 / 4], rsp->dmem[0x2e8 / 4],
+								        rsp->dmem[0x410 / 4], rsp->dmem[0x418 / 4]);
+								fclose(nf);
+							}
+						}
+					}
+				}
+#endif
 				/* ROUND 29 FIX + DIAG (see the block comment above).
 				   MEASURED (run 29e, the only two ucode_data-size READs into
 				   DMEM 0 in a whole 105 s run):

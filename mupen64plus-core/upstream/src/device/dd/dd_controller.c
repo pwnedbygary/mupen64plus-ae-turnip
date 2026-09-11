@@ -515,6 +515,11 @@ void dd_update_bm(void* opaque)
             }
             else {
                 dd->regs[DD_ASIC_BM_STATUS_CTL] &= ~DD_BM_STATUS_RUNNING;
+                /* WD DIAGNOSTIC (round 40): a block transfer ENDED.  This is
+                   the line that says the drive really delivered the data the
+                   guest asked for, and how much of the disk has been read. */
+                DebugMessage(M64MSG_WARNING, "DDBM << block done tk=%08x cmdstat=%08x",
+                        dd->regs[DD_ASIC_CUR_TK], dd->regs[DD_ASIC_CMD_STATUS]);
             }
         }
         else {
@@ -873,6 +878,14 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
         break;
 
     case DD_ASIC_BM_STATUS_CTL:
+        /* WD DIAGNOSTIC (round 40): DDCMD logs CMD_STATUS writes only, so the
+           half of the LEO protocol that actually MOVES the disk data -- the
+           buffer-manager control writes -- has never been visible on this
+           route.  Log every one with the state it acts on: whether a block
+           transfer was ever started, and with which sector/track. */
+        DebugMessage(M64MSG_WARNING, "DDBM wr=%08x bmstat=%08x cmdstat=%08x tk=%08x sec=%08x",
+                value, dd->regs[DD_ASIC_BM_STATUS_CTL], dd->regs[DD_ASIC_CMD_STATUS],
+                dd->regs[DD_ASIC_CUR_TK], dd->regs[DD_ASIC_CUR_SECTOR]);
         /* set sector */
         dd->regs[DD_ASIC_CUR_SECTOR] = (value & 0x00ff0000);
         if (dd->regs[DD_ASIC_CUR_SECTOR] != 0 && dd->regs[DD_ASIC_CUR_SECTOR] != 0x005a0000) {
