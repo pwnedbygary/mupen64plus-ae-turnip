@@ -1,5 +1,147 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
+## ROUND 65 (goal round 59) -- THE INSTRUMENTED RUN: both round-64 open defects are SOLVED (neither is the DMA loop), and the freeze relocates to "aspMain never finishes its list"
+
+> Same rules: every claim is measured on the RP6 / read out of a file in this tree, or
+> explicitly marked HYPOTHESIS / RETRACTED. Artifacts: `.fzxwork/r65/`
+> (`wd_dma65.txt` 3392 RSP-issued DMAs, `wd_watch65.txt`, `wd_sig65.txt` (absent = empty),
+> `wd_cpuw65.txt` (capped at 256), `wd_rsp.txt` 39,985 slice-exits **with new GPR fields**,
+> `wd_dmatr.txt` 3392 core-side DMAs, `wd_stall.txt`, `iplram_force.bin`, `r65_harness.log`).
+> New instrumentation (all DD-gated, committed): plugin `wd_dma65.txt`/`wd_sig65.txt`,
+> core `wd_watch65.txt` (IMEM[0..3]+DMEM 0xFC0..0xFFF shadow watch at 5 sites),
+> `wd_cpuw65.txt` (guest SP-memory store announce), and slice-exit GPR samples
+> (`at/v0/v1/t2/gp/k1/fp/sp/ra/hdr` appended to the `wd_rsp.txt` EXIT lines).
+
+### 1. THE TWO ROUND-64 OPEN DEFECTS: BOTH ANSWERED, NEITHER IS THE DMA LOOP
+
+**1a. The plugin's DMA loop is exonerated (round-64 S1/S2 is DEAD).** All 3,392
+RSP-issued DMAs of the run are logged with flags (`wd_dma65.txt`): **zero** IMEM-destined,
+**zero** bank-crossing, **zero** covering DMEM 0xFC0, **zero** refused wild. The round-19
+bank wrap holds; no DMA ever left its bank. Do not re-instrument this path.
+
+**1b. The DMEM 0xFC0 "header clobber" is the ucode's OWN state-keeping.** aspMain's entry
+sets `s7 = 0xFB0` and its state stores sweep DMEM 0xFB0..0xFFF -- over the task header.
+The proof is arithmetic: the first WATCH event shows `[fc0]00000002->00000000,
+[fd0]...->067c067e 06800680 06820684 ...` and the slice-exit GPR sample at the same
+transition reads `t2=0000067c` -- **the "clobber" content IS the ucode's registers**
+(round 63's RSPHDR reading was right; round 63's "rogue DMA" causality is RETRACTED).
+Round 64's "who zeroed DMEM 0xFC0" -- ANSWERED: the ucode, legitimately. The header is
+only sacred between loads.
+
+**1c. The IMEM replacement (`imem0=00009d40`) is the GUEST's own DD-handoff wipe.**
+The stall dump now prints `cpuw n=3599 imem_n=2319 fill_n=47`: **the guest wrote SP
+memory 3,599 times via CPU stores (0xA4001000 direct), 2,319 of them into IMEM, 47 with
+the 0x00010001 fill pattern.** This is `__LeoBootGame2`'s documented "IMEM/DMEM wipe"
+(`doc/EK_SP_FORENSICS_REPORT.md`, function table). The round-49 fill-signature probe
+never fired because its density test was tuned for the wrong content AND its wired paths
+(2/3) were never the writer -- the writer is path 1 (CPU stores), which the probe's
+caller list included but whose signature never matched. Round 63 §4 "who writes IMEM" --
+ANSWERED: the guest, by design of the 64DD soft reboot. There is **no memory-corruption
+bug in the SP DMA paths at all**.
+
+### 2. WHERE THE FREEZE ACTUALLY IS: THE SECOND BOOT
+
+Timeline, all measured: the first boot's audio task runs (slices 1-342 of `wd_rsp.txt`),
+the DD mount completes (`c_asic=10604`), the loader shows the bar, then
+`__LeoBootGame2` wipes SP memory and reboots (`osResetType=2` -- this is the user-
+visible "loading bar disappears, N64 logo + 64DD only" stage, and the reason past runs
+played scratchy static: the AI kept pulling buffers the audio task never properly
+finished). After the wipe:
+
+```
+SPMEM1 imem0=00009d40 dmem_fc0=00000000 sp_pc=04001000 sp_status=000000c0
+CURHDR seq=1  (only the FIRST boot's task header was ever latched)
+A c_task=2 c_spint=0 raise_bits SP=0   vi 60/s (user screenshot: 59FPS), guest threads parked in osRecvMesg
+DELTA5 PUMP n=38 call=10 us=1549       (the pump is alive and feeding no-op slices)
+```
+
+The plugin's RSP resumed **task-1's register state over the wiped IMEM** (zombie
+execution): slice exits keep showing `at=00000018 v0=00001b34 v1=0000016f t2=0000067c
+gp=00413338 k1=00000070 fp=00000028 sp=00000308 ra=00000abc`-class states, and the
+plugin's DMA log shows one deterministic ~10-DMA cycle repeating to the cap. The core's
+own D-lines (`wd_dmatr.txt`, 3382 lines with `st=000000c0`) show the REAL guest's loader
+loop re-issuing the same-shaped SP DMAs via MMIO every frame -- **SP_MEM/DRAM/RD_LEN/
+WR_LEN writes are not SP_STATUS writes, so round 63's "the guest made only 7 SP writes"
+never covered them.** The near-identity of the two streams (both repeat the same cycle
+from the same first transfer) is explained by both deriving from the same task state;
+a caller tag on `fifo_push` in r66 settles it definitively if it matters.
+
+### 3. THE PRIMARY DEFECT, NOW SHARP: aspMain NEVER FINISHES ITS LIST
+
+Before the wipe (slices 1-342, ~330 ms), the audio task's slice-exit GPRs are
+**identical every slice**: the AList cursor is STUCK. `gp=0x413338` (cursor), `k1=0x70`
+(0x70 bytes left, list ends at 0x4133A8), `fp=0x18` (3 commands left in the block),
+`sp=0x318` (current command at DMEM 0x318), and `v0=0x1b34` -- **the dispatch loop keeps
+jumping to handler 0x1b34**, whose PC wraps to IMEM 0xb34 (beyond aspMain's 4 KB text;
+r63's "PCs 0x058..0x0B34" top end is exactly this wrap). At slice 343 the cursor RESTARTS
+from the list top (`gp=0x413328 k1=0x80`) -- the task re-processes the same list forever.
+`wd_sig65.txt` does not exist: **the ucode never sets SIG1/SIG2/HALT/BROKE, not once** --
+no completion, no synthetic yield, nothing. No raise rule can help: the round-64 S3 gate
+is still correct, but the RSP must first reach a real task boundary.
+
+The stuck command (list at RDRAM 0x413310, cursor 0x413338) decodes from the frozen dump:
+`133cb000 94aec8e2` -- an audio command whose second word looks like a segmented address
+(`0x94aec8e2`); the state block the ucode DMA's to DMEM 0x2f0 every iteration lives at
+RDRAM 0x4132d0 (first word `0x02000940`). HYPOTHESIS (leading, unproven): the handler for
+this command loops internally in the plugin's ucode emulation (an unhandled/incorrectly
+emulated instruction or a poll that never resolves), OR the jump-table entry 0x1b34 is
+itself the corruption. The vendored `aspmain.textbin.bin` is not in the tree, so static
+disassembly of handler 0xb34 needs the decomp build first.
+
+### 4. LOG-SEMANTICS TRAPS INTRODUCED THIS ROUND (fix in r66's tooling)
+
+* `wd_dma65.txt` prints `dst` masked with `0x1ffc` for BOTH directions -- an RDRAM
+  destination prints as its low 13 bits (0x415090 -> "1090"). Do NOT read wild low-RDRAM
+  destinations from this file; the mask is in the printf, not the hardware.
+* `wd_dmatr.txt`'s `dst=` is `memaddr` (SP side) and `src=` is `dramaddr` for BOTH
+  directions; "RD" = `SP_DMA_READ` which copies **DMEM->RDRAM** (fifo_push uses WR_LEN
+  for it). Direction naming across the two files is inconsistent; r66's tooling will
+  normalize (unmasked, ms + shared sequence, direction named by data flow).
+* `wd_cpuw65.txt` capped at 256 lines during IPL3 boot (all `gpc=0xA4000xxx`); raise the
+  cap to 4096 and filter `gpc >= 0x80000000` next build.
+
+### 5. NEXT ROUND (r66), in order
+
+**A -- see inside the stuck dispatch (one run).** Extend the R29PC hook: for audio tasks,
+when the exit GPRs match the stuck signature, log the first ~2,000 PCs of one slice
+(bounded) plus the branch at the loop point, and dump DMEM 0x2f0-0x340 (the command
+block) + 0x10-0x20 at slice end. This names the looping instruction sequence and
+disambiguates "handler bug" vs "corrupt jump table" vs "waiting for a DMEM flag".
+**B -- same build:** the §4 tooling fixes + `fifo_push` caller tag (one line: reg + guest
+PC) to close the double-processing question.
+**C -- the fix, per what A shows:** a handler emulation fix cross-checked against
+`/home/garyb/LLM-Projects/phobos/ares/n64/rsp` (the port track's scope is now mostly
+"the ucode execution core", NOT the interrupt model and NOT the DMA paths); or the
+root cause of a corrupt jump table. Then the round-64 S3 SIG-gated raise lands on top
+and S4 re-checks the state machine.
+**D -- remember the goal trajectory:** menu -> audio quality (the scratchy-static report
+is the audio task never completing; expect it to resolve with C) -> the DD RTC "Error 48"
+port (Phobos `dd/rtc.cpp:18-33`) is still pending on the polish track.
+
+### 6. Re-verify this round offline (~2 min)
+
+```bash
+cd /home/garyb/LLM-Projects/mupen64plus-ae-turnip
+grep -c 'IMEM\|CROSS\|FC0\|WILD' .fzxwork/r65/wd_dma65.txt          # expect 0
+grep -a 'cpuw n=' .fzxwork/r65/t090_stall.txt                       # imem_n=2319 fill_n=47
+grep -a 'CURHDR' .fzxwork/r65/t090_stall.txt                        # seq=1
+sed -n '1p;343p' .fzxwork/r65/wd_rsp.txt | grep -o 'gp=[0-9a-f]* k1=[0-9a-f]* fp=[0-9a-f]* .*hdr=[0-9a-f]*'
+ls .fzxwork/r65/wd_sig65.txt 2>&1                                   # absent: ucode never signalled
+RAM_DUMP=.fzxwork/r65/iplram_force.bin python3 .fzxwork/ram_tools.py rd 0x413328 6
+```
+
+### 7. Honest status against the objective
+
+Still short of the menu, but the search space collapsed: the DMA paths, the SP interrupt
+chain, and the "memory corruption" are all clean; the entire freeze is now one question --
+**why does the audio ucode's dispatch loop spin on one command instead of reaching its
+SIG2+BREAK** -- with a one-run experiment (§5A) that names the culprit instructions, and
+an authorized fallback (the Ares/Phobos RSP core port) whose scope shrank to exactly that
+execution core. Plain-route and CI emumode=1 regression sets remain untouched (all r65
+code is DD-gated diagnostics; no behavior changed).
+
+---
+
 ## ROUND 64 (goal round 58) -- THE GUEST'S SP-INTERRUPT CONTRACT, READ OUT OF THE RUNNING ROM; and round 63's "host memory" verdict is retracted
 
 > Same rules as round 63: every claim is **measured on the RP6 / read out of a file in

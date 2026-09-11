@@ -282,6 +282,91 @@ static void wd_check_imem_sane(struct rsp_core* sp)
     }
 }
 
+/* ---------------------------------------------------------------------------
+   ROUND-65 DIAG: the IMEM / DMEM-header shadow watch (files/wd_watch65.txt).
+
+   Rounds 63/64 established WHAT the damage is (IMEM becomes a verbatim copy of
+   an RDRAM region; DMEM 0xFC0..0xFFF loses its OSTask header) but not WHO
+   writes it -- and the round-49 fill-signature probe cannot fire for the real
+   content (it tests for 0x00010001 density; the live damage is sparse audio
+   data).  This watch is signature-free: it remembers IMEM[0..3] and the whole
+   DMEM 0xFC0..0xFFF header region between check points and logs any change.
+
+   Write-path inventory (round 65 survey) so the announce lines can be matched
+   against WATCH lines: the plugin's rsp_dma_read is the only plugin IMEM
+   writer (bank-wrapped on this route, announces via wd_dma65.txt); the ucode
+   JIT stores mask to 0xfff (DMEM only); the core's do_sp_dma is bank-contained
+   (announces via wd_dmatr); the guest CPU store path (write_rsp_mem) is the
+   only uncontained path and announces via wd_cpuw65.txt.  A WATCH line whose
+   change has no matching announce line therefore names an uninstrumented
+   writer directly.
+
+   Sites: 0 do_SP_Task entry, 1 do_SP_Task exit, 2 rsp_dd_slice entry,
+   3 rsp_dd_slice exit, 4 rsp_interrupt_event.  All DD-gated; file capped at
+   200 lines; I/O only on an observed change. */
+#define WD65_FILES_DIR "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/"
+static uint32_t wd65_sh_imem[4];
+static uint32_t wd65_sh_hdr[16];
+static int wd65_armed = 0;
+static unsigned wd65_watch_lines = 0;
+static unsigned wd65_cpuw_lines = 0;   /* write_rsp_mem announce cap */
+
+static void wd65_watch_check(struct rsp_core* sp, unsigned site)
+{
+    FILE* f;
+    unsigned i;
+    int imem_changed = 0, hdr_changed = 0;
+    const uint32_t* im = (const uint32_t*)sp->mem;
+
+    if (g_dev.dd.idisk == NULL)
+        return;
+    if (!wd65_armed)
+    {
+        for (i = 0; i < 4; i++)
+            wd65_sh_imem[i] = im[(0x1000 >> 2) + i];
+        for (i = 0; i < 16; i++)
+            wd65_sh_hdr[i] = im[(0xfc0 >> 2) + i];
+        wd65_armed = 1;
+        return;
+    }
+    for (i = 0; i < 4; i++)
+        if (wd65_sh_imem[i] != im[(0x1000 >> 2) + i]) { imem_changed = 1; break; }
+    for (i = 0; i < 16; i++)
+        if (wd65_sh_hdr[i] != im[(0xfc0 >> 2) + i]) { hdr_changed = 1; break; }
+    if (!imem_changed && !hdr_changed)
+        return;
+    if (wd65_watch_lines < 200 &&
+        (f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_watch65.txt", "a")) != NULL)
+    {
+        wd65_watch_lines++;
+        fprintf(f, "WATCH site=%u gpc=%08x sppc=%04x st=%08x spdma=%u\n",
+                site, (uint32_t)*r4300_pc(sp->mi->r4300),
+                (uint32_t)sp->regs2[SP_PC_REG], (uint32_t)sp->regs[SP_STATUS_REG],
+                wd_c_spdma);
+        if (imem_changed)
+        {
+            fprintf(f, "  IMEM");
+            for (i = 0; i < 4; i++)
+                fprintf(f, " [%u]%08x->%08x", i, wd65_sh_imem[i], im[(0x1000 >> 2) + i]);
+            fprintf(f, "\n");
+        }
+        if (hdr_changed)
+        {
+            fprintf(f, "  HDR");
+            for (i = 0; i < 16; i++)
+                if (wd65_sh_hdr[i] != im[(0xfc0 >> 2) + i])
+                    fprintf(f, " [%03x]%08x->%08x", 0xfc0 + i * 4,
+                            wd65_sh_hdr[i], im[(0xfc0 >> 2) + i]);
+            fprintf(f, "\n");
+        }
+        fclose(f);
+    }
+    for (i = 0; i < 4; i++)
+        wd65_sh_imem[i] = im[(0x1000 >> 2) + i];
+    for (i = 0; i < 16; i++)
+        wd65_sh_hdr[i] = im[(0xfc0 >> 2) + i];
+}
+
 static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
 {
     unsigned int i,j;
@@ -767,6 +852,28 @@ void write_rsp_mem(void* opaque, uint32_t address, uint32_t value, uint32_t mask
                 wd_cpuw_imem_latch_val = value;
             }
         }
+        /* ROUND 65: announce every guest store that lands in IMEM (the ONLY
+           uncontained IMEM writer in the tree: the plugin's DMA bank-wraps,
+           the ucode's stores mask to DMEM, and do_sp_dma is bank-contained on
+           this route) or in the DMEM header region (word idx 0x3F0..0x3FF =
+           DMEM 0xFC0..0xFFF).  A WATCH line without a matching CPUW line
+           therefore cannot be a guest store.  files/wd_cpuw65.txt, capped. */
+        if (addr >= (0xfc0 >> 2))
+        {
+            static FILE* wd65_cpuw_f = NULL;
+            if (wd65_cpuw_lines < 256)
+            {
+                wd65_cpuw_lines++;
+                if (wd65_cpuw_f == NULL)
+                    wd65_cpuw_f = fopen(WD65_FILES_DIR "wd_cpuw65.txt", "a");
+                if (wd65_cpuw_f != NULL)
+                {
+                    fprintf(wd65_cpuw_f, "CPUW gpc=%08x addr=%08x widx=%03x val=%08x mask=%08x eff=%08x\n",
+                            (uint32_t)*r4300_pc(sp->mi->r4300), address, addr, value, mask, eff);
+                    fflush(wd65_cpuw_f);
+                }
+            }
+        }
         if (eff == 0x00000001u || eff == 0x00010000u || eff == 0x00010001u)
         {
             wd_cpuw_fill_n++;
@@ -946,6 +1053,7 @@ void do_SP_Task(struct rsp_core* sp)
        "ucode already halted before entry" (doRspCycles returns 0 without
        running, so we must NOT re-deliver a stale interrupt). */
     uint32_t wd_status_entry = sp->regs[SP_STATUS_REG];
+    wd65_watch_check(sp, 0);   /* round 65: shadow vs. everything before this slice */
 
     /* ROUND-7 DD DIAG (see wd_hdr_* above): compare the header DMEM 0xFC0
        against what the last header DMA actually wrote there.  `same` means
@@ -1222,6 +1330,7 @@ void do_SP_Task(struct rsp_core* sp)
         sp->regs[SP_STATUS_REG] &=
             ~(SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT);
     }
+    wd65_watch_check(sp, 1);   /* round 65: did this slice's RSP run change IMEM or the header? */
 }
 
 /* 64DD ROUTE ONLY: background pump for an unfinished RSP task.
@@ -1261,6 +1370,7 @@ static void rsp_dd_slice(void)
 {
     struct rsp_core* sp = &g_dev.sp;
     uint32_t status = sp->regs[SP_STATUS_REG];
+    wd65_watch_check(sp, 2);   /* round 65: changes since the last slice/check */
 
     /* A halted or broken RSP is not executing: nothing to run, and it is not
        holding the SP busy either. */
@@ -1288,6 +1398,7 @@ static void rsp_dd_slice(void)
         sp->rsp_task_locked = 1;
         sp->mi->r4300->cp0.interrupt_unsafe_state |= INTR_UNSAFE_RSP;
     }
+    wd65_watch_check(sp, 3);   /* round 65: did this slice's RSP run change IMEM or the header? */
 }
 
 void rsp_dd_background_pump(void)
@@ -1458,6 +1569,7 @@ void rsp_interrupt_event(void* opaque)
 {
     if (g_dev.dd.idisk != NULL) wd_c_sp_int_evt++;
     struct rsp_core* sp = (struct rsp_core*)opaque;
+    wd65_watch_check(sp, 4);   /* round 65: SP event boundary */
 
     if (!sp->rsp_task_locked)
     {

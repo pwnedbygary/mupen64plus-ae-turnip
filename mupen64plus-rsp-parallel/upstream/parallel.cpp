@@ -1601,12 +1601,24 @@ extern "C" void r29_pc_hook(unsigned pc_lo)
 				const long long wd_slice_us = std::chrono::duration_cast<std::chrono::microseconds>(
 					std::chrono::steady_clock::now() - wd_slice_t0).count();
 				wd_rsp_log_n++;
-				fprintf(rf, "RSPTASK ms=%lld seq=%u EXIT pc=%04x status=%08x irq=%u sem=%08x timed=%d units=%llu us=%lld wall=%d\n",
+				fprintf(rf, "RSPTASK ms=%lld seq=%u EXIT pc=%04x status=%08x irq=%u sem=%08x timed=%d units=%llu us=%lld wall=%d"
+				            " at=%08x v0=%08x v1=%08x t2=%08x gp=%08x k1=%08x fp=%08x sp=%08x ra=%08x hdr=%08x\n",
 					wd_now_ms(),
 					RSP::cpu.get_state().sr[31], RSP::cpu.get_state().pc & 0xfff,
 					*RSP::rsp.SP_STATUS_REG, *RSP::cpu.get_state().cp0.irq & 1,
 					*RSP::rsp.SP_SEMAPHORE_REG, RSP::SP_STATUS_TIMEOUT,
-					rsp_slice_units_now(), wd_slice_us, rsp_budget_wall_hit_now());
+					rsp_slice_units_now(), wd_slice_us, rsp_budget_wall_hit_now(),
+					/* ROUND-65: the audio dispatch loop's own registers (aspMain
+					   keeps the command cursor in gp/k1 and the block counter in
+					   fp -- see the ROUND-65 note in rsp/cp0.cpp) sampled at slice
+					   end, so "the ucode never finishes" becomes visible as a
+					   non-advancing cursor. */
+					RSP::cpu.get_state().sr[1], RSP::cpu.get_state().sr[2],
+					RSP::cpu.get_state().sr[3], RSP::cpu.get_state().sr[10],
+					RSP::cpu.get_state().sr[28], RSP::cpu.get_state().sr[27],
+					RSP::cpu.get_state().sr[30], RSP::cpu.get_state().sr[29],
+					RSP::cpu.get_state().sr[31],
+					((uint32_t*)RSP::rsp.DMEM)[0xfc0 / 4]);
 				fflush(rf);
 			}
 		}

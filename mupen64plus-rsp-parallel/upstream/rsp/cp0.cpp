@@ -297,6 +297,96 @@ extern "C" unsigned r19_bankwrap_d2i(void) { return r19_wrap_d2i_n; }
 extern "C" unsigned r19_bankwrap_i2d(void) { return r19_wrap_i2d_n; }
 extern "C" const uint32_t* r19_bankwrap_first(void) { return r19_wrap_first; }
 
+/* ---------------------------------------------------------------------------
+   ROUND-65 DIAG: the FULL ucode-DMA log (DD route only, files/wd_dma65.txt).
+
+   Round 63's rings (pdma.txt R12, wd_wrap.txt, wd_wild.txt) kept only the
+   tail, so the sequence leading up to the DMEM 0xFC0 header clobber (task
+   entry 373) and the IMEM replacement (entry 374) could not be reconstructed.
+   This logs EVERY RSP-issued DMA in order, with the flags that matter for the
+   round-64 open questions:
+     IMEM  = the SP-side bank is IMEM (a whole-ucode/overlay load; legit)
+     CROSS = a DMEM-side transfer whose span reaches past 0x1000 (with the
+             round-19 bank wrap it stays inside DMEM; logged so the shape is
+             visible even though it cannot cross)
+     FC0   = the SP-side span covers DMEM 0xFC0..0xFFF (the task header)
+     WILD  = refused by r14_wild_check (address left RDRAM)
+   s0/d0 are the first source word and the current first destination word.
+   Capped at 12000 lines (the audio task alone issues ~3800); one lazily-opened
+   handle + fflush, the same pattern as the wd_rsp.txt EXIT log.
+   --------------------------------------------------------------------------- */
+static unsigned r65_dma_lines = 0;
+static FILE* r65_dma_f = NULL;
+static void r65_dma_note(RSP::CPUState* rsp, unsigned dir /*0=RD RDRAM->SP, 1=WR SP->RDRAM*/,
+                         uint32_t dest, uint32_t source, uint32_t length, unsigned count,
+                         uint32_t skip, unsigned refused)
+{
+	if (!rsp_ares_budget_enabled() || r65_dma_lines >= 12000)
+		return;
+	/* dir==0: dest is the SP side, source is RDRAM; dir==1: source is the SP
+	   side, dest is RDRAM (mask conventions follow the copy loops below). */
+	const uint32_t sp_addr = dir ? source : dest;
+	const uint32_t spbank = sp_addr & 0x1000u;
+	const uint32_t spoff = sp_addr & 0xffcu;
+	const uint32_t span = (uint32_t)(count + 1) * length;
+	uint32_t s0, d0;
+	if (dir)
+	{
+		s0 = (source & 0x1000) ? rsp->imem[(source & 0xfffu) >> 2] : rsp->dmem[(source & 0xffcu) >> 2];
+		d0 = rsp->rdram[(dest & 0x7ffffcu) >> 2];
+	}
+	else
+	{
+		s0 = rsp->rdram[(source & 0x7ffffcu) >> 2];
+		d0 = (dest & 0x1000) ? rsp->imem[(dest & 0xfffu) >> 2] : rsp->dmem[(dest & 0xffcu) >> 2];
+	}
+	char flags[12];
+	snprintf(flags, sizeof(flags), "%s%s%s",
+	         spbank ? "IMEM" : ((spoff + span) > 0x1000u ? "CROSS" : ""),
+	         (!spbank && (spoff + span) > 0xfc0u) ? "FC0" : "",
+	         refused ? "WILD" : "");
+	if (r65_dma_f == NULL)
+		r65_dma_f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_dma65.txt", "a");
+	if (r65_dma_f == NULL)
+		return;
+	r65_dma_lines++;
+	fprintf(r65_dma_f, "DMA%u dir=%s pc=%04x src=%06x dst=%04x len=%04x cnt=%u skip=%03x st=%08x s0=%08x d0=%08x %s\n",
+	        r65_dma_lines, dir ? "WR" : "RD", rsp->pc & 0xfffu, source & 0x7ffffcu, dest & 0x1ffcu,
+	        length, count, skip, *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS], s0, d0, flags);
+	if ((r65_dma_lines & 63u) == 0)
+		fflush(r65_dma_f);
+}
+
+/* ---------------------------------------------------------------------------
+   ROUND-65 DIAG: SIG/HALT transitions the UCODE writes (files/wd_sig65.txt).
+
+   The guest's round-64 contract posts EVENT_MESG_SP only when SIG1|SIG2 are
+   visible at interrupt time; knowing exactly WHEN the ucode sets/clears them
+   (and from which PC) pins down which half of the protocol is missing.  Logs
+   0->1 transitions of SIG0/SIG1/SIG2/HALT/BROKE from rsp_status_write and
+   from the synthetic-yield paths (marked rt=ffffffff).  Transitions are rare
+   (task boundaries), so direct file writes are safe here.
+   --------------------------------------------------------------------------- */
+static unsigned r65_sig_lines = 0;
+static void r65_sig_note(RSP::CPUState* rsp, uint32_t rt, uint32_t old_status, uint32_t new_status)
+{
+	static FILE* f = NULL;
+	uint32_t rose;
+	if (!rsp_ares_budget_enabled() || r65_sig_lines >= 256)
+		return;
+	rose = new_status & ~old_status;
+	if (!(rose & (SP_STATUS_SIG0 | SP_STATUS_SIG1 | SP_STATUS_SIG2 | SP_STATUS_HALT | SP_STATUS_BROKE)))
+		return;
+	r65_sig_lines++;
+	if (f == NULL)
+		f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_sig65.txt", "a");
+	if (f == NULL)
+		return;
+	fprintf(f, "SIG pc=%04x rt=%08x old=%08x new=%08x rose=%08x irq=%u\n",
+	        rsp->pc & 0xfffu, rt, old_status, new_status, rose, *rsp->cp0.irq & 1);
+	fflush(f);
+}
+
 static unsigned r19_imem_n = 0;
 static void r19_imem_note(RSP::CPUState* rsp, uint32_t dst, uint32_t src, uint32_t len)
 {
@@ -1484,6 +1574,8 @@ void r31_arm_k0_repair(unsigned want);
 			   osSpTaskLoad() clears SIG0|SIG1|SIG2 at the next task load, so
 			   the handshake stays self-limiting.  R21_KEEP_SIG0=0 restores the
 			   round-16 form (clear SIG0) for A/B measurement. */
+			{
+			uint32_t st65 = *RSP::rsp.SP_STATUS_REG;   /* r65: pre-ack snapshot */
 #if R21_KEEP_SIG0
 			if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_SIG0)
 				*RSP::rsp.SP_STATUS_REG |= SP_STATUS_SIG1 | SP_STATUS_SIG2;
@@ -1493,6 +1585,11 @@ void r31_arm_k0_repair(unsigned want);
 				    (*RSP::rsp.SP_STATUS_REG | SP_STATUS_SIG1 | SP_STATUS_SIG2) & ~SP_STATUS_SIG0;
 #endif
 			*rsp->cp0.irq |= 1;
+			/* ROUND-65: the synthetic yield is itself an SP_STATUS mutator the
+			   guest can see; log the whole transition (rt=ffffffff marks the
+			   synthetic path). */
+			r65_sig_note(rsp, 0xffffffffu, st65, *RSP::rsp.SP_STATUS_REG);
+			}
 			/* ROUND-14 DIAG: count the synthetic yields this block
 			   fabricates (RAM only -- no file I/O in the RSP path). */
 			r14_fake_n++;
@@ -1503,7 +1600,9 @@ void r31_arm_k0_repair(unsigned want);
 			}
 			else if (RSP::MFC0_count[rt] >= RSP::SP_STATUS_TIMEOUT)
 			{
+				uint32_t st65 = *RSP::rsp.SP_STATUS_REG;
 				*RSP::rsp.SP_STATUS_REG |= SP_STATUS_HALT;
+				r65_sig_note(rsp, 0xfffffffeu, st65, *RSP::rsp.SP_STATUS_REG);
 				return MODE_CHECK_FLAGS;
 			}
 		}
@@ -1520,6 +1619,7 @@ void r31_arm_k0_repair(unsigned want);
 		//fprintf(stderr, "Writing 0x%x to status reg!\n", rt);
 
 		uint32_t status = *rsp->cp0.cr[CP0_REGISTER_SP_STATUS];
+		const uint32_t status0 = status;   /* r65: pre-write snapshot for the SIG log */
 
 		if (rt & SP_CLR_HALT)
 			status &= ~SP_STATUS_HALT;
@@ -1584,13 +1684,14 @@ void r31_arm_k0_repair(unsigned want);
 		else if (rt & SP_SET_SIG7)
 			status |= SP_STATUS_SIG7;
 
-		*rsp->cp0.cr[CP0_REGISTER_SP_STATUS] = status;
-		/* ROUND-14: no file I/O here.  The ucode writes SP_STATUS from its
-		   inner loops, and round 14 measured that per-write file I/O on
-		   this path changes the run (the emulation process died with
-		   SIGILL in the RSP JIT ~4s in, a state round 13's tree never
-		   reached).  Keep a RAM-only ring of the last 16 writes for the
-		   dump instead. */
+	*rsp->cp0.cr[CP0_REGISTER_SP_STATUS] = status;
+	r65_sig_note(rsp, rt, status0, status);
+	/* ROUND-14: no file I/O here.  The ucode writes SP_STATUS from its
+	   inner loops, and round 14 measured that per-write file I/O on
+	   this path changes the run (the emulation process died with
+	   SIGILL in the RSP JIT ~4s in, a state round 13's tree never
+	   reached).  Keep a RAM-only ring of the last 16 writes for the
+	   dump instead. */
 		r14_spw_ring[r14_spw_n & 15u][0] = rt;
 		r14_spw_ring[r14_spw_n & 15u][1] = status;
 		r14_spw_n++;
@@ -2077,8 +2178,12 @@ void r31_arm_k0_repair(unsigned want);
 
 		/* ROUND-18: refuse the transfer if the ucode's DMA address register
 		   has left RDRAM (runaway walk -- see r14_wild_check). */
-		if (r14_wild_check(rsp, 0, source, dest, length, count, skip))
-			return MODE_CHECK_FLAGS;
+		{
+			unsigned wd65_refused = r14_wild_check(rsp, 0, source, dest, length, count, skip);
+			r65_dma_note(rsp, 0, dest, source, length, count, skip, wd65_refused);
+			if (wd65_refused)
+				return MODE_CHECK_FLAGS;
+		}
 
 		/* ROUND-15: first fetch out of the low 1MB (guest zero page / the
 		   boot framebuffer fill) -- capture the full RSP state once. */
@@ -2626,8 +2731,12 @@ void r31_arm_k0_repair(unsigned want);
 		   path the 29.9-million-transfer wipe used.  The caller ignores this
 		   function's result, so refuse by simply not transferring; the
 		   deterministic slice budget still ends the runaway's slice. */
-		if (r14_wild_check(rsp, 1, dest, source, length, count, skip))
-			return;
+		{
+			unsigned wd65_refused = r14_wild_check(rsp, 1, dest, source, length, count, skip);
+			r65_dma_note(rsp, 1, dest, source, length, count, skip, wd65_refused);
+			if (wd65_refused)
+				return;
+		}
 
 #ifdef INTENSE_DEBUG
 		fprintf(stderr, "DMA WRITE: (0x%x <- 0x%x) len %u, count %u, skip %u\n", dest & 0x7ffffc, source & 0x1ffc,
