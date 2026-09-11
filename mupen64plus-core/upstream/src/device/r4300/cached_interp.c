@@ -1969,6 +1969,21 @@ static void wd_stall_probe(const char* path)
             fprintf(f, " %08x", wd70_eret_ring[(wd70_eret_n - n70 + i) & 63u]);
         fprintf(f, "\n");
     }
+    /* ROUND-71: the transition watch -- every change of the sAudioThread
+       state word (tag=1) and __osRunningThread (tag=2) with the guest PC of
+       the block boundary where the change was first observed. */
+    {
+        extern uint32_t wd71_ring[32 * 5];
+        extern volatile uint32_t wd71_n;
+        uint32_t n71 = wd71_n < 32 ? wd71_n : 32;
+        fprintf(f, "WD71TR n=%u\n", wd71_n);
+        for (uint32_t i = 0; i < n71; i++)
+        {
+            const uint32_t* e = &wd71_ring[((wd71_n - n71 + i) & 31u) * 5u];
+            fprintf(f, "  T tag=%u gpc=%08x old=%08x new=%08x extra=%08x\n",
+                    e[1], e[0], e[2], e[3], e[4]);
+        }
+    }
     /* ROUND 49: SP MEMORY IN ONE LINE.
        Until now the only way to see this was the raw 8 KiB image in the big
        dump (SPMEM, a bare fwrite), which needs a python pass to read -- so the

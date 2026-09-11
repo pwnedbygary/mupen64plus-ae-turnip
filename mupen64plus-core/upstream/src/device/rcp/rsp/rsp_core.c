@@ -337,6 +337,14 @@ volatile uint32_t wd69_disp_n = 0;
    stalled, so "which thread did the eret resume" is answered directly. */
 uint32_t wd70_eret_ring[64];
 volatile uint32_t wd70_eret_n = 0;
+/* ROUND-71: transition watch.  The pump fires at every block boundary; when
+   the sAudioThread state word (0x807999e0) or __osRunningThread (0x80771e20)
+   CHANGES between fires, record the guest PC of the boundary plus old/new.
+   The state word was found 0 (invalid) at the logo stall with a garbage
+   context -- this names the block that zeroed it. */
+/* flat 5-word entries: {gpc, tag, old, new, extra} */
+uint32_t wd71_ring[32 * 5];
+volatile uint32_t wd71_n = 0;
 
 static void wd65_watch_check(struct rsp_core* sp, unsigned site)
 {
@@ -1516,6 +1524,30 @@ void rsp_dd_background_pump(void)
                 e[4] = dram[((0x807999d0 + 0x11c) & 0x7fffff) >> 2]; /* sAudioThread saved pc */
                 e[5] = dram[((0x80799670 + 0x10) & 0x7fffff) >> 2];  /* sIdleThread.state|flags */
                 wd69_disp_n++;
+            }
+        }
+        /* ROUND-71: transition watches on the two scheduler words. */
+        {
+            static uint32_t wd71_aud_last = 0xdeadbeefu, wd71_run_last = 0xdeadbeefu;
+            const uint32_t* dram = (const uint32_t*)(void*)g_dev.ri.rdram->dram;
+            uint32_t gpc71 = wd68_pcp_ring[(wd68_pcp_n - 1) & 63u];
+            uint32_t aud_v = dram[((0x807999d0 + 0x10) & 0x7fffff) >> 2];
+            uint32_t run_v = dram[(0x80771e20 & 0x7fffff) >> 2];
+            if (wd71_n < 256u && aud_v != wd71_aud_last)
+            {
+                uint32_t* e = &wd71_ring[(wd71_n & 31u) * 5u];
+                e[0] = gpc71; e[1] = 1; e[2] = wd71_aud_last; e[3] = aud_v;
+                e[4] = dram[((0x807999d0 + 0x11c) & 0x7fffff) >> 2]; /* audio saved pc */
+                wd71_n++;
+                wd71_aud_last = aud_v;
+            }
+            if (wd71_n < 256u && run_v != wd71_run_last)
+            {
+                uint32_t* e = &wd71_ring[(wd71_n & 31u) * 5u];
+                e[0] = gpc71; e[1] = 2; e[2] = wd71_run_last; e[3] = run_v;
+                e[4] = 0;
+                wd71_n++;
+                wd71_run_last = run_v;
             }
         }
         wd_c_pump_n++;
