@@ -138,6 +138,68 @@ queue; if MAIN wakes at 0.3/s, the VI→MAIN event path is the defect.
 
 ---
 
+## ROUND 74 (goal round 64) -- the queue map at the logo stall: every manager thread blocked on an empty queue; the audio pipeline ran 29 tasks then froze
+
+> Measured on the RP6 with the r73 long-slice fix installed (commit
+> ca01ff8e2). Artifacts: `.fzxwork/r73_*`, `.fzxwork/r74_*`.
+
+### 1. THE LONG-SLICE FIX RESULT (r73): the pipeline came ALIVE
+
+With audio slices restored to 20480 units (2s deadline; GFX keeps 512):
+
+* **The SIG log filled (2030 bytes)**: `rt=00004000 rose=00000200` entries --
+  the ucode sets SIG2 (TASKDONE); **the audio tasks COMPLETE**.
+* **`c_spint=29`**: SP interrupts fire for the first time since round 9.
+* **`CURHDR seq=21`, `c_task=31`**: 20+ task-header loads -- the loader's
+  double-buffered audio loop (command lists alternating `0x411910` /
+  `0x4132d0`) submitted task after task.
+* MAIN's SP state machine CYCLES (`YIELDING -> AUDIO -> INACTIVE -> ...`);
+  the r72 "stale YIELDING" read became a transient mid-pipeline value.
+
+### 2. THE QUEUE MAP AT THE STALL (r74, ek_state --queues on the fresh dump)
+
+```
+gAudioTaskMesgQueue 0x8079a0d8: count=0/1, mt=0x807999d0 (the AUDIO thread waiting!)
+gMainThreadMesgQueue 0x8079a120: count=0/16, mt=0x80799820 (MAIN waiting)
+sPiMgrCmdQueue 0x8079a090: count=0/64, mt=0x807c20a0 (the PI manager waiting)
+the VI manager's queue 0x807c46c0: count=0/5, mt=0x807c3510 (the VI mgr waiting)
+LEOcommand_que 0x807c5398: count=0/16, mt=0x807c4838 (the LEO thread waiting)
+__osRunQueue 0x80771e18: head=the tail dummy (EMPTY)
+```
+
+**Every manager thread is blocked waiting on an EMPTY queue.** The
+interrupt handlers run (c_genint advances; MI_INTR reads 0 at the stall =
+the acks happen) but their message sends never land in the queues.
+
+### 3. THE FREEZE SEQUENCE (r73->r74)
+
+The pipeline ran 29 audio tasks (SIG2 completions; the loader's alternating
+command lists), then the scheduler blocked in
+`AudioSynth_LoadReverbSamples+0x28`'s wait and stopped draining
+gAudioTaskMesgQueue. MAIN's per-VI `osSendMesg(NEXT_AUDIO_TASK, NOBLOCK)`
+then fails silently (the queue state shows room, but the send never lands --
+the scheduler is blocked on a DIFFERENT wait inside the reverb step). The
+last RSP task sits HALTed (sp_status=0xC3) awaiting a resume only the
+scheduler can issue. WD73RATE: MAIN's queue rotates ~30-60/s (its messages
+arrive!), the audio queue 0.
+
+### 4. r75: the scheduler's wait inside LoadReverbSamples
+
+AudioSynth_LoadReverbSamples loads reverb data via a PI DMA and waits
+(osRecvMesg on the PI manager's completion queue -- sPiMgrCmdQueue
+0x8079a090). The PI manager (prio 150!) is WAITING on ITS queue for a
+COMMAND. The DMA command was sent by... the scheduler, before blocking.
+**The PI manager never processed it, or its completion message went
+elsewhere.** r75: (1) verify sPiMgrCmdQueue's pending command (the dump's
+first=27/msg pointer), (2) check whether the PI manager thread ever ran
+after the DMA was queued (its saved pc + prio 150 vs the idle at prio 0 --
+it should preempt!), (3) the PI manager's dispatch is the fix target: a
+prio-150 thread blocked on a queue with a pending command that the
+dispatch never delivers points at the same class of scheduler-state
+corruption as 4c, now in the loaded code's OS.
+
+---
+
 ## ROUND 70 (goal round 62) -- the ERET ledger: the dispatcher pops a DEAD audio-thread struct (state=0, garbage context) every interrupt; the scheduler can never run
 
 > Measured (RP6, `.fzxwork/r66/` stall dumps). Commit `bef576139`. The user's
