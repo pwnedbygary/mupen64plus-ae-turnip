@@ -164,18 +164,53 @@ uint32_t wd_imem_bad_count = 0, wd_imem_bad_spdma = 0;
 volatile uint32_t wd_imem_kill_path = 0;
 uint32_t wd_imem_kill_a = 0, wd_imem_kill_b = 0, wd_imem_kill_c = 0, wd_imem_kill_d = 0;
 uint32_t wd_imem_kill_pc = 0, wd_imem_kill_count = 0, wd_imem_kill_spdma = 0;
+/* Round 49: the sampled fill density at the moment of the latch, and the GUEST
+   pc of the write that crossed the threshold (path 1 = a CPU store, so this
+   names the libultra routine doing it). */
+uint32_t wd_imem_kill_fill = 0, wd_imem_kill_gpc = 0;
 
 void wd_imem_probe(struct rsp_core* sp, uint32_t path, uint32_t a, uint32_t b,
                    uint32_t c, uint32_t d)
 {
+    /* ROUND 49 FIX -- WHY THIS NEVER FIRED, AND WHY THAT MATTERED.
+       The old test was `im[0x1000/4] == 0x00010001 && im[0x1000/4+1] ==
+       0x00010001`, i.e. it required IMEM[0] AND IMEM[1] to hold the fill
+       pattern.  The live memory does not satisfy that: the new SPMEM1 probe
+       reports `imem_fill=792 imem0=ffffffff` (r59/t070) and, in the r58 dump,
+       IMEM as a single repeated word with a different word 0.  So the latch
+       could NOT fire no matter which path did the damage -- which is exactly
+       what was observed (`wd_imem_kill_path` came out 5, the pump fallback,
+       whose only meaning is "nobody caught it").  Path 3 is also a phantom:
+       the plugin never calls this function, and an RSP ucode cannot store to
+       IMEM in the first place, so the real writers are path 1 (CPU store) and
+       path 2 (SP DMA) -- both of which were already wired.
+
+       The test is now a DENSITY TRANSITION over a sampled scan: count how many
+       of 32 words spread across IMEM equal the fill pattern, and latch on the
+       call that takes the count from below 20 to 20-or-more.  A real ucode
+       scores ~0; the live damaged IMEM scores 24-32.  Sampling keeps this
+       cheap enough to sit on every write path (32 word reads), and because the
+       fill is being rewritten continuously the crossing is caught at the
+       writer rather than ~12 ms later. */
+    static uint32_t prev_fill = 0;
     const uint32_t* im = (const uint32_t*)sp->mem;
-    if (wd_imem_kill_path) return;
-    if (im[0x1000 / 4] != 0x00010001u || im[0x1000 / 4 + 1] != 0x00010001u) return;
-    wd_imem_kill_path = path;
-    wd_imem_kill_a = a; wd_imem_kill_b = b; wd_imem_kill_c = c; wd_imem_kill_d = d;
-    wd_imem_kill_pc = sp->regs2[SP_PC_REG];
-    wd_imem_kill_count = r4300_cp0_regs(&sp->mi->r4300->cp0)[CP0_COUNT_REG];
-    wd_imem_kill_spdma = wd_c_spdma;
+    uint32_t i, fill = 0;
+    for (i = 0; i < 32; i++)
+        if (im[(0x1000 >> 2) + i * 32] == 0x00010001u) fill++;
+    if (prev_fill < 20u && fill >= 20u && !wd_imem_kill_path)
+    {
+        wd_imem_kill_path = path;
+        wd_imem_kill_a = a; wd_imem_kill_b = b; wd_imem_kill_c = c; wd_imem_kill_d = d;
+        wd_imem_kill_pc = sp->regs2[SP_PC_REG];
+        wd_imem_kill_count = r4300_cp0_regs(&sp->mi->r4300->cp0)[CP0_COUNT_REG];
+        wd_imem_kill_spdma = wd_c_spdma;
+        wd_imem_kill_fill = fill;
+        /* The guest PC of the code that performed the write: for path 1 that
+           names the libultra routine doing the CPU store, which is the whole
+           point of the exercise. */
+        wd_imem_kill_gpc = sp->mi->r4300 != NULL ? *r4300_pc(sp->mi->r4300) : 0;
+    }
+    prev_fill = fill;
 }
 
 /* Cheap (two word compares) and DD-gated; called from the background pump so a

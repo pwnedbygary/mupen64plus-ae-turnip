@@ -1715,16 +1715,22 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
         fprintf(f, "%s imem_bad=%u word=%08x %08x %08x %08x fc0=%08x pc=%08x status=%08x count=%08x dmas=%u\n",
             tag, wd_imem_bad, wd_imem_bad_word[0], wd_imem_bad_word[1],            wd_imem_bad_word[2], wd_imem_bad_word[3], wd_imem_bad_fc0,
             wd_imem_bad_pc, wd_imem_bad_status, wd_imem_bad_count, wd_imem_bad_spdma);
-        /* ROUND 19: which path wrote the fill pattern into IMEM (1 = CPU
-           direct SP-memory write, 2 = CPU-side SP DMA, 3 = RSP-side DMA,
-           5 = only ever seen by the pump), and with which parameters. */
+        /* ROUND 19/49: which path wrote the fill pattern into IMEM (1 = CPU
+           direct SP-memory write, 2 = CPU-side SP DMA, 5 = only ever seen by
+           the pump; path 3 is a phantom -- the plugin never calls the probe and
+           an RSP ucode cannot store IMEM), with which parameters.  `fill` is
+           the sampled fill density at the latch (32 samples, threshold 20) and
+           `gpc` the GUEST pc of the write, which for path 1 names the libultra
+           routine doing the CPU store. */
         {
             extern volatile uint32_t wd_imem_kill_path;
             extern uint32_t wd_imem_kill_a, wd_imem_kill_b, wd_imem_kill_c, wd_imem_kill_d;
             extern uint32_t wd_imem_kill_pc, wd_imem_kill_count, wd_imem_kill_spdma;
-            fprintf(f, "%s IMEMKILL path=%u a=%08x b=%08x c=%08x d=%08x pc=%08x count=%08x dmas=%u\n",
+            extern uint32_t wd_imem_kill_fill, wd_imem_kill_gpc;
+            fprintf(f, "%s IMEMKILL path=%u a=%08x b=%08x c=%08x d=%08x pc=%08x count=%08x dmas=%u fill=%u gpc=%08x\n",
                 tag, wd_imem_kill_path, wd_imem_kill_a, wd_imem_kill_b, wd_imem_kill_c,
-                wd_imem_kill_d, wd_imem_kill_pc, wd_imem_kill_count, wd_imem_kill_spdma);
+                wd_imem_kill_d, wd_imem_kill_pc, wd_imem_kill_count, wd_imem_kill_spdma,
+                wd_imem_kill_fill, wd_imem_kill_gpc);
         }
     }
     /* ROUND 13: the frame protocol.  A task-load is classified by the type word

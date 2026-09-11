@@ -130,15 +130,50 @@ INTR_BREAK set, nobody home".
 
 ### Next (round 59 / goal 50)
 
-1. **Name the writer of the IMEM fill pattern.** It is not an SP DMA and not
-   any path `wd_imem_probe` latches. Add the probe to `write_rsp_mem`'s tail and
-   to the RSP plugin's DMA entry (the two unwatched paths), logging the guest PC
-   and the value, then re-run. The fill is being rewritten *continuously*, so it
-   will be caught in one run.
-2. Once the writer is known, decide: if it is the guest deliberately writing
-   IMEM (a libultra path this emulation mishandles), that is a small, testable
-   fix. If it is the RSP plugin, take the pre-authorized Ares port for the
-   SP/RSP shell instead of adding a sixth heuristic.
+**The IMEM-fill latch was itself broken, and fixing it narrowed the writer to
+the RSP plugin's own DMA path.** `wd_imem_probe()` required
+`IMEM[0] AND IMEM[1] == 0x00010001`, but live IMEM[0] is `0xffffffff` with 792
+fill words -- so it could never fire, and `wd_imem_kill_path` always came back
+`5` (the pump fallback, which only means "nobody caught it"; path 3 is a
+phantom, the plugin never calls the probe). It is now a **sampled
+density-transition latch** (32 words spread across IMEM, threshold 20, latches
+the call that crosses it) and also records `fill=` and the **guest pc** of the
+write. Re-run (r60):
+
+```
+IMEMKILL path=5 a=... pc=04001000 count=0d36231a dmas=424 fill=25 gpc=80746800
+```
+
+Both real core writers **were** already wired (`do_sp_dma` line 421, outside
+the logging guard, and `write_rsp_mem`), yet neither tripped -- and a stepwise
+CPU store could not have taken the sampled count from 19 to 25 without some
+intermediate call seeing the crossing. **So the fill did not arrive through
+either core path: it arrives through the RSP plugin's own DMA**, the one
+IMEM-writing path with no probe. That is consistent with what round 40 already
+documented in `cp0.cpp`: a "WILD" double-add makes the RSP copy RDRAM over its
+own IMEM (`R19IMEM n=8 pc=020 dst=1000 src=ea65d8 len=0170 <- WILD`, where
+`0x753AF8 + 0x752AE0 == 0xEA65D8`), and the plugin's IMEM loads use lengths up
+to `0f80` -- nearly the whole bank.
+
+Also pinned this round, three independent ways: `sp->mem` offset **0x0000 is
+DMEM** (OSTask header at 0xFC0) and **0x1000 is IMEM** (ucode, `SP_IMEM_START`
+= 0x04001000). `plugin.c` publishes exactly that (`rsp_info.DMEM =
+MM_RSP_MEM`, `IMEM = MM_RSP_MEM + 0x1000`), the `wd_dma2.txt` log shows the
+header landing at `dst=0fc0` and the ucode at `dst=1000`, and `mem_base_u32`
+is in **full** (non-compressed) mode, so no aliasing is involved.
+
+Next round, in order:
+
+1. **Probe the plugin's IMEM writes.** Call the core's latch from the plugin's
+   RSP-side DMA into IMEM (`cp0.cpp`'s `rsp_dma_read` / `rsp_imem_dma_bump`,
+   which already exists at `rsp_jit.cpp:144`), logging direction, dst, src,
+   length and pc. That names the writer in one run.
+2. Then fix the double-add at its root rather than masking it. Round 40's
+   `R40_NORM` path already repairs the descriptor; the question is why a
+   wild absolute descriptor still reaches IMEM. If the repair cannot be made
+   airtight, this is the point to take the user-pre-authorized Ares/Phobos
+   N64DD + RSP + interrupt-delivery port instead of adding a sixth DD-only
+   heuristic to `do_SP_Task` (which already carries five).
 
 ## ROUND 57 -- FOUND IT: THE DD-ROUTE RSP PUMP WAS EATING 95% OF THE CPU THREAD
 
