@@ -1,5 +1,93 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
+## ROUND 39 (latest) -- the run's real state, and two emulator defects fixed
+
+**Read this first; it supersedes the round-36 "DP deadlock" framing.**
+
+* **THE STATE IS A RUNAWAY DMA LOOP, NOT A DP HANDSHAKE DEADLOCK.** The
+  periodic DD counter file (`files/wd_r20.txt`, rewritten every few seconds by
+  the RSP plugin) reads, for a full 150 s run of the frozen 64DD screen:
+
+      R20 ms=192682390 pc=0000 dma=19337817 datalist=211 outbuf=116
+          low=1048611 save=1 yreq=0 ytimeout=0 saved_k0=152e03c0
+      R26W wild=18284001
+
+  i.e. **18.2 million wild (out-of-RDRAM) transfers**, all refused by
+  `r14_wild_check`, burning the emulation thread. The guest never reaches a
+  second frame because the RSP never finishes the first gfx task.
+
+* **THE WILD POINTER'S ORIGIN IS THE HOST'S FORCED-YIELD SAVE.**
+  `saved_k0=152e03c0` is the **audio ucode's** k0. The EK gfx task is cut off
+  by the host's forced yield *before its walk has loaded k0* (the ucode loads
+  k0 from the header's `data_ptr` only when the walk starts), so the resume
+  slot `DMEM 0xBF8` receives 0x152E03C0 -- not a physical RDRAM address. Masked
+  by the DMA register's own 24-bit truncation it becomes 0x2E03C0, the walk
+  then runs over cleared memory (every command reads as G_NOOP filler), and the
+  x0xA8 walk never terminates. `R25K0` trace of the same run shows the pattern
+  exactly: `sr26=152e03c0 -> 152e0468` with `ff0=0024e260` (the *correct*
+  data_ptr sitting in the header the whole time).
+
+* **FIX 1 -- parallel-RDP NEVER DROPS A WINDOW** (`parallel_imp.cpp`).
+  Upstream refused any window with more than 0x7FFF commands
+  (`(cmd_ptr+length) & ~(0x3FFFF>>3) -> return`) and left **DPC_CURRENT**
+  behind. The EK's flush spins on DPC_CURRENT (IMEM 0x2A0..0x2B0) before it
+  publishes its next DMEM command block, so a dropped window freezes the spin;
+  the pending region and the flush length then grow together (measured 672,
+  680, 688 ... 1616 bytes, +8 per flush) and past 0x650 the transfer's
+  destination `DMEM 0x9B0` overruns into `DMEM 0xFC0` -- **the OSTask copy** --
+  after which the ucode reads ring base/end/data_ptr out of display-list
+  filler (0x00010001, 0xFC000640) and no FULLSYNC reaches the RDP again. The
+  window is now consumed in <=0x7FFF-command chunks with DPC_CURRENT published
+  after each, the RDRAM offset is masked to the real 8 MiB window (upstream's
+  `& 0xFFFFF8` permitted reads to 16 MiB, off the end of the RDRAM
+  allocation), and every window upstream *would* have dropped is latched to
+  `files/wd_rdpdrop.txt`. `R39_CHUNK=0` restores the upstream path for A/B.
+  NOTE: no oversized window occurred in the fix run (`wd_rdpdrop.txt` absent),
+  so this defect was NOT the trigger in that run -- it is still a real bug and
+  the latch stays armed to catch it in a run where it does fire.
+
+* **FIX 2 -- THE k0 REPAIR NOW COVERS BOTH GFX UCODES** (`rsp/cp0.cpp`).
+  Round 30's repair matched only `dest DMEM 0x920`, the shape of the ucode at
+  RDRAM 0x7505C0 (set B). The disk program's EK ucode -- RDRAM 0x752AE0 (set
+  A), the one the DD route walks with -- fetches with `addiu s4,r0,0x9B0`
+  (IMEM 0x17C), so the repair could never fire for this game. It now accepts
+  both shapes, and treats a "wanted" pointer that is not a physical RDRAM
+  address (0x152E03C0) as what it is rather than as a display list, falling
+  back to the header's `data_ptr`.
+
+* **FIX 3 -- A NEW TASK LOAD RESETS THE YIELD BUDGET** (`rsp/cp0.cpp`, in the
+  header-change detector). `RSP::MFC0_count[]` gates the host's forced yield at
+  SP_STATUS_TIMEOUT and was only reset at *slice* entry, so a task starting
+  inside an already-spent slice is force-yielded on its first poll -- precisely
+  how the gfx task came to be saved before its walk began.
+
+* **PLAIN ROUTE: the diagnostic leak is fixed and verified.** The user reported
+  lag spikes and audio crackle in Mario Tennis. The cause was `r32_wr_note()`
+  in the RSP DMA-write path: `fopen`/`fprintf`/`fclose` on each of the first
+  3000 write DMAs of *every* session, plain carts included -- thousands of file
+  operations inside the RSP's hot path, against this project's own rule. It is
+  now DD-gated and behind `files/wd_deep.flag`, which also carries the two
+  unbounded traces (`wd_dmatr.txt`, 2.9 GB/run, and `wd_rsp.txt`, 43 MB/run).
+  Also gated to the DD route: `wd_r31gen.txt` (was written from the
+  *plain-cart* branch of the ucode-load path, 14 KB per Mario Tennis launch),
+  the `wd_smc.txt` session marker (written for every game), and
+  `r19_cmd_latch` (armed for every game).
+  **ACCEPTANCE MEASURED**: Mario Tennis renders at `game_ink` 49.6-57.1 % with
+  the screen animating (matching the pre-change control 55.3/57.1 %) and
+  creates **no `wd_*` file at all** during the run.
+
+* **NEXT (round 40)**: the remaining fault is the saved-k0 / yield path, not
+  the RDP. Concretely: (a) make the forced-yield save write a *coherent* resume
+  state (if the live k0 is not a usable display-list pointer, save the header's
+  `data_ptr` instead) -- the host is already fabricating that save, so it must
+  fabricate a state the ucode can resume from; (b) stop forcing a yield until
+  the gfx task's walk has started (the counter reset above is the first half of
+  this); (c) if both fail, take the objective's authorised escape hatch and port
+  ares's RSP/DD/interrupt model from `/home/garyb/LLM-Projects/phobos/ares/n64`
+  -- in ares the RSP runs on its own thread, so the entire host-fabricated
+  yield machinery (which is what manufactures the bad saved state) does not
+  exist.
+
 > Auto-generated checkpoint. Read top-to-bottom. The single biggest concrete progress this
 > session: **round 36 named the post-load deadlock end-to-end — the guest's GAME thread is blocked
 > in `osRecvMesg(&D_800DCAC8)` waiting for the `0x2A` that only the DP (RDP-done) interrupt
