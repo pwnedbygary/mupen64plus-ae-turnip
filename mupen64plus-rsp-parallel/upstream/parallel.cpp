@@ -102,6 +102,27 @@ extern "C" int rsp_diag_trace(void)
 	return cached;
 }
 
+/* ROUND 37: `wd_trace.flag` now means "the BOUNDED watches" -- the ones with a
+   fixed line cap (the k0 watch, the 26-word DMEM watch, the r12/r32 rings).
+   The two traces that are unbounded per-transfer / per-preemption I/O stay
+   behind a second flag, `wd_deep.flag`:
+
+     * the r14 per-transfer ring flush (wd_dmatr.txt, measured 2.9 GB/run),
+     * the per-budget-expiry IMEM dump (wd_rsp.txt, 43 MB/run).
+
+   Both are pure I/O in the RSP's hot path, and the DD route's budget/yield
+   model is TIME based, so they move the very preemption points they are meant
+   to observe.  Keeping them separately switchable lets a k0 run stay
+   timing-honest. */
+extern "C" int rsp_diag_deep(void)
+{
+	static int cached = -1;
+	if (cached < 0)
+		cached = (access("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_deep.flag",
+		                 F_OK) == 0) ? 1 : 0;
+	return cached;
+}
+
 extern "C"
 {
 	// Hack entry point to use when loading savestates when we're tracing.

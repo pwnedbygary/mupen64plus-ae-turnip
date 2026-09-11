@@ -8886,9 +8886,17 @@ void new_dynarec_init(void)
   g_dev.r4300.new_dynarec_hot_state.invc_ptr=g_dev.r4300.cached_interp.invalid_code;
 #endif
   stop_after_jal=0;
-  { /* DIAGNOSTIC: start the DD SMC trace fresh for this session */
-    FILE* wd_f = fopen(WD_SMC_DIR "wd_smc.txt", "w");
-    if (wd_f != NULL) { fprintf(wd_f, "WD_SMC start=%08x\n", (u_int)start); fclose(wd_f); }
+  { /* DIAGNOSTIC: start the DD SMC trace fresh for this session.
+       ROUND 39: DD route only.  This ran for EVERY game, so a plain cart
+       created wd_smc.txt in its own files dir on every launch (measured on
+       Mario Tennis).  One 22-byte write is not a performance problem, but
+       this project's rule is that the 64DD diagnostics cost a plain cart
+       exactly nothing. */
+    if (g_dev.dd.idisk != NULL)
+    {
+      FILE* wd_f = fopen(WD_SMC_DIR "wd_smc.txt", "w");
+      if (wd_f != NULL) { fprintf(wd_f, "WD_SMC start=%08x\n", (u_int)start); fclose(wd_f); }
+    }
     wd_smc_events = 0;
   }
   // TLB

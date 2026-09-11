@@ -16,6 +16,66 @@ static int cmd_cur;
 static int cmd_ptr;
 static uint32_t cmd_data[0x00040000 >> 2];
 
+/* ===========================================================================
+   ROUND 39: NEVER DROP AN RDP WINDOW.
+
+   vk_process_commands() below copies the window [DPC_CURRENT, DPC_END) into
+   cmd_data (0x8000 64-bit commands) and walks it.  Upstream refuses any
+   window that does not fit:
+
+       if ((cmd_ptr + length) & ~(0x0003FFFF >> 3))
+           return;                       // > 0x7FFF commands: silently dropped
+
+   and that early return leaves DPC_CURRENT behind.  MEASURED CONSEQUENCE on
+   the 64DD route (F-Zero X EK, rounds 36..38, wd_lowsp/wd_r25k0/wd_r36):
+
+     * the EK's FIFO gfx ucode kicks the RDP with `mtc0 DMEM[0xF0], DPC_END`
+       and then spins on DPC_CURRENT before publishing its next DMEM command
+       block (IMEM 0x2A0..0x2B0: `mfc0 t3,DPC_CURRENT / sub t3,t3,t8 /
+       blez / sub t3,t3,s3 / blez 0x2A0`);
+     * a dropped window freezes that spin.  The pending region keeps growing,
+       so the next flush's length keeps growing with it (measured: 672, 680,
+       688, ... 1616 bytes, i.e. +8 per flush);
+     * that DMA's destination is DMEM 0x9B0 and 0x9B0 + 0x650 = 0x1000, so
+       once the length passes 0x650 the transfer overwrites DMEM 0xFC0..0xFFF
+       -- THE OSTask COPY.  The ucode then reads its ring base/end/data_ptr
+       out of display-list filler (0x00010001, and GBI words such as
+       0xFC000640), the walk pointer k0 becomes 0xFF8000A7, DPC_START/END go
+       to 0xFC000000-based values, and no FULLSYNC ever reaches the RDP again:
+       measured DPC_START/END = 00000000/FC000640, FC000640/FC000C88,
+       FC000C88/FC0012D8 as the last three kicks of the run.  The guest's gfx
+       thread then waits forever for the DP message (fzerox-decomp
+       src/sys/sys_main.c:352/396) -- the frozen 64DD screen.
+
+   So: consume the window in chunks of at most 0x7FFF commands, publishing
+   DPC_CURRENT after each chunk (hardware advances it as it consumes), and
+   mask the RDRAM-side offset to the actual 8 MiB window -- upstream's
+   `offset &= 0xFFFFF8` allows reads up to 16 MiB, i.e. off the end of the
+   RDRAM allocation.
+
+   R39_CHUNK=0 restores the upstream behaviour for A/B (and latches every
+   dropped window to files/wd_rdpdrop.txt so the mechanism stays measurable).
+   A plain cart's windows are a few hundred commands, so this path is not
+   reached at all; nothing here changes plain-game behaviour.
+   ======================================================================== */
+#define R39_CHUNK 1
+#define R39_DROP_FILE "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_rdpdrop.txt"
+
+static void r39_drop_note(uint32_t cur, uint32_t end, unsigned length, unsigned cmds)
+{
+	static unsigned n = 0;
+	FILE* f;
+	if (n >= 8)
+		return;
+	n++;
+	f = fopen(R39_DROP_FILE, (n == 1) ? "w" : "a");
+	if (f == NULL)
+		return;
+	fprintf(f, "R39DROP n=%u cur=%08x end=%08x bytes=%u cmds=%u\n",
+	        n, cur, end, length, cmds);
+	fclose(f);
+}
+
 static unique_ptr<RDP::CommandProcessor> frontend;
 static unique_ptr<Device> device;
 static unique_ptr<Context> context;
@@ -158,9 +218,86 @@ void vk_process_commands()
 			return;
 
 		length = unsigned(length) >> 3;
+#if R39_CHUNK
+		/* R39: chunked; see the note at the top of this file.  A single pass
+		   over the upstream window is the common case (length <= 0x7FFF). */
 		if ((cmd_ptr + length) & ~(0x0003FFFF >> 3))
-			return;
+			r39_drop_note(DP_CURRENT, DP_END, unsigned(length) << 3, length);
+		{
+			uint32_t offset = DP_CURRENT;
+			uint32_t remaining = unsigned(length);
+			const bool xbus = (*GET_GFX_INFO(DPC_STATUS_REG) & DP_STATUS_XBUS_DMA) != 0;
 
+			while (remaining > 0)
+			{
+				uint32_t chunk = remaining > 0x7FFFu ? 0x7FFFu : remaining;
+				uint32_t left = chunk;
+				int incomplete = 0;
+
+				cmd_ptr = 0;
+				cmd_cur = 0;
+				if (xbus)
+				{
+					do
+					{
+						offset &= 0xFF8;
+						cmd_data[2 * cmd_ptr + 0] = *reinterpret_cast<const uint32_t *>(SP_DMEM + offset);
+						cmd_data[2 * cmd_ptr + 1] = *reinterpret_cast<const uint32_t *>(SP_DMEM + offset + 4);
+						offset += sizeof(uint64_t);
+						cmd_ptr++;
+					} while (--left > 0);
+				}
+				else
+				{
+					do
+					{
+						offset &= 0x7FFFF8;   /* R39: stay inside the 8 MiB RDRAM */
+						cmd_data[2 * cmd_ptr + 0] = *reinterpret_cast<const uint32_t *>(DRAM + offset);
+						cmd_data[2 * cmd_ptr + 1] = *reinterpret_cast<const uint32_t *>(DRAM + offset + 4);
+						offset += sizeof(uint64_t);
+						cmd_ptr++;
+					} while (--left > 0);
+				}
+
+				while (cmd_cur - cmd_ptr < 0)
+				{
+					uint32_t w1 = cmd_data[2 * cmd_cur];
+					uint32_t command = (w1 >> 24) & 63;
+					int cmd_length = cmd_len_lut[command];
+
+					if (cmd_ptr - cmd_cur - cmd_length < 0)
+					{
+						/* A command split across the chunk boundary.  Match
+						   upstream's handling of a truncated tail: the window
+						   is declared consumed. */
+						incomplete = 1;
+						break;
+					}
+
+					if (command >= 8 && frontend)
+						frontend->enqueue_command(cmd_length * 2, &cmd_data[2 * cmd_cur]);
+
+					if (RDP::Op(command) == RDP::Op::SyncFull)
+					{
+						// For synchronous RDP:
+						if (vk_synchronous && frontend)
+							frontend->wait_for_timeline(frontend->signal_timeline());
+						*gfx.MI_INTR_REG |= DP_INTERRUPT;
+						gfx.CheckInterrupts();
+					}
+
+					cmd_cur += cmd_length;
+				}
+
+				if (incomplete)
+					break;
+
+				remaining -= chunk;
+				if (remaining > 0)
+					*GET_GFX_INFO(DPC_CURRENT_REG) = offset & 0x00FFFFF8;
+			}
+		}
+#else
 		uint32_t offset = DP_CURRENT;
 		if (*GET_GFX_INFO(DPC_STATUS_REG) & DP_STATUS_XBUS_DMA)
 		{
@@ -218,6 +355,7 @@ void vk_process_commands()
 
 			cmd_cur += cmd_length;
 		}
+#endif
 
 		cmd_ptr = 0;
 		cmd_cur = 0;

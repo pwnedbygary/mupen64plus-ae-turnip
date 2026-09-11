@@ -488,8 +488,11 @@ extern "C"
 	extern "C" int rsp_ares_budget_enabled(void);
 
 	/* ROUND 36: per-block-entry traces are opt-in (files/wd_trace.flag);
-	   on a normal DD run nothing below fires. */
+	   on a normal DD run nothing below fires.
+	   ROUND 37: the per-preemption IMEM dump (wd_rsp.txt, 43 MB/run) is
+	   unbounded I/O in the hot path, so it needs the deeper flag. */
 	extern "C" int rsp_diag_trace(void);
+	extern "C" int rsp_diag_deep(void);
 
 	/* ------------------------------------------------------------------
 	   ROUND 25 DIAG (DD route only -- the call site is gated on
@@ -938,7 +941,11 @@ Func CPU::get_jit_block(uint32_t pc)
 		}
 		{
 			static int gn = 0;
-			if (gn < 200)
+			/* ROUND 39: opt-in.  This sat in the PLAIN-CART branch of the
+			   ucode-load path, so every plain game wrote up to 200 lines of
+			   wd_r31gen.txt (measured: 14 KB per Mario Tennis launch).  The
+			   DD route already has files/wd_trace.flag for exactly this. */
+			if (gn < 200 && rsp_diag_trace())
 			{
 				FILE *f = fopen(R31_DIAG_PATH "wd_r31gen.txt", "a");
 				gn++;
@@ -2554,7 +2561,8 @@ ReturnMode CPU::run()
 		{
 #ifdef PARALLEL_INTEGRATION
 			static FILE* rf = NULL;
-			if (!rf) rf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_rsp.txt", "a");
+			if (rsp_diag_deep() && !rf)
+				rf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_rsp.txt", "a");
 			if (rf)
 			{
 				/* dump IMEM words around the preempt pc so the ucode's wait

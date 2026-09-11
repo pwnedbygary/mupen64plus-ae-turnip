@@ -27,6 +27,10 @@ extern "C" int rsp_ares_budget_enabled(void);
    Absent `files/wd_trace.flag` -> every heavy trace returns immediately. */
 extern "C" int rsp_diag_trace(void);
 
+/* ROUND 37: the two UNBOUNDED per-transfer/per-preemption traces have their
+   own flag (`wd_deep.flag`), so the bounded watches can run alone. */
+extern "C" int rsp_diag_deep(void);
+
 /* ROUND-12 DIAG (DD route only).  The post-load failure writes a WORD-ALIGNED
    copy of the audio ucode's data table -- a long run of 0x00010001 at
    RDRAM 0x8076b268, i.e. ucode+0x2408 -- over live RSP memory (IMEM[0] and the
@@ -147,8 +151,10 @@ static void r14_record(RSP::CPUState* rsp, unsigned dir, uint32_t dst, uint32_t 
 	if (!rsp_ares_budget_enabled())
 		return;
 	/* ROUND 36: opt-in only -- this single trace wrote 2.9 GB per DD run.
-	   See rsp_diag_trace()'s comment in ../parallel.cpp. */
-	if (!rsp_diag_trace())
+	   ROUND 37: it moved to the DEEPER flag (`wd_deep.flag`, see
+	   rsp_diag_deep() in ../parallel.cpp) so the bounded watches can be
+	   enabled without paying 19 MB/s of fprintf in the RSP's hot path. */
+	if (!rsp_diag_deep())
 		return;
 	e = &r14_ring[r14_idx & 255];
 	e->dir = dir; e->pc = rsp->pc & 0xfff; e->dst = dst; e->src = src;
@@ -441,6 +447,11 @@ static unsigned r19_cmd_n = 0;
 static int r19_cmd_latch(RSP::CPUState* rsp, const char* what, uint32_t val)
 {
 	FILE* f;
+	/* ROUND 39: DD route only.  This is reached on every DPC_START/DPC_END
+	   write of every game; bounded (16 records), but a plain cart should not
+	   pay any file I/O for a 64DD diagnostic. */
+	if (!rsp_ares_budget_enabled())
+		return 0;
 	if (r19_cmd_n >= 16)
 		return 0;
 	f = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_cmd.txt",
@@ -1860,12 +1871,55 @@ void r31_arm_k0_repair(unsigned want);
 			{
 				for (unsigned q = 0; q < 6u; q++) r30_hdr[q] = cur[q];
 				r30_new_task = 1;
+				/* ROUND 39: A NEW TASK LOAD MUST RESET THE YIELD BUDGET.
+				   RSP::MFC0_count[] gates the host's forced yield when it
+				   reaches SP_STATUS_TIMEOUT (0x7FFF), and parallel.cpp only
+				   resets it at SLICE entry -- so a task that starts inside a
+				   slice that already burned the budget inherits a spent
+				   counter and is force-yielded on its very FIRST poll.  For
+				   the DD route that is fatal: the EK gfx task is then cut off
+				   before its walk has loaded k0 (the ucode loads k0 from
+				   data_ptr only when the walk starts), so the host's yield
+				   save (r20/r21, DMEM[0xBF8] + the DMEM[0..0xBFF] image)
+				   records the PREVIOUS task's leftover k0.  MEASURED on the
+				   RP6 (wd_r20.txt of round 39): `save=1 saved_k0=152e03c0`,
+				   i.e. the AUDIO ucode's k0 written into the gfx task's resume
+				   slot; the guest then resubmits with flags|=OS_TASK_YIELDED,
+				   the ucode resumes from DMEM[0xBF8] = 0x152E03C0 (masked to
+				   RDRAM 0x2C03C0, cleared memory), every command reads as
+				   G_NOOP filler, and the walk runs away: `R26W wild=18284001`
+				   -- 18.2 MILLION refused transfers, the RSP burning the core
+				   for the rest of the run while the 64DD screen sits frozen.
+				   A fresh task gets a fresh budget, which is what the budget
+				   means.  DD-gated (this whole block is). */
+				for (unsigned q = 0; q < 32u; q++)
+					RSP::MFC0_count[q] = 0;
 			}
 			if (rsp_ares_budget_enabled() && r30_new_task && length == 0xa8u &&
-			    (dest & 0x1fffu) == 0x920u)
+			    ((dest & 0x1fffu) == 0x920u || (dest & 0x1fffu) == 0x9b0u))
 			{
+				uint32_t dptr = rsp->dmem[0xff0 / 4];
 				uint32_t want = (rsp->dmem[0xfc4 / 4] & 1u) ? rsp->dmem[0xbf8 / 4]
-				                                            : rsp->dmem[0xff0 / 4];
+				                                            : dptr;
+				/* ROUND 39: (a) THE SHAPE TEST NOW COVERS BOTH GFX UCODES.
+				   The round-30 repair only matched `dest DMEM 0x920`, which is
+				   the shape of the ucode at RDRAM 0x7505C0 (set B).  The disk
+				   program's EK gfx ucode -- RDRAM 0x752AE0 (set A), the one the
+				   DD route actually walks with -- fetches with `addiu
+				   s4,r0,0x9B0` (IMEM 0x17C), so the repair never fired for it.
+				   (b) A SAVED POINTER THAT IS NOT PHYSICAL RDRAM IS NOT A
+				   DISPLAY LIST.  MEASURED (wd_r20.txt, round 39): the host's
+				   forced yield save recorded `saved_k0=152e03c0` -- the AUDIO
+				   ucode's k0, 0x152E03C0, which is above the 8 MiB RDRAM window.
+				   Masked by the DMA register's own 24-bit truncation it becomes
+				   0x2E03C0, indistinguishable from a real pointer by shape, so
+				   the old `want != source` test passed and the walk ran from
+				   cleared memory: `R26W wild=18284001`, 18.2 million refused
+				   transfers, the 64DD screen frozen for the whole run.  Fall
+				   back to the header's data_ptr when the wanted pointer cannot
+				   be a physical address. */
+				if (want >= 0x800000u && (dptr & 0xffffffu) < 0x800000u)
+					want = dptr;
 				r30_new_task = 0;
 				if ((want & 0xffffffu) < 0x800000u && (want & 0x7ffffcu) != (source & 0x7ffffcu))
 				{
@@ -2218,6 +2272,15 @@ void r31_arm_k0_repair(unsigned want);
 	{
 		unsigned so = source & 0x1fffu;
 		FILE* f;
+		/* ROUND 39: PLAIN-ROUTE REGRESSION FIX (user-visible: lag spikes and
+		   audio crackle in Mario Tennis).  This instrument was the one
+		   per-DMA file trace still running on EVERY game: it fopen/append/
+		   fclose'd on each of the first 3000 write DMAs of the session, i.e.
+		   thousands of file operations in the RSP's hot path of a plain cart,
+		   which this project's own rule forbids.  It is now DD-gated and
+		   behind the deep flag like every other per-transfer trace. */
+		if (!rsp_ares_budget_enabled() || !rsp_diag_deep())
+			return;
 		if (r32_wrn >= 3000u)
 			return;
 		/* ROUND 33: NO FILTER.  Round 32's filter let an unrelated 0x170-byte
