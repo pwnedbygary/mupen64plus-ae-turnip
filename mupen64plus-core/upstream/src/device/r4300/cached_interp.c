@@ -1610,6 +1610,8 @@ struct wd_snap {
        DD's MECHA/BM level interrupts were invisible in every prior stall
        dump (raise_bits has no DD column). */
     uint32_t dd_asic_status, dd_cause_ip3, cause_ip_bits;
+    /* ROUND-73: message-transition counters (MAIN queue / audio queue). */
+    uint32_t mq_trans, aq_trans;
 };
 
 /* Read a guest u32 out of RDRAM (the guest sees KSEG0 0x80xxxxxx = phys). */
@@ -1640,6 +1642,11 @@ static void wd_take_snap(struct wd_snap* s)
     s->dd_asic_status = g_dev.dd.idisk != NULL ? g_dev.dd.regs[DD_ASIC_CMD_STATUS] : 0;
     s->cause_ip_bits = cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00);
     s->dd_cause_ip3 = (s->cause_ip_bits & UINT32_C(0x0800)) != 0;
+    {
+        extern volatile uint32_t wd73_mq_trans, wd73_aq_trans;
+        s->mq_trans = wd73_mq_trans;
+        s->aq_trans = wd73_aq_trans;
+    }
     s->sp_status = g_dev.sp.regs[SP_STATUS_REG];
     s->sp_pc = g_dev.sp.regs2[SP_PC_REG];
     s->sp_busy = g_dev.sp.regs[SP_DMA_BUSY_REG];
@@ -1705,6 +1712,7 @@ static void wd_print_snap(FILE* f, const char* tag, const struct wd_snap* s)
         tag, s->cause, s->status, s->epc, s->badvaddr, s->count);
     fprintf(f, "%s dd_asic_status=%08x cause_ip_bits=%08x dd_ip3=%u (MECHA_INT=0x02000000 BM_INT=0x04000000)\n",
         tag, s->dd_asic_status, s->cause_ip_bits, s->dd_cause_ip3);
+    fprintf(f, "%s wd73 mq_trans=%u aq_trans=%u\n", tag, s->mq_trans, s->aq_trans);
     fprintf(f, "%s mi_intr=%08x mi_mask=%08x sp_status=%08x sp_pc=%08x sp_busy=%08x sp_full=%08x sp_sem=%08x\n",
         tag, s->mi_intr, s->mi_mask, s->sp_status, s->sp_pc, s->sp_busy, s->sp_full, s->sp_sem);
     fprintf(f, "%s c_task=%u c_spint=%u c_genint=%u c_sample=%u c_asic=%u c_pi=%u vi_cur=%08x field=%u delay=%u\n",
@@ -1930,6 +1938,8 @@ static void wd_stall_probe(const char* path)
         (int)(b.pump_n - a.pump_n), (int)(b.pump_call - a.pump_call),
         (int)(b.pump_us - a.pump_us), (int)b.pump_max,
         (int)((b.core_utime - a.core_utime) + (b.core_stime - a.core_stime)) * 10000);
+    fprintf(f, "WD73RATE mq_trans=%d aq_trans=%d (per 300ms window; 2 transitions per message round-trip)\n",
+        (int)(b.mq_trans - a.mq_trans), (int)(b.aq_trans - a.aq_trans));
     /* ROUND-68: guest-PC distribution over the stall window (the pump fires
        at every recompiler block boundary; the loaded DD-boot code at
        0x80600000+ has no decomp symbols, so the raw addresses are the

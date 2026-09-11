@@ -345,6 +345,13 @@ volatile uint32_t wd70_eret_n = 0;
 /* flat 5-word entries: {gpc, tag, old, new, extra} */
 uint32_t wd71_ring[32 * 5];
 volatile uint32_t wd71_n = 0;
+/* ROUND-73: message-rate counters.  Transitions (any change) of the
+   gMainThreadMesgQueue first/msgCount word (0x8079a12c) and the
+   gAudioTaskMesgQueue equivalent (0x8079a0e4), sampled at every pump fire.
+   The stall probe prints the 300ms delta: transitions/s ~= 2x the message
+   rate (send +1, receive -1).  Localizes the wake throttle: MAIN's arrival
+   rate vs the scheduler's consumption rate. */
+volatile uint32_t wd73_mq_trans = 0, wd73_aq_trans = 0;
 
 static void wd65_watch_check(struct rsp_core* sp, unsigned site)
 {
@@ -1548,6 +1555,14 @@ void rsp_dd_background_pump(void)
                 e[4] = 0;
                 wd71_n++;
                 wd71_run_last = run_v;
+            }
+            /* ROUND-73: message-rate counters for the two queues. */
+            {
+                static uint32_t wd73_mq_last = 0xdeadbeefu, wd73_aq_last = 0xdeadbeefu;
+                uint32_t mq_v = dram[((0x8079a120 + 0xc) & 0x7fffff) >> 2];
+                uint32_t aq_v = dram[((0x8079a0d8 + 0xc) & 0x7fffff) >> 2];
+                if (mq_v != wd73_mq_last) { wd73_mq_trans++; wd73_mq_last = mq_v; }
+                if (aq_v != wd73_aq_last) { wd73_aq_trans++; wd73_aq_last = aq_v; }
             }
         }
         wd_c_pump_n++;
