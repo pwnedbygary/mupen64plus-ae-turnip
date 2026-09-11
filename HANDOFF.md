@@ -1,5 +1,145 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
+## ROUND 58 (goal round 49) -- **ROUND 57'S HEADLINE WAS A MEASUREMENT ARTEFACT. THE MACHINE WAS NEVER CPU-STARVED. AND THE RSP HAS NO PROGRAM AT ALL.**
+
+### 1. The correction: the guest was already at full speed
+
+Round 57 compared the guest's CP0 COUNT rate against **93.75 MHz** ("an N64 is
+93.75 MHz") and concluded the guest was running 11.3x slow. But **the N64's CP0
+COUNT does not run at the CPU clock -- it runs at half of it, the VI clock**,
+and this tree says so itself:
+
+* `vi_controller.c: `vi_clock_from_tv_standard(SYSTEM_NTSC)` returns **48681812**,
+  i.e. 48.68 MHz, and `vi->delay = vi->clock / expected_refresh_rate`
+  = 48681812/60 = 811364, which is the 811092 observed.
+* `dd_controller.c` uses `46875000 * seconds` as **cycles per second** when
+  scheduling 64DD timer interrupts.
+
+So the reference is **48.68 MHz**, not 93.75 MHz. Re-derived from the raw
+`count=` fields of the archived dumps (independent of anything round 57 wrote):
+
+| run | pump | dCOUNT/300ms | COUNT MHz | % of real | cyc/VI | vi->delay |
+|---|---|---|---|---|---|---|
+| r57/t060 | uncapped | 14543396 | 48.48 | 99.6% | 807966 | 811092 |
+| r57/t150 | uncapped | 15148957 | 50.50 | 103.7% | 841608 | 811092 |
+| r57b/t090 | uncapped | 14072970 | 46.91 | 96.4% | 827821 | 811092 |
+| r57c/t090 | **capped** | 14592036 | 48.64 | 99.9% | 810668 | 811092 |
+| r58/t100 | **capped** | 14600050 | 48.67 | 100.0% | 811113 | 811092 |
+| r58/t180 | **capped** | 14604177 | 48.68 | 100.0% | 811343 | 811092 |
+
+**The guest clock is 96-104% of real hardware in BOTH configurations.** The
+pump fix cut the emulation thread from 63% to 37% of a core and bought a ~4%
+guest-clock change (r57b/t090 46.91 -> r57c/t090 48.64), not 10.6x. The
+"4.61 MHz" baseline was a boot-phase sample, and the "71,470 cycles per VI"
+figure that round 57 called phase-independent proof was computed with the same
+wrong divisor.
+
+`cyc/VI` == `vi->delay` also does **not** prove the timebase is healthy, as
+round 57 claimed: it is equally satisfied by a guest that finishes its 811k
+cycles early and idles until the next VI. It is a tautology of the scheduler,
+not a health check.
+
+**The pump cap is still worth keeping** (it frees 26% of a core for free), but
+it is a cleanup, not the fix, and it did not move the boot.
+
+Round 57's *measurement machinery* was sound -- only its reference constant was
+wrong. Re-validated this round: `DELTA5 CORE tid=23747 abs_utime=2500
+abs_stime=132` matches the independently-parsed `THREADS` entry for the same
+tid **exactly**, and that thread is the top consumer (2632 of 70s x 100Hz
+jiffies = 37.6% of a core) with the windowed `d_utime=10/30` agreeing. Two real
+bugs were found and fixed in the instrumentation itself:
+
+* `wd_read_core_stat()` advanced 3 characters after the comm field and then read
+  `p[0]` as the state -- landing on the **first digit of ppid**, so every sample
+  printed `state=1` (never R/S/D), and the extra skip left the field walk one
+  token out of step, so utime/stime were read from the wrong columns. It now
+  prints a real state character, and `DELTA5 CORE` prints `tid=` plus absolute
+  `abs_utime/abs_stime` so the parse is self-validating against `THREADS`.
+
+### 2. The bank map, pinned down (this had been quietly wrong)
+
+`sp->mem` byte offset **0x0000 is DMEM, 0x1000 is IMEM** -- the opposite of
+what several round comments assume. Evidence from the tree's own logs, not from
+memory: `files/wd_dma2.txt` shows the 64-byte OSTask header DMA landing at
+`dst=0fc0` with `sp->mem[0xfc0/4]` reading that header's type afterwards, and
+the 4096-byte ucode load landing at `dst=1000` with `sp->mem[0x1000/4]` reading
+the ucode's first word. libultra's `__osSpSetPc(SP_IMEM_START)` is **0x04001000**
+(bit 12 set = IMEM), which is why `SP_PC` reads 0x04001000 during a load.
+So: **DMEM = 0x0000 (task header at 0xFC0, ucode DATA), IMEM = 0x1000 (ucode
+CODE, the RSP's start PC).**
+
+### 3. The state the boot is actually stuck in
+
+Pulled for the first time the sections that the periodic probe does not print
+(`TASKRING`, `SPWRING`, `FRAMEPROTO`, `SPMEM`, `THREADS`, the block `RING`).
+Between t100 and t180 -- **80 seconds** -- these are all **identical**:
+
+```
+TASKRING n=211 gfxn=3 audn=208      <- no new SP task load in 80 s
+SPWRING  n=638                      <- no new guest SP_STATUS write in 80 s
+c_asic = 10604                      <- no 64DD ASIC access since boot
+c_spint = 210                       <- no SP interrupt since boot
+```
+
+while `c_task` (do_SP_Task entries) climbs 31/s, `c_pi` 14/s, `c_vi_evt` 60/s,
+`c_exc` 148/s. The machine is running at full speed and doing **nothing**: it is
+not starved and not looping on a peripheral -- it is waiting.
+
+* **The last task got no completion.** 211 task loads, **210** SP interrupts.
+  The last load is a GFX task (`type=1 flags=4 ucode=0x80752AE0 ucd=0x8077A090
+  data=0x8024E260 yptr=0x8032DCD0 ysz=0xC00`). Dumped from the 8 MB RDRAM image,
+  `0x80752AE0` is **valid RSP ucode** -- a near-clone of gspF3DEX2 at 0x807505C0
+  (first 8 words identical except words 3-4). So the task is real and its
+  completion interrupt never arrived.
+* **SP_STATUS = 0x000000C0 = `INTR_BREAK|SIG0`**, HALT and BROKE both clear,
+  `SP_PC = 0x04001000`. (0xC0 is *not* HALT|BROKE -- an earlier note of mine
+  mis-decoded it.)
+* **IMEM holds no program.** New one-line probe `SPMEM1` (r59/t070):
+  `imem_nz=1024 imem_runs=216 imem_fill=792 imem0=ffffffff dmem0=00010001
+  dmem_fc0=00010001`. **792 of 1024 IMEM words are the fill pattern
+  0x00010001**, and in the r58 dump IMEM was a *single* repeated word
+  (`uniq=1`) -- i.e. no ucode at all, and the 0x00010001 pattern is actively
+  being rewritten into SP memory over time. The OSTask header slot
+  `dmem_fc0` is fill pattern too.
+* **`wd_dma2.txt` caps out at n=422 and its last ucode load was clean**
+  (`dram=007504f0 src=09000419`, a valid instruction), and **no SP DMA ever had
+  a source beginning with the fill pattern** (`grep -c src=00010001` = 0). So
+  the fill pattern did **not** arrive through an SP DMA -- it was written by the
+  CPU path (`write_rsp_mem`) or the RSP plugin's DMA path, and
+  `wd_imem_probe`'s per-path latch never caught it (it reports `path=5`, the
+  "seen too late from the pump" fallback). `cpuw imem_n=2319` -- the CPU has
+  written 2319 words into IMEM.
+* The guest is looping in libultra: ~14 raw PI DMAs/s from
+  `__osEPiRawStartDma` (PC `0x8074C170`), 0x400 bytes each with a **0x3C0
+  source stride** into consecutive 0x400 destination slots, over a ~452 KB cart
+  window (0x109880B0..0x109F90B0); only **124 distinct block targets** execute;
+  EPC parked in the libultra idle loop at 0x806F32EC; VI manager queue empty
+  (`vievtq=0/5`). The 960->1024 stride is a de-interleaving/expansion copy, not
+  a memcpy.
+
+### 4. Why this matters for the objective
+
+The objective names the fallback explicitly: *"If the in-tree fix for the guest
+post-load SP/RSP deadlock fails, port the working Ares/Phobos N64DD + RSP +
+interrupt-delivery model"*. The evidence now says the in-tree model **is** the
+problem it was accumulating heuristics against: after ~40 rounds `do_SP_Task()`
+carries five DD-only special cases (task-load guard, host-budget yield silence,
+ares yield delivery, ares completion delivery, forced HALT), and the live state
+is still "a real task in DMEM 0xFC0, no completion, no ucode in IMEM, SIG0 +
+INTR_BREAK set, nobody home".
+
+### Next (round 59 / goal 50)
+
+1. **Name the writer of the IMEM fill pattern.** It is not an SP DMA and not
+   any path `wd_imem_probe` latches. Add the probe to `write_rsp_mem`'s tail and
+   to the RSP plugin's DMA entry (the two unwatched paths), logging the guest PC
+   and the value, then re-run. The fill is being rewritten *continuously*, so it
+   will be caught in one run.
+2. Once the writer is known, decide: if it is the guest deliberately writing
+   IMEM (a libultra path this emulation mishandles), that is a small, testable
+   fix. If it is the RSP plugin, take the pre-authorized Ares port for the
+   SP/RSP shell instead of adding a sixth heuristic.
+
 ## ROUND 57 -- FOUND IT: THE DD-ROUTE RSP PUMP WAS EATING 95% OF THE CPU THREAD
 
 **The guest's emulated clock was running 11.3x slower than its own VI schedule

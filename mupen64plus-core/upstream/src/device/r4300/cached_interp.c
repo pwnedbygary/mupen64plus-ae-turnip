@@ -1173,10 +1173,15 @@ static int wd_read_core_stat(uint64_t* utime, uint64_t* stime, char* state)
     p = strrchr(buf, ')');
     if (p == NULL) return 0;
     p++;
-    /* p now points at " S 1790 ..."; field 3 = state, 14/15 = utime/stime. */
-    for (i = 0; i < 3 && *p; i++) p++;
-    *state = p[0];
-    p += 2;
+    /* ROUND 49 FIX: this used to advance three characters and then read p[0]
+       as the state, which lands on the FIRST DIGIT OF PPID -- every sample
+       printed `state=1` (a digit, never R/S/D), and the extra skip left the
+       field walk one token out of step, so utime/stime were read from the
+       wrong columns.  Field 3 is a state CHARACTER: skip the space, take it,
+       step over the following space. */
+    while (*p == ' ') p++;
+    *state = *p;
+    p++;
     /* skip ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt */
     for (i = 0; i < 10; i++) {
         while (*p == ' ') p++;
@@ -1870,9 +1875,11 @@ static void wd_stall_probe(const char* path)
        CPU-bound and the guest's slowness is emulation cost; 1-2/30 means the
        thread is asleep and the guest is being throttled.  `state` is the
        kernel state at the B sample (R=run, S=sleep, D=uninterruptible). */
-    fprintf(f, "DELTA5 CORE state=%c d_utime=%d d_stime=%d (of 30 ticks/300ms) "
-               "lim_calls=%d lim_us=%d lim_max=%d\n",
-        b.core_state, (int)(b.core_utime - a.core_utime), (int)(b.core_stime - a.core_stime),
+    fprintf(f, "DELTA5 CORE tid=%d state=%c d_utime=%d d_stime=%d (of 30 ticks/300ms) "
+               "abs_utime=%llu abs_stime=%llu lim_calls=%d lim_us=%d lim_max=%d\n",
+        (int)wd_core_tid, b.core_state,
+        (int)(b.core_utime - a.core_utime), (int)(b.core_stime - a.core_stime),
+        (unsigned long long)b.core_utime, (unsigned long long)b.core_stime,
         (int)(b.lim_calls - a.lim_calls), (int)(b.lim_us - a.lim_us), (int)b.lim_max);
     /* ROUND 57: PI ledger totals over the same window + worst-case handler. */
     fprintf(f, "DELTA5 PI rd=%d rd_us=%d rd_max=%d wr=%d wr_us=%d wr_max=%d vi_delay=%u\n",
@@ -1888,6 +1895,42 @@ static void wd_stall_probe(const char* path)
         (int)(b.pump_n - a.pump_n), (int)(b.pump_call - a.pump_call),
         (int)(b.pump_us - a.pump_us), (int)b.pump_max,
         (int)((b.core_utime - a.core_utime) + (b.core_stime - a.core_stime)) * 10000);
+    /* ROUND 49: SP MEMORY IN ONE LINE.
+       Until now the only way to see this was the raw 8 KiB image in the big
+       dump (SPMEM, a bare fwrite), which needs a python pass to read -- so the
+       single most decisive fact about the RSP, "is there a program in IMEM at
+       all?", was invisible in every wd_stall.txt of the campaign.
+
+       Bank map, pinned down this round from the tree's own logs rather than
+       from memory: sp->mem byte offset 0x0000 is DMEM and 0x1000 is IMEM.  The
+       evidence is the trace this tree already writes (files/wd_dma2.txt): the
+       64-byte OSTask header DMA lands at dst=0fc0 and afterwards
+       `sp->mem[0xfc0/4]` reads that header's type, while the 4096-byte ucode
+       load lands at dst=1000 and afterwards `sp->mem[0x1000/4]` reads the
+       ucode's first word.  libultra's `__osSpSetPc(SP_IMEM_START)` is
+       0x04001000 (see write_rsp_regs2), i.e. bit 12 SET = IMEM, so IMEM is the
+       bank at 0x1000 and holds ucode CODE; DMEM at 0x0000 holds the header and
+       ucode DATA.
+
+       `imem_runs` is the number of maximal runs of equal words in IMEM: a real
+       ucode scores ~1024, a single fill pattern scores 1.  O(n), no alloc. */
+    {
+        const uint32_t* m = (const uint32_t*)g_dev.sp.mem;
+        uint32_t i, imem_runs = 1, imem_nz = 0, imem_fill = 0, dmem_runs = 1, dmem_nz = 0;
+        for (i = 0; i < 1024; i++) {
+            uint32_t wi = m[(0x1000 >> 2) + i], wd = m[i];
+            if (wi) imem_nz++;
+            if (wi == 0x00010001u) imem_fill++;
+            if (i && wi != m[(0x1000 >> 2) + i - 1]) imem_runs++;
+            if (wd) dmem_nz++;
+            if (i && wd != m[i - 1]) dmem_runs++;
+        }
+        fprintf(f, "SPMEM1 dmem_nz=%u dmem_runs=%u imem_nz=%u imem_runs=%u imem_fill=%u "
+                   "imem0=%08x dmem0=%08x dmem_fc0=%08x sp_pc=%08x sp_status=%08x\n",
+                dmem_nz, dmem_runs, imem_nz, imem_runs, imem_fill,
+                m[0x1000 >> 2], m[0], m[0xfc0 >> 2],
+                g_dev.sp.regs2[SP_PC_REG], g_dev.sp.regs[SP_STATUS_REG]);
+    }
     wd_pir_dump(f);
     /* Round 8: THE CP0 EVENT QUEUE.  gen_interrupt() dispatches on
        cp0.q.first->data.type, and the VI_INT handler (case 0) is what re-arms
