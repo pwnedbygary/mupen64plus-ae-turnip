@@ -1,5 +1,125 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
+## ROUND 66/67 (goal round 60) -- THE PC-PERSISTENCE FIX: the audio task finally progresses; the boot advances from the DD-LOADING bar to the logo screen; new stall = the reboot path
+
+> Every claim measured on the RP6 or read from files in this tree. Artifacts:
+> `.fzxwork/r66/` and `.fzxwork/r67/`. Commits: `2384da17d` (fixes), `28ff1a37e`
+> (byte-order doc). THE HEADLINE: the round-65 "audio ucode never completes"
+> mystery is SOLVED -- the RSP's program counter was never persisted across
+> slices, so the task re-ran from its entry every 256-unit slice, forever.
+
+### 1. THE ROOT CAUSE (r66): state.pc is never written during execution
+
+The ares-derived JIT threads the running pc **exclusively through the host
+register `JIT_REGISTER_NEXT_PC`**: the dispatcher loads it *from* `state.pc`
+once (parallel.cpp:1393 restore; rsp_jit.cpp:898), each block tail writes the
+next pc into it (rsp_jit.cpp:1048/1109), and chained blocks pass it through
+`enter(next_pc)`. **Nothing ever stores it back into `state.pc`** -- so
+DoRspCycles' exit-save (`*RSP::rsp.SP_PC_REG = 0x04001000 | state.pc`) always
+wrote the ENTRY value (0), and every restored slice re-entered at pc 0.
+
+Measured proof: the r66 stuck-trace ring (512 block entries) has **exact
+period 89 and every period starts at `000`** -- one full task run per slice,
+restarted at the deterministic budget point. 13,447 consecutive
+`EXIT pc=0000` lines. For plain carts this never mattered (no budget = one
+slice per task); the r62 short-slice DD model made it fatal.
+
+**THE FIX (rsp_jit.cpp, DD-gated by the existing `rsp_ares_budget_enabled()`
+emission gate):** at both mid-block budget-expiry emissions (loop-top labels
+and per-32-instruction checks) the JIT now calls
+`r66_budget_exit_pc(&state.pc, resume_pc)` which stores the true resume pc
+into the slot the exit-save reads. (`rsp_enter`'s block-boundary expiry got
+the same treatment.) **CAUTION: lightning takes JIT call arguments in
+PROTOTYPE order** -- the first r66 build pushed them reversed, the helper
+dereferenced the pc integer as the slot pointer, and the emulation process
+died with SIGSEGV from JIT'd memory (crash buffer frame #01
+`<anonymous:...>`). Fixed; the working call order is
+`jit_pushargi(&state.pc); jit_pushargi(pc);`.
+
+Verified on the RP6: `pcsync=13346` (the sync fires), EXIT pcs advance
+instruction-by-instruction (0x41d..0x422...), the AList cursor ADVANCES
+(gp 0x413338 → 0x4133d0 ≈ 19 commands processed), and **the boot gets past
+the DD-LOADING bar to the N64/64DD logo screen** -- exactly the two-stage
+stall the user has seen on every prior build.
+
+### 2. ALSO FIXED THIS ROUND (measured, smaller)
+
+* **SP_DMA_BUSY staleness** (`r66_dma_completed` in cp0.cpp): aspMain's DMA
+  helper polls SP_DMA_BUSY (mfc0 reg 6 at IMEM 0xb28, found by scanning the
+  intact aspMain text in the r63 RDRAM dump with the CORRECT byte order --
+  see the byte-order rule!). Ucode-issued DMAs complete synchronously in the
+  mtc0 handler but the FIFO bookkeeping regs kept the guest's last MMIO
+  values; both are now cleared after a synchronous transfer (DD-gated).
+  `busypoll=0` in every EXIT line proves no stale-BUSY poll remains.
+* **The pump vs. the reboot wipe** (`wd_imem_bad` latch in rsp_core.c): the
+  DD reboot's "CPU state reset" (LeoBootGame's IMEM/DMEM wipe -- guest PC
+  0x800bb92c = LeoBootGame+0x3ec, caught by the NEW r67 CPUW RAM ring
+  `wd65w_ring[64][4]`, flushed into wd_watch65.txt on every shadow-watch
+  transition) turns IMEM into 1024 words of 0x00010001; the pump used to run
+  fill-as-code forever. Now the pump stops while the fill signature is
+  latched and re-arms when the guest loads a NEW task header
+  (`wd_cur_hdr_seq` moves past `wd_imem_bad_hdr_seq`).
+* Log tooling: dma65 prints unmasked dst + ms; fifo_push caller tag
+  (wd_fifo66.txt); the r66 wedge capture (wd_sp_break.bin) exists but has
+  not fired since the fix.
+
+### 3. THE NEW STALL (r67): the logo screen -- the reboot path
+
+What is measured at the logo stall (r67 artifacts):
+
+* Visuals: static N64+64DD logo, VI at 60/s (`raise_bits VI` advancing),
+  user-visible as "N64 logo and 64DD was all that was on screen".
+* SP: `SPMEM1 imem_fill=1024` (100% 0x00010001), `sp_pc=04001024`,
+  `sp_status=000000c0` (stale SIG0+INTR_BREAK from the pre-wipe yield),
+  pump gated off by the r67 latch, `spdma=2`, `c_asic=10604` (NO new disk
+  reads), `CURHDR seq=1` (NO new task header loads).
+* Guest OS (ek_state.py on the r67 dump): **all first-boot OS threads
+  parked** -- GAME in osRecvMesg on [D_800DCAC8], MAIN on
+  gMainThreadMesgQueue (EVENT_MESG_SP, never raised: `c_spint=0`), AUDIO at
+  osStartThread+0x134 (the yield handshake), a LEO thread on
+  [LEOcommand_que], RESET on gResetMesgQueue; `__osRunningThread` = IDLE.
+  `status=0x2000ff01` -- **IE still set** even though __LeoBootGame2's body
+  (forensics report) calls __osSetSR before the wipe.
+
+Interpretation (HYPOTHESIS, leading): the loaded DD-boot code (per the
+LuigiBlood wiki F-Zero-X page: cart fn 800FC300 → LBA 833 header → load →
+first-0x100 bootcodecrypto decrypt → LeoBootGame 0x800BB540) is running its
+own init (it draws the logo) but blocks before its first disk read and its
+first SP task submission. The first-boot OS's threads are all parked waiting
+on the SP/yield handshake that the wipe invalidated. The r67 pump gate
+removed the fill-as-code distraction but the guest's own blocking remains.
+
+### 4. NEXT ROUND (r68), in order
+
+1. **Find what the loaded boot code blocks on.** Its OS state is invisible to
+   ek_state.py (which decodes the CART's OS globals). Options: (a) symbolize
+   the loaded code's entry (`__LeoBootGame3(entry)` target from the r67
+   dump) against the EK decomp; (b) sample the guest PC at pump time into a
+   bounded ring (the WATCH gpc only shows one instant); (c) check the SR/IE
+   question -- if the boot disabled interrupts and our SR shows IE=1, the
+   __osSetSR write path deserves a probe.
+2. **The libleo presence check** (wiki Emulation-Info: "STATUS & 0x0000FFFF
+   nonzero = no 64DD attached"): verify our ASIC_STATUS low 16 bits are 0
+   once the second boot's libleo init runs. Also "PI DMAs must NOT be
+   instant for libleo" -- our dd_controller must keep non-instant PI DMA.
+3. **The DD RTC** (Phobos `dd/rtc.cpp:18-33`, host-time BCD seeding) is
+   still pending for "Error 48 -- Date/Time not set" once the second boot
+   reaches the game.
+4. Keep the r66/r67 fix set under regression: Mario Tennis (plain),
+   emumode=1 CI baseline, cart-hack support64dd=false.
+
+### 5. Honest status against the objective
+
+**Real, user-visible progress for the first time in the campaign**: the
+DD-LOADING bar phase now completes (the audio task actually runs; the
+scratchy-static era is explained -- one slice's worth of audio work looping)
+and the boot reaches the N64/64DD logo. The remaining stall is in the
+reboot/DD-boot path, with fresh instrumentation (CPUW ring, WATCH transition
+dumps, pcsync counters) already in place to name it. Plain-route and CI
+emumode=1 regression sets untouched (all changes DD-gated).
+
+---
+
 ## ROUND 65 (goal round 59) -- THE INSTRUMENTED RUN: both round-64 open defects are SOLVED (neither is the DMA loop), and the freeze relocates to "aspMain never finishes its list"
 
 > Same rules: every claim is measured on the RP6 / read out of a file in this tree, or
