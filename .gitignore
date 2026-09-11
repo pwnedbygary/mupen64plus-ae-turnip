@@ -63,6 +63,7 @@ keystore.properties
 
 # Local bring-up scratch (dumps, traces, disassembly helpers) - never commit
 .fzxwork/
+.zcode/
 /files/
 
 # Local build by-products
