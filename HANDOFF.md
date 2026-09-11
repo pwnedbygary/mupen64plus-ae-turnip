@@ -88,9 +88,10 @@ Why that is the whole story of the freeze:
 > Raise `MI_INTR_SP` **only** when `SP_STATUS & (SP_STATUS_YIELDED | SP_STATUS_TASKDONE)`
 > is set. Every other raise is worse than not raising at all.
 
-Nothing in this tree implements that rule today. `do_SP_Task`'s tail (`rsp_core.c:1071`)
-raises on any running->stopped transition, and `rsp_dd_slice()` (`rsp_core.c:1276-1285`)
-raises on any halt/break. Both can fire with `SP_STATUS & 0x300 == 0`.
+Nothing in this tree implements that rule today. `do_SP_Task`'s DD branch
+(`rsp_core.c:1089-1110`) raises on any running->stopped transition, and `rsp_dd_slice()`
+(`rsp_core.c:1276-1285`) raises on any halt/break. Both can fire with
+`SP_STATUS & 0x300 == 0`.
 
 ### 2. The guest's write stream, decoded with the real write-bit numbering
 
@@ -326,8 +327,8 @@ Expected: 20+ instructions decoded (not 2), `send_mesg`/`osSpTaskYield+0x10`/
 Unchanged in the parts that matter, and improved in one: the game still does not reach the
 menu and there is still no audio, but the campaign is no longer guessing at *why the
 interrupt is ignored*. The requirement is now written down, sourced from the ROM itself,
-and there are exactly two candidate defects left — the IMEM overwrite (S1/S2) and the
-raise condition (S3) — with a one-run experiment that separates them. No DD-gated behavior
+and there are exactly two candidate defects left -- the IMEM overwrite (S1/S2) and the
+raise condition (S3) -- with a one-run experiment that separates them. No DD-gated behavior
 changed this round: the same code that ran in round 62 ran here, so the plain-route and
 CI `emumode=1` regression sets are untouched by round 64.
 
