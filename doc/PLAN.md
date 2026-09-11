@@ -173,6 +173,13 @@ One instrumented device run. Diagnostics only — no behavior change.
 
 ## 6. Traps carried forward (do not re-learn)
 
+- **Dump byte order** (cost two raw-scan mistakes 2026-09-11; also in `ram_tools.py`
+  docstring trap 3): every dump file (`iplram_*.bin`, `ram_force.bin`, `wd_r29sp.bin`)
+  stores each guest 32-bit word in **host little-endian order** — recover the guest's
+  big-endian value with `struct.unpack_from('<I', raw, off)`, never `'>I'`. Signatures
+  of having it backwards: an expected word (0x340a0fc0) reads as its bswap
+  (0xc00f0a34); an opcode/mfc0 scan finds nothing; the 0x00010001 fill reads as
+  0x01000100. Prefer `ram_tools.py` (unswaps once in `load()`) over raw scans.
 - `wd_spw.txt`'s `st_after` is synthetic (`rsp_core.c:610`); `wd_r29sp.bin` is
   **IMEM-then-DMEM** (`parallel.cpp:769`), not a raw `sp->mem` image; RDRAM dumps are
   word-swapped inside each 32-bit word (use `ram_tools.py`); capstone must be

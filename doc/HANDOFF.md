@@ -99,6 +99,14 @@ disassembly of handler 0xb34 needs the decomp build first.
   normalize (unmasked, ms + shared sequence, direction named by data flow).
 * `wd_cpuw65.txt` capped at 256 lines during IPL3 boot (all `gpc=0xA4000xxx`); raise the
   cap to 4096 and filter `gpc >= 0x80000000` next build.
+* **DUMP BYTE ORDER (cost two raw-scan mistakes this round; now also stated in
+  `ram_tools.py`'s docstring, trap 3):** every dump file stores each guest 32-bit word
+  in **host little-endian order** -- a raw `struct.unpack('>I')` on file bytes returns
+  the byte-swapped word. To recover the guest's big-endian value from raw bytes, always
+  unpack `'<I'` (`struct.unpack_from('<I', raw, off)[0]` == guest word). Signatures of
+  having it backwards: an expected word (340a0fc0) reads as its bswap (c00f0a34); an
+  opcode scan finds nothing; the 0x00010001 fill reads as 0x01000100. Prefer
+  `ram_tools.py` (which unswaps once in `load()`) over raw scans.
 
 ### 5. NEXT ROUND (r66), in order
 

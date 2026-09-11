@@ -36,6 +36,19 @@ TWO TRAPS THAT HAVE ALREADY COST ROUNDS (round 64):
    0x340a0fc0; healthy IMEM[0] is 0x340a0fc0).  So a **correct** RDRAM -> SP DMA is a
    straight word copy, and byte-identity between an SP bank and an RDRAM region is
    exactly what a correct transfer produces.  Do not read it as evidence of a bug.
+
+3. **THE RULE, stated once so raw scans stop getting it wrong (cost 2 mistakes on
+   2026-09-11):** every dump file stores each guest 32-bit word in **host
+   little-endian order** -- a raw `open(...,'rb').read()` followed by
+   `struct.unpack('>I')` returns the byte-SWAPPED word.  To recover the guest's
+   big-endian value from raw file bytes, always unpack **little-endian**:
+   `struct.unpack_from('<I', raw, off)[0]` == guest word.  Equivalently:
+   guest_be_word = bswap32(raw_le_word); the file byte sequence is the guest byte
+   stream with each 4-byte group reversed.  Signatures that you got it backwards:
+   (a) a word you expected (340a0fc0) reads as its bswap (c00f0a34); (b) an
+   opcode/mfc0 scan finds nothing at all; (c) the 0x00010001 fill pattern reads
+   as 0x01000100.  Prefer this module (which unswaps once in `load()`) over raw
+   scans; if you must scan raw, scan '<I'.
 """
 import os
 import sys
