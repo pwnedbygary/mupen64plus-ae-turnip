@@ -1,6 +1,7 @@
 #include "../state.hpp"
 
 #include <cstdio>
+#include <chrono>
 
 #ifdef PARALLEL_INTEGRATION
 #include "../rsp_1.1.h"
@@ -350,11 +351,53 @@ static void r65_dma_note(RSP::CPUState* rsp, unsigned dir /*0=RD RDRAM->SP, 1=WR
 	if (r65_dma_f == NULL)
 		return;
 	r65_dma_lines++;
-	fprintf(r65_dma_f, "DMA%u dir=%s pc=%04x src=%06x dst=%04x len=%04x cnt=%u skip=%03x st=%08x s0=%08x d0=%08x %s\n",
-	        r65_dma_lines, dir ? "WR" : "RD", rsp->pc & 0xfffu, source & 0x7ffffcu, dest & 0x1ffcu,
+	/* wd_now_ms() lives in parallel.cpp; same clock, local copy for this file. */
+	const long long r65_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	    std::chrono::steady_clock::now().time_since_epoch()).count();
+	fprintf(r65_dma_f, "DMA%u dir=%s ms=%lld pc=%04x src=%06x dst=%08x len=%04x cnt=%u skip=%03x st=%08x s0=%08x d0=%08x %s\n",
+	        r65_dma_lines, dir ? "WR" : "RD", r65_ms, rsp->pc & 0xfffu, source & 0x7ffffcu, dest,
 	        length, count, skip, *rsp->cp0.cr[RSP::CP0_REGISTER_SP_STATUS], s0, d0, flags);
 	if ((r65_dma_lines & 63u) == 0)
 		fflush(r65_dma_f);
+}
+
+/* ROUND-66 FIX COUNTERS: the ucode polls SP_DMA_BUSY (reg 6) and SP_DMA_FULL
+   (reg 5) around its own DMAs (aspMain IMEM 0xae0/0xb08/0xb28 -- measured on
+   the r63 dump).  Counting the polls that see a STALE 1 makes the round-66
+   fix's effect measurable: before it, the audio task spins here; after it,
+   the counts stay flat.  RAM only. */
+static unsigned r66_busy_poll_n = 0, r66_full_poll_n = 0;
+extern "C" void r66_cp0_poll_note(unsigned rd, uint32_t value)
+{
+	if (value == 0u)
+		return;
+	if (rd == RSP::CP0_REGISTER_DMA_BUSY)
+		r66_busy_poll_n++;
+	else if (rd == RSP::CP0_REGISTER_DMA_FULL)
+		r66_full_poll_n++;
+}
+extern "C" unsigned r66_busy_polls(void) { return r66_busy_poll_n; }
+extern "C" unsigned r66_full_polls(void) { return r66_full_poll_n; }
+
+/* ROUND-66 FIX: a ucode-issued DMA completes synchronously inside the mtc0
+   handler, so the FIFO bookkeeping the ucode then polls must read CLEAR.
+   The core's SP_DMA_BUSY_REG / SP_DMA_FULL_REG belong to the guest-MMIO
+   fifo path (fifo_push sets them, the RSP_DMA_EVT pop clears them); their
+   value at ucode-poll time is whatever the guest's last DMA left -- during
+   the DD loader's per-frame DMA loop that is 1 far too often, and the
+   audio ucode's completion poll (IMEM 0xb20..0xb34) then never exits
+   (measured: the AList cursor stuck at one command for 330 ms of slices,
+   identical GPRs every slice).  A finished transfer is not busy: clear
+   both after the copy, DD-gated so the plain route stays byte-identical
+   (user rule 2026-09-05).  SP_STATUS's own DMA_BUSY/FULL bits are NOT
+   touched -- the guest reads those from SP_STATUS, whose lifecycle stays
+   with the core's fifo path. */
+static void r66_dma_completed(RSP::CPUState* rsp)
+{
+	if (!rsp_ares_budget_enabled())
+		return;
+	*rsp->cp0.cr[RSP::CP0_REGISTER_DMA_BUSY] = 0;
+	*rsp->cp0.cr[RSP::CP0_REGISTER_DMA_FULL] = 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1205,6 +1248,7 @@ void r31_arm_k0_repair(unsigned want);
 	{
 		rd &= 15;
 		uint32_t res = *rsp->cp0.cr[rd];
+		r66_cp0_poll_note(rd, res);   /* round 66: stale-BUSY/FULL poll counter */
 #ifdef PARALLEL_INTEGRATION
 		if (rd == CP0_REGISTER_DMA_READ_LENGTH || rd == CP0_REGISTER_DMA_WRITE_LENGTH)
 		{
@@ -2184,6 +2228,12 @@ void r31_arm_k0_repair(unsigned want);
 			if (wd65_refused)
 				return MODE_CHECK_FLAGS;
 		}
+		/* ROUND-66: this transfer completed synchronously -- see the note on
+		   r66_dma_completed.  Refused transfers do NOT clear the flags: the
+		   ucode still has a real DMA in flight from the core's perspective
+		   only if the guest issued one; a refused ucode DMA is dropped, which
+		   matches the round-18 refusal contract. */
+		r66_dma_completed(rsp);
 
 		/* ROUND-15: first fetch out of the low 1MB (guest zero page / the
 		   boot framebuffer fill) -- capture the full RSP state once. */
@@ -2737,6 +2787,8 @@ void r31_arm_k0_repair(unsigned want);
 			if (wd65_refused)
 				return;
 		}
+		/* ROUND-66: this transfer completed synchronously -- see r66_dma_completed. */
+		r66_dma_completed(rsp);
 
 #ifdef INTENSE_DEBUG
 		fprintf(stderr, "DMA WRITE: (0x%x <- 0x%x) len %u, count %u, skip %u\n", dest & 0x7ffffc, source & 0x1ffc,

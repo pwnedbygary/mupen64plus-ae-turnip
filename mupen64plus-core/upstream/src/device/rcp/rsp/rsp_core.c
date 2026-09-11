@@ -194,6 +194,9 @@ uint32_t wd_cpuw_latch_addr = 0, wd_cpuw_latch_val = 0, wd_cpuw_latch_mask = 0;
 uint32_t wd_cpuw_last_addr = 0, wd_cpuw_last_val = 0, wd_cpuw_last_mask = 0;
 uint32_t wd_cpuw_imem_latch_addr = 0, wd_cpuw_imem_latch_val = 0;
 volatile uint32_t wd_imem_bad = 0;             /* garbage IMEM observed      */
+/* ROUND-67: the header-latch seq at the moment wd_imem_bad latched; the pump
+   re-arms the RSP only when the guest loads a NEW task header (seq moves). */
+volatile uint32_t wd_imem_bad_hdr_seq = 0;
 uint32_t wd_imem_bad_word[4] = {0, 0, 0, 0};   /* IMEM[0..3] at that moment  */
 uint32_t wd_imem_bad_fc0 = 0, wd_imem_bad_pc = 0, wd_imem_bad_status = 0;
 uint32_t wd_imem_bad_count = 0, wd_imem_bad_spdma = 0;
@@ -270,6 +273,7 @@ static void wd_check_imem_sane(struct rsp_core* sp)
     if (im[0x1000 / 4] == 0x00010001u && im[0x1000 / 4 + 1] == 0x00010001u)
     {
         wd_imem_bad = 1;
+        wd_imem_bad_hdr_seq = wd_cur_hdr_seq;   /* ROUND-67: re-arm on the next task load */
         wd_imem_bad_word[0] = im[0x1000 / 4];
         wd_imem_bad_word[1] = im[0x1000 / 4 + 1];
         wd_imem_bad_word[2] = im[0x1000 / 4 + 2];
@@ -310,6 +314,13 @@ static uint32_t wd65_sh_hdr[16];
 static int wd65_armed = 0;
 static unsigned wd65_watch_lines = 0;
 static unsigned wd65_cpuw_lines = 0;   /* write_rsp_mem announce cap */
+/* ROUND-67: RAM ring of the last 64 guest stores into IMEM / the header
+   region, filled by write_rsp_mem (no I/O on the hot path) and flushed into
+   wd_watch65.txt by the shadow watch when it detects a transition -- so the
+   stores that immediately precede the damage are always captured, whatever
+   the file cap was doing. */
+uint32_t wd65w_ring[64][4];
+volatile uint32_t wd65w_n = 0;
 
 static void wd65_watch_check(struct rsp_core* sp, unsigned site)
 {
@@ -357,6 +368,20 @@ static void wd65_watch_check(struct rsp_core* sp, unsigned site)
                 if (wd65_sh_hdr[i] != im[(0xfc0 >> 2) + i])
                     fprintf(f, " [%03x]%08x->%08x", 0xfc0 + i * 4,
                             wd65_sh_hdr[i], im[(0xfc0 >> 2) + i]);
+            fprintf(f, "\n");
+        }
+        /* ROUND-67: the last 64 qualifying guest stores (gpc/addr/val/mask),
+         oldest first, so a transition is matched against its writers even
+         when the CPUW file cap or filter hid them. */
+        {
+            uint32_t n64 = wd65w_n < 64 ? wd65w_n : 64;
+            fprintf(f, "  RING");
+            for (i = 0; i < n64; i++)
+            {
+                const uint32_t* e = wd65w_ring[(wd65w_n - n64 + i) & 63u];
+                fprintf(f, "\n    gpc=%08x addr=%08x val=%08x mask=%08x",
+                        e[0], e[1], e[2], e[3]);
+            }
             fprintf(f, "\n");
         }
         fclose(f);
@@ -600,6 +625,33 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
 
 static void fifo_push(struct rsp_core* sp, uint32_t dir)
 {
+    /* ROUND-66 DIAG (DD route, files/wd_fifo66.txt, capped): who drives the
+       core's guest-MMIO SP DMA fifo during the frozen phase.  Round 65 found
+       the core's D-lines and the plugin's ucode-side DMA log showing the same
+       repeating cycle; this tags each push with the guest PC and the fifo
+       state so the two streams can be told apart (guest loader loop vs
+       something re-running the fifo). */
+    if (g_dev.dd.idisk != NULL)
+    {
+        static FILE* wd66_fifo_f = NULL;
+        static unsigned wd66_fifo_lines = 0;
+        if (wd66_fifo_lines < 512)
+        {
+            wd66_fifo_lines++;
+            if (wd66_fifo_f == NULL)
+                wd66_fifo_f = fopen(WD65_FILES_DIR "wd_fifo66.txt", "a");
+            if (wd66_fifo_f != NULL)
+            {
+                fprintf(wd66_fifo_f, "PUSH dir=%u pc=%08x mem=%08x dram=%08x len=%08x busy=%u full=%u spdma=%u\n",
+                        dir, (uint32_t)*r4300_pc(sp->mi->r4300),
+                        sp->regs[SP_MEM_ADDR_REG], sp->regs[SP_DRAM_ADDR_REG],
+                        dir == SP_DMA_READ ? sp->regs[SP_WR_LEN_REG] : sp->regs[SP_RD_LEN_REG],
+                        sp->regs[SP_DMA_BUSY_REG], sp->regs[SP_DMA_FULL_REG],
+                        wd_c_spdma);
+                fflush(wd66_fifo_f);
+            }
+        }
+    }
     if (sp->regs[SP_DMA_FULL_REG])
     {
         DebugMessage(M64MSG_WARNING, "RSP DMA attempted but FIFO queue already full.");
@@ -852,24 +904,37 @@ void write_rsp_mem(void* opaque, uint32_t address, uint32_t value, uint32_t mask
                 wd_cpuw_imem_latch_val = value;
             }
         }
-        /* ROUND 65: announce every guest store that lands in IMEM (the ONLY
-           uncontained IMEM writer in the tree: the plugin's DMA bank-wraps,
-           the ucode's stores mask to DMEM, and do_sp_dma is bank-contained on
-           this route) or in the DMEM header region (word idx 0x3F0..0x3FF =
-           DMEM 0xFC0..0xFFF).  A WATCH line without a matching CPUW line
-           therefore cannot be a guest store.  files/wd_cpuw65.txt, capped. */
+        /* ROUND 65/67: announce every guest store that lands in IMEM (the
+           ONLY uncontained IMEM writer in the tree: the plugin's DMA
+           bank-wraps, the ucode's stores mask to DMEM, and do_sp_dma is
+           bank-contained on this route) or in the DMEM header region (word
+           idx 0x3F0..0x3FF = DMEM 0xFC0..0xFFF).  ROUND 67: the r66 filter
+           (gpc >= 0x80000000) was WRONG -- it excluded the second boot's
+           IPL3-style code, which executes FROM SP DMEM at 0xA4000xxx and is
+           the one guest code class proven to write IMEM (r65: 2,319 stores,
+           gpc=0xa4000068..0xa40007e0).  Log everything again; the RAM ring
+           below is what the WATCH transition dump reads, so the hot path
+           stays I/O-free and the file write happens only on real events. */
         if (addr >= (0xfc0 >> 2))
         {
-            static FILE* wd65_cpuw_f = NULL;
-            if (wd65_cpuw_lines < 256)
+            uint32_t wd65_gpc = (uint32_t)*r4300_pc(sp->mi->r4300);
+            /* ring of the last 64 qualifying stores (dumped on a WATCH
+               transition by wd65_ring_flush) */
+            wd65w_ring[wd65w_n & 63u][0] = wd65_gpc;
+            wd65w_ring[wd65w_n & 63u][1] = address;
+            wd65w_ring[wd65w_n & 63u][2] = value;
+            wd65w_ring[wd65w_n & 63u][3] = mask;
+            wd65w_n++;
+            if (wd65_cpuw_lines < 8192)
             {
+                static FILE* wd65_cpuw_f = NULL;
                 wd65_cpuw_lines++;
                 if (wd65_cpuw_f == NULL)
                     wd65_cpuw_f = fopen(WD65_FILES_DIR "wd_cpuw65.txt", "a");
                 if (wd65_cpuw_f != NULL)
                 {
                     fprintf(wd65_cpuw_f, "CPUW gpc=%08x addr=%08x widx=%03x val=%08x mask=%08x eff=%08x\n",
-                            (uint32_t)*r4300_pc(sp->mi->r4300), address, addr, value, mask, eff);
+                            wd65_gpc, address, addr, value, mask, eff);
                     fflush(wd65_cpuw_f);
                 }
             }
@@ -1419,6 +1484,23 @@ void rsp_dd_background_pump(void)
     if (g_dev.dd.idisk == NULL) return;               /* plain carts: inert */
     if (wd_sp_stock()) return;                        /* stock SP semantics  */
     wd_check_imem_sane(&g_dev.sp);
+
+    /* ROUND-67 FIX: the DD reboot's "CPU state reset" (LeoBootGame's
+       IMEM/DMEM wipe, guest PC 0x800bb92c = LeoBootGame+0x3ec, measured via
+       the r67 CPUW ring) destroys whatever task was in the RSP -- on
+       hardware the boot owns the coprocessor from that moment and the
+       machine reboots into the DD game.  Feeding the wiped (0x00010001
+       fill) IMEM to the pump runs fill-as-code forever and the boot never
+       completes.  So: once the fill signature is latched, stop pumping;
+       the latch clears when the guest loads a NEW task header (the
+       ROUND-22 latch seq), which is how the second boot re-arms the RSP. */
+    if (wd_imem_bad)
+    {
+        if (wd_cur_hdr_seq != wd_imem_bad_hdr_seq)
+            wd_imem_bad = 0;               /* a new task load re-armed the RSP */
+        else
+            return;                        /* the boot still owns the RSP */
+    }
 
     if (!wd_dd_legacy()) {
         /* ROUND 62 (default): drive the RSP whenever it is enabled, i.e. by

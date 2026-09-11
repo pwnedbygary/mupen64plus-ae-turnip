@@ -1,5 +1,22 @@
 # PLAN.md — N64DD on mupen64plus-ae-turnip: F-Zero X EK → menu with clean audio
 
+**Hardware/documentation references (user-provided 2026-09-11):**
+- https://github.com/LuigiBlood/64dd/wiki — definitive 64DD docs. Most relevant pages:
+  [Registers](https://github.com/LuigiBlood/64dd/wiki/Registers) (ASIC register map),
+  [Commands](https://github.com/LuigiBlood/64dd/wiki/Commands) (mecha command set),
+  [Memory-Map](https://github.com/LuigiBlood/64dd/wiki/Memory-Map),
+  [Micro-Sequencer](https://github.com/LuigiBlood/64dd/wiki/Micro-Sequencer),
+  [Disk-Access-Process](https://github.com/LuigiBlood/64dd/wiki/Disk-Access-Process),
+  [64DD-IPL](https://github.com/LuigiBlood/64dd/wiki/64DD-IPL) (boot: Disk ID →
+  0x800001A0, LBA 24 → entrypoint, LeoBootGame w/o descrambling, "CPU state reset = after
+  IPL3", region bytes → 0x80000010/90/110/190),
+  [F-Zero-X](https://github.com/LuigiBlood/64dd/wiki/F-Zero-X) (rebooter mechanism: cart
+  fn 800FC300 → LBA 833 header → load → first-0x100-bytes bootcodecrypto decrypt →
+  LeoBootGame 0x800BB540 — matches doc/EK_SP_FORENSICS_REPORT.md),
+  [Games-with-libleo](https://github.com/LuigiBlood/64dd/wiki/Games-with-libleo)
+- https://github.com/ChrisPVille/64dd-schematics — hardware schematics
+- https://64dd.org/ — general 64DD resource site
+
 Objective (user, 2026-09-11): make N64DD games boot and run properly in the recompiler
 (emumode=2, parallel-RDP Vulkan) on the RP6: **F-Zero X (Japan).z64 + F-Zero X.ndd must
 load fully, reach the menu, and run with clean audio**. All DD-specific changes **gated

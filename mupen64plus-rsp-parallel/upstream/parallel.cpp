@@ -72,6 +72,13 @@ extern "C" int rsp_ares_budget_enabled(void)
 	return RSP::rsp.IsDDPresent && RSP::rsp.IsDDPresent();
 }
 
+/* ROUND-66: stale-BUSY/FULL poll counters, maintained in rsp/cp0.cpp and
+   printed on every wd_rsp.txt EXIT line (see r66_dma_completed). */
+extern "C" unsigned r66_busy_polls(void);
+extern "C" unsigned r66_full_polls(void);
+/* ROUND-66: how many mid-block budget exits published the resume pc. */
+extern "C" unsigned r66_pc_syncs(void);
+
 /* ===========================================================================
    ROUND 36: THE PER-TRANSFER TRACES ARE NOW OPT-IN, BECAUSE THEY WERE A
    FIRST-ORDER TIMING CONFOUND -- AND A DEVICE HAZARD.
@@ -1601,10 +1608,12 @@ extern "C" void r29_pc_hook(unsigned pc_lo)
 				const long long wd_slice_us = std::chrono::duration_cast<std::chrono::microseconds>(
 					std::chrono::steady_clock::now() - wd_slice_t0).count();
 				wd_rsp_log_n++;
-				fprintf(rf, "RSPTASK ms=%lld seq=%u EXIT pc=%04x status=%08x irq=%u sem=%08x timed=%d units=%llu us=%lld wall=%d"
-				            " at=%08x v0=%08x v1=%08x t2=%08x gp=%08x k1=%08x fp=%08x sp=%08x ra=%08x hdr=%08x\n",
+				fprintf(rf, "RSPTASK ms=%lld seq=%u EXIT pc=%04x sppc=%04x status=%08x irq=%u sem=%08x timed=%d units=%llu us=%lld wall=%d"
+				            " at=%08x v0=%08x v1=%08x t2=%08x gp=%08x k1=%08x fp=%08x sp=%08x ra=%08x hdr=%08x"
+				            " busypoll=%u fullpoll=%u pcsync=%u\n",
 					wd_now_ms(),
 					RSP::cpu.get_state().sr[31], RSP::cpu.get_state().pc & 0xfff,
+					*RSP::rsp.SP_PC_REG & 0xfff,
 					*RSP::rsp.SP_STATUS_REG, *RSP::cpu.get_state().cp0.irq & 1,
 					*RSP::rsp.SP_SEMAPHORE_REG, RSP::SP_STATUS_TIMEOUT,
 					rsp_slice_units_now(), wd_slice_us, rsp_budget_wall_hit_now(),
@@ -1618,9 +1627,90 @@ extern "C" void r29_pc_hook(unsigned pc_lo)
 					RSP::cpu.get_state().sr[28], RSP::cpu.get_state().sr[27],
 					RSP::cpu.get_state().sr[30], RSP::cpu.get_state().sr[29],
 					RSP::cpu.get_state().sr[31],
-					((uint32_t*)RSP::rsp.DMEM)[0xfc0 / 4]);
+					((uint32_t*)RSP::rsp.DMEM)[0xfc0 / 4],
+					r66_busy_polls(), r66_full_polls(), r66_pc_syncs());
 				fflush(rf);
 			}
+		}
+
+		/* ROUND-66 DIAG: the stuck audio-dispatch inner trace (files/
+		   wd_r66loop.txt + wd_r66sp.bin, <=2 dumps, DD-gated by dd_mode).
+		   Round 65 proved the pre-wipe audio task's slice-exit GPRs are
+		   byte-identical for ~330 ms (the AList cursor never advances), but
+		   the only PC ring dumps skip the audio ucode, so nobody has seen
+		   WHICH inner loop the ucode spins in.  Trigger: three consecutive
+		   slice-exits with identical gp/k1/fp/sp while DMEM 0xFC0 still
+		   reads task type 2 (pre-wipe).  Payload: the 512-entry block-PC
+		   ring, full GPRs, the jump table (DMEM 0x00..0x40), the fetched
+		   command block (0x2f0..0x340), the state area (0xfb0..0x1000), and
+		   a full IMEM||DMEM image for rsp_dis.py. */
+		{
+			static unsigned r66_pgp = 0xffffffffu, r66_pk1 = 0xffffffffu;
+			static unsigned r66_pfp = 0xffffffffu, r66_psp = 0xffffffffu;
+			static unsigned r66_stuck_n = 0, r66_dumps = 0;
+			const uint32_t* srt = RSP::cpu.get_state().sr;
+			const uint32_t* dm66 = (const uint32_t*)RSP::rsp.DMEM;
+			const uint32_t* im66 = (const uint32_t*)RSP::rsp.IMEM;
+			unsigned t66 = dm66[0xfc0 / 4];
+			if (t66 == 2u &&
+			    srt[28] == r66_pgp && srt[27] == r66_pk1 &&
+			    srt[30] == r66_pfp && srt[29] == r66_psp)
+			{
+				if (++r66_stuck_n == 3u && r66_dumps < 2u)
+				{
+					r66_dumps++;
+					FILE* lf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r66loop.txt",
+					                 r66_dumps == 1 ? "w" : "a");
+					if (lf != NULL)
+					{
+						unsigned i;
+						fprintf(lf, "R66STUCK n=%u ms=%lld k0=%08x at=%08x v0=%08x v1=%08x t2=%08x "
+						            "gp=%08x k1=%08x fp=%08x sp=%08x ra=%08x st=%08x pc=%04x\n",
+						        r66_dumps, wd_now_ms(), srt[26], srt[1], srt[2], srt[3], srt[10],
+						        srt[28], srt[27], srt[30], srt[29], srt[31],
+						        *RSP::rsp.SP_STATUS_REG, RSP::cpu.get_state().pc & 0xfff);
+						fprintf(lf, "R66GPR:");
+						for (i = 0; i < 32; i++)
+							fprintf(lf, " %s=%08x", (i % 8 == 0) ? "\n  " : "", srt[i]);
+						fprintf(lf, "\nR66TBL (jump table, DMEM 0x00..0x40):");
+						for (i = 0; i < 16; i++)
+							fprintf(lf, " %08x", dm66[i]);
+						fprintf(lf, "\nR66CMD (command block, DMEM 0x2f0..0x340):");
+						for (i = 0x2f0 / 4; i < 0x340 / 4; i++)
+							fprintf(lf, " %08x", dm66[i]);
+						fprintf(lf, "\nR66STATE (DMEM 0xfb0..0x1000):");
+						for (i = 0xfb0 / 4; i < 0x1000 / 4; i++)
+							fprintf(lf, " %08x", dm66[i]);
+						fprintf(lf, "\nR66IMEM (dispatch head + handler, 0x050..0x100):");
+						for (i = 0x050 / 4; i < 0x100 / 4; i++)
+							fprintf(lf, " %08x", im66[i]);
+						fprintf(lf, "\nR66IMEM2 (handler region, 0xa80..0xc00):");
+						for (i = 0xa80 / 4; i < 0xc00 / 4; i++)
+							fprintf(lf, " %08x", im66[i]);
+						fprintf(lf, "\nR66RING:");
+						{
+							unsigned n = r29_seq < R29_RING ? r29_seq : R29_RING;
+							for (i = 0; i < n; i++)
+								fprintf(lf, " %03x", r29_ring[(r29_seq - n + i) & (R29_RING - 1u)]);
+						}
+						fprintf(lf, "\n");
+						fclose(lf);
+					}
+					FILE* sf = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_r66sp.bin",
+					                 r66_dumps == 1 ? "wb" : "ab");
+					if (sf != NULL)
+					{
+						fwrite(RSP::rsp.IMEM, 1, 0x1000, sf);
+						fwrite(RSP::rsp.DMEM, 1, 0x1000, sf);
+						fclose(sf);
+					}
+				}
+			}
+			else
+			{
+				r66_stuck_n = 0;
+			}
+			r66_pgp = srt[28]; r66_pk1 = srt[27]; r66_pfp = srt[30]; r66_psp = srt[29];
 		}
 
 		// From CXD4.

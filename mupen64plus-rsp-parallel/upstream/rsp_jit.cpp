@@ -460,6 +460,22 @@ extern "C"
 		return 1;
 	}
 
+	/* ROUND-66 FIX: called from the two JIT'd budget-expiry paths (loop-top
+	   labels and per-32-instruction checks) with the exact resume pc and the
+	   slot that DoRspCycles' exit-save reads.  Nothing else maintained
+	   state.pc on these paths, so every slice used to restart at pc 0
+	   (measured: the DD audio daemon never completed -- SP_PC was saved as 0
+	   on every one of 13,447 consecutive slices).  Also counted, so the EXIT
+	   log line can prove the sync fires. */
+	static volatile unsigned r66_pc_sync_n = 0;
+	extern "C" unsigned r66_pc_syncs(void) { return r66_pc_sync_n; }
+	static void r66_budget_exit_pc(uint32_t *pc_slot, jit_uword_t pc)
+	{
+		r66_pc_sync_n++;
+		if (pc_slot != NULL)
+			*pc_slot = static_cast<uint32_t>(pc & 0xffcu);
+	}
+
 	/* DIAG: freeze heartbeat hook (defined in parallel.cpp). */
 	extern "C" void rsp_watchdog_tick(unsigned pc_lo);
 
@@ -706,6 +722,16 @@ extern "C"
 			r25_dmem_watch(cpu, pc);
 		}
 		if (rsp_ares_budget_enabled() && rsp_budget_expired()) {
+			/* ROUND-66 FIX: the slice ends HERE, at a block boundary whose pc
+			   the dispatcher just handed us -- but `state.pc` is not synced on
+			   this return path, so DoRspCycles' exit-save writes SP_PC from a
+			   stale (0) value and the next slice re-enters at pc 0.  Measured on
+			   the RP6 (r66 ring, period 89, every period starting at 000): the
+			   DD audio daemon re-ran from its entry every 256-unit slice and
+			   could never reach its yield/completion.  A finished transfer is
+			   not busy either (r66_dma_completed) -- together these let the
+			   task actually progress across slices. */
+			static_cast<CPU *>(cpu)->get_state().pc = pc;
 			rsp_watchdog_tick(pc);
 			return static_cast<CPU *>(cpu)->get_return_thunk();
 		}
@@ -2370,6 +2396,17 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 			jit_retval(JIT_REGISTER_MODE);
 			auto *loop_budget_ok = jit_beqi(JIT_REGISTER_MODE, 0);
 			regs.flush_register_window(_jit);
+			/* ROUND-66 FIX: publish the true resume pc.  The exit-save in
+			   DoRspCycles reads state.pc, which nothing maintained on this
+			   bail-out path (measured on the RP6: SP_PC saved as 0 every
+			   slice, so the next slice restored pc 0 and the audio daemon
+			   re-ran from its entry forever -- r66 ring, period 89, every
+			   period starting at 000).  The loop-top label is the resume
+			   point: nothing after it in this block has executed. */
+			jit_prepare();
+			jit_pushargi(reinterpret_cast<jit_word_t>(&state.pc));
+			jit_pushargi((pc_word + i) << 2);
+			jit_finishi(reinterpret_cast<jit_pointer_t>(r66_budget_exit_pc));
 			jit_movi(JIT_REGISTER_MODE, RSP::MODE_CHECK_FLAGS);
 			jit_patch_abs(jit_jmpi(), thunks.return_thunk);
 			jit_patch(loop_budget_ok);
@@ -2410,6 +2447,15 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 			jit_retval(JIT_REGISTER_MODE);
 			auto *budget_ok = jit_beqi(JIT_REGISTER_MODE, 0);
 			regs.flush_register_window(_jit);
+			/* ROUND-66 FIX: publish the true resume pc (see the loop-label
+			   note above).  Instruction i has executed here; the next one
+			   has not.  Args in prototype order: (pc_slot, pc) -- the r66
+			   build's crash was this pair reversed (the helper dereferenced
+			   the pc integer as the slot pointer). */
+			jit_prepare();
+			jit_pushargi(reinterpret_cast<jit_word_t>(&state.pc));
+			jit_pushargi((pc_word + i + 1) << 2);
+			jit_finishi(reinterpret_cast<jit_pointer_t>(r66_budget_exit_pc));
 			jit_movi(JIT_REGISTER_MODE, RSP::MODE_CHECK_FLAGS);
 			jit_patch_abs(jit_jmpi(), thunks.return_thunk);
 			jit_patch(budget_ok);
