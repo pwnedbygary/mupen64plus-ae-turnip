@@ -1,6 +1,7 @@
 #include "parallel_imp.h"
 #include <chrono>
 #include <memory>
+#include <unistd.h>
 #include <vector>
 #include "rdp_device.hpp"
 #include "context.hpp"
@@ -76,6 +77,25 @@ static void r39_drop_note(uint32_t cur, uint32_t end, unsigned length, unsigned 
 	fclose(f);
 }
 
+/* ROUND 57: OPT-IN.  The round 47/48 traces below were written
+   unconditionally, so every plain game also produced up to 400 lines of
+   wd_r47win.txt per launch -- the same plain-route diagnostic leak that round
+   39 closed for wd_r31gen.txt.  The video plugin cannot see the core's
+   g_dev.dd.idisk, so the gate is a flag file exactly like files/wd_trace.flag:
+   the DD runs already touch wd_trace.flag, so they keep the trace, and a
+   plain launch writes nothing.  Checked at most once a second (an access() on
+   the RDP thread is far cheaper than the fopen this guards). */
+#define R_VK_DIAG_FLAG "/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_trace.flag"
+
+static bool r_vk_diag_on()
+{
+	static int cached = -1;
+	static unsigned tick = 0;
+	if ((tick++ & 0x3ffu) == 0 || cached < 0)
+		cached = (access(R_VK_DIAG_FLAG, F_OK) == 0) ? 1 : 0;
+	return cached == 1;
+}
+
 /* ROUND 47: log EVERY ProcessRDPList call and the window it actually sees.
    The RSP-block-boundary samples in the RSP trace cannot answer this: the EK
    ucode kicks DPC_END and then spins on DPC_CURRENT, so a satisfied spin and a
@@ -86,7 +106,7 @@ static void r47_win_note(uint32_t cur, uint32_t end, int length)
 {
 	static unsigned n = 0;
 	FILE* f;
-	if (n >= 400)
+	if (n >= 400 || !r_vk_diag_on())
 		return;
 	n++;
 	f = fopen(R47_WIN_FILE, (n == 1) ? "w" : "a");
@@ -105,7 +125,7 @@ static void r48_inc_note(uint32_t cur, uint32_t end, int cmd_cur, int cmd_ptr, i
 {
 	static unsigned n = 0;
 	FILE* f;
-	if (n >= 200)
+	if (n >= 200 || !r_vk_diag_on())
 		return;
 	n++;
 	f = fopen(R48_INC_FILE, (n == 1) ? "w" : "a");

@@ -89,6 +89,24 @@ closed, cyclic read loop -- but it is *running*, not stalled: VI 60/s, AI 60/s,
 209 audio tasks completed, the screen is the static "NINTENDO 64DD" logo with
 `gfx=3` (only three gfx tasks ever).
 
+### Regression control (round 57, plain route)
+
+The round 57 count surfaced one plain-route leak that round 39 had missed in a
+different file: `parallel_imp.cpp`'s `r47_win_note`/`r48_inc_note` were
+**unconditional**, so every plain launch produced up to 400 lines of
+`wd_r47win.txt` (measured: 23 KB on a Mario Tennis launch). The video plugin
+cannot see `g_dev.dd.idisk`, so they now take the same opt-in gate as
+`wd_r31gen.txt`: an `access()` on `files/wd_trace.flag`, cached for 1024 calls.
+The DD runs touch that flag already, so nothing was lost.
+
+**Clean control, after deleting every `wd_*` file and flag first:**
+Mario Tennis launched from the same content:// intent on the same build ->
+`wd_*` files present afterwards: **none**; no `Fatal signal`/`SIGSEGV` in
+logcat; two screenshots 25 s apart differ (1.19 MB / 1.11 MB), i.e. the game is
+rendering and animating. The DD-only additions of this round (PI ledger,
+core-thread CPU accounting, pump accounting, the duty-cycle cap) are all behind
+`g_dev.dd.idisk != NULL` / `pi->dd->idisk != NULL` and never execute here.
+
 ### Provenance / how to reproduce
 
 * Build: `GRADLE_USER_HOME=$PWD/.gradle_home ./gradlew :app:assembleDebug --offline`
