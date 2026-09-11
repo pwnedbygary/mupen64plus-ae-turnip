@@ -1,5 +1,100 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
+## ROUND 69 (goal round 61) -- the dispatch trace, the un-gating experiment (and its revert), and a new leading hypothesis: the stale DD ASIC interrupt
+
+> Everything below is measured (RP6 runs + the r67 RDRAM dump) or quoted from
+> the tree. Artifacts: `.fzxwork/r69_*.log`, the r66-run stall dumps in
+> `.fzxwork/r66/`. Commits: `c7a96e963` (probe + experiment revert).
+
+### 0. Incorporated: GPT-5.6's 4c addendum (kept verbatim below in §4c)
+
+The 15:45 "DD LOADING" screenshot is post-r66-fix; the AUDIO thread DID run
+and created a task post-reboot; the terminal scheduler state is internally
+inconsistent (sAudioThread.state=RUNNING at osStartThread+0x134 while
+__osRunningThread=IDLE and the run queue reads empty). GPT-5.6's hypothesis
+(a post-reboot context-switch divergence in the dynarec around
+__osDispatchThread's restore/eret) was tested this round.
+
+### 1. THE DISPATCH TRACE (new probe, committed)
+
+`WD_DISPDSP` (rsp_core.c + cached_interp.c): while the guest PC is inside
+__osDispatchThread (0x80746f64..0x807470e0), every pump fire records
+{pc, __osRunQueue, __osRunningThread, sAudioThread.state(+0x10),
+sAudioThread saved EPC(+0x11c)} into a 64-entry ring, printed by the stall
+probe. Measured at the logo stall:
+
+```
+WD_DISPDSP n=23177   (all samples: pc=80747094 runq=807999d0
+                      running=80799ee0 aud_state=00020000 aud_epc=80750384)
+```
+
+* **23,177 dispatch-block entries ≈ the total interrupt count** (VI 5408 +
+  AI 5325 + PI 12749 ≈ 23.5k): EVERY interrupt causes a dispatch attempt
+  that enters the mask-restore block (`0x80747094` = the block head; the
+  block ends with `sw` to MI_INTR_MASK_REG at `0x807470c8`).
+* The run-queue head is PINNED at `sAudioThread` (0x807999d0) -- queued,
+  never popped -- while `__osRunningThread` = 0x80799ee0 (SYS6, prio 30),
+  whose context restore never completes.
+* `MISTATE intr=00000000`: no pending MI (IP2) source. `raise_bits` has **no
+  DD/CART column** -- the DD ASIC's interrupts (IP3, the cart line) have been
+  invisible in every stall dump of the campaign.
+
+### 2. THE UN-GATING EXPERIMENT AND ITS REVERT (do not redo)
+
+GPT-5.6's 4c pointed at the dispatch; the first candidate fix was removing
+the `wd_dd_legacy()` gate from the four lost-interrupt rechecks (ERET_new,
+the gen_interrupt recheck in new_dynarec.c, the MI-mask-write recheck in
+mi_controller.c, the cached-interpreter recheck in interrupt.c) -- those are
+round-9..25 correctness fixes ("the EK loader spins on CAUSE & 0x7c") that
+the r62 A/B split accidentally turned off in the default model. **Measured
+result: the machine HANGS inside the dispatcher's MI_INTR_MASK restore** --
+the mi_controller recheck injects `exception_general` into the dispatcher's
+own mask restore, so no dispatch ever completes and the audio thread stays
+queued forever. The r62 legacy gate was accidentally protecting against
+exactly this re-entrancy in the new SP model. **All four sites were REVERTED
+to the r62 state; the flag's scope is now at least understood: it belongs on
+the SP-model code only (rsp_core.c), and the rechecks need a re-entrancy-safe
+design before they can run in the default model** (a gen_interrupt depth
+flag and/or the `interrupt_unsafe_state` condition, plus an analysis of
+whether the injected source can ever be acked).
+
+### 3. NEW LEADING HYPOTHESIS: the stale never-acked DD ASIC interrupt
+
+The dispatch of SYS6 re-fires a pending interrupt at its own MI_INTR_MASK
+restore every time, and the dispatch that would run the ack never completes.
+With `MISTATE intr=0` (no IP2 source) and the boot wipe having abandoned the
+DD transfer mid-chain (c_asic frozen at 10604), the prime suspect is a
+**stale never-acked MECHA/BM level interrupt on the IP3 (cart) line** left
+by the wiped boot: a level interrupt re-fires on every context switch's
+mask-restore, starving the dispatch that would ack it. On hardware the
+reboot's reset path (or the new boot's ASIC_HARD_RESET / libleo init) clears
+it; our dd_controller's pending-interrupt state survives the guest's soft
+reboot.
+
+**r70, in order:**
+1. Instrument CAUSE.IP3 and the dd_controller mecha/bm interrupt lines
+   (stall-dump line + the WD_DISPDSP pattern), and read ASIC_STATUS's
+   interrupt bits at the stall.
+2. Verify the guest ack path exists and is reachable: per the LuigiBlood
+   wiki, **reading ASIC_STATUS acknowledges the BM interrupt and schedules
+   the next sector**; MECHA int reset is BM_CTL/STATUS bit semantics.
+3. Fix: make a stale DD interrupt reset-able across the guest's soft reboot
+   (ASIC_HARD_RESET semantics: write 0xAAAA0000 clears the pending state),
+   or deliver+ack it once so the dispatch completes. DD-gated, plain-route
+   untouched.
+4. Then re-check the scheduler state: the AUDIO thread should finally
+   dispatch, submit its task, and the boot should leave the logo.
+
+### 4. Honest status
+
+The PC-persistence fix (r66) remains the campaign's structural win: the
+audio task runs, the loader bar completes, and the boot reaches the logo.
+The logo stall now has a concrete, instrumented mechanism (a dispatch
+re-interrupted at its own mask restore) and a named suspect (the stale DD
+ASIC interrupt), with the probe committed to catch the fix working.
+
+---
+
 ## ROUND 66/67 (goal round 60) -- THE PC-PERSISTENCE FIX: the audio task finally progresses; the boot advances from the DD-LOADING bar to the logo screen; new stall = the reboot path
 
 > Every claim measured on the RP6 or read from files in this tree. Artifacts:
