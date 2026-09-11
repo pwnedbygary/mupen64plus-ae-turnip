@@ -1,5 +1,78 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
+## ROUND 70 (goal round 62) -- the ERET ledger: the dispatcher pops a DEAD audio-thread struct (state=0, garbage context) every interrupt; the scheduler can never run
+
+> Measured (RP6, `.fzxwork/r66/` stall dumps). Commit `bef576139`. The user's
+> observation CONFIRMS the mechanism: the garbled static during loading is now
+> SILLENCE -- the audio pipeline no longer loops (r66 fix) but the scheduler
+> can never submit the next task.
+
+### 1. THE ERET LEDGER (WD_ERET, new_dynarec.c ERET_new, DD-gated)
+
+The guest pc of the last 64 erets, 63,481 total. The repeating cycle:
+
+```
+... 80746068 80746068 80746068 80746068 80750384 80746068 ... 80750384 806f32ec 806f32ec ...
+     \_ osRecvMesg+0x68 (parked threads re-checked)   \_ AUDIO tail  \_ the boot's b . spin (x2)
+```
+
+* **The AUDIO thread IS dispatched** -- erets to `0x80750384`
+  (osStartThread+0x134) -- but its saved pc NEVER advances past that point:
+  it resumes, its `__osRestoreInt` re-enables interrupts, the pending
+  interrupt fires immediately, and it is switched out at the same pc,
+  21k+ times.
+* The erets to `0x806f32ec` (the loaded boot's `b .` spin, x2 per cycle) are
+  the prio-0 idle being resumed when nothing else is selectable -- normal.
+* **AUDIO's struct (0x807999d0) is DEAD**: `state=0` (invalid; valid values
+  are 1/2/4/8), saved context sp/ra = 0xffffffff (garbage), yet
+  `id=4, priority=20, queue=__osRunQueue` are valid and the run-queue head is
+  PINNED at it. The dispatcher pops it every interrupt (the head never
+  moves) and erets into the garbage context. The audio scheduler (prio 20)
+  can never execute its loop, so no task is ever submitted. osStartThread's
+  re-enqueue condition (`t->queue == &__osRunQueue`, a first-boot leftover
+  the wipe missed) feeds it back onto the queue each pass.
+
+### 2. REFUTED: the stale DD-interrupt hypothesis
+
+`dd_asic_status=01180000` at the stall: MECHA_INT (0x02000000) and BM_INT
+(0x04000000) both CLEAR; `cause_ip_bits=00000000` -- no CAUSE IP bits
+latched. The DD ack paths (ASIC_STATUS read acks BM; BM_CTL MECHA_RST acks
+MECHA) are implemented and wiki-faithful. The last mecha command in the log
+is a write-seek (cmd=02, track 0x22f) that completed normally.
+
+### 3. THE REMAINING QUESTION (r71): who zeroed the AUDIO thread struct, and why does osStartThread run against it?
+
+Facts: the second boot's init DID call osStartThread on this struct (the
+erets), the struct's id/priority/queue are valid but state=0 and the context
+is garbage (0xffffffff fills -- osCreateThread fills the unused context
+slots with a pattern, but state=0 means the create's STOPPED store is gone).
+Leading candidates: (a) the loaded code's init bzeroes the thread area
+*after* creating the threads (a second wipe -- the first boot's LeoBootGame
+wipe predates the second boot's creation, so a SECOND wipe inside the loaded
+code is plausible); (b) the first-boot leftover struct was enqueued by the
+stale `queue` pointer without a fresh create. **r71 = GPT-5.6's
+instruction-level dispatch instrument**: record one full
+__osDispatchThread pass (the pop, the __osRunningThread store, the
+state=RUNNING store, the EPC supplied to eret, the dynarec ERET target) on
+the non-hanging build, plus a bounded write-watch on 0x807999e0 (the AUDIO
+state word) to name the zeroing writer. The watch must be emulator-side
+(the dynarec inlines RDRAM stores) -- e.g. check the store inside the
+existing block-boundary hook by diffing the word between samples, or trap it
+in the interpreter for one boot.
+
+### 4. Honest status
+
+The mechanism chain is now complete end-to-end: r66 PC persistence (fixed) →
+the loader bar completes → the boot wipe (by design) → the second boot's
+scheduler runs but its AUDIO thread struct is dead (state=0, garbage
+context) → the dispatcher pops and erets into it forever → no audio task is
+ever submitted → silence at the logo. The single remaining unknown is WHO
+zeroed the struct, which the r71 write-watch will name; the fix is then
+either emulator-side (if we corrupt it) or a guest-faithful re-initialization
+path.
+
+---
+
 ## ROUND 69 (goal round 61) -- the dispatch trace, the un-gating experiment (and its revert), and a new leading hypothesis: the stale DD ASIC interrupt
 
 > Everything below is measured (RP6 runs + the r67 RDRAM dump) or quoted from
