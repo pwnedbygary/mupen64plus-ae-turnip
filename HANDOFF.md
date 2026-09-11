@@ -1,5 +1,338 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
+## ROUND 64 (goal round 58) -- THE GUEST'S SP-INTERRUPT CONTRACT, READ OUT OF THE RUNNING ROM; and round 63's "host memory" verdict is retracted
+
+> Same rules as round 63: every claim is **measured on the RP6 / read out of a file in
+> this tree**, or explicitly marked HYPOTHESIS / RETRACTED. The big result this round is
+> not a fix, it is the *specification* the fix has to satisfy -- and it is no longer
+> guesswork, because F-Zero X's own `__osException` was disassembled out of the frozen
+> RDRAM image and it says exactly which SP interrupt it will accept and what it does with
+> one it will not.
+
+### 0. Tree state
+
+| item | value |
+|---|---|
+| branch | `dd-eos-watchdog-checkpoint` |
+| HEAD (round 64 commits) | `2759d0dd0` + this round's `r64` commit (HANDOFF + `ram_tools.py` fix) |
+| device | RP6, serial `49016109`, package `org.mupen64plus-ae-turnip.pwnedbygary.debug` |
+| run analyzed | the round-63 run, artifacts in `.fzxwork/r63/` (no new device run this round) |
+
+The round-63 section below is unchanged except where this section explicitly retracts it.
+**Read this section first; §4 of round 63 is wrong.**
+
+### 1. THE CONTRACT: what the guest does with MI_INTR_SP -- disassembled, not inferred
+
+Both halves agree, from two independent sources: the vendored decomp's libultra
+(`.fzxwork/fzerox-decomp/src/libultra/`, `include/PR/`) and a disassembly of the *running*
+game (`__osException` @ `0x80746800`, read out of `.fzxwork/r63/ram_force.bin`).
+
+The SP arm of the RCP interrupt dispatcher, including delay slots:
+
+```
+80746928  lui  $t1, 0xa430          # MI base
+8074692c  lw   $t1, 0xc($t1)        # $t1 = MI_INTR_REG
+...       sw   $t1, 0x128($k0)      # __osRcpState = MI_INTR_REG
+80746ab4  lui  $t0, 0x8077
+80746ab8  addiu $t0, $t0, 0x1e60
+80746abc  lw   $t0, ($t0)           # __OSGlobalIntMask
+80746ac0  lui  $s1, 0xa430
+80746ac4  lw   $s1, 8($s1)          # MI_INTR_MASK_REG
+80746ac8  srl  $t0, $t0, 0x10       # GlobalIntMask >> 16  == the MI mask
+80746acc  and  $s1, $s1, $t0        # $s1 = MI_INTR_MASK & global mask
+80746ad0  andi $t1, $s1, 1          # MI_INTR_SP
+80746ad4  beqz $t1, 0x80746b24      # not pending -> next source
+80746adc  lui  $t4, 0xa404
+80746ae0  lw   $t4, 0x10($t4)       # $t4 = SP_STATUS **BEFORE** the ack
+80746ae4  ori  $t1, $zero, 0x8008   # SP_CLR_INTR | SP_CLR_SIG3
+80746ae8  lui  $at, 0xa404
+80746aec  andi $t4, $t4, 0x300      # SIG1(YIELDED) | SIG2(TASKDONE)  <-- THE TEST
+80746af0  andi $s1, $s1, 0x3e       # consume the SP bit
+80746af4  beqz $t4, 0x80746b14
+80746af8  sw   $t1, 0x10($at)       # SP_STATUS = 0x8008   (delay slot: always runs)
+80746afc  jal  send_mesg   a0=0x20  # -> __osEventStateTab[0x20/8] = OS_EVENT_SP
+80746b14  jal  send_mesg   a0=0x58  # -> __osEventStateTab[0x58/8] = OS_EVENT_SP_BREAK
+```
+
+`send_mesg` is at `0x80746d24` (symbolized out of the dump) and its argument is a **byte
+offset into `__osEventStateTab`** (`0x807c3390`), whose element is
+`{OSMesgQueue* messageQueue; OSMesg message;}` = **8 bytes**
+(`.fzxwork/fzerox-decomp/include/PR/osint.h:5-8`). So `0x20/8 = 4 = OS_EVENT_SP` and
+`0x58/8 = 11 = OS_EVENT_SP_BREAK` (`include/PR/os_message.h:83,90`). The rest of the
+dispatcher's arguments confirm the numbering: `0x30/8 = 6 = AI`, `0x38/8 = 7 = VI`,
+`0x70/8 = 14 = PRENMI`.
+
+**What this means, in one sentence:** the guest posts `EVENT_MESG_SP` to the main thread
+**only if `SP_STATUS & (SIG1 | SIG2)` is set at the moment of the interrupt**; if it is
+clear, the same interrupt is "handled" by posting `OS_EVENT_SP_BREAK` (**event 11, which
+nothing in this game waits on**) and is then thrown away.
+
+Why that is the whole story of the freeze:
+
+* `sys_main.c:344` is the main-thread loop and `sys_main.c:171` is
+  `osSetEventMesg(OS_EVENT_SP, &gMainThreadMesgQueue, EVENT_MESG_SP)`. Event 11 goes to
+  `__osEventStateTab[11].messageQueue`, which no `osSetEventMesg` in this ROM ever fills.
+* The guest **acknowledges** with `SP_STATUS = 0x8008`: bit 3 is `SP_CLR_INTR`, which the
+  core maps to `clear_rcp_interrupt(mi, MI_INTR_SP)` (`rsp_core.c:636-639`). So the
+  interrupt is *consumed by the guest itself* and cannot be "retried".
+* Bit 15 (`SP_CLR_SIG3`) is cleared at the same time, and the ack write passes
+  `update_sp_status`'s gate (`rsp_core.c:686-691`: `rsp_task_locked` && HALT clear ->
+  `do_SP_Task`) -- so a raise-without-SIG-bits does not just get dropped, it **re-enters
+  the RSP**, which can raise again. That is a self-sustaining loop with zero forward
+  progress, and it is a quantitative explanation of two older measurements that were
+  never explained: round 62's `stock` configuration (1,042,858 synthesized SP interrupts
+  against 1,046,387 guest SP writes) and round 9's "the guest's entire CPU share was its
+  own SP handler".
+
+**The rule that follows, and it is a rule, not a heuristic:**
+> Raise `MI_INTR_SP` **only** when `SP_STATUS & (SP_STATUS_YIELDED | SP_STATUS_TASKDONE)`
+> is set. Every other raise is worse than not raising at all.
+
+Nothing in this tree implements that rule today. `do_SP_Task`'s tail (`rsp_core.c:1071`)
+raises on any running->stopped transition, and `rsp_dd_slice()` (`rsp_core.c:1276-1285`)
+raises on any halt/break. Both can fire with `SP_STATUS & 0x300 == 0`.
+
+### 2. The guest's write stream, decoded with the real write-bit numbering
+
+`include/PR/rcp.h:195-256` gives the SP_STATUS **write** bits (they are not the read bits;
+`SP_SET_YIELD` is `SP_SET_SIG0` = `1<<10`). With that, all 7 lines of
+`.fzxwork/r63/wd_spw.txt` decode, and `ra` names the caller:
+
+| n | `w` | decode | `ra` |
+|---|---|---|---|
+| 5 | `0x00002b00` | `SET_INTR_BREAK｜CLR_YIELD｜CLR_YIELDED｜CLR_TASKDONE` | `0x807463f4` = `osSpTaskLoad+0x98` |
+| 6 | `0x00000125` | `SET_INTR_BREAK｜CLR_SSTEP｜CLR_BROKE｜CLR_HALT` | `0x8074651c` = `osSpTaskStartGo+0x30` |
+| 7 | `0x00000400` | `SET_SIG0` = `SET_YIELD` | `0x80748570` = `osSpTaskYield+0x10` |
+
+(`sptask.c` and `sptaskyield.c` give the same constants.) And `sys_main.c:109-126` is
+where 5-7 come from: `Sched_SpTaskStartAudio()` -> `osSpTaskStart` (load + start-go), then
+a second `EVENT_MESG_AUDIO_TASK_SET` while `sSpTaskActive && sSpTaskState != YIELDING` ->
+`Sched_SpTaskYield()` -> `osSpTaskYield()` + `sSpTaskState = SP_TASK_YIELDING`.
+
+So the freeze is exactly: **the audio task was started, then asked to yield, and only
+`EVENT_MESG_SP` can move `sSpTaskState` off `SP_TASK_YIELDING`** (`sys_main.c:345-353`).
+Round 63 had the right conclusion; this round has the right mechanism.
+
+**Trap, new this round:** `wd_spw.txt`'s `st_after` field is **synthetic**
+(`rsp_core.c:610`: `(st_before & ~1) | ((w & 1) ? 0 : 1)`). It does not report SP_STATUS
+after the write; it only echoes the HALT transition the write requests. Do not read
+`st_after=0x41` as "HALT became set". (`st_before` *is* a real read.)
+
+### 3. The freeze state, from `.fzxwork/r63/dump_tail.txt`
+
+```
+SPSTATE    status=000000c0 dma_busy=00000000 dma_full=00000000 pc=04001000
+MISTATE    intr=00000000 mask=0000003f
+FRAMEPROTO loads t0=0 gfx=0 aud=1 t3=0 entry t1=0 t2=2 rdpkick=0 kick_last=00000000..00000000 mi=00000000 spwr=7 sigwr=7 dp_rd=0 dp_ack=2
+EXCSTATE   total=23879 int=23877 nested=0 raise=23375 signal=0 cmp=4 vi_evt=5375 vi_ack=5326
+```
+
+* `SP_STATUS = 0xC0` = `INTR_BREAK | SIG0`: the guest's yield request is still sitting
+  there, **HALT is clear and BROKE is clear** -- the RSP is "running" forever.
+* `MI_INTR_REG = 0` and `MI_INTR_MASK = 0x3F` -- **the guest has the SP mask enabled**.
+  So the missing piece is unambiguously *the raise*, not the mask or the delivery path.
+* `rdpkick=0`, `gfx=0`: no gfx task ever ran, consistent with round 63.
+* `sigwr=7` of `spwr=7`: every single SP_STATUS write this guest made touched a SIG bit.
+
+### 4. The RSP side, from the plugin's own trace plus a live 8 KB SP dump
+
+`.fzxwork/r63/rsp.txt` (39,983 lines) reduces to **four** distinct slice shapes, in order:
+
+| count | ENTER line | reading |
+|---|---|---|
+| 1 | `ttype=2 exp=0 imem0=340a0fc0 8d420018 nzi=971 nzd=761` | the audio task starts; IMEM holds the ucode |
+| 372 | `ttype=2 exp=1 ... nzi=971`, `status=000000c0` | the audio task runs, IMEM intact, **SIG0 already requested**; every slice expires its budget |
+| 1 | `ttype=0 exp=1 ... nzi=971` | one slice where the DMEM header no longer reads as a task |
+| 12,833 | `ttype=0 exp=1 imem0=00009d40 6e900000 nzi=238` | byte-identical slices, status stuck at `0xC0` |
+
+and every `EXIT` but one is `status=000000c0` (13,458 of them). `exp=1` is the plugin's
+own "host budget expired" flag, and `timed=32767` is `RSP::SP_STATUS_TIMEOUT`.
+
+So the RSP **is** being fed (by `rsp_dd_background_pump` -> `rsp_dd_slice`,
+`rsp_core.c:1260-1455`), and it **never halts, never breaks and never completes** -- it
+burns 12,833 slices in a state that never changes. That is the missing interrupt.
+
+**And the reason it can loop forever in a state that never changes is in the next
+paragraph: IMEM no longer contains the ucode.**
+
+`.fzxwork/r63/r29sp.bin` is live SP memory. **Its layout is IMEM first, then DMEM**
+(`parallel.cpp:769-773` writes `RSP::rsp.IMEM` then `RSP::rsp.DMEM`). Cross-checked
+against the trace: half A has **238** non-zero words = `nzi=238`, half B has **193** =
+`nzd=193`. My first read of this file assumed it was a raw `sp->mem` image and therefore
+had the banks backwards for a few minutes -- it is IMEM-then-DMEM, and the plugin's own
+`nzi`/`nzd` counters prove it.
+
+### 5. RETRACTION: round 63's "the content is host memory" is WRONG
+
+Round 63 §4 concluded from the *shape* of the garbage (`00009d40`, `6e900000`, `00888888`,
+`00012000`, `00001bff`, 238 non-zero words) that IMEM held **host heap** -- "the signature
+of host memory (pointers, sparse), not of guest data" -- and listed "the plugin's copy loop
+reading past the end of its `rdram` buffer" as suspicion #1.
+
+That is false, and the disproof is a plain byte comparison against the same run's RDRAM
+image:
+
+```
+IMEM file 0x0000..0x01FF  ==  ram_force.bin 0x3c018..0x3c218   byte-for-byte, 128/128 words
+(the same blob also starts at RDRAM 0x3ce98, where 54 words match before diverging)
+```
+
+So **IMEM's first 128 words are a verbatim copy of a real, in-range guest RDRAM region**,
+and the values that looked like host pointers are 16-bit audio-shaped data:
+`00009d40 6e900000 0003f400 05f30000 0004f200 04f40000 0000ea30 5cd00000 ...`
+
+**Two facts that must be kept together to read this correctly** (both verified this
+round, and getting either wrong sends you down round 63's path):
+
+1. **RDRAM host bytes and SP host bytes use the *same* convention.** `ram_force.bin` at
+   RDRAM `0x768e60` holds bytes `c0 0f 0a 34`; the guest's big-endian word there is
+   `0x340a0fc0`, which is exactly the healthy `imem0=340a0fc0` the trace prints, and
+   exactly what a raw host read of `r29sp.bin` offset 0 holds. So a *correct* RDRAM->SP
+   copy is a straight word copy, and **byte-identity between an SP bank and an RDRAM
+   region is what a correct DMA produces** -- it is not evidence of a bug.
+2. Everything below `0x3c018`-ish in RDRAM that looks like "sparse noise" is just the
+   game's audio data. As 16-bit halves it is unremarkable PCM/DPCM-shaped material.
+
+What survives from round 63 §4 is the **destination** arithmetic, and this round it points
+somewhere specific:
+
+* The rogue transfer the plugin's DMA ring captured is
+  `RD dst=00000000 src=00820680 len=1672 cnt=64 skip=104` (`pdma.txt`), a 64-chunk
+  transfer whose span is `0x0000..0x1BC00` -- i.e. it **starts in DMEM and walks far past
+  the end of SP memory**.
+* In the plugin, `DMEM` and `IMEM` are **adjacent in one allocation**:
+  `pdmem=0x79363c0000`, `pimem=0x79363c1000`. An over-long write whose destination is not
+  clamped to its bank therefore lands in IMEM. (HYPOTHESIS, and the leading one: *this* is
+  how the ucode text was replaced.) It is also a defect worth fixing on its own merits --
+  no destination in SP memory should be allowed to leave its bank.
+* **What is NOT yet proven, and is the single number the next run must produce:** the
+  rogue transfer's own source words read back as `0x00010001` (`s0=00010001 s1=00010001`,
+  the game's fill at the masked source `0x020680`), whereas IMEM holds RDRAM `0x3c018`
+  data. So the transfer that *overruns* and the transfer that *filled IMEM* are not yet
+  shown to be the same one. One instrumented line settles it.
+
+### 6. Also settled this round (do not re-litigate)
+
+* **The plugin sees the guest's SP_STATUS.** `parallel.cpp:1691` sets
+  `cr[0x4] = RSP::rsp.SP_STATUS_REG`, i.e. the plugin's CP0 SP_STATUS *is* the core's
+  `sp->regs[SP_STATUS_REG]`. "Two separate status registers" is ruled out; the host's
+  `SP_SET_SIG0` really is visible to the ucode.
+* **The raise does reach the CPU.** `mi_controller.c:161` `raise_rcp_interrupt` ->
+  `raise_maskable_interrupt(r4300, CP0_CAUSE_IP2)`. The chain is fine; only the condition
+  is wrong.
+* **The plugin's "faithful forced yield" can never fire for *this* task.** The r20/r21
+  mechanism (`cp0.cpp:1195`, `:1377-1396`) is gated on `RSP::MFC0_count[rt] >= 0x7fff`
+  SP_STATUS polls, which the r62 256-unit slice budget ends long before, and then on
+  `hdr_ok`, which requires `ysize >= 0xc00`. The EK audio task's OSTask, read straight out
+  of the frozen RDRAM at `0x7c1c00`, has **`yield_data_size = 0xd8`**:
+  ```
+  type=02 flags=0 ucode=80768e60 size=1000 ucode_data=00768e60 size=1000
+  dram_stack=00794e90 size=2df  output_buff=0  data_ptr=0 data_size=0
+  yield_data_ptr=004132d0  yield_data_size=000000d8
+  ```
+  (cross-checked against the plugin's own DMAs: `RD dst=00000000 src=00794e90 len=736`
+  is `dram_stack`/`dram_stack_size+1` exactly, which pins the struct offsets.) So the
+  `0xc00` test fails, `hdr_ok=0`, and the whole save/k0/ucode-base path is dead code on
+  every run. Note also **`data_ptr = 0, data_size = 0`** -- an audio task with an empty
+  command list should complete almost immediately, which is a useful sanity target.
+* **The wave of "IMEM fill" instrumentation from rounds 58-63 is moot**, because the fill
+  pattern `0x00010001` is not what is in IMEM. The writer put real RDRAM data there.
+
+### 7. Next steps, in the order I would do them
+
+**S1 (one run, ~15 lines, DD-gated) -- identify the IMEM writer, now with a known
+signature.** In the plugin's DMA loop (`rsp/cp0.cpp`, `rsp_dma_read` around 1872-2200),
+record for **every** write whose destination is `>= 0x1000` (the IMEM bank) -- including
+writes that only *cross* into it from below: the chunk index, `source`, `source_addr`,
+`dest_addr`, the `word` actually stored, and `(uintptr_t)rsp->rdram / rsp->imem /
+rsp->dmem`. Also log, once, the guest/uCode `pc` and the SP_STATUS. The hypothesis above
+predicts you will see `dest` starting below `0x1000` and crossing; if instead every
+in-bank write has a proper in-bank `dest`, the writer is not this loop and the port
+question below gets decided immediately.
+
+**S2 (the actual fix candidate) -- clamp the SP destination to its bank** in the plugin's
+DMA (and check the core's `do_sp_dma` for the same), DD-gated, plus a one-shot log when
+the clamp fires. This is a real hardware property (SP memory is two 4 KB banks; a DMA
+cannot leave its bank by length), not a heuristic about this game.
+
+**S3 -- enforce the §1 rule.** Raise `MI_INTR_SP` **only** if
+`SP_STATUS & (SP_STATUS_YIELDED | SP_STATUS_TASKDONE)`. Two places:
+`do_SP_Task`'s DD branch (`rsp_core.c:1099-1105`) and `rsp_dd_slice()`
+(`rsp_core.c:1276-1285`). On hardware the RSP sets those bits itself: the boot/entry code
+acks a yield with `ori t0,r0,0x5200; mtc0 t0,SP_STATUS` (`0x5200` =
+`CLR_SIG0|SET_SIG1|SET_SIG2`) and a completing ucode sets `SP_SET_SIG2` before `break`.
+If the emulated RSP reaches either point, this rule changes nothing; if it does not, this
+rule stops the interrupt storm and the freeze becomes a *silent* no-interrupt, which is
+strictly easier to diagnose than an interrupt the guest eats. Consider it a correctness
+fix and a diagnostic, not a cure.
+
+**S4 -- then, and only then, re-read `sys_main.c`'s state machine** against the events the
+guest actually receives (E3 of round 63, unchanged): does the main thread leave
+`SP_TASK_YIELDING`, do `Sched_SpTaskStartAudio` / `Sched_SpTaskResumeGfx` run, does the
+first gfx task appear (`FRAMEPROTO gfx` non-zero, `rdpkick` non-zero).
+
+**S5 -- the authorized fallback, still on the table.** If S1/S2 show the plugin's SP model
+is the thing that is broken, the objective explicitly authorizes porting the working
+Ares/Phobos N64DD + RSP + interrupt-delivery model from
+`/home/garyb/LLM-Projects/phobos/ares/n64`. Note what this round adds to that decision:
+the plugin already carries an ares-derived RSP whose **register aliasing is correct**
+(§6), so the port is a *reconciliation of the interrupt model and the slice scheduler*
+with the core -- not a rewrite of the RSP itself. That is a much smaller job than it looked
+in round 63, and S1/S2 should be enough to decide it.
+
+### 8. Tooling changes this round (committed)
+
+* **`ram_tools.py dis` was silently lying.** It used capstone `CS_MODE_MIPS32`; capstone
+  does not error on MIPS III's 64-bit instructions (`sd`, `ld`, `daddiu`), it simply
+  **stops decoding**, so `__osException` "ended" after two instructions. It now uses
+  `CS_MODE_MIPS64` and prints an explicit `... decoder stopped after N of M instructions`
+  line when it cannot continue. Everything in §1 was found because of this fix; check the
+  same pattern in any other disassembler you introduce.
+* Documented in the tool's docstring, because both cost time this round:
+  - `wd_r29sp.bin` is **IMEM then DMEM** (`parallel.cpp:769`), not a raw `sp->mem` image.
+  - RDRAM host bytes and SP host bytes share one convention, so byte-identity between an
+    SP bank and an RDRAM region is *expected* -- see §5.
+
+### 9. Re-verify this round without a device (all offline, ~2 minutes)
+
+```bash
+cd /home/garyb/LLM-Projects/mupen64plus-ae-turnip
+# 1. the contract: the SP dispatch and the two send_mesg calls
+RAM_DUMP=.fzxwork/r63/ram_force.bin .fzxwork/ram_tools.py dis 0x80746ad0 20
+RAM_DUMP=.fzxwork/r63/ram_force.bin .fzxwork/ram_tools.py sym 0x80746d24 0x80748570 0x807463f4 0x8074651c
+sed -n '83p;90p' .fzxwork/fzerox-decomp/include/PR/os_message.h     # 4 = SP, 11 = SP_BREAK
+sed -n '5,8p'    .fzxwork/fzerox-decomp/include/PR/osint.h          # __OSEventState is 8 bytes
+sed -n '195,256p' .fzxwork/fzerox-decomp/include/PR/rcp.h           # SP write bits (1<<10 = SET_SIG0)
+# 2. the write stream and the freeze state
+cat .fzxwork/r63/wd_spw.txt
+grep -E 'SPSTATE|MISTATE|FRAMEPROTO' .fzxwork/r63/dump_tail.txt
+# 3. the slice shapes and the SP dump
+awk '{print $2}' .fzxwork/r63/rsp.txt | sort | uniq -c | sort -rn | head
+grep -o 'ENTER pc=[0-9a-f]* status=[0-9a-f]* ttype=[0-9]* exp=[0-9] imem0=[0-9a-f]* [0-9a-f]* nzi=[0-9]*' \
+    .fzxwork/r63/rsp.txt | uniq -c
+# 4. the retraction, and the OSTask
+python3 -c "
+import struct
+sp=open('.fzxwork/r63/r29sp.bin','rb').read(); ram=open('.fzxwork/r63/ram_force.bin','rb').read()
+print('IMEM vs RDRAM 0x3c018 matches:',sum(1 for i in range(1024) if sp[4*i:4*i+4]==ram[0x3c018+4*i:0x3c018+4*i+4]))
+print('OSTask yield_data_size = 0x%x'%struct.unpack_from('<I',ram,0x7c1c00+13*4)[0])"
+```
+
+Expected: 20+ instructions decoded (not 2), `send_mesg`/`osSpTaskYield+0x10`/
+`osSpTaskLoad+0x98`/`osSpTaskStartGo+0x30`, event 4/11, `558` matches, `0xd8`.
+
+### 10. Honest status against the objective
+
+Unchanged in the parts that matter, and improved in one: the game still does not reach the
+menu and there is still no audio, but the campaign is no longer guessing at *why the
+interrupt is ignored*. The requirement is now written down, sourced from the ROM itself,
+and there are exactly two candidate defects left — the IMEM overwrite (S1/S2) and the
+raise condition (S3) — with a one-run experiment that separates them. No DD-gated behavior
+changed this round: the same code that ran in round 62 ran here, so the plain-route and
+CI `emumode=1` regression sets are untouched by round 64.
+
+---
+
 ## ROUND 63 (goal round 57) -- THE FREEZE ANATOMY, EXACTLY: a 344 ms audio task, one rogue DMA, and an SP interrupt the guest waits on forever
 
 > Written to be read cold (this round was handed off to a different model). Every

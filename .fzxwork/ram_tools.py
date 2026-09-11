@@ -8,7 +8,7 @@ read a dump straight, every ASCII string and every instruction looks like noise.
 This module does that conversion once and gives you the questions the campaign
 actually asks of a dump:
 
-    ./ram_tools.py dis 0x80750384 24     disassemble guest code (capstone, mips32 BE)
+    ./ram_tools.py dis 0x80750384 24     disassemble guest code (capstone, MIPS III BE)
     ./ram_tools.py rd 0x8074fee0 8       hexdump guest words
     ./ram_tools.py sym 0x80750384        symbolize via the vendored F-Zero X decomp
     ./ram_tools.py find 340a0fc0         which guest addresses hold this word?
@@ -21,6 +21,21 @@ Symbols come from .fzxwork/ek_sym.py (fzerox-decomp symbol_addrs*.txt).
 
 Physical addresses below 0x80000000 are also accepted (the ucode lives at RDRAM
 0x768e60), because the dump is a flat image of RDRAM starting at offset 0.
+
+TWO TRAPS THAT HAVE ALREADY COST ROUNDS (round 64):
+
+1. `wd_r29sp.bin` is **IMEM first, then DMEM** -- 0x1000 bytes each
+   (parallel.cpp:769 writes `RSP::rsp.IMEM` then `RSP::rsp.DMEM`).  It is NOT a raw
+   image of `sp->mem`, whose banks are the other way round (0x0000 = DMEM,
+   0x1000 = IMEM).  Cross-check which half is which against the plugin trace's own
+   `nzi=` / `nzd=` counters on the neighbouring `RSPTASK` line.
+
+2. RDRAM host bytes and SP host bytes obey the **same** byte order: the guest's
+   big-endian word is stored as the byte-reversed 4-byte sequence in *both*
+   (`ram_force.bin` at RDRAM 0x768e60 is `c0 0f 0a 34`; the guest word is
+   0x340a0fc0; healthy IMEM[0] is 0x340a0fc0).  So a **correct** RDRAM -> SP DMA is a
+   straight word copy, and byte-identity between an SP bank and an RDRAM region is
+   exactly what a correct transfer produces.  Do not read it as evidence of a bug.
 """
 import os
 import sys
@@ -58,19 +73,32 @@ def w32(addr):
 
 
 def mips():
+    """Capstone handle for the R4300 (MIPS III).
+
+    MIPS64, **not** MIPS32: the R4300 has the 64-bit instructions (`sd`, `ld`,
+    `daddiu`, ...) and libultra's exception path is full of them.  Capstone in
+    CS_MODE_MIPS32 does not error on those, it just silently *stops decoding* --
+    which reads exactly like "the function ends here".  That cost an hour once;
+    do not switch this back.
+    """
     try:
-        from capstone import Cs, CS_ARCH_MIPS, CS_MODE_MIPS32, CS_MODE_BIG_ENDIAN
+        from capstone import Cs, CS_ARCH_MIPS, CS_MODE_MIPS64, CS_MODE_BIG_ENDIAN
     except ImportError:
         raise SystemExit("pip install capstone")
-    return Cs(CS_ARCH_MIPS, CS_MODE_MIPS32 + CS_MODE_BIG_ENDIAN)
+    return Cs(CS_ARCH_MIPS, CS_MODE_MIPS64 + CS_MODE_BIG_ENDIAN)
 
 
 def dis(addr, n=16):
     md = mips()
     o = off(addr)
+    seen = 0
     for ins in md.disasm(GUEST[o:o + n * 4], addr):
         w = w32(ins.address)
         print("%08x  %08x  %-8s %s" % (ins.address, w, ins.mnemonic, ins.op_str))
+        seen += 1
+    if seen < n:
+        print("... decoder stopped after %d of %d instructions (undecodable word at "
+              "0x%08x)" % (seen, n, addr + 4 * seen))
 
 
 def rd(addr, n=8):
