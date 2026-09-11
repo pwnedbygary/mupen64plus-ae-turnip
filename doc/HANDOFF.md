@@ -1,5 +1,73 @@
 # Handoff Summary: F-Zero X EK on 64DD (mupen64plus-ae-turnip)
 
+## ROUND 71 (goal round 63) -- the merged dispatcher diagnostics ran on the RP6: the post-reboot scheduler is ALIVE; the stall is a guest-level message-chain deadlock
+
+> Measured (RP6 run with commit 313fb670d + the local r71 transition watch,
+> rebased as 68a6912fb; pushed). Artifacts: `.fzxwork/r71_stall.txt`,
+> `.fzxwork/r71_t035/t065.png`.
+
+### 1. What the merged DDDIAG module measured (first run)
+
+`DDDIAG_COUNTS steps=0 boundaries=9600781 erets=69302 events=132844
+stores=163612 audio_stores=163612 selected_stores=0 running_stores=0
+queue_stores=0`:
+
+* **The scheduler WORKS post-reboot.** The WD71TR transition watch shows the
+  AUDIO thread cycling WAITING(8)→RUNNABLE(2)→RUNNING(4)→WAITING with its
+  saved pc advancing through real scheduler code (`0x8072e69c`, `0x8073a8bc`,
+  `0x8072f8b4`), and `__osRunningThread` rotating correctly through the
+  thread set (MAIN 0x80799820, GAME 0x80799b80, SYSTEM 0x807c20a0, ...).
+* **The AUDIO thread blocks in osRecvMesg on queue `0x8079a0d8`** (the audio
+  manager's queue) waiting for a message from the game's MAIN thread.
+* **MAIN (prio 99) is parked on gMainThreadMesgQueue waiting EVENT_MESG_SP**
+  (`c_spint=0`): the RSP is wiped and the r67 latch re-arms only on a new
+  task-header load, which never comes because the scheduler waits for MAIN's
+  message. **Circular guest-level dependency: MAIN(SP) ← task ← scheduler ←
+  MAIN's message.**
+* The loaded boot thread (0x80799ee0, prio 30) spins in a bare `b .` at
+  0x806f32ec (LOADED code region -- the cart's Idle_ThreadEntry symbolization
+  there is void) and wins the CPU between interrupts, starving everything at
+  prio < 30 for the entire gap.
+* The user's observation confirms the pipeline change: the loading-phase
+  garbled static became silence (no task loops; no task is submitted).
+
+### 2. Refuted this round
+
+* **The stale DD-interrupt hypothesis**: `dd_asic_status=01180000`
+  (MECHA_INT/BM_INT both clear), `cause_ip_bits=00000000`. The DD ack paths
+  are implemented and wiki-faithful; the last mecha command (write-seek,
+  cmd=02 track 0x22f) completed normally.
+* The event table is NOT the blocker: `__osEventStateTab` (0x807c3390) is
+  populated post-reboot (SP → gMainThreadMesgQueue, VI/COUNTER → the
+  scheduler's queue 0x807c46c0, PI, DP, FAULT, PRENMI all registered).
+* The OSThread layout trap: the EK build's layout is `prio=+4, queue=+8,
+  state|flags=+0x10 (u16 each), context=+0x20, saved pc=+0x11C`
+  (ek_state.py's offsets) -- NOT the decomp header's `priority=+8` layout.
+  The r69 dispatch-trace's `aud_state` read at +0x10 was correct after all;
+  GPT-5.6's "+0x10 = state" was also right, but the decomp header misled a
+  round of analysis.
+
+### 3. r72: break the message-chain deadlock
+
+The chain has exactly one entry point the emulator can legally influence:
+**the first SP event post-reboot requires a task, and the task requires the
+scheduler to be kicked by MAIN, and MAIN waits for the SP event.** On
+hardware this resolves because the loaded boot's init *itself* submits the
+first audio task (or sends MAIN's first message) before its `b .` park -- our
+run shows the boot parked WITHOUT either. r72:
+1. Disassemble the loaded boot's init path around the spin (what the boot
+   did immediately before `b .` at 0x806f32ec -- the calls, the flag
+   reads) from the r67 dump; identify the unmet wait.
+2. Map queue 0x8079a0d8's ownership (who creates/sends) in the EK decomp
+   (sys_scheduler.c / sys_main.c).
+3. Candidate fixes, DD-gated: (a) if the boot waits on an emulator-visible
+   event that never fires (e.g. a stale RSP/DMA state), clear it; (b) if the
+   loaded code's first task submission was eaten by the r67 latch window,
+   re-order the latch re-arm to also trigger on a scheduler submit attempt.
+4. The moment the logo clears, check the DD RTC (Error 48) and audio quality.
+
+---
+
 ## ROUND 70 (goal round 62) -- the ERET ledger: the dispatcher pops a DEAD audio-thread struct (state=0, garbage context) every interrupt; the scheduler can never run
 
 > Measured (RP6, `.fzxwork/r66/` stall dumps). Commit `bef576139`. The user's
