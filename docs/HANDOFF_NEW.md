@@ -901,3 +901,76 @@ remain pending; the project task is not complete.
   The locally signed release build will have a different hash; record its own.
 - `git diff --check`: passed. No running web app exists for a browser
   screenshot check; the supplied Android screenshot remains visual evidence.
+
+## 2026-09-11 — DDSTART1 device capture: combo boot selection confirmed
+
+Evidence: `attached_assets/ddstart1-logcat_1789183322734.txt`, 907 lines,
+SHA-256 `149d0a7bab205c5a062bb09825020d3375767bce8ba836bb74cab32d4c4e993e`;
+package report `attached_assets/installed-package-debug_1789183322735.txt`.
+Keep raw uploads private; only selected technical findings are published.
+
+One relevant launch, PID 27775, starts around device time 23:21:18.
+The log ends at 23:21:36.821, roughly 18 seconds after startup, not a verified
+30-second stalled interval. The package report confirms the `.debug` package,
+arm64-v8a, DEBUGGABLE, version `3.0.335 (beta) c836a422`, updated 23:19:12.
+That version label matches the supplied workspace diagnostic build; native
+markers establish that this is not the old logging-suppressed capture.
+
+### Confirmed records (original log line numbers)
+
+- 203–205: explicit support enabled, directNdd=false, configured IPL/disk
+  present, autoLoadRequested=false, requested CountPerOp=1/denominator=0;
+  both Java and native DDSTART1 markers present.
+- 249–257: F-ZERO X (U) [!], MD5
+  `753437D0D8ADA1D12F3F9CF0F0A5171F`, CRC `B30ED978 3003C9F9`,
+  native .z64, 16,777,216 bytes, USA. This is a real cartridge input, not
+  the frontend's dummy ROM for direct disk launch.
+- 278: saved full-disk `.ndr` load fails. The subsequent recognized disk at
+  291 is 64,931,840 bytes, SDK format. `load_dd_disk` tries original media
+  after saved-file failure; no fatal original-file/format failure follows.
+- 294,299–300: IPL loaded, 4,194,304 bytes; boot selection explicitly
+  `source=DD_IPL` with the real cartridge also loaded; CIC 8501 detected.
+- 262,270,276: parallel graphics, Android audio and parallel RSP plugins.
+- 475: four RDRAM modules, total 8 MiB.
+- 514: actual engine **Dynamic Recompiler**. This is now runtime evidence,
+  not an inference from another PID or the requested profile.
+
+No DDSTART1 limit marker appears; the 256-message cap is not the explanation
+for silence after the existing startup records. No exact guest PC, command/
+DMA sequence, disk-code entry or context writer is recorded by this probe.
+The log does not contain a native fatal signal/Java FATAL EXCEPTION for this
+run. Host graphics/audio startup does not establish guest menu/audio success.
+Current run's visible/animation/audio outcome still needs the user's report;
+the prior uploaded screenshot belongs to the earlier observation.
+
+### Correction: “Loading a saved disk” is not evidence of save loading
+
+Line 292 contains that warning, but source inspection of
+`core/main/main.c` near the end of `load_dd_disk` shows it is emitted whenever
+the first region word matches JP, US or development, irrespective of the
+file source. It does **not** establish a saved image was used. Here line 278
+shows saved-file failure and the loader's original-file fallback succeeds.
+Do not delete saves or attribute the freeze to save contamination based on
+this wording. The warning does establish that one of those region constants
+matched, but does not print which one. Matching IPL/disk region remains
+unverified; USA in a filename alone is insufficient.
+
+### Interpretation and next decision
+
+The boot-priority discrepancy is now observed for this exact native combo:
+real cartridge + disk + IPL -> DD IPL startup, contrary to the wiki's
+cartridge-first combo rule. This is the strongest established configuration/
+boot mismatch so far, **not proof it causes the logo freeze**. Input presence,
+recognized disk format, 8 MiB memory, actual CPU engine and no requested
+autoload are no longer the first unknown boundary.
+
+Before a behavior candidate, preserve this diagnostic baseline and confirm
+whether the same static logo occurs in this run. A narrowly scoped
+cartridge-first comparison must require explicit DD activation and a real
+combo cartridge, preserve direct-disk dummy-ROM handling, and leave all
+DD-disabled games unchanged. Do not use the diagnostic flag as an implicit
+permanent hardware-behavior setting. Also capture the actual disk region
+and game code so a region mismatch is not confused with boot priority.
+No scheduler/context/RTC/renderer correction is justified by this capture.
+No runtime code changed in this analysis pass; task and acceptance remain
+open.
