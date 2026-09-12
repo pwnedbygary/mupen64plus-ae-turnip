@@ -25,6 +25,38 @@ and still fails to boot native N64DD correctly. These are user observations,
 not reproductions performed here. The exact native failure stage on this
 baseline still needs a fresh capture.
 
+## One-time local resync after the branch reset
+
+For local tooling and local LLMs: run from the repository root, not the
+Android platform-tools directory. Pause other tools that might push while
+resyncing. Run `git status --short` first. If it lists changes, stop and
+preserve them with a local commit or stash (including relevant untracked
+files) before proceeding. Do not commit signing material or game/save files.
+
+The following replaces the local debugging branch pointer with the current
+remote branch and checks out that source. It first preserves the old local
+branch tip under a timestamped backup name. That backup protects committed
+history, not uncommitted or ignored files.
+
+```sh
+git fetch origin &&
+git branch "backup/dd-before-v336-$(date +%Y%m%d-%H%M%S)" dd-eos-watchdog-checkpoint &&
+git switch -C dd-eos-watchdog-checkpoint origin/dd-eos-watchdog-checkpoint &&
+git log -1 --oneline
+```
+
+If any command fails, stop and report the error. Do not force-push, merge the
+old experimental history, or reapply an old stash wholesale onto the baseline.
+Review saved changes individually before carrying anything forward.
+
+This procedure assumes the local `dd-eos-watchdog-checkpoint` branch already
+exists. If it does not, fetch and use
+`git switch --track origin/dd-eos-watchdog-checkpoint` instead.
+
+After this one-time resync, use normal fast-forward pulls for new commits.
+Read this handoff from the updated checkout before building. Keep the original
+local signing setup and do not use old generated APKs as baseline builds.
+
 ## Rules for this investigation
 
 1. Keep observations, source facts, and hypotheses separate. Record negative
