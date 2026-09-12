@@ -1328,3 +1328,17 @@ APK SHA-256:
 Read-only code review found no runtime implementation blocker; its coverage
 wording correction is incorporated above and in the source comment. Raw
 Android logs are excluded from selective GitHub publication.
+
+## Test publication requirement
+
+For every test iteration, update this handoff **before** creating and pushing
+the test commit to the current debug branch, `dd-eos-watchdog-checkpoint`.
+The user uses that branch as input to a local LLM. Each handoff entry should
+include the test's purpose, changes, device evidence, verification results,
+coverage limits and next capture instructions. Include the published commit
+ID with the APK delivery. Publish focused changes without force or private
+raw logs/signing material. This requirement also appears in `replit.md`.
+
+The DDSTART4 test source and handoff were already published together in
+`379af8175ad20a3c1174ef94a6930c640e53ead2`; this documentation update
+records the standing requirement and does not require another APK.
