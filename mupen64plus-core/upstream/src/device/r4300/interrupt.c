@@ -32,6 +32,7 @@
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "api/callbacks.h"
@@ -39,6 +40,7 @@
 #include "device/pif/bootrom_hle.h"
 #include "device/r4300/cached_interp.h"
 #include "device/r4300/cp0.h"
+#include "device/r4300/dd_fault_layout.h"
 #include "device/r4300/new_dynarec/new_dynarec.h"
 #include "device/r4300/r4300_core.h"
 #include "device/r4300/recomp.h"
@@ -778,34 +780,53 @@ static void dd_trace_context_snapshot(struct r4300_core* r4300,
  * and all four nearby words match; a mismatch makes the mapped roots
  * explicitly unavailable.
  *
- * The structure offsets are matched to the public
+ * The scheduler fields and fault-context offsets are matched to the public
  * /tmp/fzerox-reference/include/PR/os_thread.h at revision
- * 4fd50c7ca6b44f996aa0fbb68ec86df75855d5b8.  OSThread pointers are four
- * byte guest words; __OSThreadContext has 64-bit registers stored as two
- * direct host uint32_t guest words.  Reading by these explicit offsets avoids
+ * 4fd50c7ca6b44f996aa0fbb68ec86df75855d5b8.  The selected fault context has
+ * a 0x128-byte prefix and 29 saved integer slots starting at 0x20 in the
+ * at,v0,v1,a0-a3,t0-t7,s0-s7,t8,t9,gp,sp,s8,ra order. OSThread pointers are
+ * four-byte guest words; the saved 64-bit values are stored as two direct
+ * host uint32_t guest words.  Reading by these explicit offsets avoids
  * host-ABI casts and extracts the state halfword from the guest word.
  * The source-side identity is Idle_ThreadEntry in src/sys/sys_main.c; that
  * function's osSetThreadPri/while-true tail is evidence, not control.
+ *
+ * The word at 0x800d1d80 is a two-word queue-tail sentinel, not an OSThread.
+ * It is never decoded or followed through tlnext.  The active-list head at
+ * 0x800d1d8c is used only after the same exact PC/code signature gate, with
+ * the adjacent run-queue/running/faulted globals serving as the corroborating
+ * thread.c layout.
  */
 enum
 {
     DD_SCHEDULER_EXPECTED_PC = 0x800679f8,
+    DD_SCHEDULER_QUEUE_SENTINEL = 0x800d1d80,
     DD_SCHEDULER_RUN_QUEUE = 0x800d1d88,
+    DD_SCHEDULER_ACTIVE_THREAD_HEAD = 0x800d1d8c,
     DD_SCHEDULER_RUNNING_THREAD = 0x800d1d90,
+    DD_SCHEDULER_FAULTED_THREAD = 0x800d1d94,
     DD_SCHEDULER_EXPECTED_PREV_JAL = 0x0c031dc4,
     DD_SCHEDULER_EXPECTED_SET_PRI_JAL = 0x0c030a98,
     DD_SCHEDULER_EXPECTED_LOOP = 0x1000ffff,
     DD_SCHEDULER_EXPECTED_NOP = 0x00000000,
     DD_SCHEDULER_THREAD_BYTES = 288,
+    DD_SCHEDULER_FAULT_CONTEXT_PREFIX = DD_FAULT_LAYOUT_CONTEXT_PREFIX,
     DD_SCHEDULER_THREAD_NEXT = 0,
     DD_SCHEDULER_THREAD_PRIORITY = 4,
     DD_SCHEDULER_THREAD_QUEUE = 8,
     DD_SCHEDULER_THREAD_TLNEXT = 12,
     DD_SCHEDULER_THREAD_STATE = 16,
     DD_SCHEDULER_THREAD_ID = 20,
-    DD_SCHEDULER_CONTEXT_SP = 240,
-    DD_SCHEDULER_CONTEXT_RA = 256,
-    DD_SCHEDULER_CONTEXT_PC = 284,
+    DD_SCHEDULER_THREAD_CONTEXT = DD_FAULT_LAYOUT_GPR_OFFSET,
+    DD_SCHEDULER_CONTEXT_GPR_COUNT = DD_FAULT_LAYOUT_GPR_COUNT,
+    DD_SCHEDULER_CONTEXT_SP = DD_FAULT_LAYOUT_SP_OFFSET,
+    DD_SCHEDULER_CONTEXT_RA = DD_FAULT_LAYOUT_RA_OFFSET,
+    DD_SCHEDULER_CONTEXT_LO = DD_FAULT_LAYOUT_LO_OFFSET,
+    DD_SCHEDULER_CONTEXT_HI = DD_FAULT_LAYOUT_HI_OFFSET,
+    DD_SCHEDULER_CONTEXT_SR = DD_FAULT_LAYOUT_SR_OFFSET,
+    DD_SCHEDULER_CONTEXT_PC = DD_FAULT_LAYOUT_PC_OFFSET,
+    DD_SCHEDULER_CONTEXT_CAUSE = DD_FAULT_LAYOUT_CAUSE_OFFSET,
+    DD_SCHEDULER_CONTEXT_BADVADDR = DD_FAULT_LAYOUT_BADVADDR_OFFSET,
     DD_SCHEDULER_CHAIN_LIMIT = 8,
     DD_SCHEDULER_SEEN_LIMIT = 16
 };
@@ -830,42 +851,17 @@ struct dd_scheduler_thread_snapshot
 static int dd_scheduler_read_word(const struct r4300_core* r4300,
         uint32_t address, uint32_t* value)
 {
-    uint32_t physical;
-    unsigned int segment;
-
-    if (value == NULL || (address & UINT32_C(3)) != 0
-            || !dd_context_map_kseg(address, &physical, &segment)
-            || r4300 == NULL || r4300->rdram == NULL
-            || r4300->rdram->dram == NULL
-            || (size_t)physical > r4300->rdram->dram_size
-            || r4300->rdram->dram_size - (size_t)physical
-                < sizeof(uint32_t))
-        return 0;
-
-    /*
-     * RDRAM's uint32_t array is already the core's guest-word view.  Do not
-     * call a generic memory handler here: this path must not touch MMIO or
-     * trigger a read side effect.
-     */
-    *value = r4300->rdram->dram[physical / sizeof(uint32_t)];
-    return 1;
+    return r4300 != NULL && r4300->rdram != NULL
+        && dd_fault_guest_read_u32(r4300->rdram->dram,
+            r4300->rdram->dram_size, address, value);
 }
 
 static int dd_scheduler_guest_range(const struct r4300_core* r4300,
         uint32_t address, size_t bytes)
 {
-    uint32_t physical;
-    unsigned int segment;
-
-    if (bytes == 0 || (address & UINT32_C(3)) != 0
-            || !dd_context_map_kseg(address, &physical, &segment)
-            || r4300 == NULL || r4300->rdram == NULL
-            || r4300->rdram->dram == NULL
-            || (size_t)physical > r4300->rdram->dram_size
-            || r4300->rdram->dram_size - (size_t)physical < bytes)
-        return 0;
-
-    return 1;
+    return r4300 != NULL && r4300->rdram != NULL
+        && dd_fault_guest_range(r4300->rdram->dram,
+            r4300->rdram->dram_size, address, bytes, NULL);
 }
 
 static const char* dd_scheduler_pointer_state(
@@ -880,16 +876,9 @@ static const char* dd_scheduler_pointer_state(
 static int dd_scheduler_read_u64(const struct r4300_core* r4300,
         uint32_t address, uint64_t* value)
 {
-    uint32_t high;
-    uint32_t low;
-
-    if (value == NULL || !dd_scheduler_read_word(r4300, address, &high)
-            || !dd_scheduler_read_word(r4300, address + sizeof(uint32_t), &low))
-        return 0;
-
-    /* Guest u64 fields are two direct guest words, high word first. */
-    *value = ((uint64_t)high << 32) | (uint64_t)low;
-    return 1;
+    return r4300 != NULL && r4300->rdram != NULL
+        && dd_fault_guest_read_u64(r4300->rdram->dram,
+            r4300->rdram->dram_size, address, value);
 }
 
 static int dd_scheduler_read_thread(const struct r4300_core* r4300,
@@ -1002,6 +991,28 @@ static void dd_scheduler_emit_thread(unsigned int progress_ordinal,
         snapshot->wait_raw[3]);
 }
 
+static void dd_scheduler_emit_sentinel(unsigned int progress_ordinal,
+        const struct r4300_core* r4300, const char* chain, unsigned int depth)
+{
+    uint32_t sentinel_next = 0;
+    uint32_t sentinel_priority = 0;
+    int next_available = dd_scheduler_read_word(r4300,
+        DD_SCHEDULER_QUEUE_SENTINEL, &sentinel_next);
+    int priority_available = dd_scheduler_read_word(r4300,
+        DD_SCHEDULER_QUEUE_SENTINEL + sizeof(uint32_t),
+        &sentinel_priority);
+
+    DdStartupDiagnosticsTraceScheduler(
+        "DDSTART6 scheduler: candidate=%u chain=%s depth=%u"
+        " sentinel=%08" PRIx32 " state=%s"
+        " raw_next=%08" PRIx32 " raw_priority=%08" PRIx32
+        " result=sentinel",
+        progress_ordinal, chain, depth,
+        DD_SCHEDULER_QUEUE_SENTINEL,
+        next_available && priority_available ? "available" : "partial",
+        sentinel_next, sentinel_priority);
+}
+
 static const char* dd_scheduler_walk(unsigned int progress_ordinal,
         const struct r4300_core* r4300, const char* chain, uint32_t start,
         int use_tlnext, uint32_t* seen, unsigned int* seen_count)
@@ -1018,6 +1029,18 @@ static const char* dd_scheduler_walk(unsigned int progress_ordinal,
         struct dd_scheduler_thread_snapshot snapshot;
         uint32_t next;
         const char* pointer_state;
+
+        /*
+         * __osRunQueue's root may point at this two-word fake tail object.
+         * It has only next/priority words; treating it as an OSThread would
+         * reinterpret unrelated data as state/context and follow tlnext into
+         * the adjacent globals.  Read only the two sentinel words and stop.
+         */
+        if (current == DD_SCHEDULER_QUEUE_SENTINEL) {
+            dd_scheduler_emit_sentinel(progress_ordinal, r4300, chain, depth);
+            result = "sentinel";
+            break;
+        }
 
         pointer_state = dd_scheduler_pointer_state(r4300, current,
                 DD_SCHEDULER_THREAD_BYTES);
@@ -1057,6 +1080,16 @@ static const char* dd_scheduler_walk(unsigned int progress_ordinal,
             result = "end";
             break;
         }
+        if (next == DD_SCHEDULER_QUEUE_SENTINEL) {
+            /*
+             * The sentinel is intentionally allowed as the terminal next
+             * value even though its allocation is only eight bytes.
+             * The next loop iteration performs the two-word sentinel read
+             * and stops without applying OSThread offsets.
+             */
+            current = next;
+            continue;
+        }
         if (!dd_scheduler_guest_range(r4300, next,
                     DD_SCHEDULER_THREAD_BYTES)) {
             result = "invalid-next";
@@ -1073,10 +1106,21 @@ static const char* dd_scheduler_walk(unsigned int progress_ordinal,
         current = next;
     }
 
+    /*
+     * Eight real nodes are the limit.  If the eighth node points at the
+     * sentinel, emit that terminal two-word object without admitting a ninth
+     * OSThread decode.
+     */
+    if (current == DD_SCHEDULER_QUEUE_SENTINEL
+            && strcmp(result, "sentinel") != 0) {
+        dd_scheduler_emit_sentinel(progress_ordinal, r4300, chain, depth);
+        result = "sentinel";
+    }
     if (current != 0 && depth >= DD_SCHEDULER_CHAIN_LIMIT
             && strcmp(result, "cycle") != 0
             && strcmp(result, "visited") != 0
-            && strcmp(result, "invalid-next") != 0)
+            && strcmp(result, "invalid-next") != 0
+            && strcmp(result, "sentinel") != 0)
         result = "limit";
     DdStartupDiagnosticsTraceScheduler(
         "DDSTART6 scheduler: candidate=%u chain=%s limit=%u result=%s"
@@ -1104,16 +1148,20 @@ static void dd_trace_scheduler_snapshot(struct r4300_core* r4300,
     uint32_t fingerprint[sizeof(fingerprint_expected)
         / sizeof(fingerprint_expected[0])];
     uint32_t roots_raw[7];
-    uint32_t run_queue;
-    uint32_t running_thread;
+    uint32_t run_queue = 0;
+    uint32_t active_thread = 0;
+    uint32_t running_thread = 0;
     uint32_t seen[DD_SCHEDULER_SEEN_LIMIT];
+    uint32_t active_seen[DD_SCHEDULER_SEEN_LIMIT];
     unsigned int seen_count = 0;
+    unsigned int active_seen_count = 0;
     unsigned int i;
     unsigned int raw_count = 0;
     int fingerprint_available = 1;
     int fingerprint_matches = 1;
     int roots_available;
     int run_queue_available;
+    int active_thread_available;
     int running_thread_available;
 
     if (!DdStartupDiagnosticsEnabled())
@@ -1153,6 +1201,8 @@ static void dd_trace_scheduler_snapshot(struct r4300_core* r4300,
 
     run_queue_available = dd_scheduler_read_word(r4300,
         DD_SCHEDULER_RUN_QUEUE, &run_queue);
+    active_thread_available = dd_scheduler_read_word(r4300,
+        DD_SCHEDULER_ACTIVE_THREAD_HEAD, &active_thread);
     running_thread_available = dd_scheduler_read_word(r4300,
         DD_SCHEDULER_RUNNING_THREAD, &running_thread);
     roots_available = run_queue_available && running_thread_available;
@@ -1160,15 +1210,17 @@ static void dd_trace_scheduler_snapshot(struct r4300_core* r4300,
         DdStartupDiagnosticsTraceScheduler(
             "DDSTART6 scheduler: candidate=%u pc_sample=%08" PRIx32
             " pc_state=exact fingerprint=match mapped_roots=unavailable"
-            " runQueue_state=%s runningThread_state=%s",
+            " runQueue_state=%s runningThread_state=%s"
+            " activeThreadHead_state=%s",
             progress_ordinal, pc_sample,
             run_queue_available ? "available" : "unavailable",
-            running_thread_available ? "available" : "unavailable");
+            running_thread_available ? "available" : "unavailable",
+            active_thread_available ? "available" : "unavailable");
         return;
     }
 
     /*
-     * Read one raw neighborhood around both verified root words.  The
+     * Read one raw neighborhood around the verified root words.  The
      * addresses are contiguous in this map, but the labels remain raw rather
      * than assigning meaning to a possible active-queue variable.
      */
@@ -1188,7 +1240,8 @@ static void dd_trace_scheduler_snapshot(struct r4300_core* r4300,
         " root_raw_base=%08" PRIx32 " root_raw_state=%s"
         " raw0=%08" PRIx32 " raw1=%08" PRIx32
         " raw2=%08" PRIx32 " raw3=%08" PRIx32 " raw4=%08" PRIx32
-        " raw5=%08" PRIx32 " raw6=%08" PRIx32,
+        " raw5=%08" PRIx32 " raw6=%08" PRIx32
+        " activeThreadHead=%08" PRIx32 " activeThreadHead_ptr_state=%s",
         progress_ordinal, pc_sample, run_queue, running_thread,
         dd_scheduler_pointer_state(r4300, run_queue,
             DD_SCHEDULER_THREAD_BYTES),
@@ -1198,13 +1251,361 @@ static void dd_trace_scheduler_snapshot(struct r4300_core* r4300,
         raw_count == sizeof(roots_raw) / sizeof(roots_raw[0])
             ? "available" : "partial",
         roots_raw[0], roots_raw[1], roots_raw[2], roots_raw[3], roots_raw[4],
-        roots_raw[5], roots_raw[6]);
+        roots_raw[5], roots_raw[6], active_thread,
+        dd_scheduler_pointer_state(r4300, active_thread,
+            DD_SCHEDULER_THREAD_BYTES));
 
     memset(seen, 0, sizeof(seen));
     dd_scheduler_walk(progress_ordinal, r4300, "running-tlnext",
         running_thread, 1, seen, &seen_count);
     dd_scheduler_walk(progress_ordinal, r4300, "runQueue-next",
         run_queue, 0, seen, &seen_count);
+    if (active_thread_available) {
+        memset(active_seen, 0, sizeof(active_seen));
+        dd_scheduler_walk(progress_ordinal, r4300, "active-tlnext",
+            active_thread, 1, active_seen, &active_seen_count);
+    } else {
+        DdStartupDiagnosticsTraceScheduler(
+            "DDSTART6 scheduler: candidate=%u chain=active-tlnext"
+            " limit=%u result=unavailable reason=active-head-read-failed",
+            progress_ordinal, DD_SCHEDULER_CHAIN_LIMIT);
+    }
+}
+
+static int dd_fault_signature_matches(const struct r4300_core* r4300,
+        uint32_t fingerprint[4], int* fingerprint_available)
+{
+    static const uint32_t fingerprint_address[] = {
+        DD_SCHEDULER_EXPECTED_PC - 20,
+        DD_SCHEDULER_EXPECTED_PC - 8,
+        DD_SCHEDULER_EXPECTED_PC,
+        DD_SCHEDULER_EXPECTED_PC + 4
+    };
+    static const uint32_t fingerprint_expected[] = {
+        DD_SCHEDULER_EXPECTED_PREV_JAL,
+        DD_SCHEDULER_EXPECTED_SET_PRI_JAL,
+        DD_SCHEDULER_EXPECTED_LOOP,
+        DD_SCHEDULER_EXPECTED_NOP
+    };
+    unsigned int i;
+    int matches = 1;
+
+    if (fingerprint == NULL || fingerprint_available == NULL)
+        return 0;
+
+    *fingerprint_available = 1;
+    for (i = 0; i < sizeof(fingerprint_expected)
+            / sizeof(fingerprint_expected[0]); ++i) {
+        if (!dd_scheduler_read_word(r4300, fingerprint_address[i],
+                    &fingerprint[i])) {
+            *fingerprint_available = 0;
+            matches = 0;
+        } else if (fingerprint[i] != fingerprint_expected[i]) {
+            matches = 0;
+        }
+    }
+    return matches;
+}
+
+/*
+ * DDSTART7 is the selected-thread counterpart to DDSTART6.  It reads the
+ * fault-selected OSThread directly from __osFaultedThread, independently of
+ * either list walk's eight-node limit.  The offsets below are explicit guest
+ * offsets from the public N64 os_thread.h, not a host-ABI cast.
+ */
+struct dd_fault_thread_snapshot
+{
+    uint32_t address;
+    int32_t priority;
+    int32_t id;
+    uint16_t state;
+    uint16_t flags;
+    uint64_t gpr[DD_SCHEDULER_CONTEXT_GPR_COUNT];
+    uint64_t saved_sp;
+    uint64_t saved_ra;
+    uint64_t saved_lo;
+    uint64_t saved_hi;
+    uint32_t saved_sr;
+    uint32_t saved_cause;
+    uint32_t saved_badvaddr;
+    uint32_t saved_pc;
+    uint32_t code[32];
+    enum dd_context_code_status code_status[32];
+    unsigned int code_valid;
+};
+
+static int dd_fault_read_thread(const struct r4300_core* r4300,
+        uint32_t address, struct dd_fault_thread_snapshot* snapshot)
+{
+    uint32_t state_flags;
+    uint32_t priority;
+    uint32_t id;
+    unsigned int i;
+
+    if (snapshot == NULL || !dd_scheduler_guest_range(r4300, address,
+                DD_SCHEDULER_FAULT_CONTEXT_PREFIX))
+        return 0;
+
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->address = address;
+    if (!dd_scheduler_read_word(r4300,
+                address + DD_SCHEDULER_THREAD_PRIORITY, &priority)
+            || !dd_scheduler_read_word(r4300,
+                address + DD_SCHEDULER_THREAD_STATE, &state_flags)
+            || !dd_scheduler_read_word(r4300,
+                address + DD_SCHEDULER_THREAD_ID, &id)
+            || !dd_scheduler_read_u64(r4300,
+                address + DD_SCHEDULER_CONTEXT_SP, &snapshot->saved_sp)
+            || !dd_scheduler_read_u64(r4300,
+                address + DD_SCHEDULER_CONTEXT_RA, &snapshot->saved_ra)
+            || !dd_scheduler_read_u64(r4300,
+                address + DD_SCHEDULER_CONTEXT_LO, &snapshot->saved_lo)
+            || !dd_scheduler_read_u64(r4300,
+                address + DD_SCHEDULER_CONTEXT_HI, &snapshot->saved_hi)
+            || !dd_scheduler_read_word(r4300,
+                address + DD_SCHEDULER_CONTEXT_SR, &snapshot->saved_sr)
+            || !dd_scheduler_read_word(r4300,
+                address + DD_SCHEDULER_CONTEXT_CAUSE, &snapshot->saved_cause)
+            || !dd_scheduler_read_word(r4300,
+                address + DD_SCHEDULER_CONTEXT_BADVADDR,
+                &snapshot->saved_badvaddr)
+            || !dd_scheduler_read_word(r4300,
+                address + DD_SCHEDULER_CONTEXT_PC, &snapshot->saved_pc))
+        return 0;
+
+    snapshot->priority = (int32_t)priority;
+    snapshot->state = (uint16_t)(state_flags >> 16);
+    snapshot->flags = (uint16_t)state_flags;
+    snapshot->id = (int32_t)id;
+
+    /*
+     * The fault context contains 29 saved integer registers in this order:
+     * at,v0,v1,a0-a3,t0-t7,s0-s7,t8,t9,gp,sp,s8,ra. The direct guest u64
+     * assembly preserves the N64 high/low word representation.
+     */
+    for (i = 0; i < DD_SCHEDULER_CONTEXT_GPR_COUNT; ++i) {
+        if (!dd_scheduler_read_u64(r4300,
+                    address + DD_SCHEDULER_THREAD_CONTEXT + i * 8,
+                    &snapshot->gpr[i]))
+            return 0;
+    }
+    return 1;
+}
+
+static void dd_fault_read_code_window(const struct r4300_core* r4300,
+        uint32_t pc, uint32_t code[32],
+        enum dd_context_code_status code_status[32], unsigned int* valid_count)
+{
+    unsigned int pc_segment = 0;
+    unsigned int slot;
+
+    if (code == NULL || code_status == NULL || valid_count == NULL)
+        return;
+    *valid_count = 0;
+    memset(code, 0, sizeof(uint32_t) * 32);
+    for (slot = 0; slot < 32; ++slot)
+        code_status[slot] = DD_CONTEXT_CODE_PC_UNAVAILABLE;
+
+    if ((pc & UINT32_C(3)) != 0) {
+        for (slot = 0; slot < 32; ++slot)
+            code_status[slot] = DD_CONTEXT_CODE_PC_MISALIGNED;
+        return;
+    }
+    if (!dd_context_map_kseg(pc, NULL, &pc_segment)) {
+        for (slot = 0; slot < 32; ++slot)
+            code_status[slot] = DD_CONTEXT_CODE_NOT_KSEG;
+        return;
+    }
+
+    for (slot = 0; slot < 32; ++slot) {
+        uint32_t address;
+        uint32_t physical;
+        unsigned int segment;
+        uint32_t delta;
+
+        if (slot < 8) {
+            delta = (8 - slot) * 4;
+            if (pc < delta) {
+                code_status[slot] = DD_CONTEXT_CODE_ADDRESS_UNDERFLOW;
+                continue;
+            }
+            address = pc - delta;
+        } else {
+            delta = (slot - 8) * 4;
+            if (pc > UINT32_MAX - delta) {
+                code_status[slot] = DD_CONTEXT_CODE_ADDRESS_OVERFLOW;
+                continue;
+            }
+            address = pc + delta;
+        }
+
+        if (!dd_context_map_kseg(address, &physical, &segment)) {
+            code_status[slot] = DD_CONTEXT_CODE_NOT_KSEG;
+            continue;
+        }
+        if (segment != pc_segment) {
+            code_status[slot] = DD_CONTEXT_CODE_CROSSED_KSEG;
+            continue;
+        }
+        if (r4300 == NULL || r4300->rdram == NULL
+                || r4300->rdram->dram == NULL) {
+            code_status[slot] = DD_CONTEXT_CODE_RDRAM_UNAVAILABLE;
+            continue;
+        }
+        if ((size_t)physical > r4300->rdram->dram_size
+                || r4300->rdram->dram_size - (size_t)physical
+                    < sizeof(uint32_t)) {
+            code_status[slot] = DD_CONTEXT_CODE_RDRAM_OUT_OF_RANGE;
+            continue;
+        }
+        code[slot] = r4300->rdram->dram[physical / sizeof(uint32_t)];
+        code_status[slot] = DD_CONTEXT_CODE_OK;
+        ++*valid_count;
+    }
+}
+
+static void dd_fault_emit_snapshot(unsigned int progress_ordinal,
+        const struct dd_fault_thread_snapshot* snapshot)
+{
+    unsigned int chunk;
+
+    DdStartupDiagnosticsTraceFault(
+        "DDSTART7 fault: candidate=%u structured=available"
+        " fault_thread=%08" PRIx32 " id=%" PRId32
+        " priority=%" PRId32 " state=%04x flags=%04x"
+        " saved_sr=%08" PRIx32 " saved_cause=%08" PRIx32
+        " saved_badvaddr=%08" PRIx32 " saved_pc=%08" PRIx32
+        " saved_sp=%016" PRIx64 " saved_ra=%016" PRIx64
+        " saved_lo=%016" PRIx64 " saved_hi=%016" PRIx64
+        " saved_cause_source=thread_context"
+        " code_state=%s code_valid=%u",
+        progress_ordinal, snapshot->address, snapshot->id,
+        snapshot->priority, snapshot->state, snapshot->flags,
+        snapshot->saved_sr, snapshot->saved_cause, snapshot->saved_badvaddr,
+        snapshot->saved_pc, snapshot->saved_sp, snapshot->saved_ra,
+        snapshot->saved_lo, snapshot->saved_hi,
+        snapshot->code_valid == 32 ? "available"
+            : snapshot->code_valid != 0 ? "partial" : "unavailable",
+        snapshot->code_valid);
+
+    for (chunk = 0; chunk < 4; ++chunk) {
+        unsigned int first = chunk * 8;
+        unsigned int slot;
+        size_t used = 0;
+        char registers[256] = {0};
+        for (slot = first; slot < first + 8
+                && slot < DD_SCHEDULER_CONTEXT_GPR_COUNT; ++slot) {
+            int written = snprintf(registers + used, sizeof(registers) - used,
+                " slot%02u=%016" PRIx64, slot, snapshot->gpr[slot]);
+            if (written < 0 || (size_t)written >= sizeof(registers) - used)
+                break; /* At most 8 fixed-size slots fit in this buffer. */
+            used += (size_t)written;
+        }
+        DdStartupDiagnosticsTraceFault(
+            "DDSTART7 fault: candidate=%u gpr%u%s",
+            progress_ordinal, chunk, registers);
+    }
+
+    for (chunk = 0; chunk < 4; ++chunk) {
+        unsigned int first = chunk * 8;
+        DdStartupDiagnosticsTraceFault(
+            "DDSTART7 fault: candidate=%u code%u"
+            " s%02u=%s:%08" PRIx32 " s%02u=%s:%08" PRIx32
+            " s%02u=%s:%08" PRIx32 " s%02u=%s:%08" PRIx32
+            " s%02u=%s:%08" PRIx32 " s%02u=%s:%08" PRIx32
+            " s%02u=%s:%08" PRIx32 " s%02u=%s:%08" PRIx32,
+            progress_ordinal, chunk,
+            first, dd_context_code_status_name(snapshot->code_status[first]),
+            snapshot->code[first],
+            first + 1, dd_context_code_status_name(snapshot->code_status[first + 1]),
+            snapshot->code[first + 1],
+            first + 2, dd_context_code_status_name(snapshot->code_status[first + 2]),
+            snapshot->code[first + 2],
+            first + 3, dd_context_code_status_name(snapshot->code_status[first + 3]),
+            snapshot->code[first + 3],
+            first + 4, dd_context_code_status_name(snapshot->code_status[first + 4]),
+            snapshot->code[first + 4],
+            first + 5, dd_context_code_status_name(snapshot->code_status[first + 5]),
+            snapshot->code[first + 5],
+            first + 6, dd_context_code_status_name(snapshot->code_status[first + 6]),
+            snapshot->code[first + 6],
+            first + 7, dd_context_code_status_name(snapshot->code_status[first + 7]),
+            snapshot->code[first + 7]);
+    }
+}
+
+static void dd_trace_fault_snapshot(struct r4300_core* r4300,
+        unsigned int progress_ordinal, uint32_t pc_sample, int pc_available)
+{
+    uint32_t fingerprint[4] = {0, 0, 0, 0};
+    uint32_t fault_thread;
+    struct dd_fault_thread_snapshot snapshot;
+    int fingerprint_available = 1;
+    int signature_matches;
+    int root_available;
+
+    if (!DdStartupDiagnosticsEnabled())
+        return;
+
+    if (!pc_available || pc_sample != DD_SCHEDULER_EXPECTED_PC) {
+        DdStartupDiagnosticsTraceFault(
+            "DDSTART7 fault: candidate=%u structured=unavailable"
+            " reason=pc-signature-mismatch pc_sample=%08" PRIx32
+            " pc_state=%s",
+            progress_ordinal, pc_sample,
+            pc_available ? "mismatch" : "unavailable");
+        return;
+    }
+
+    signature_matches = dd_fault_signature_matches(r4300, fingerprint,
+        &fingerprint_available);
+    if (!signature_matches) {
+        DdStartupDiagnosticsTraceFault(
+            "DDSTART7 fault: candidate=%u structured=unavailable"
+            " reason=code-signature-%s pc_sample=%08" PRIx32
+            " raw_prev=%08" PRIx32 " raw_setpri=%08" PRIx32
+            " raw_loop=%08" PRIx32 " raw_nop=%08" PRIx32,
+            progress_ordinal, fingerprint_available ? "mismatch" : "unavailable",
+            pc_sample, fingerprint[0], fingerprint[1], fingerprint[2],
+            fingerprint[3]);
+        return;
+    }
+
+    root_available = dd_scheduler_read_word(r4300,
+        DD_SCHEDULER_FAULTED_THREAD, &fault_thread);
+    if (!root_available) {
+        DdStartupDiagnosticsTraceFault(
+            "DDSTART7 fault: candidate=%u structured=unavailable"
+            " reason=fault-pointer-read-failed"
+            " fault_root=%08" PRIx32 " signature=match",
+            progress_ordinal, DD_SCHEDULER_FAULTED_THREAD);
+        return;
+    }
+    if (fault_thread == 0 || fault_thread == DD_SCHEDULER_QUEUE_SENTINEL
+            || !dd_scheduler_guest_range(r4300, fault_thread,
+                DD_SCHEDULER_FAULT_CONTEXT_PREFIX)) {
+        DdStartupDiagnosticsTraceFault(
+            "DDSTART7 fault: candidate=%u structured=unavailable"
+            " reason=%s fault_thread=%08" PRIx32
+            " pointer_state=%s signature=match",
+            progress_ordinal, fault_thread == 0 ? "null-fault-pointer"
+                : fault_thread == DD_SCHEDULER_QUEUE_SENTINEL
+                    ? "sentinel-fault-pointer" : "invalid-fault-pointer",
+            fault_thread, fault_thread == 0 ? "null" : "invalid");
+        return;
+    }
+    if (!dd_fault_read_thread(r4300, fault_thread, &snapshot)) {
+        DdStartupDiagnosticsTraceFault(
+            "DDSTART7 fault: candidate=%u structured=unavailable"
+            " reason=guest-thread-read-failed fault_thread=%08" PRIx32
+            " pointer_state=valid signature=match",
+            progress_ordinal, fault_thread);
+        return;
+    }
+
+    dd_fault_read_code_window(r4300, snapshot.saved_pc, snapshot.code,
+        snapshot.code_status, &snapshot.code_valid);
+    dd_fault_emit_snapshot(progress_ordinal, &snapshot);
 }
 
 static void dd_trace_interrupt_progress(struct r4300_core* r4300,
@@ -1230,6 +1631,8 @@ static void dd_trace_interrupt_progress(struct r4300_core* r4300,
         dd_trace_context_snapshot(r4300, progress_ordinal, pc_sample,
             pc_available);
         dd_trace_scheduler_snapshot(r4300, progress_ordinal, pc_sample,
+            pc_available);
+        dd_trace_fault_snapshot(r4300, progress_ordinal, pc_sample,
             pc_available);
     }
     DdStartupDiagnosticsTrace(DD_TRACE_PROGRESS, DD_TRACE_PROGRESS_SPARSE,

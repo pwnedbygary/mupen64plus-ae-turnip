@@ -81,6 +81,14 @@ extern int DdStartupDiagnosticsTraceContext(const char *message, ...)
  */
 extern int DdStartupDiagnosticsTraceScheduler(const char *message, ...)
     ATTR_FMT(1,2);
+/*
+ * DDSTART7 has an independent 18-record session budget: two late candidates
+ * times the nine records in a complete saved-thread snapshot.  It is reset
+ * by every callback registration and remains subject to the same explicit
+ * host gate.
+ */
+extern int DdStartupDiagnosticsTraceFault(const char *message, ...)
+    ATTR_FMT(1,2);
 extern m64p_error SetStateCallback(ptr_StateCallback pFunc, void *Context);
 extern void       DebugMessage(int level, const char *message, ...) ATTR_FMT(2,3);
 extern void       StateChanged(m64p_core_param param_type, int new_value);

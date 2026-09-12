@@ -16,6 +16,7 @@ static unsigned pi_dma_traces;
 static unsigned pi_boundary_traces;
 static unsigned context_traces;
 static unsigned scheduler_traces;
+static unsigned fault_traces;
 static void capture(void *context, int level, const char *message)
 {
     const char *ordinal;
@@ -48,6 +49,8 @@ static void capture(void *context, int level, const char *message)
         ++context_traces;
     if (strstr(message, "DDSTART6 scheduler"))
         ++scheduler_traces;
+    if (strstr(message, "DDSTART7 fault"))
+        ++fault_traces;
 }
 
 int main(void)
@@ -221,5 +224,27 @@ int main(void)
     assert(count == 1); /* identity after reset */
     DdStartupDiagnosticsTraceScheduler("DDSTART6 scheduler: reset");
     assert(count == 2 && scheduler_traces == 1);
+
+    /* DDSTART7 is separately gated, bounded at 18, and reset per session. */
+    count = 0;
+    fault_traces = 0;
+    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "0", 1);
+    SetDebugCallback(capture, NULL);
+    DdStartupDiagnosticsTraceFault("DDSTART7 fault: disabled");
+    assert(count == 0 && fault_traces == 0);
+
+    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "1", 1);
+    SetDebugCallback(capture, NULL);
+    assert(count == 1); /* DDSTART1 identity */
+    for (unsigned i = 0; i < 40; ++i)
+        DdStartupDiagnosticsTraceFault("DDSTART7 fault: budget");
+    assert(fault_traces == 18 && count == 1 + 18);
+
+    count = 0;
+    fault_traces = 0;
+    SetDebugCallback(capture, NULL);
+    assert(count == 1); /* identity after reset */
+    DdStartupDiagnosticsTraceFault("DDSTART7 fault: reset");
+    assert(count == 2 && fault_traces == 1);
     return 0;
 }

@@ -1392,8 +1392,11 @@ Files changed for this candidate:
 `mupen64plus-core/upstream/src/api/callbacks.c`,
 `mupen64plus-core/upstream/src/api/callbacks.h`,
 `mupen64plus-core/upstream/src/device/r4300/interrupt.c`,
+`mupen64plus-core/upstream/src/device/r4300/dd_fault_layout.h`,
 `tools/tests/dd-startup-callbacks-test.c`,
-`tools/verify-dd-startup-apk.sh`, and this handoff.
+`tools/tests/dd-startup-fault-layout-test.c`,
+`tools/test-dd-startup.sh`, `tools/verify-dd-startup-apk.sh`, and this
+handoff.
 
 ## 2026-09-12 — DDSTART6 signature-gated scheduler snapshot candidate
 
@@ -1458,8 +1461,11 @@ Files changed for this candidate:
 `mupen64plus-core/upstream/src/api/callbacks.c`,
 `mupen64plus-core/upstream/src/api/callbacks.h`,
 `mupen64plus-core/upstream/src/device/r4300/interrupt.c`,
+`mupen64plus-core/upstream/src/device/r4300/dd_fault_layout.h`,
 `tools/tests/dd-startup-callbacks-test.c`,
-`tools/verify-dd-startup-apk.sh`, and this handoff.
+`tools/tests/dd-startup-fault-layout-test.c`,
+`tools/test-dd-startup.sh`, `tools/verify-dd-startup-apk.sh`, and this
+handoff.
 
 ## DDSTART6 build verification
 
@@ -1604,3 +1610,120 @@ idle is not necessarily the earlier main-thread exception. Until then,
 do not diagnose RTC, a missed DD interrupt, or an address-error exception
 as the established cause, and do not patch the saved SP or idle loop.
 No runtime correction or new APK accompanies this analysis.
+
+## 2026-09-12 — DDSTART7 selected-thread exception-context candidate
+
+This pass adds DDSTART7, a read-only diagnostic observation at the same
+signature-gated progress candidates (`65536` and `1048576`) used by DDSTART5
+and DDSTART6. It is enabled only by the existing
+`M64P_DD_STARTUP_DIAGNOSTICS=1` gate. No DD controller, scheduler, interrupt,
+guest memory, context, timing, or hook behavior is changed, and prior logging
+classes remain in place.
+
+### DDSTART6 sentinel/list correction
+
+The JP/rev0 reference is `/tmp/fzerox-reference`, revision
+`4fd50c7ca6b44f996aa0fbb68ec86df75855d5b8`. The adjacent thread globals are
+signature-gated at the existing map:
+
+- `__osRunQueue = 0x800d1d88`
+- active-list head (`thread.c` adjacent global) = `0x800d1d8c`
+- `__osRunningThread = 0x800d1d90`
+- `__osFaultedThread = 0x800d1d94`
+
+`0x800d1d80` is only an eight-byte queue-tail object (`next`, `priority`).
+DDSTART6 now reads those two raw words and stops with an explicit sentinel
+record; it never decodes that address as an OSThread or follows its apparent
+`tlnext`. The running-thread `tlnext` walk therefore terminates at the
+sentinel. After the same exact sampled idle PC and four-word code fingerprint
+match, a separate active-list `tlnext` walk starts from `0x800d1d8c` and is
+bounded at eight real thread objects. The active walk has independent visited
+state and does not expand the list limit.
+
+### DDSTART7 selected fault thread
+
+After the same exact gate (`PC=0x800679f8`, raw words
+`0x0c031dc4`, `0x0c030a98`, `0x1000ffff`, `0x00000000`), DDSTART7 reads the
+fault-selected pointer from `0x800d1d94` independently of either DDSTART6
+list limit. A null, invalid, unreadable, or signature-mismatched selection is
+reported as `structured=unavailable`; no thread fields are decoded in those
+cases. A valid selection is decoded using explicit guest offsets from the
+public `include/PR/os_thread.h`, not a host struct cast:
+
+| Field | Guest offset |
+| --- | --- |
+| next / priority / queue / tlnext | `0x00 / 0x04 / 0x08 / 0x0c` |
+| state / flags / id | state+flags word `0x10`; id `0x14` |
+| fault-context prefix / saved integer context start | `0x128 / 0x20` |
+| saved SP / RA | `0xf0 / 0x100` |
+| saved LO / HI | `0x108 / 0x110` |
+| saved SR / PC / Cause / BadVAddr | `0x118 / 0x11c / 0x120 / 0x124` |
+
+The snapshot emits state and flags, all 29 saved fault-context integer
+register slots (in guest order `at,v0,v1,a0-a3,t0-t7,s0-s7,t8,t9,gp,sp,s8,ra`;
+the output deliberately labels them `slot00` through `slot28`), explicit saved
+SP/RA and LO/HI, and the saved SR/Cause/BadVAddr/PC.
+`saved_cause_source=thread_context` is emitted deliberately: live CP0 Cause
+at the late idle boundary is not substituted for the selected thread's saved
+exception Cause. The saved-PC code window starts eight words before the saved
+PC, then contains 24 words starting at PC (32 words total). Each word
+independently requires alignment,
+KSEG0/KSEG1 membership, the same segment as the saved PC, and a real RDRAM
+`dram_size` bound. Reads use the direct RDRAM array only; generic memory
+handlers and MMIO are never touched.
+
+DDSTART7 has an independent 18-record callback budget. A complete candidate
+uses nine records (one header, four register records, four code records), so
+the two candidates have the exact worst-case bound `2 × 9 = 18`. Invalid
+pointer or missing-signature candidates consume one structured-unavailable
+record. The budget and ordinal reset on every callback registration and are
+disabled with the existing host gate. No outcome or root-cause claim follows
+from this diagnostic.
+
+### Capture instructions and limits
+
+The owning agent should perform the normal source and packaged-marker checks,
+then update the existing debug installation without clearing data. Use the
+same Japanese native combination, DD enabled, no autoload, and unchanged
+profile. Capture at least **45 seconds** to `ddstart7-logcat.txt` so both
+late candidates can be observed. Verify `DDSTART7 fault:` in the packaged
+arm64 native core before requesting a device run. Device outcome remains
+pending; this is not an emulation correction.
+
+Source review rejected an initial incorrect saved-register layout before
+delivery. The corrected layout includes `at` and uses saved SR/Cause/BadVAddr
+at `0x118/0x120/0x124`. Host fixtures now test the **production** RDRAM
+reader with independent numeric offsets, known high/low word halves,
+KSEG0/KSEG1 aliases, exact-end acceptance, and invalid-range rejection.
+Both focused test suites and the final layout/bounds review passed.
+No rejected-layout APK was delivered.
+
+Files changed for this candidate:
+`mupen64plus-core/upstream/src/api/callbacks.c`,
+`mupen64plus-core/upstream/src/api/callbacks.h`,
+`mupen64plus-core/upstream/src/device/r4300/interrupt.c`,
+`mupen64plus-core/upstream/src/device/r4300/dd_fault_layout.h`,
+`tools/test-dd-startup.sh`,
+`tools/tests/dd-startup-callbacks-test.c`,
+`tools/tests/dd-startup-fault-layout-test.c`,
+`tools/verify-dd-startup-apk.sh`, and this handoff.
+
+### Final pre-delivery verification
+
+- Android debug build passed in 1m21s (all configured ABIs). The renewed
+  environment needed the Gradle distribution/dependency cache restored
+  online; the earlier download failure produced no new APK.
+- Packaged arm64 native core contains DDSTART7 and all previous diagnostic
+  markers. The focused callback and shared production-reader tests passed;
+  final code review passed after the ABI corrections described above.
+- The existing debug key was selected locally without changing project
+  signing configuration or publishing signing material. APK certificate
+  SHA-256 matches DDSTART6 exactly:
+  `311f4e35e939256ae8df53ecbf15c43235d1ee97f8a0138d332839c5e53c2bfc`.
+  Update with `adb install -r`; stop on any installation/signature error,
+  rather than uninstalling or clearing data.
+- Delivered file: `build-downloads/DDSTART7-debug.apk`, SHA-256
+  `fb03906cb84de98a4362b71f246e2f65afeec82075146ae75bfc34337ad08f9f`.
+- No connected Android device or browser-runnable version exists here.
+  The requested native capture, cause identification, exact corrupting
+  writer/reuse attribution, correction and acceptance remain unresolved.
