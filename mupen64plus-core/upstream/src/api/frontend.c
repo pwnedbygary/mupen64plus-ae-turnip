@@ -54,6 +54,14 @@ static int l_CoreInit = 0;
 static int l_ROMOpen = 0;
 static int l_CallerUsingSDL = 0;
 
+static m64p_error startup_failure(m64p_error error)
+{
+    /* Only discard the added diagnostic state; preserve baseline cleanup. */
+    if (DdStartupDiagnosticsEnabled())
+        SetDebugCallback(NULL, NULL);
+    return error;
+}
+
 /* functions exported outside of libmupen64plus to front-end application */
 EXPORT m64p_error CALL CoreStartup(int APIVersion, const char *ConfigPath, const char *DataPath, void *Context,
                                    void (*DebugCallback)(void *, int, const char *), void *Context2,
@@ -74,7 +82,7 @@ EXPORT m64p_error CALL CoreStartup(int APIVersion, const char *ConfigPath, const
     {
         DebugMessage(M64MSG_ERROR, "CoreStartup(): Front-end (API version %i.%i.%i) is incompatible with this core (API %i.%i.%i)",
                      VERSION_PRINTF_SPLIT(APIVersion), VERSION_PRINTF_SPLIT(FRONTEND_API_VERSION));
-        return M64ERR_INCOMPATIBLE;
+        return startup_failure(M64ERR_INCOMPATIBLE);
     }
 
     /* set up the default (dummy) plugins */
@@ -87,19 +95,19 @@ EXPORT m64p_error CALL CoreStartup(int APIVersion, const char *ConfigPath, const
 
     /* next, start up the configuration handling code by loading and parsing the config file */
     if (ConfigInit(ConfigPath, DataPath) != M64ERR_SUCCESS)
-        return M64ERR_INTERNAL;
+        return startup_failure(M64ERR_INTERNAL);
 
     /* set default configuration parameter values for Core */
     if (ConfigOpenSection("Core", &g_CoreConfig) != M64ERR_SUCCESS || g_CoreConfig == NULL)
-        return M64ERR_INTERNAL;
+        return startup_failure(M64ERR_INTERNAL);
 
     if (!main_set_core_defaults())
-        return M64ERR_INTERNAL;
+        return startup_failure(M64ERR_INTERNAL);
 
     /* allocate base memory */
     g_mem_base = init_mem_base();
     if (g_mem_base == NULL) {
-        return M64ERR_NO_MEMORY;
+        return startup_failure(M64ERR_NO_MEMORY);
     }
 
     /* The ROM database contains MD5 hashes, goodnames, and some game-specific parameters */
@@ -129,6 +137,11 @@ EXPORT m64p_error CALL CoreShutdown(void)
     /* deallocate base memory */
     release_mem_base(g_mem_base);
     g_mem_base = NULL;
+
+    /* DD diagnostics must not retain their callback after producers stop.
+     * Keep the historical callback lifecycle unchanged for non-DD sessions. */
+    if (DdStartupDiagnosticsEnabled())
+        SetDebugCallback(NULL, NULL);
 
     l_CoreInit = 0;
     return M64ERR_SUCCESS;

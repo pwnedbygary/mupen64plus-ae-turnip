@@ -534,7 +534,8 @@ class CoreInterface
      * This function initializes libmupen64plus for use by allocating memory,
      * creating data structures, and loading the configuration file.
      */
-    int coreStartup(String configDirPath, String dataDirPath, String userDataPath, String userCachePath)
+    int coreStartup(String configDirPath, String dataDirPath, String userDataPath, String userCachePath,
+                    boolean enable64DdSupport)
     {
         LibC.INSTANCE.setenv("XDG_DATA_HOME", userDataPath, 1);
         LibC.INSTANCE.setenv("XDG_CACHE_HOME", userCachePath, 1);
@@ -545,7 +546,17 @@ class CoreInterface
         mCoreContext.setString(0, coreContextText);
 
         CoreLibrary.DebugCallback debugCallback = null;
-        if (!new File(mDdRom).exists()) {
+        // The native core filters/bounds these messages before crossing JNA.
+        // Reset for every session, including DD-disabled cartridge launches.
+        if (LibC.INSTANCE.setenv("M64P_DD_STARTUP_DIAGNOSTICS",
+                enable64DdSupport ? "1" : "0", 1) != 0) {
+            Log.e(TAG, "Unable to configure DD startup diagnostics");
+            return -1;
+        }
+        if (enable64DdSupport) {
+            Log.i(TAG, "DDSTART1 requested: support64dd=true; native marker required");
+            debugCallback = mDebugCallBackCore;
+        } else if (!new File(mDdRom).exists()) {
             Log.i(TAG, "DDROM file does not exists:" + mDdRom);
             debugCallback = mDebugCallBackCore;
         } else {

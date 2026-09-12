@@ -766,3 +766,138 @@ lookup. The native core's DD logging suppression remains the next concrete
 observation blocker. Keep original signing and the non-suffixed package for
 any update; do not switch package variants, uninstall, or clear data to gain
 diagnostic access. No raw package dump is published with this summary.
+
+## 2026-09-11 — DDSTART1 diagnostic-only candidate
+
+The user explicitly confirmed the tested APK is the v336 release. No more
+baseline identity confirmation is required to proceed with this observation
+change. This candidate does **not** fix the freeze or change boot priority.
+
+### Exact change and activation boundary
+
+- `CoreService` passes the existing per-game `enable64DdSupport` boolean
+  into `CoreInterface.coreStartup`. New launch metadata is emitted only
+  under that boolean: direct-NDD classification, configured input presence,
+  CountPerOp and denominator. Disk-only metadata uses the actual global IPL
+  selection rather than incorrectly reporting the cart-specific paths.
+  `autoLoadRequested` reports the existing `!mIsRestarting` decision, without
+  changing it; an attempted load is not proof a state file was restored.
+- `CoreInterface` sets process-local `M64P_DD_STARTUP_DIAGNOSTICS` to exactly
+  `1` or `0` at every startup, preventing a previous session's activation
+  from carrying forward. This is app process state, not a workspace secret
+  or an instruction for users to set an environment variable on Android.
+  Failure to set it aborts startup with an explicit error rather than risking
+  stale diagnostic activation.
+- With support enabled, register the existing core callback even if the IPL
+  exists, so load errors remain observable. With support disabled, retain
+  the original IPL-exists/null-callback selection and ordinary logging.
+  Direct-NDD classification alone does not enable these diagnostics.
+- Native `callbacks.c` snapshots the option at callback registration, filters
+  out STATUS/VERBOSE before formatting and JNA delivery, and allows a maximum
+  of **256 native callback messages total per CoreStartup**. This includes
+  the identity marker and a final coverage-limit message in place of the
+  256th ordinary record. The final marker is not a guest stall indication.
+  Atomic budget updates prevent concurrent producers exceeding the cap;
+  delivery ordering across threads is not an exact guest event sequence.
+- `device.c` emits one gated selection record: cartridge/IPL byte sizes and
+  chosen CART/DD_IPL source. Existing load/CIC/engine messages supply the
+  surrounding context. The original IPL-first selection expression is
+  unchanged, including its documented hardware discrepancy.
+- After core shutdown quiesces producers, clear callback/context/diagnostic
+  activation only for a diagnostic session. The baseline non-DD shutdown
+  callback lifecycle remains unchanged.
+- On native startup failure, discard added diagnostic callback state before
+  returning the original error. On Java setup failure after successful native
+  initialization, explicitly DD-gated teardown detaches plugins, closes ROM
+  and shuts down the core; it does not prune/export/sync saves. This closes
+  the diagnostic lifetime without changing DD-disabled failure handling.
+
+Plain-cart overhead is confined to per-session option initialization and
+simple false guards in existing logging/device initialization/shutdown code.
+There is no new instruction hook, polling timer, buffer-manager transition,
+RSP/renderer/timing change, file trace, ROM database change, or save mutation.
+DD-enabled callback logging has finite but nonzero overhead; a differing
+visible result under diagnostics would need an uninstrumented comparison.
+Plugin/Android logs outside this native core callback are not capped by it.
+This is a startup observation, not a sustained PI/DD or exact-writer trace.
+
+### Review corrections and reproducible verification
+
+Initial review found the proposed cap allowed 257 crossings, shutdown did
+not clear the new state, and direct-NDD metadata reported cart preferences.
+All three were corrected before publication. Tests cover baseline verbose
+logging, DD level filtering, exact cap, single limit marker, error/warning
+delivery, null-callback teardown and subsequent plain-session reset.
+The teardown unit test covers callback reset; Android lifecycle invocation
+and actual game behavior still require device confirmation.
+Follow-up review found startup/setup failure lifetimes also needed cleanup;
+the native error returns and DD-only Java failure teardown now handle these.
+
+From repository root:
+
+```sh
+bash tools/test-dd-startup.sh
+./gradlew :app:assembleDebug --console=plain
+bash tools/verify-dd-startup-apk.sh app/build/outputs/apk/debug/Mupen64PlusAE-debug.apk
+```
+
+The APK verifier checks all three DDSTART1 markers in the actual packaged
+arm64-v8a core and prints the APK SHA-256. A Java “requested” message alone
+does not prove the native change was packaged. An old locally cached core
+must not be accepted just because Gradle reports success.
+
+### Local signed build and capture
+
+Use the current debugging branch with a clean or documented working diff.
+The workspace debug APK is for build/package verification only: it is not
+the user's release signing identity and is not being distributed.
+Build locally with the original signing setup, same non-suffixed package
+and compatible version code; verify its packaged core with the helper above.
+Do not accept a fallback debug signing identity for a release update.
+Do not upload keystores or credentials. Do not uninstall or clear data.
+If an update is rejected for signing/version reasons, stop and report it.
+
+On the Mac, the prerequisite versions are Java 17, SDK 34, build tools
+34.0.0, NDK 26.1.10909125 and CMake 3.22.1. The prior chat supplied an
+M1-compatible setup using pinned command-line tools and Rosetta. Use the
+local SDK path; do not copy Linux `local.properties` paths to macOS.
+The repository Gradle wrapper supplies Gradle itself.
+
+After the locally signed diagnostic APK is installed, from any Mac directory:
+
+```sh
+export PATH="$HOME/Downloads/platform-tools:$PATH"
+mkdir -p "$HOME/Desktop/n64dd-ddstart1"
+cd "$HOME/Desktop/n64dd-ddstart1"
+adb shell dumpsys package org.mupen64plusae.turnip.pwnedbygary > installed-package.txt
+adb logcat -T 1 -v threadtime > ddstart1-logcat.txt
+```
+
+Start recording before opening the game. `-T 1` limits historical backlog
+without clearing device logs. Use the same native cart/disk/IPL and settings,
+support enabled, fresh launch without loading a state. Reproduce the logo
+freeze, allow about 30 seconds, then Control-C. Share privacy-reviewed logs,
+the APK verifier output and whether screen/audio behavior changed. Preserve
+all saves and do not use the cart hack as this native test.
+
+Expected new records: `DDSTART1 launch`, `DDSTART1 requested`,
+`DDSTART1 native`, then disk/IPL/CIC/engine messages as the core reaches them,
+and `DDSTART1 boot selection`. Missing stages may be loading failures,
+budget exhaustion, or packaging/activation failures; distinguish these.
+In DD-disabled controls there must be no DDSTART1 runtime records.
+Native menu/audio, ordinary-cart regressions and writable-save acceptance
+remain pending; the project task is not complete.
+
+### Workspace verification result
+
+- `bash tools/test-dd-startup.sh`: passed.
+- `./gradlew :app:assembleDebug --offline --console=plain`: passed after
+  all review corrections (27 seconds, 417 actionable tasks). This is compilation/
+  packaging verification, not a device boot result.
+- `bash tools/verify-dd-startup-apk.sh ...`: all three native arm64 markers
+  present in the resulting APK.
+- Workspace-only verification APK SHA-256:
+  `b27201ba2e08f63b33a313a92396817297ab5836a35de8ac38388b7a61ef304d`.
+  The locally signed release build will have a different hash; record its own.
+- `git diff --check`: passed. No running web app exists for a browser
+  screenshot check; the supplied Android screenshot remains visual evidence.

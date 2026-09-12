@@ -20,6 +20,7 @@
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 #include "device.h"
+#include "api/callbacks.h"
 
 #include "memory/memory.h"
 #include "pif/pif.h"
@@ -200,6 +201,12 @@ void init_device(struct device* dev,
     uint32_t rom_base = (dd_rom_size > 0)
         ? MM_DD_ROM
         : MM_CART_ROM;
+
+    if (DdStartupDiagnosticsEnabled())
+        DebugMessage(M64MSG_INFO,
+            "DDSTART1 boot selection: cart_bytes=%zu ipl_bytes=%zu source=%s (baseline policy unchanged)",
+            (size_t)rom_size, (size_t)dd_rom_size,
+            rom_base == MM_DD_ROM ? "DD_IPL" : "CART");
 
     init_pif(&dev->pif,
         (uint8_t*)mem_base_u32(base, MM_PIF_MEM),
