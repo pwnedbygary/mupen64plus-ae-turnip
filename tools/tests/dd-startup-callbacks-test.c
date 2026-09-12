@@ -14,6 +14,7 @@ static unsigned bm_ordinal;
 static unsigned bm_bad_ordinals;
 static unsigned pi_dma_traces;
 static unsigned pi_boundary_traces;
+static unsigned context_traces;
 static void capture(void *context, int level, const char *message)
 {
     const char *ordinal;
@@ -42,6 +43,8 @@ static void capture(void *context, int level, const char *message)
         else
             ++bm_ordinal;
     }
+    if (strstr(message, "DDSTART5 context"))
+        ++context_traces;
 }
 
 int main(void)
@@ -158,5 +161,37 @@ int main(void)
     SetDebugCallback(capture, NULL);
     DebugMessage(M64MSG_VERBOSE, "plain again");
     assert(count == 4);
+
+    /*
+     * DDSTART5 is host-gated, has an independent 24-record budget even
+     * after DDSTART4 consumes the aggregate budget, and resets on callback
+     * registration.
+     */
+    count = 0;
+    context_traces = 0;
+    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "0", 1);
+    SetDebugCallback(capture, NULL);
+    DdStartupDiagnosticsTraceContext("DDSTART5 context: disabled");
+    assert(count == 0 && context_traces == 0);
+
+    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "1", 1);
+    SetDebugCallback(capture, NULL);
+    assert(count == 1); /* DDSTART1 identity */
+    bm_ordinal = 0;
+    bm_bad_ordinals = 0;
+    for (unsigned i = 0; i < 600; ++i)
+        DdStartupDiagnosticsTrace(DD_TRACE_BM_HANDSHAKE, DD_TRACE_EARLY,
+            "DDSTART4 BM observation");
+    for (unsigned i = 0; i < 40; ++i)
+        DdStartupDiagnosticsTraceContext("DDSTART5 context: budget");
+    assert(context_traces == 24 && count == 1 + 512 + 24);
+    assert(bm_ordinal == 512 && bm_bad_ordinals == 0);
+
+    count = 0;
+    context_traces = 0;
+    SetDebugCallback(capture, NULL);
+    assert(count == 1); /* DDSTART1 identity after reset */
+    DdStartupDiagnosticsTraceContext("DDSTART5 context: reset");
+    assert(count == 2 && context_traces == 1);
     return 0;
 }

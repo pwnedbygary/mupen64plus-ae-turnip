@@ -42,6 +42,7 @@
 #include "device/r4300/new_dynarec/new_dynarec.h"
 #include "device/r4300/r4300_core.h"
 #include "device/r4300/recomp.h"
+#include "device/rdram/rdram.h"
 #include "device/rcp/ai/ai_controller.h"
 #include "device/rcp/vi/vi_controller.h"
 #include "main/main.h"
@@ -533,12 +534,242 @@ static void call_interrupt_handler(const struct cp0* cp0, size_t index)
     handler->callback(handler->opaque);
 }
 
+enum dd_context_code_status
+{
+    DD_CONTEXT_CODE_OK = 0,
+    DD_CONTEXT_CODE_PC_UNAVAILABLE,
+    DD_CONTEXT_CODE_PC_MISALIGNED,
+    DD_CONTEXT_CODE_NOT_KSEG,
+    DD_CONTEXT_CODE_ADDRESS_UNDERFLOW,
+    DD_CONTEXT_CODE_ADDRESS_OVERFLOW,
+    DD_CONTEXT_CODE_CROSSED_KSEG,
+    DD_CONTEXT_CODE_RDRAM_UNAVAILABLE,
+    DD_CONTEXT_CODE_RDRAM_OUT_OF_RANGE
+};
+
+static const char* dd_context_code_status_name(enum dd_context_code_status status)
+{
+    static const char* const names[] = {
+        "ok",
+        "pc-unavailable",
+        "pc-misaligned",
+        "not-kseg",
+        "address-underflow",
+        "address-overflow",
+        "crossed-kseg",
+        "rdram-unavailable",
+        "rdram-out-of-range"
+    };
+
+    return (unsigned int)status
+        < sizeof(names) / sizeof(names[0]) ? names[status] : "unavailable";
+}
+
+/*
+ * Do not use the generic memory handlers here.  They can address MMIO and
+ * may have read side effects.  The snapshot is limited to the two direct
+ * cached/uncached RDRAM segments, with each word checked independently.
+ */
+static int dd_context_map_kseg(uint32_t address, uint32_t* physical,
+        unsigned int* segment)
+{
+    const uint64_t kseg_size = UINT64_C(0x20000000);
+
+    if ((uint64_t)address >= (uint64_t)R4300_KSEG0
+            && (uint64_t)address < (uint64_t)R4300_KSEG0 + kseg_size) {
+        if (physical != NULL)
+            *physical = address - R4300_KSEG0;
+        *segment = 0;
+        return 1;
+    }
+    if ((uint64_t)address >= (uint64_t)R4300_KSEG1
+            && (uint64_t)address < (uint64_t)R4300_KSEG1 + kseg_size) {
+        if (physical != NULL)
+            *physical = address - R4300_KSEG1;
+        *segment = 1;
+        return 1;
+    }
+
+    return 0;
+}
+
+static int dd_context_sample_pc(struct r4300_core* r4300, uint32_t* pc_sample)
+{
+    struct precomp_instr** pc_struct;
+    uint32_t* pc;
+
+    if (r4300 == NULL || pc_sample == NULL)
+        return 0;
+
+    pc_struct = r4300_pc_struct(r4300);
+    if (pc_struct == NULL)
+        return 0;
+
+    /*
+     * In NEW_DYNAREC mode r4300_pc() selects
+     * new_dynarec_hot_state.pcaddr for a dynarec core.  For interpreter
+     * modes it selects the current precompiled instruction's addr.  Do not
+     * dereference the latter until its pointer is known to be present.
+     */
+#ifdef NEW_DYNAREC
+    if (r4300->emumode != EMUMODE_DYNAREC && *pc_struct == NULL)
+#else
+    if (*pc_struct == NULL)
+#endif
+        return 0;
+
+    pc = r4300_pc(r4300);
+    if (pc == NULL)
+        return 0;
+
+    *pc_sample = *pc;
+    return 1;
+}
+
+static void dd_trace_context_snapshot(struct r4300_core* r4300,
+        unsigned int progress_ordinal, uint32_t pc_sample, int pc_available)
+{
+    int64_t gpr[32];
+    uint32_t code[32];
+    enum dd_context_code_status code_status[32];
+    int64_t* regs;
+    unsigned int pc_segment = 0;
+    unsigned int valid_count = 0;
+    unsigned int chunk;
+    unsigned int slot;
+    int pc_is_kseg = 0;
+    const char* pc_state;
+    const char* code_state;
+
+    memset(gpr, 0, sizeof(gpr));
+    memset(code, 0, sizeof(code));
+    for (slot = 0; slot < 32; ++slot)
+        code_status[slot] = DD_CONTEXT_CODE_PC_UNAVAILABLE;
+
+    regs = r4300_regs(r4300);
+    if (regs != NULL)
+        memcpy(gpr, regs, sizeof(gpr));
+
+    if (!pc_available) {
+        pc_state = "unavailable";
+    }
+    else if ((pc_sample & UINT32_C(3)) != 0) {
+        pc_state = "misaligned";
+        for (slot = 0; slot < 32; ++slot)
+            code_status[slot] = DD_CONTEXT_CODE_PC_MISALIGNED;
+    }
+    else if (!dd_context_map_kseg(pc_sample, NULL, &pc_segment)) {
+        pc_state = "not-kseg";
+        for (slot = 0; slot < 32; ++slot)
+            code_status[slot] = DD_CONTEXT_CODE_NOT_KSEG;
+    }
+    else {
+        pc_state = "mapped";
+        pc_is_kseg = 1;
+    }
+
+    if (pc_is_kseg) {
+        for (slot = 0; slot < 32; ++slot) {
+            uint32_t address;
+            uint32_t physical;
+            unsigned int segment;
+            uint32_t delta;
+
+            if (slot < 8) {
+                delta = (8 - slot) * 4;
+                if (pc_sample < delta) {
+                    code_status[slot] = DD_CONTEXT_CODE_ADDRESS_UNDERFLOW;
+                    continue;
+                }
+                address = pc_sample - delta;
+            }
+            else {
+                delta = (slot - 8) * 4;
+                if (pc_sample > UINT32_MAX - delta) {
+                    code_status[slot] = DD_CONTEXT_CODE_ADDRESS_OVERFLOW;
+                    continue;
+                }
+                address = pc_sample + delta;
+            }
+
+            if (!dd_context_map_kseg(address, &physical, &segment)) {
+                code_status[slot] = DD_CONTEXT_CODE_NOT_KSEG;
+                continue;
+            }
+            if (segment != pc_segment) {
+                code_status[slot] = DD_CONTEXT_CODE_CROSSED_KSEG;
+                continue;
+            }
+            if (r4300->rdram == NULL || r4300->rdram->dram == NULL) {
+                code_status[slot] = DD_CONTEXT_CODE_RDRAM_UNAVAILABLE;
+                continue;
+            }
+            if ((size_t)physical > r4300->rdram->dram_size
+                    || r4300->rdram->dram_size - (size_t)physical
+                        < sizeof(uint32_t)) {
+                code_status[slot] = DD_CONTEXT_CODE_RDRAM_OUT_OF_RANGE;
+                continue;
+            }
+
+            code[slot] = r4300->rdram->dram[physical / sizeof(uint32_t)];
+            code_status[slot] = DD_CONTEXT_CODE_OK;
+            ++valid_count;
+        }
+    }
+
+    code_state = valid_count == 32 ? "available"
+        : valid_count != 0 ? "partial" : "unavailable";
+    DdStartupDiagnosticsTraceContext(
+        "DDSTART5 context: candidate=%u pc_sample=%08" PRIx32
+        " pc_state=%s pc_is_exact_writer=false gpr_state=%s code_state=%s",
+        progress_ordinal, pc_sample, pc_state, regs != NULL ? "available" : "unavailable",
+        code_state);
+
+    for (chunk = 0; chunk < 4; ++chunk) {
+        unsigned int first = chunk * 8;
+        DdStartupDiagnosticsTraceContext(
+            "DDSTART5 context: candidate=%u gpr%u"
+            " r%02u=%016" PRIx64 " r%02u=%016" PRIx64
+            " r%02u=%016" PRIx64 " r%02u=%016" PRIx64
+            " r%02u=%016" PRIx64 " r%02u=%016" PRIx64
+            " r%02u=%016" PRIx64 " r%02u=%016" PRIx64,
+            progress_ordinal, chunk, first, (uint64_t)gpr[first],
+            first + 1, (uint64_t)gpr[first + 1],
+            first + 2, (uint64_t)gpr[first + 2],
+            first + 3, (uint64_t)gpr[first + 3],
+            first + 4, (uint64_t)gpr[first + 4],
+            first + 5, (uint64_t)gpr[first + 5],
+            first + 6, (uint64_t)gpr[first + 6],
+            first + 7, (uint64_t)gpr[first + 7]);
+    }
+
+    for (chunk = 0; chunk < 4; ++chunk) {
+        unsigned int first = chunk * 8;
+        DdStartupDiagnosticsTraceContext(
+            "DDSTART5 context: candidate=%u code%u"
+            " s%02u=%s:%08" PRIx32 " s%02u=%s:%08" PRIx32
+            " s%02u=%s:%08" PRIx32 " s%02u=%s:%08" PRIx32
+            " s%02u=%s:%08" PRIx32 " s%02u=%s:%08" PRIx32
+            " s%02u=%s:%08" PRIx32 " s%02u=%s:%08" PRIx32,
+            progress_ordinal, chunk,
+            first, dd_context_code_status_name(code_status[first]), code[first],
+            first + 1, dd_context_code_status_name(code_status[first + 1]), code[first + 1],
+            first + 2, dd_context_code_status_name(code_status[first + 2]), code[first + 2],
+            first + 3, dd_context_code_status_name(code_status[first + 3]), code[first + 3],
+            first + 4, dd_context_code_status_name(code_status[first + 4]), code[first + 4],
+            first + 5, dd_context_code_status_name(code_status[first + 5]), code[first + 5],
+            first + 6, dd_context_code_status_name(code_status[first + 6]), code[first + 6],
+            first + 7, dd_context_code_status_name(code_status[first + 7]), code[first + 7]);
+    }
+}
+
 static void dd_trace_interrupt_progress(struct r4300_core* r4300,
                                         unsigned int event_type)
 {
     uint32_t pc_sample = 0;
-    struct precomp_instr** pc_struct = NULL;
     const uint32_t* cp0_regs;
+    unsigned int progress_ordinal;
+    int pc_available;
 
     if (!DdStartupDiagnosticsEnabled())
         return;
@@ -548,10 +779,12 @@ static void dd_trace_interrupt_progress(struct r4300_core* r4300,
      * intentionally a sample, not an instruction hook or an exact writer
      * attribution; compiled stores may occur between these boundaries.
      */
-    pc_struct = r4300_pc_struct(r4300);
-    if (r4300->emumode == EMUMODE_DYNAREC || *pc_struct != NULL)
-        pc_sample = *r4300_pc(r4300);
+    pc_available = dd_context_sample_pc(r4300, &pc_sample);
     cp0_regs = r4300_cp0_regs(&r4300->cp0);
+    progress_ordinal = DdStartupDiagnosticsNextProgressOrdinal();
+    if (progress_ordinal == 65536 || progress_ordinal == 1048576)
+        dd_trace_context_snapshot(r4300, progress_ordinal, pc_sample,
+            pc_available);
     DdStartupDiagnosticsTrace(DD_TRACE_PROGRESS, DD_TRACE_PROGRESS_SPARSE,
         "DDSTART3 progress: boundary=interrupt event=%u cp0_count=%08"
         PRIx32 " cause=%08" PRIx32 " pc_sample=%08" PRIx32

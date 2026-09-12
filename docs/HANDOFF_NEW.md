@@ -1329,7 +1329,84 @@ Read-only code review found no runtime implementation blocker; its coverage
 wording correction is incorporated above and in the source comment. Raw
 Android logs are excluded from selective GitHub publication.
 
+## 2026-09-12 — DDSTART5 late guest-context snapshot candidate
+
+This pass adds an explicitly gated, diagnostic-only late context observation.
+It does not alter DDSTART4, the DD controller, interrupt scheduling, guest
+state, memory handlers, or any device behavior. No APK was built, installed,
+or published by this pass.
+
+### Snapshot coverage and source reasoning
+
+- `dd_trace_interrupt_progress` remains the only call site and still runs at
+  the existing `gen_interrupt` emulation-thread boundary. It predicts the
+  next DDSTART3 progress ordinal and captures only candidates `65536` and
+  `1048576`; there is no per-instruction hook.
+- The sampled PC uses the existing `r4300_pc` accessor after the same
+  null-safe `r4300_pc_struct` check used by the progress observation. Source
+  inspection of `device/r4300/r4300_core.c` confirms that NEW_DYNAREC selects
+  `new_dynarec_hot_state.pcaddr` in dynarec mode and the current
+  precompiled-instruction address in interpreter modes. GPRs use the existing
+  `r4300_regs` accessor; its NEW_DYNAREC path is
+  `new_dynarec_hot_state.regs[32]`. No direct platform-specific hot-state
+  access was added.
+- The snapshot copies all 32 GPRs into fixed stack storage before emission.
+  Code storage is also fixed stack storage: 32 words, with slots `0..7`
+  representing eight words before the sampled PC and slots `8..31`
+  representing the PC and the following 24 words. Each virtual slot is
+  independently checked for arithmetic overflow/underflow, KSEG0/KSEG1
+  membership, and crossing the sampled segment. Physical access uses only
+  `r4300->rdram->dram` after a real `dram_size` byte-bound check; it does not
+  call generic memory handlers and therefore does not read MMIO or trigger
+  read side effects.
+- Unavailable PC/GPR state, misalignment, non-KSEG addresses, segment
+  crossings, missing RDRAM, and RDRAM bounds failures are emitted as explicit
+  state/status values. `pc_is_exact_writer=false` remains explicit: this is
+  a boundary sample and cannot identify the instruction that wrote guest
+  state.
+
+DDSTART5 context records use a separate 24-record callback class, outside
+the DDSTART3/DDSTART4 aggregate and per-kind budgets. A complete candidate
+snapshot uses at most nine records (header, four GPR records, four code
+records), so the two candidates fit within the class bound. The class
+counter and remaining budget are reset by every `SetDebugCallback`, and the
+host gate remains exactly `M64P_DD_STARTUP_DIAGNOSTICS=1`. The APK verifier
+now requires the `DDSTART5 context:` marker. The focused host test adds
+disabled-gate, aggregate-independent budget, and callback-reset assertions;
+the owning agent should run it and perform the normal source/package checks.
+
+### Retained DDSTART4 handoff findings
+
+The supplied DDSTART4 evidence SHA-256 is
+`a72ac07e9ae0b358ff5f5ffd475e4f36727cec6273ecd202645eeced9a408b`.
+The reported block 1 at track 464 covered 85 data sectors plus four C2
+sectors, followed by stop and acknowledgement. The 512-record cap reached
+track 316 sector 41, so it is a coverage limit rather than a complete-block
+claim. The track 6 special case is an intentional retail failure path, not
+the root cause. Earlier `0x06` DMA evidence uses the IPL-to-RDRAM direction
+write convention; it does not establish that the guest wrote the IPL.
+These are retained observations only: no code-symbol guesses and no
+guaranteed root-cause claim.
+
+Files changed for this candidate:
+`mupen64plus-core/upstream/src/api/callbacks.c`,
+`mupen64plus-core/upstream/src/api/callbacks.h`,
+`mupen64plus-core/upstream/src/device/r4300/interrupt.c`,
+`tools/tests/dd-startup-callbacks-test.c`,
+`tools/verify-dd-startup-apk.sh`, and this handoff.
+
 ## Test publication requirement
+
+DDSTART5 final verification before publication: callback/budget/reset tests
+passed; Android debug build passed in 42 seconds; packaged arm64 context
+marker and previous trace markers verified; focused code review found no
+implementation blocker. APK SHA-256:
+`986a59a11895f0c3f4e42cfb96a6f18a20015f746111a4a0154b2dfa2d95010d`.
+This is diagnostic-only and device results remain pending. Update the existing
+debug app, preserve saves, use the same Japanese native combination with DD
+enabled and no autoload, then capture at least 30 seconds to
+`ddstart5-logcat.txt`. Expected context output is two nine-record groups,
+not a guarantee of a particular guest PC or a successful boot.
 
 For every test iteration, update this handoff **before** creating and pushing
 the test commit to the current debug branch, `dd-eos-watchdog-checkpoint`.

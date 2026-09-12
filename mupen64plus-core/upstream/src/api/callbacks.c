@@ -47,6 +47,9 @@ static unsigned int dd_startup_remaining = 0;
  * cannot consume the DD DMA-start observations.  DDSTART4 BM observations
  * have a larger bounded window sized for a block handshake; prior retries
  * can consume it, so complete-block coverage is not guaranteed.
+ * DDSTART5 context records are intentionally outside both the aggregate and
+ * per-kind budgets above.  They have a small, independently reset class
+ * budget so a late progress boundary remains observable.
  */
 enum
 {
@@ -58,12 +61,15 @@ enum
     DD_TRACE_INTERRUPT_BUDGET = 16,
     DD_TRACE_PROGRESS_BUDGET = 12,
     DD_TRACE_BM_HANDSHAKE_BUDGET = 512,
+    DD_TRACE_CONTEXT_BUDGET = 24,
     DD_TRACE_EARLY_SAMPLES = 8
 };
 
 static unsigned int dd_trace_remaining = 0;
 static unsigned int dd_trace_kind_remaining[DD_TRACE_KIND_COUNT];
 static unsigned int dd_trace_kind_seen[DD_TRACE_KIND_COUNT];
+static unsigned int dd_trace_context_remaining = 0;
+static unsigned int dd_trace_context_seen = 0;
 
 static int reserve_dd_trace(unsigned int *remaining)
 {
@@ -76,6 +82,11 @@ static int reserve_dd_trace(unsigned int *remaining)
                 available - 1, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
 
     return 1;
+}
+
+static int reserve_dd_trace_context(void)
+{
+    return reserve_dd_trace(&dd_trace_context_remaining);
 }
 
 static int power_of_two(unsigned int value)
@@ -154,6 +165,53 @@ void DdStartupDiagnosticsTrace(enum dd_startup_trace_kind kind,
     (*pDebugFunc)(DebugContext, M64MSG_INFO, msgbuf);
 }
 
+unsigned int DdStartupDiagnosticsNextProgressOrdinal(void)
+{
+    if (!DdStartupDiagnosticsEnabled())
+        return 0;
+
+    /*
+     * The caller invokes this immediately before the existing progress
+     * trace, on the emulation thread.  The trace itself increments this
+     * class's seen counter; this read therefore predicts that trace's
+     * ordinal without adding a second progress counter.
+     */
+    return __atomic_load_n(&dd_trace_kind_seen[DD_TRACE_PROGRESS],
+            __ATOMIC_RELAXED) + 1;
+}
+
+int DdStartupDiagnosticsTraceContext(const char *message, ...)
+{
+    char msgbuf[512];
+    va_list args;
+    unsigned int ordinal;
+    int prefix_length;
+
+    if (!DdStartupDiagnosticsEnabled() || message == NULL
+            || !reserve_dd_trace_context())
+        return 0;
+
+    ordinal = __atomic_add_fetch(&dd_trace_context_seen, 1, __ATOMIC_RELAXED);
+    prefix_length = snprintf(msgbuf, sizeof(msgbuf), "record=%u ", ordinal);
+    if (prefix_length < 0)
+        return 0;
+    if ((size_t)prefix_length >= sizeof(msgbuf))
+        prefix_length = sizeof(msgbuf) - 1;
+
+    va_start(args, message);
+    vsnprintf(msgbuf + prefix_length, sizeof(msgbuf) - (size_t)prefix_length,
+            message, args);
+    va_end(args);
+
+    /*
+     * DDSTART5 is an explicitly gated, synchronous callback observation.
+     * The context and code snapshot is prepared by the emulation thread
+     * before this call; this function performs no allocation or I/O.
+     */
+    (*pDebugFunc)(DebugContext, M64MSG_INFO, msgbuf);
+    return 1;
+}
+
 /* global Functions for use by the Core */
 m64p_error SetDebugCallback(ptr_DebugCallback pFunc, void *Context)
 {
@@ -166,6 +224,9 @@ m64p_error SetDebugCallback(ptr_DebugCallback pFunc, void *Context)
         && dd_option[0] == '1' && dd_option[1] == '\0';
     __atomic_store_n(&dd_startup_remaining, 256, __ATOMIC_RELAXED);
     __atomic_store_n(&dd_trace_remaining, DD_TRACE_TOTAL_BUDGET, __ATOMIC_RELAXED);
+    __atomic_store_n(&dd_trace_context_remaining, DD_TRACE_CONTEXT_BUDGET,
+            __ATOMIC_RELAXED);
+    __atomic_store_n(&dd_trace_context_seen, 0, __ATOMIC_RELAXED);
     for (i = 0; i < DD_TRACE_KIND_COUNT; ++i) {
         __atomic_store_n(&dd_trace_kind_remaining[i],
                 dd_trace_kind_budget((enum dd_startup_trace_kind)i),
