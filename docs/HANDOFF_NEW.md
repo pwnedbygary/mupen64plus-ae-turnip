@@ -1727,3 +1727,90 @@ Files changed for this candidate:
 - No connected Android device or browser-runnable version exists here.
   The requested native capture, cause identification, exact corrupting
   writer/reuse attribution, correction and acceptance remain unresolved.
+
+## DDSTART7 device evidence — saved TLB-load fault and boot-code lead
+
+Input SHA-256:
+`3ecca4932d7363b037638b0b04784b92914cd75cdd8a6424c8675a6d57df0198`.
+One native launch reports explicit DD support, cart-plus-disk mode, no
+autoload request, and effective **Dynamic Recompiler**. Both complete
+nine-record fault snapshots are present at ordinals 65536 and 1048576
+(16:48:01.007 and 16:48:11.590). All saved fields, 29 register slots, and
+32 code words are identical. The corrected active-list walk reaches its
+sentinel after eight real threads; no fake sentinel context is decoded.
+
+### Direct observations and instruction decoding
+
+| Field | Value / interpretation |
+| --- | --- |
+| Fault-selected thread | `800dc1d0`, ID 3 (MAIN), priority 99 |
+| State / flags | `0001` stopped / `0002` fault flag |
+| Saved Cause | `00000008`: ExcCode `(cause >> 2) & 31 = 2`, TLB load exception |
+| Branch-delay bit | 0 |
+| Saved PC | `800ad4ac` |
+| Saved BadVAddr | `079bb080` |
+| Saved a0 (slot03) | `00000000079bb080` |
+| Saved SP / RA | `ffffffff800d4203` / `ffffffff800bb6b0` |
+| RDRAM word at saved PC | `8c830000` = `lw v1, 0(a0)` |
+
+The decoded load's effective address equals saved BadVAddr exactly and is
+word-aligned. This is **not an AdEL/alignment exception** merely because the
+saved SP is unaligned. The evidence is an internally consistent saved
+TLB-load fault, not an exception-entry trace. It does not prove when those
+saved fields were written, which translated instruction executed, or why
+the address lacked a usable translation. Continuing interrupt-sampler
+progress does not mean that the main thread resumed or faulted repeatedly.
+
+### Reference mapping, with explicit address arithmetic
+
+The checked reference revision remains
+`4fd50c7ca6b44f996aa0fbb68ec86df75855d5b8`. Its JP/rev0 main YAML sets
+ROM start `1060` and VRAM start `80067060`, so the mapping bias is
+**`80066000`**. Subsegment classifications (not exact function symbols):
+
+| Address | ROM offset | Reference subsegment |
+| --- | --- | --- |
+| `800ad4ac` saved PC | `474ac` | `audio/rom/lib/seqplayer`, VRAM `800ac050..800aea90` |
+| `800ac9c0` nearby JAL target | `469c0` | same seqplayer subsegment |
+| `800bb6b0` saved RA | `556b0` | `leo/leo_bootdisk`, VRAM `800bb540..800bb9a0` |
+
+These mappings describe the reference cartridge layout, not proof of which
+overlay or translated block was executing. Exact function attribution is
+not established.
+
+`src/leo/leo_bootdisk.c::LeoBootGame` descrambles boot functions in place
+using an address-derived byte key, then calls D-cache writeback and I-cache
+invalidation before entering the next boot stage. A further correlation:
+saved a3 is `800bb67c`, within the boot region, and the low-byte sum of that
+address's bytes is `bd`, matching saved v1 and t9. This is a boot-path lead,
+not proof that a3 is a particular function symbol or that descrambling failed.
+
+Current new_dynarec treats guest CACHE as NOP; its guest-code coherence
+instead relies on write/block invalidation. That fact alone is not a bug
+diagnosis. DD DMA-to-RDRAM already explicitly invalidates both KSEG aliases,
+as cartridge ROM DMA does. No missing DD DMA invalidation call was found.
+Do not patch CACHE or change DMA timing on this evidence alone.
+
+### Next controlled comparison — same APK, cached interpreter
+
+Use DDSTART7 unchanged. Copy the current emulation profile, change only
+**R4300 emulator → Cached interpreter**, and assign that copy only to the
+DD-enabled Japanese F-Zero test entry. Preserve the original profile,
+count-per-op settings, cart/disk/IPL, no-autoload setting, saves and other
+games. Capture a fresh launch for **90 seconds** (slower mode) to
+`ddstart7-cached-logcat.txt`; report screen/audio behavior. Verify the actual
+native engine marker in the uploaded log, not just the chosen UI value.
+
+This comparison tests whether the failure depends on the execution engine.
+Success would narrow investigation toward engine-specific execution or
+timing, not prove a particular cache fix. Failure could still differ in
+cause/PC. An incomplete late snapshot in the slower mode is not evidence
+that no fault occurred. These bounded snapshots do **not** constitute the
+full cached-interpreter dispatcher/writer coverage required for final
+attribution.
+
+If exact tracing is needed next, record the live exception-entry state and
+the boot-region instruction changes/invalidation around the observed
+return-address region. A later RDRAM code window is not a transcript of
+executed translated code. No emulation correction or new APK was produced
+for this analysis. Native success and final acceptance remain pending.
