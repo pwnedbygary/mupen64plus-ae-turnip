@@ -1498,3 +1498,58 @@ raw logs/signing material. This requirement also appears in `replit.md`.
 The DDSTART4 test source and handoff were already published together in
 `379af8175ad20a3c1174ef94a6930c640e53ead2`; this documentation update
 records the standing requirement and does not require another APK.
+
+## 2026-09-12 — working Phobos/Ares reference comparison
+
+User reports their Ares port boots and plays these games and recalls fixing
+initial date/time seeding. This is user-observed reference success, not a
+new device validation here. Archive `phobos-master_1789226371619.zip`:
+SHA-256 `676f4efdf20a0a19565e0a731c04bd31e4e2cac462d759bf086ca439741fa979`.
+Selected sources were extracted into an isolated temporary directory after
+checking archive paths/symlinks. Neither archive nor reference tree is
+published; only this comparison is shared with the user's local LLM.
+
+### Remembered RTC fix located
+
+Reference `ares/n64/dd/rtc.cpp` loads a 16-byte `time.rtc`. If the first
+eight bytes are all FF **or all zero**, `seedCurrentTime()` fills BCD
+year/month/day/hour/minute/second from host local time and records an epoch
+timestamp for elapsed-time updates. Existing valid RTC data is advanced,
+not overwritten. `android/app/src/main/cpp/PhobosRunner.cpp` creates the
+system-pak `time.rtc` node and handles root-pak flushing so saves have a
+durable target. These concrete fixes match the user's recollection.
+
+Current `device/dd/dd_controller.c` uses a different design. Power-on resets
+`now` and `last_update_rtc` to zero, but before command processing,
+`update_rtc()` adds `clock_now - last_update_rtc`: the first command therefore
+makes `now` equal the backend's current host time, not Unix epoch.
+`backends/clock_ctime_plus_delta.c` supplies `time(NULL)` plus a configured
+delta. Commands 12/13/14 return BCD date/time pairs. Both cores effectively
+use the low two decimal year digits; no year-conversion defect is established.
+
+Current RTC **write commands 0F/10/11 and persistent guest-set DD time are
+not implemented**. This is a fidelity gap, not proof of the black-screen
+cause. Early captured commands are 09/1B/01; trace-budget exhaustion means
+absence of later RTC records cannot prove no RTC accesses occurred.
+Do not transplant file-seeding logic into a core with no equivalent RTC file.
+
+### Other concrete differences
+
+- Reference `ares/n64/dd/io.cpp` acknowledges BM IRQ on ASIC status reads
+  and schedules another BM request with a delay. Its hardware-testing comment
+  is reference evidence, not hardware validation performed in this project.
+- Current controller acknowledges exact DS/C2 PI-address writes; status-read
+  acknowledgement/advancement is limited to the sector gap.
+  `device/rcp/pi/pi_controller.c` advances BM on PI completion before raising
+  MI PI; reference `ares/n64/pi/dma.cpp` does not advance BM at that point.
+- Ares maps full DD buffer ranges, whereas current DMA/ack paths include
+  exact DS/C2 base-address tests. Offset accesses could behave differently.
+- PI length normalization, timing and disk-format mapping differ. They are
+  not interchangeable implementations; copying timings or large code paths
+  would not constitute an evidence-based correction.
+
+The complete track-464 block/C2 acknowledgement remains counterevidence to
+“all disk handshakes fail.” The existing DDSTART6 scheduler capture remains
+the next relevant test: identify blocked/stopped threads and correlate their
+wait with these differences. No new runtime code/APK was made for this
+reference comparison. Root cause and acceptance remain unresolved.
