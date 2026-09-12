@@ -709,6 +709,16 @@ this run as a proven post-LeoBootGame/game-context stall. The cartridge-first
 hardware discrepancy remains relevant for the intended combo launch.
 No audio observation or elapsed-to-freeze measurement has yet been supplied.
 
+**Screenshot subsequently received:** `attached_assets/image_1789182282862.png`
+shows a white 3D logo on a pale/lavender background, touchscreen controls and
+an FPS overlay; no unset-clock message or game menu is visible. This visually
+corroborates the displayed screen described by the user. A still image cannot
+establish a freeze duration, continuing animation, input response or guest
+CPU/RSP progress. The FPS overlay is not evidence that guest logic advances.
+Do not infer an RTC failure, graphics failure, or exact IPL execution address
+from the image. Raw image remains an uploaded evidence asset, not a runtime
+change or a published game asset.
+
 1. Obtain package metadata for the actual non-suffixed package, local build
    commit/dirty diff, and audio/timing details if needed to distinguish the
    two late attempts. Visible behavior is now reported above; do not ask
