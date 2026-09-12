@@ -2145,3 +2145,58 @@ other setting or broadening the correction.
 Native DD menu/gameplay/audio acceptance, the full cached-interpreter
 dispatcher comparison, and required plain-cart/WritableROM persistence
 regressions remain open. This task remains **IN_PROGRESS**.
+
+## DDSTART9 native confirmation and remaining transition freeze — 2026-09-12
+
+Capture `ddstart9-logcat_1789251365596.txt`, SHA-256
+`7d9bfd2b1cc896a7f34dde4cbcaebbf68d9d1e6493868998122c50cbe280bc02`,
+contains **five Dynamic Recompiler launches: four Japanese cartridges and
+one USA cartridge**. All have the DDSTART9 marker. No cached-interpreter
+fallback was introduced. The last Japanese run explicitly enables Parallel
+2x upscaling. See [DDSTART9_RUNTIME_ANALYSIS.md](DDSTART9_RUNTIME_ANALYSIS.md)
+for per-session identity, evidence and limits.
+
+The four Japanese runs confirm the predicted correction natively: the first
+boot block is 79 words ending at `800bb67c`, followed by a separately compiled,
+current-matching 199-word callee. Later boot-tail compilations also match
+current code. The old exact-fault observer remains enabled, and the
+`800ad49c`/`800ad4ac`/`079bb080` fault does not recur. The user confirms
+Japanese menu progression. **Retain the DDSTART9 correction unchanged.**
+
+The user still sees menu/text corruption and a gameplay-transition freeze,
+similar to cached interpreter. This is not complete native DD acceptance.
+The USA run is a distinct cart/disk/boot path and does not demonstrate the
+same Japanese failure; per-session IPL byte identity is not in the log.
+An initial chat statement that all five cartridges were Japanese was
+incorrect and was corrected after isolating the USA session.
+
+Existing startup probes do not cover the later transition. Japanese BM
+logging reaches its cap; the last sampled progress ordinal is 16,384, without
+the higher-threshold context snapshots. Unimplemented command warnings are
+candidates, not evidence sufficient for another correction.
+
+In two Japanese runs, queued exit/autosave never completes. Repeated frontend
+RUNNING/PAUSED callbacks afterward are explained by the existing shutdown
+and pause retry timers, not ongoing guest CPU progress. This makes a shared
+synchronous native/plugin blockage worth checking, without assigning the
+cause to RSP, graphics, disk or timing yet.
+
+### Next capture, using the existing APK
+
+No new APK or timing/profile change is required. Reproduce the Japanese
+gameplay freeze, leave the frozen emulation view open without Pause/Exit,
+and capture two stack-only `debuggerd -b` samples of the
+`:EmulationProcess` process. Android/device permissions may deny this;
+preserve errors and do not root, uninstall or clear data to bypass them.
+
+Obtain the corrupted-menu screenshot and audio behavior as separate evidence.
+Use native stack PCs/build IDs to distinguish RSP/video/driver blocking from
+CPU/generated-code execution. If stack access is unavailable, the fallback
+is a minimal DD-gated atomic phase/heartbeat diagnostic observable while
+the emulation thread is blocked, not another startup-only logging stream.
+
+The delivered APK remains DDSTART9, SHA-256
+`6d49acbb76c91e7576cc1dbbaa80fd49c8ccabef3d8830ef7c0193dc36d5590a`.
+No runtime code changed in this analysis iteration. The task remains
+**IN_PROGRESS** for gameplay/display/audio, full cached-dispatcher coverage
+and required cart/WritableROM persistence regressions.
