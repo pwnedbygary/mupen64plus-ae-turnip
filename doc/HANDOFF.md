@@ -198,7 +198,38 @@ prio-150 thread blocked on a queue with a pending command that the
 dispatch never delivers points at the same class of scheduler-state
 corruption as 4c, now in the loaded code's OS.
 
-### 4b. r75 MEASURED: the message buffers show the deadlock exactly; the remaining defect is the break-without-SIG2
+### 4b. r76 MEASURED: the fatal break decoded
+
+The break ledger with the command word (`k0`) captured:
+
+```
+BRK pc=00b8 st=00000243 ...   x14: the NORMAL completions (SIG2 set, audio=2)
+BRK pc=00b8 st=00000243 audio=00000000 x4: completions with the header wiped
+BRK pc=0620 st=000000c3 audio=21fcc10e k0=153003c0 sp=00000000  ← THE FATAL ONE
+```
+
+* The fatal break: `aspMain+0x620`, `k0=0x153003c0` (command 0x15, a
+  LOAD/SAVE-class command), `sp=0` (a freshly-started task), DMEM 0xFC0 =
+  0x21fcc10e (the ucode's own state sweep clobbers the header mid-run --
+  r65's documented legitimate behavior).
+* The handler region at aspMain+0x620 does halfword loads (an
+  ENVMIXER-class command handler). The ucode broke while processing the
+  FIRST command of a post-wipe task submission.
+* The r76 ledger line format: `BRK pc st audio r0 ra t8 k0 sp a0 a1`.
+
+**r77: disassemble aspMain+0x620's break path (which condition leads to the
+break -- the handler's error path?), and check the command's parameter
+fields (the SAVE target address 0x80401600-class values) against the DMA
+logs. The alternative framing: the post-wipe task submissions run with
+clobbered DMEM state (the wipe's residue under the fresh command lists) --
+if the ucode's first command expects pre-initialized DMEM (the
+descriptor area at 0x2e0!), the wipe's residue breaks it. The boot's own
+wipe design assumes the SECOND boot re-initializes DMEM before the first
+task -- osSpTaskLoad only fills 0xFC0+ (the header) and the ucode load
+(IMEM); the descriptor area (0x2e0) and the command block (0x2f0+) come
+from the task's own first DMAs.**
+
+### 4c. r75 MEASURED: the message buffers show the swallow
 
 MAIN's queue message buffer (0x8079a280) alternates **`0x1a` (EVENT_MESG_VI)
 and `0x16` (EVENT_MESG_AUDIO_TASK_SET)** -- the audio engine's "command list
