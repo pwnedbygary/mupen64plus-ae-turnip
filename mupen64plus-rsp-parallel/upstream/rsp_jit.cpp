@@ -2614,10 +2614,11 @@ ReturnMode CPU::run()
 					bf76 = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_break76.txt", "a");
 				if (bf76 != NULL)
 				{
-					fprintf(bf76, "BRK pc=%04x st=%08x audio=%08x r0=%08x ra=%08x t8=%08x\n",
+					fprintf(bf76, "BRK pc=%04x st=%08x audio=%08x r0=%08x ra=%08x t8=%08x k0=%08x sp=%08x a0=%08x a1=%08x\n",
 					        state.pc & 0xfff, *state.cp0.cr[CP0_REGISTER_SP_STATUS],
 					        ((uint32_t*)state.dmem)[0xfc0 / 4], state.sr[0],
-					        state.sr[31], state.sr[24]);
+					        state.sr[31], state.sr[24], state.sr[26], state.sr[29],
+					        state.sr[4], state.sr[5]);
 					fflush(bf76);
 				}
 			}
