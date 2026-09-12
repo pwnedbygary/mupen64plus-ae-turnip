@@ -120,12 +120,20 @@ static void update_rtc(struct dd_rtc* rtc)
 static void signal_dd_interrupt(struct dd_controller* dd, uint32_t bm_int)
 {
     dd->regs[DD_ASIC_CMD_STATUS] |= bm_int;
+    if (DdStartupDiagnosticsEnabled())
+        DdStartupDiagnosticsTrace(DD_TRACE_INTERRUPT, DD_TRACE_EARLY,
+            "DDSTART3 interrupt: source=DD assert=%08x status=%08x",
+            bm_int, dd->regs[DD_ASIC_CMD_STATUS]);
     r4300_check_interrupt(dd->r4300, CP0_CAUSE_IP3, 1);
 }
 
 static void clear_dd_interrupt(struct dd_controller* dd, uint32_t bm_int)
 {
     dd->regs[DD_ASIC_CMD_STATUS] &= ~bm_int;
+    if (DdStartupDiagnosticsEnabled())
+        DdStartupDiagnosticsTrace(DD_TRACE_INTERRUPT, DD_TRACE_EARLY,
+            "DDSTART3 interrupt: source=DD clear=%08x status=%08x",
+            bm_int, dd->regs[DD_ASIC_CMD_STATUS]);
     r4300_check_interrupt(dd->r4300, CP0_CAUSE_IP3, 0);
 }
 
@@ -332,6 +340,9 @@ void read_dd_regs(void* opaque, uint32_t address, uint32_t* value)
 
     if (address < MM_DD_REGS || address >= MM_DD_MS_RAM) {
         DebugMessage(M64MSG_ERROR, "Unknown access in DD registers MMIO space %08x", address);
+        if (DdStartupDiagnosticsEnabled())
+            DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_READ, DD_TRACE_SPARSE,
+                "DDSTART3 reg read invalid: address=%08x", address);
         *value = 0;
         return;
     }
@@ -350,6 +361,10 @@ void read_dd_regs(void* opaque, uint32_t address, uint32_t* value)
 
     *value = dd->regs[reg];
     DebugMessage(M64MSG_VERBOSE, "DD REG: %08X -> %08x", address, *value);
+    if (DdStartupDiagnosticsEnabled())
+        DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_READ, DD_TRACE_SPARSE,
+            "DDSTART3 reg read: address=%08x reg=%u response=%08x status=%08x",
+            address, reg, *value, dd->regs[DD_ASIC_CMD_STATUS]);
 
     /* post read update. Not part of the returned value */
     switch(reg)
@@ -373,6 +388,10 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
 
     if (address < MM_DD_REGS || address >= MM_DD_MS_RAM) {
         DebugMessage(M64MSG_ERROR, "Unknown access in DD registers MMIO space %08x", address);
+        if (DdStartupDiagnosticsEnabled())
+            DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_COMMAND, DD_TRACE_EARLY,
+                "DDSTART3 reg write invalid: address=%08x value=%08x mask=%08x",
+                address, value, mask);
         return;
     }
 
@@ -381,6 +400,11 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
     assert(mask == ~UINT32_C(0));
 
     DebugMessage(M64MSG_VERBOSE, "DD REG: %08X <- %08x", address, value);
+    if (DdStartupDiagnosticsEnabled())
+        DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_COMMAND, DD_TRACE_EARLY,
+            "DDSTART3 reg write: address=%08x reg=%u value=%08x mask=%08x command=%02x",
+            address, reg, value, mask, reg == DD_ASIC_CMD_STATUS
+                ? (value >> 16) & 0xff : 0);
 
     switch (reg)
     {
@@ -634,6 +658,13 @@ unsigned int dd_dom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr, u
 
 void dd_on_pi_cart_addr_write(struct dd_controller* dd, uint32_t address)
 {
+    if (DdStartupDiagnosticsEnabled()
+            && ((address >= MM_DD_C2S_BUFFER && address < MM_DD_DS_BUFFER)
+                || (address >= MM_DD_DS_BUFFER && address < MM_DD_REGS)))
+        DdStartupDiagnosticsTrace(DD_TRACE_INTERRUPT, DD_TRACE_EARLY,
+            "DDSTART3 interrupt: source=PI cart_ack=%08x status_before=%08x",
+            address, dd->regs[DD_ASIC_CMD_STATUS]);
+
     /* clear C2 xfer */
     if (address == MM_DD_C2S_BUFFER) {
         dd->regs[DD_ASIC_CMD_STATUS] &= ~(DD_STATUS_C2_XFER | DD_STATUS_BM_ERR);

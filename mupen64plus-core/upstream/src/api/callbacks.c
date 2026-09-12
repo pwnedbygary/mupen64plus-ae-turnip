@@ -39,21 +39,131 @@ static void *            StateContext = NULL;
 /* Set only at callback registration, before emulation threads run. */
 static int dd_startup_diagnostics = 0;
 static unsigned int dd_startup_remaining = 0;
+/*
+ * DDSTART3 deliberately uses a separate callback budget.  Startup messages
+ * retain their DDSTART1 cap, but cannot consume the observations needed after
+ * the guest begins issuing DD commands.
+ */
+enum
+{
+    DD_TRACE_TOTAL_BUDGET = 96,
+    DD_TRACE_REGISTER_COMMAND_BUDGET = 24,
+    DD_TRACE_REGISTER_READ_BUDGET = 24,
+    DD_TRACE_PI_DMA_BUDGET = 20,
+    DD_TRACE_INTERRUPT_BUDGET = 16,
+    DD_TRACE_PROGRESS_BUDGET = 12,
+    DD_TRACE_EARLY_SAMPLES = 8
+};
+
+static unsigned int dd_trace_remaining = 0;
+static unsigned int dd_trace_kind_remaining[DD_TRACE_KIND_COUNT];
+static unsigned int dd_trace_kind_seen[DD_TRACE_KIND_COUNT];
+
+static int reserve_dd_trace(unsigned int *remaining)
+{
+    unsigned int available = __atomic_load_n(remaining, __ATOMIC_RELAXED);
+
+    do {
+        if (available == 0)
+            return 0;
+    } while (!__atomic_compare_exchange_n(remaining, &available,
+                available - 1, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+
+    return 1;
+}
+
+static int power_of_two(unsigned int value)
+{
+    return value != 0 && (value & (value - 1)) == 0;
+}
+
+static int power_of_four(unsigned int value)
+{
+    return power_of_two(value) && (value & UINT32_C(0x55555555)) != 0;
+}
+
+static unsigned int dd_trace_kind_budget(enum dd_startup_trace_kind kind)
+{
+    static const unsigned int budgets[DD_TRACE_KIND_COUNT] = {
+        DD_TRACE_REGISTER_COMMAND_BUDGET,
+        DD_TRACE_REGISTER_READ_BUDGET,
+        DD_TRACE_PI_DMA_BUDGET,
+        DD_TRACE_INTERRUPT_BUDGET,
+        DD_TRACE_PROGRESS_BUDGET
+    };
+
+    return ((unsigned int)kind < DD_TRACE_KIND_COUNT) ? budgets[kind] : 0;
+}
 
 int DdStartupDiagnosticsEnabled(void)
 {
     return dd_startup_diagnostics;
 }
 
+void DdStartupDiagnosticsTrace(enum dd_startup_trace_kind kind,
+                               enum dd_startup_trace_mode mode,
+                               const char *message, ...)
+{
+    char msgbuf[512];
+    va_list args;
+    unsigned int ordinal;
+    int prefix_length = 0;
+
+    if (!DdStartupDiagnosticsEnabled() || (unsigned int)kind >= DD_TRACE_KIND_COUNT
+            || message == NULL)
+        return;
+
+    ordinal = __atomic_add_fetch(&dd_trace_kind_seen[kind], 1, __ATOMIC_RELAXED);
+    if (mode == DD_TRACE_SPARSE && ordinal > DD_TRACE_EARLY_SAMPLES
+            && !power_of_two(ordinal))
+        return;
+    if (mode == DD_TRACE_PROGRESS_SPARSE
+            && ordinal != 1 && !power_of_four(ordinal))
+        return;
+    if (!reserve_dd_trace(&dd_trace_kind_remaining[kind])
+            || !reserve_dd_trace(&dd_trace_remaining))
+        return;
+
+    if (kind == DD_TRACE_PROGRESS) {
+        prefix_length = snprintf(msgbuf, sizeof(msgbuf), "ordinal=%u ",
+                ordinal);
+        if (prefix_length < 0)
+            return;
+        if ((size_t)prefix_length >= sizeof(msgbuf))
+            prefix_length = sizeof(msgbuf) - 1;
+    }
+    va_start(args, message);
+    vsnprintf(msgbuf + prefix_length, sizeof(msgbuf) - prefix_length,
+            message, args);
+    va_end(args);
+
+    /*
+     * This is intentionally not DebugMessage(): its 256-message startup
+     * budget must not hide the later sparse trace.  The callback is still the
+     * existing synchronous core callback; no queue, allocation, or file I/O
+     * is introduced.
+     */
+    (*pDebugFunc)(DebugContext, M64MSG_INFO, msgbuf);
+}
+
 /* global Functions for use by the Core */
 m64p_error SetDebugCallback(ptr_DebugCallback pFunc, void *Context)
 {
+    unsigned int i;
+
     pDebugFunc = pFunc;
     DebugContext = Context;
     const char *dd_option = getenv("M64P_DD_STARTUP_DIAGNOSTICS");
     dd_startup_diagnostics = pFunc != NULL && dd_option != NULL
         && dd_option[0] == '1' && dd_option[1] == '\0';
     __atomic_store_n(&dd_startup_remaining, 256, __ATOMIC_RELAXED);
+    __atomic_store_n(&dd_trace_remaining, DD_TRACE_TOTAL_BUDGET, __ATOMIC_RELAXED);
+    for (i = 0; i < DD_TRACE_KIND_COUNT; ++i) {
+        __atomic_store_n(&dd_trace_kind_remaining[i],
+                dd_trace_kind_budget((enum dd_startup_trace_kind)i),
+                __ATOMIC_RELAXED);
+        __atomic_store_n(&dd_trace_kind_seen[i], 0, __ATOMIC_RELAXED);
+    }
     if (dd_startup_diagnostics)
         DebugMessage(M64MSG_INFO, "DDSTART1 native: support64dd=true; INFO/WARNING/ERROR only; limit=256");
     return M64ERR_SUCCESS;

@@ -51,6 +51,11 @@ int validate_pi_request(struct pi_controller* pi)
 /** static (local) variables **/
 static uint32_t   l_ForceAlignmentOfPiDmaCartMask = ~UINT32_C(1);
 
+static int is_dd_pi_address(uint32_t address)
+{
+    return address >= MM_DOM2_ADDR1 && address < MM_DOM2_ADDR2;
+}
+
 static void dma_pi_read(struct pi_controller* pi)
 {
     if (!validate_pi_request(pi))
@@ -76,6 +81,12 @@ static void dma_pi_read(struct pi_controller* pi)
     /* PI seems to treat the first 128 bytes differently, see https://n64brew.dev/wiki/Peripheral_Interface#Unaligned_DMA_transfer */
     if (length >= 0x7f && (length & 1))
         length += 1;
+    if (DdStartupDiagnosticsEnabled() && pi->dd != NULL && is_dd_pi_address(cart_addr)) {
+        DdStartupDiagnosticsTrace(DD_TRACE_PI_DMA, DD_TRACE_EARLY,
+            "DDSTART3 PI DMA start: direction=read dram=%08" PRIX32
+            " cart=%08" PRIX32 " length=%08" PRIX32,
+            dram_addr, cart_addr, length);
+    }
     unsigned int cycles = handler->dma_read(opaque, dram, dram_addr, cart_addr, length);
 
     /* Mark DMA as busy */
@@ -114,6 +125,12 @@ static void dma_pi_write(struct pi_controller* pi)
         length += 1;
     if (length <= 0x80)
         length -= dram_addr & 0x7;
+    if (DdStartupDiagnosticsEnabled() && pi->dd != NULL && is_dd_pi_address(cart_addr)) {
+        DdStartupDiagnosticsTrace(DD_TRACE_PI_DMA, DD_TRACE_EARLY,
+            "DDSTART3 PI DMA start: direction=write dram=%08" PRIX32
+            " cart=%08" PRIX32 " length=%08" PRIX32,
+            dram_addr, cart_addr, length);
+    }
     unsigned int cycles = handler->dma_write(opaque, dram, dram_addr, cart_addr, length);
 
     post_framebuffer_write(&pi->dp->fb, dram_addr, length);
@@ -200,6 +217,12 @@ void write_pi_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
     case PI_STATUS_REG:
         if (value & mask & PI_STATUS_CLR_INTR)
         {
+            if (DdStartupDiagnosticsEnabled() && pi->dd != NULL
+                    && is_dd_pi_address(pi->regs[PI_CART_ADDR_REG]))
+                DdStartupDiagnosticsTrace(DD_TRACE_INTERRUPT, DD_TRACE_EARLY,
+                    "DDSTART3 interrupt: source=PI clear_status=%08" PRIX32
+                    " dd_cart=%08" PRIX32,
+                    value, pi->regs[PI_CART_ADDR_REG]);
             pi->regs[reg] &= ~PI_STATUS_INTERRUPT;
             clear_rcp_interrupt(pi->mi, MI_INTR_PI);
         }
@@ -225,6 +248,14 @@ void write_pi_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
 void pi_end_of_dma_event(void* opaque)
 {
     struct pi_controller* pi = (struct pi_controller*)opaque;
+    if (DdStartupDiagnosticsEnabled() && pi->dd != NULL) {
+        DdStartupDiagnosticsTrace(DD_TRACE_PI_DMA, DD_TRACE_EARLY,
+            "DDSTART3 PI boundary: phase=completion dma_identity=unknown"
+            " cart_reg=%08" PRIX32 " dram_reg=%08" PRIX32
+            " rd_len_reg=%08" PRIX32 " wr_len_reg=%08" PRIX32,
+            pi->regs[PI_CART_ADDR_REG], pi->regs[PI_DRAM_ADDR_REG],
+            pi->regs[PI_RD_LEN_REG], pi->regs[PI_WR_LEN_REG]);
+    }
     pi->regs[PI_STATUS_REG] &= ~(PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY);
     pi->regs[PI_STATUS_REG] |= PI_STATUS_INTERRUPT;
 
@@ -236,4 +267,9 @@ void pi_end_of_dma_event(void* opaque)
     }
 
     raise_rcp_interrupt(pi->mi, MI_INTR_PI);
+    if (DdStartupDiagnosticsEnabled() && pi->dd != NULL)
+        DdStartupDiagnosticsTrace(DD_TRACE_INTERRUPT, DD_TRACE_EARLY,
+            "DDSTART3 interrupt: source=PI boundary=raise"
+            " dma_identity=unknown mi=%08" PRIX32 " status=%08" PRIX32,
+            pi->mi->regs[MI_INTR_REG], pi->regs[PI_STATUS_REG]);
 }

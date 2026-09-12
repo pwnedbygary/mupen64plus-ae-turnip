@@ -29,6 +29,7 @@
 #include <stdlib.h>
 
 #include <assert.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -532,11 +533,41 @@ static void call_interrupt_handler(const struct cp0* cp0, size_t index)
     handler->callback(handler->opaque);
 }
 
+static void dd_trace_interrupt_progress(struct r4300_core* r4300,
+                                        unsigned int event_type)
+{
+    uint32_t pc_sample = 0;
+    struct precomp_instr** pc_struct = NULL;
+    const uint32_t* cp0_regs;
+
+    if (!DdStartupDiagnosticsEnabled())
+        return;
+
+    /*
+     * gen_interrupt is an existing emulation-thread boundary.  This is
+     * intentionally a sample, not an instruction hook or an exact writer
+     * attribution; compiled stores may occur between these boundaries.
+     */
+    pc_struct = r4300_pc_struct(r4300);
+    if (r4300->emumode == EMUMODE_DYNAREC || *pc_struct != NULL)
+        pc_sample = *r4300_pc(r4300);
+    cp0_regs = r4300_cp0_regs(&r4300->cp0);
+    DdStartupDiagnosticsTrace(DD_TRACE_PROGRESS, DD_TRACE_PROGRESS_SPARSE,
+        "DDSTART3 progress: boundary=interrupt event=%u cp0_count=%08"
+        PRIx32 " cause=%08" PRIx32 " pc_sample=%08" PRIx32
+        " pc_is_exact_writer=false",
+        event_type, cp0_regs[CP0_COUNT_REG], cp0_regs[CP0_CAUSE_REG],
+        pc_sample);
+}
+
 void gen_interrupt(struct r4300_core* r4300)
 {
     uint32_t* cp0_regs = r4300_cp0_regs(&r4300->cp0);
     unsigned int* cp0_next_interrupt = r4300_cp0_next_interrupt(&r4300->cp0);
     int* cp0_cycle_count = r4300_cp0_cycle_count(&r4300->cp0);
+
+    if (r4300->cp0.q.first != NULL)
+        dd_trace_interrupt_progress(r4300, r4300->cp0.q.first->data.type);
 
     if (*r4300_stop(r4300) == 1)
     {

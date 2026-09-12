@@ -1054,3 +1054,208 @@ Comparison APK SHA-256:
 `0dcec790f4a452d0788a31088e6ffc1231b92e4119777415bc63cc9d30a43eeb`.
 This is a separately signed `.debug` build compatible with the prior supplied
 debug installation, not an update for the original release package.
+
+## 2026-09-12 — DDSTART2 attempt blocked by cartridge read permission
+
+User reported “Failed to open ROM for reading.” Uploaded
+`attached_assets/ddstart2-logcat_1789223108862.txt` contains 2,440 lines,
+SHA-256 `62a5a5e8af2ae77aaceb0f2f6bfaee5d0e909092bf6db19b929b6ee1fb1ae72d`.
+Raw logs remain private.
+
+Two attempts (PIDs 29526 and 29774) reach native DDSTART1 registration,
+then fail opening the cartridge through Android's external-storage provider.
+Lines 1194–1223 and 2181–2207 explicitly report SecurityException/Permission
+Denial for the existing `ROMs/n64/F-Zero X.z64` document URI, followed by
+the frontend launch failure. Android requests ACTION_OPEN_DOCUMENT or a
+related grant. No DDSTART2 disk-region or boot-selection record appears.
+Thus this capture does not exercise or refute the cartridge-first comparison.
+Shared DDSTART1 identity alone cannot prove which comparison binary ran.
+
+Remedy: in the debug app use Refresh ROMs -> Select Folder and reselect
+the SD-card `ROMs/n64` folder using Android's system picker, granting access.
+Leave “Clear gallery before adding” unchecked. The scanner requests a
+persistable read grant via ACTION_OPEN_DOCUMENT_TREE. Do not uninstall,
+clear app data, delete saves, or alter boot code to address this failure.
+Regrant IPL/disk file access only if subsequent logs show those files denied.
+The log does not establish why the prior cartridge grant became unavailable.
+After restoring access, capture a fresh no-savestate launch of the same
+comparison APK; native stall diagnosis and acceptance remain pending.
+
+## 2026-09-12 — DDSTART2 retry loads media but produces black screen
+
+User reports the retry “just sits at a black screen.” Evidence:
+`attached_assets/ddstart2-retry-logcat_1789223335971.txt`, 3,067 lines,
+SHA-256 `291787046dc954e5eefa4fadc7b91e7b1a7a64dc2f912ac5811faecce3d1143d`.
+Raw upload remains private. This file contains **two distinct launches**:
+
+| Record | Japanese cart attempt | US cart attempt |
+|---|---|---|
+| PID / engine startup | 30309 / 10:27:01.618 | 30725 / 10:28:15.046 |
+| Cart identity | F-ZERO X (J), MD5 58D200D43620007314304F4E6C9E6528 | F-ZERO X (U), MD5 753437D0D8ADA1D12F3F9CF0F0A5171F |
+| Disk | SDK, 64,931,840 bytes, JAPAN | Same reported format/size/region |
+| Disk ID bytes | 45 46 5a 4a 00 00 (`EFZJ` prefix) | Same reported bytes |
+| Boot | CART, combo_cart_boot=1, CIC X106 | CART, combo_cart_boot=1, CIC X106 |
+| CPU / memory | Dynamic Recompiler / 8 MiB | Dynamic Recompiler / 8 MiB |
+| Requested autoload | false | false |
+
+Relevant line groups: 232–269 and 460–507; 2334–2363 and 2536–2609.
+IPL URI names Japan in both attempts (179 and 2280), unlike the earlier
+USA-prototype-named IPL. This identifies a selection change, not an IPL hash
+verification. Do not compare this file as if only boot policy changed.
+Both cartridge regions were tried against a Japanese disk; the first attempt
+is the appropriate cart-region pairing for further native comparison.
+
+The access problem is resolved for these launches: cart, disk and IPL all
+load, and the DDSTART2 override actually runs. Missing `.ndr` messages are
+the same original-disk fallback described above, not failed disk loading.
+No native fatal signal, Java FATAL EXCEPTION or coverage-limit marker is
+present. The emulator-finished messages at 1001 and 3038 follow UI shutdown
+and save-completion records; they are not evidence of a spontaneous crash.
+Observed execution windows are approximately 16 and 12 seconds.
+Host startup and successful autosave do not establish guest progress/menu.
+Current black-screen audio was not separately reported.
+
+### Boot consistency audit and next control
+
+A read-only audit checked device selection, PIF/CIC initialization, boot HLE,
+IPL3 copy, CPU start address, hard reset and NMI. X106 selects cartridge in
+the HLE path as well: there is no demonstrated cart-CIC/DD-IPL3 split.
+Do not add an entry-PC or reset patch based on that rejected hypothesis.
+Cartridge-first boot alone has **not** delivered native success.
+
+Next useful existing-APK control: launch the same Japanese cart with its
+per-game N64DD support disabled, same emulation profile/plugins, fresh
+start with no savestate. Do not clear configured media or saves. GamePrefs
+supplies empty DD paths while disabled and the combo override is reset to 0.
+A normal-cart failure would need investigation before interpreting another
+DD experiment. Normal-cart success would narrow the difference to the
+DD-enabled path, without proving a specific faulty register or writer.
+No new runtime code or APK was produced in this analysis pass.
+
+## 2026-09-12 — Japanese cartridge DD-disabled control captured
+
+Evidence: `attached_assets/fzero-j-dd-off-logcat_1789223591720.txt`,
+SHA-256 `5d9cde410598931db617a5c1d5ec4991838bd5e2558a9bfeea323e43e0fafdef`.
+PID 31360 starts around 10:32:38; capture ends around 10:32:51.
+Lines 685–720 identify missing cached DD IPL, the same Japanese cartridge
+MD5 `58D200D43620007314304F4E6C9E6528`, and CIC X106. No DDSTART markers
+are present; ordinary VERBOSE/DEBUG core logging is restored.
+Lines 1007–1076 show 8 MiB and Dynamic Recompiler initialization.
+Pause/resume records at 1320–1368 end in “Emulation continued.”
+No Java FATAL EXCEPTION, native fatal signal or frontend launch failure is
+shown. These observations do not prove that a game screen rendered.
+
+The plain-cart route emits “Failed to load DD Disk” for the WorkingPath
+directory and a `.ndr` path without a disk name (714–715). This is the
+existing optional-media directory probe, not a cartridge-open failure:
+core startup continues without a loaded DD disk/IPL. Do not conflate it
+with the earlier Android read-permission failure or patch ordinary-cart
+behavior merely to silence this message.
+
+User subsequently confirmed the Japanese cartridge reaches its title/menu
+and “works perfectly fine,” in response to the audio/controls question.
+This is a passing user-observed ordinary Japanese-cart control for this
+installation/profile, not acceptance for every other cartridge or persistence.
+The DD-enabled black screen remains unresolved. Do not repeat this control
+without a change that invalidates it. Next evidence needs to locate guest
+progress or the first divergent DD interaction, not repeat startup metadata.
+Task remains incomplete.
+
+The user also switched to Replit Desktop App expecting direct device access.
+Official desktop documentation and a live workspace ADB check were consulted:
+the agent still runs in a Linux cloud workspace and `adb devices -l` lists no
+attached devices. Desktop login alone has not exposed the handheld here.
+Continue using user-run local ADB captures unless actual connectivity changes;
+do not claim direct device validation or expose ADB publicly as a workaround.
+
+## 2026-09-12 — DDSTART3 bounded runtime-observation candidate
+
+This is a diagnostic candidate, not task completion and not a behavioral fix.
+It preserves DDSTART2 boot selection and metadata, the existing DDSTART1
+callback behavior, and the DD-disabled baseline. No timing, IRQ delivery,
+renderer, RSP, or save behavior was changed. No APK was built or installed by
+this change.
+
+### Exact observation coverage
+
+- The existing Java `enable64DdSupport` per-game decision remains the native
+  activation boundary through `M64P_DD_STARTUP_DIAGNOSTICS=1`. Every
+  DDSTART3 call checks `DdStartupDiagnosticsEnabled()`; a DD struct pointer,
+  direct-NDD classification, ROM name, or compiled DD support is not enough.
+  Callback registration resets all DDSTART3 counters on startup and teardown
+  resets the activation through the existing callback lifecycle.
+- DD register writes (including command/status and buffer-manager writes) are
+  recorded as early `DDSTART3 reg write` events, with address, register index,
+  value, mask and command byte. The register-command class has a strict
+  24-event budget. DD register responses record the returned value and status
+  as `DDSTART3 reg read`; invalid accesses are also candidates for this class.
+  Reads use the sparse threshold: the first eight candidate reads, then only
+  power-of-two candidate counts. The read class has a separate 24-event
+  budget. This is a response observation before the existing status-read
+  acknowledgement/update, not a register-model change.
+- DD-related PI DMA starts record exact direction, DRAM address, DD cart
+  address and effective length. PI completion and PI-raise observations are
+  only current-register/interrupt-boundary samples and explicitly carry
+  `dma_identity=unknown`; they do not claim to complete or pair with an
+  earlier start. There is no persistent DMA correlation slot or latched DD
+  filter, so reset, queued-event, and savestate boundaries cannot
+  misattribute a prior transfer. PI boundary observations are emitted only in
+  a DD-enabled session. PI DMA-boundary events have a strict 20-event budget
+  and interrupt observations a strict 16-event budget. DD CART interrupt
+  assert/clear plus PI buffer acknowledgements remain separate observations;
+  none alter PI scheduling or completion.
+- Guest progress is sampled at the existing `gen_interrupt` emulation-thread
+  boundary, including VI event dispatch and other interrupt events. Samples
+  contain an ordinal, CP0 count/cause, event type and a `pc_sample`; the
+  message explicitly labels `pc_is_exact_writer=false`. Progress sampling
+  emits ordinal 1 and then only powers of four (4, 16, ... 4^11), with a
+  strict 12-event progress budget. Thus an interrupt boundary at ordinal 128
+  is intentionally not emitted, and the progress budget is not exhausted
+  during the first few hundred boundaries. There is no per-instruction hook,
+  dynarec writer probe, or claim that a sampled PC wrote DD state.
+
+DDSTART3 has an independent aggregate callback budget of 96 records
+(24+24+20+16+12), so the existing 256-total `DebugMessage` DDSTART1 cap
+cannot consume the later sparse observations. Formatting uses the existing
+synchronous callback and a fixed stack buffer only: no allocation, trace
+file, timer, polling loop, or new thread is introduced. Atomic reservations
+keep each class and the aggregate budget bounded if a callback boundary is
+re-entered. Callback delivery order across emulator/plugin threads remains
+non-authoritative.
+
+### Verification and limitations
+
+`bash tools/test-dd-startup.sh` passes focused disabled-session, independent
+DDSTART1/DDSTART3-budget, sparse read/progress-threshold, callback reset, and
+aggregate budget checks. Host `-fsyntax-only` checks pass for the changed PI,
+interrupt, DD-controller and callback sources (the baseline's existing
+unused-parameter warnings remain when `-Werror` is applied to standalone DD
+and interrupt files). The APK marker helper now requires DDSTART3 register
+read, PI DMA-start and progress strings in addition to the DDSTART1/DDSTART2
+markers; packaged-core verification and device capture are still pending.
+
+The records show emulator-side observations only. A missing record can mean a
+budget threshold, callback suppression, an unexecuted path, or packaging
+failure; it is not proof that hardware/guest activity did not occur. Sparse
+PC values identify an interval/boundary, never an exact guest writer.
+DDSTART3 therefore narrows command/response, PI/interrupt, and guest-progress
+ordering but does not establish a root cause, native boot success, menu/audio
+success, or a fix for the DD-enabled black screen. A fresh locally signed APK
+with the verified packaged core and a matching DD-enabled device capture are
+required next. The bounded callback still has finite host overhead; any
+behavioral comparison must retain an uninstrumented control and must not
+interpret a changed timing outcome as an emulator correction.
+
+Final workspace verification: the callback/trace budget tests and diff
+whitespace check passed. Android `:app:assembleDebug` passed after all review
+corrections; all required DDSTART1/DDSTART2/DDSTART3 markers were verified in
+the packaged arm64 core. APK SHA-256:
+`96f9ea86e1ff7dbb5dbc808430aa3c3d6affb0a056ae4fc80f6ce142d3b20748`.
+Review identified ambiguous PI completion association after reset or state
+load; persistent DMA correlation was removed rather than changing scheduler
+behavior. Progress sampling was extended to powers of four to avoid consuming
+all twelve records within the first 128 interrupt boundaries.
+Device results are pending. Install as an update to the existing debug app,
+never uninstall the release or clear data; stop if signature verification
+rejects the update. Use the same Japanese cart/disk/IPL, DD enabled, existing
+profile and no autoload. Capture to `ddstart3-logcat.txt`.
