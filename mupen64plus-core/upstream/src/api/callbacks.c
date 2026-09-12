@@ -50,6 +50,9 @@ static unsigned int dd_startup_remaining = 0;
  * DDSTART5 context records are intentionally outside both the aggregate and
  * per-kind budgets above.  They have a small, independently reset class
  * budget so a late progress boundary remains observable.
+ * DDSTART6 scheduler records are also independent: the scheduler snapshot is
+ * a read-only, signature-gated RDRAM observation and must not be starved by
+ * the earlier trace classes or by DDSTART5.
  */
 enum
 {
@@ -62,6 +65,7 @@ enum
     DD_TRACE_PROGRESS_BUDGET = 12,
     DD_TRACE_BM_HANDSHAKE_BUDGET = 512,
     DD_TRACE_CONTEXT_BUDGET = 24,
+    DD_TRACE_SCHEDULER_BUDGET = 64,
     DD_TRACE_EARLY_SAMPLES = 8
 };
 
@@ -70,6 +74,8 @@ static unsigned int dd_trace_kind_remaining[DD_TRACE_KIND_COUNT];
 static unsigned int dd_trace_kind_seen[DD_TRACE_KIND_COUNT];
 static unsigned int dd_trace_context_remaining = 0;
 static unsigned int dd_trace_context_seen = 0;
+static unsigned int dd_trace_scheduler_remaining = 0;
+static unsigned int dd_trace_scheduler_seen = 0;
 
 static int reserve_dd_trace(unsigned int *remaining)
 {
@@ -212,6 +218,38 @@ int DdStartupDiagnosticsTraceContext(const char *message, ...)
     return 1;
 }
 
+int DdStartupDiagnosticsTraceScheduler(const char *message, ...)
+{
+    char msgbuf[512];
+    va_list args;
+    unsigned int ordinal;
+    int prefix_length;
+
+    if (!DdStartupDiagnosticsEnabled() || message == NULL
+            || !reserve_dd_trace(&dd_trace_scheduler_remaining))
+        return 0;
+
+    ordinal = __atomic_add_fetch(&dd_trace_scheduler_seen, 1, __ATOMIC_RELAXED);
+    prefix_length = snprintf(msgbuf, sizeof(msgbuf), "record=%u ", ordinal);
+    if (prefix_length < 0)
+        return 0;
+    if ((size_t)prefix_length >= sizeof(msgbuf))
+        prefix_length = sizeof(msgbuf) - 1;
+
+    va_start(args, message);
+    vsnprintf(msgbuf + prefix_length, sizeof(msgbuf) - (size_t)prefix_length,
+            message, args);
+    va_end(args);
+
+    /*
+     * DDSTART6 is a bounded synchronous callback just like DDSTART5.  The
+     * emulation thread prepares the snapshot and this function only formats
+     * and emits it; no allocation, guest write, or file I/O is introduced.
+     */
+    (*pDebugFunc)(DebugContext, M64MSG_INFO, msgbuf);
+    return 1;
+}
+
 /* global Functions for use by the Core */
 m64p_error SetDebugCallback(ptr_DebugCallback pFunc, void *Context)
 {
@@ -227,6 +265,9 @@ m64p_error SetDebugCallback(ptr_DebugCallback pFunc, void *Context)
     __atomic_store_n(&dd_trace_context_remaining, DD_TRACE_CONTEXT_BUDGET,
             __ATOMIC_RELAXED);
     __atomic_store_n(&dd_trace_context_seen, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&dd_trace_scheduler_remaining, DD_TRACE_SCHEDULER_BUDGET,
+            __ATOMIC_RELAXED);
+    __atomic_store_n(&dd_trace_scheduler_seen, 0, __ATOMIC_RELAXED);
     for (i = 0; i < DD_TRACE_KIND_COUNT; ++i) {
         __atomic_store_n(&dd_trace_kind_remaining[i],
                 dd_trace_kind_budget((enum dd_startup_trace_kind)i),

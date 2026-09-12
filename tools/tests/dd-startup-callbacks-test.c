@@ -15,6 +15,7 @@ static unsigned bm_bad_ordinals;
 static unsigned pi_dma_traces;
 static unsigned pi_boundary_traces;
 static unsigned context_traces;
+static unsigned scheduler_traces;
 static void capture(void *context, int level, const char *message)
 {
     const char *ordinal;
@@ -45,6 +46,8 @@ static void capture(void *context, int level, const char *message)
     }
     if (strstr(message, "DDSTART5 context"))
         ++context_traces;
+    if (strstr(message, "DDSTART6 scheduler"))
+        ++scheduler_traces;
 }
 
 int main(void)
@@ -193,5 +196,30 @@ int main(void)
     assert(count == 1); /* DDSTART1 identity after reset */
     DdStartupDiagnosticsTraceContext("DDSTART5 context: reset");
     assert(count == 2 && context_traces == 1);
+
+    /* DDSTART6 is separately gated, bounded at 64, and reset per session. */
+    count = 0;
+    scheduler_traces = 0;
+    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "0", 1);
+    SetDebugCallback(capture, NULL);
+    DdStartupDiagnosticsTraceScheduler("DDSTART6 scheduler: disabled");
+    assert(count == 0 && scheduler_traces == 0);
+
+    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "1", 1);
+    SetDebugCallback(capture, NULL);
+    assert(count == 1); /* DDSTART1 identity */
+    for (unsigned i = 0; i < 100; ++i)
+        DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_COMMAND, DD_TRACE_EARLY,
+            "DDSTART3 command before scheduler");
+    for (unsigned i = 0; i < 80; ++i)
+        DdStartupDiagnosticsTraceScheduler("DDSTART6 scheduler: budget");
+    assert(scheduler_traces == 64 && count == 1 + 24 + 64);
+
+    count = 0;
+    scheduler_traces = 0;
+    SetDebugCallback(capture, NULL);
+    assert(count == 1); /* identity after reset */
+    DdStartupDiagnosticsTraceScheduler("DDSTART6 scheduler: reset");
+    assert(count == 2 && scheduler_traces == 1);
     return 0;
 }

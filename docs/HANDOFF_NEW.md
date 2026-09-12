@@ -1395,18 +1395,97 @@ Files changed for this candidate:
 `tools/tests/dd-startup-callbacks-test.c`,
 `tools/verify-dd-startup-apk.sh`, and this handoff.
 
+## 2026-09-12 — DDSTART6 signature-gated scheduler snapshot candidate
+
+This pass extends the same late progress candidates (`65536` and `1048576`)
+used by DDSTART5. It is diagnostic-only and explicitly gated by
+`M64P_DD_STARTUP_DIAGNOSTICS=1`; DDSTART2 boot selection and all ordinary
+DD behavior are unchanged. No APK was built, installed, or published by
+this pass.
+
+### Exact evidence and signature gate
+
+- The retained DDSTART5 evidence is SHA-256
+  `a4b042448d0b22dce51427a79de78bdd1999dda745fd45f12bd24054938a161e`.
+  Both sampled `PC=0x800679f8` code windows were identical: previous slot
+  3 is raw `0x0c031dc4` (`jal 0x800c7710`), slot 6 is raw
+  `0x0c030a98` (`jal 0x800c2a60`), slot 8 is `0x1000ffff`, and slot 9 is
+  `nop` (`0x00000000`).
+- The public source is `/tmp/fzerox-reference`, revision
+  `4fd50c7ca6b44f996aa0fbb68ec86df75855d5b8`. `src/sys/sys_main.c`
+  `Idle_ThreadEntry` calls `osSetThreadPri(NULL, OS_PRIORITY_IDLE)` and then
+  spins in `while (true) {}`; this identifies the late sampling site but is
+  not executable control in the emulator.
+- `/tmp/fzerox-reference/linker_scripts/jp/rev0/symbol_addrs.txt` maps
+  `osSetThreadPri=0x800c2a60`, `osStartThread=0x800c7710`,
+  `__osRunQueue=0x800d1d88`, and `__osRunningThread=0x800d1d90`.
+  These identities are evidence only. The implementation first requires the
+  exact sampled PC and all four raw fingerprint words above; on any mismatch
+  it emits `mapped_roots=unavailable` and never reads those mapped roots.
+
+### Snapshot safety and decoded layout
+
+- The scheduler snapshot runs only at the existing `gen_interrupt` boundary
+  and only at ordinals `65536` and `1048576`; there is no instruction hook.
+  It reads `r4300->rdram->dram` directly after KSEG0/KSEG1, alignment, and
+  `dram_size` checks. It does not invoke generic memory handlers, read MMIO,
+  mutate RDRAM, or alter timing, interrupts, guest state, or DDSTART2.
+- Root words and a contiguous nearby neighborhood are emitted as explicitly
+  labeled `raw` words. No undocumented `__osActiveQueue` address is used.
+- Thread records use explicit guest offsets matched to public
+  `include/PR/os_thread.h` in the cited revision, not a host-ABI cast:
+  `next=0x00`, `priority=0x04`, `queue=0x08`, `tlnext=0x0c`,
+  `state=0x10` (high halfword), `id=0x14`, and context
+  `savedSP=0xf0`, `savedRA=0x100`, `savedPC=0x11c`. Guest 64-bit values
+  are assembled from direct high/low words. The `queue` pointer is only
+  reported as a raw wait-queue head plus nearby raw words; no OSMesgQueue
+  offset or queue semantics are inferred.
+- The verified `runningThread` `tlnext` chain and `runQueue` `next` chain
+  each stop at eight records. Aligned KSEG RDRAM pointers are required,
+  global visited tracking detects shared nodes/cycles, and invalid pointers,
+  read failures, and traversal limits are explicitly labeled. There are at
+  most 64 DDSTART6 callback records per session in an independent budget;
+  callback registration resets that budget and its counter. The budget is not
+  a guarantee that either late candidate has a complete chain.
+
+The callback test now covers DDSTART6 disabled gating, the independent
+64-record bound, and callback-reset behavior. The packaged-core marker
+verifier requires `DDSTART6 scheduler:` in addition to all earlier markers.
+Raw device logs remain excluded; no device result or root-cause claim is made
+by this candidate.
+
+Files changed for this candidate:
+`mupen64plus-core/upstream/src/api/callbacks.c`,
+`mupen64plus-core/upstream/src/api/callbacks.h`,
+`mupen64plus-core/upstream/src/device/r4300/interrupt.c`,
+`tools/tests/dd-startup-callbacks-test.c`,
+`tools/verify-dd-startup-apk.sh`, and this handoff.
+
+## DDSTART6 build verification
+
+Focused callback gate/budget/reset tests passed; Android debug build passed
+in 43 seconds; arm64 scheduler marker and prior diagnostic markers verified
+in the packaged core. Focused layout/bounds review passed. APK SHA-256:
+`ae664fd68582a5e9759f9aea483811dcea8a70a36e92febf4196da9e6ac130cb`.
+No runtime outcome is claimed. Use the same Japanese native combination,
+DD enabled, no autoload, unchanged profile, and record at least 30 seconds to
+`ddstart6-logcat.txt`. Update the debug installation without clearing data.
+
 ## Test publication requirement
 
-DDSTART5 final verification before publication: callback/budget/reset tests
-passed; Android debug build passed in 42 seconds; packaged arm64 context
-marker and previous trace markers verified; focused code review found no
-implementation blocker. APK SHA-256:
+DDSTART6 final verification before publication: callback/budget/reset tests
+passed locally; no Android debug build or package verification was performed
+by this pass. The owning agent must perform the normal source/package checks
+and verify the packaged arm64 scheduler marker before publication. The prior
+DDSTART5 APK SHA-256 was:
 `986a59a11895f0c3f4e42cfb96a6f18a20015f746111a4a0154b2dfa2d95010d`.
 This is diagnostic-only and device results remain pending. Update the existing
 debug app, preserve saves, use the same Japanese native combination with DD
 enabled and no autoload, then capture at least 30 seconds to
-`ddstart5-logcat.txt`. Expected context output is two nine-record groups,
-not a guarantee of a particular guest PC or a successful boot.
+`ddstart6-logcat.txt`. Expected output is at most two signature-gated
+late-candidate snapshots within the 64-record session budget, not a
+guarantee of a particular guest PC, root mapping, complete chain, or
+successful boot.
 
 For every test iteration, update this handoff **before** creating and pushing
 the test commit to the current debug branch, `dd-eos-watchdog-checkpoint`.

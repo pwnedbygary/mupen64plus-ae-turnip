@@ -74,6 +74,13 @@ extern unsigned int DdStartupDiagnosticsNextProgressOrdinal(void);
  */
 extern int DdStartupDiagnosticsTraceContext(const char *message, ...)
     ATTR_FMT(1,2);
+/*
+ * DDSTART6 has its own 64-record session budget.  It is deliberately
+ * separate from DDSTART1/DDSTART3/DDSTART4 and DDSTART5, and is reset by
+ * every callback registration.
+ */
+extern int DdStartupDiagnosticsTraceScheduler(const char *message, ...)
+    ATTR_FMT(1,2);
 extern m64p_error SetStateCallback(ptr_StateCallback pFunc, void *Context);
 extern void       DebugMessage(int level, const char *message, ...) ATTR_FMT(2,3);
 extern void       StateChanged(m64p_core_param param_type, int new_value);
