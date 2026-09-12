@@ -4,6 +4,8 @@
 
 Started 2026-09-11. No new Android runtime test has been performed by this
 workspace in this investigation. The N64DD failure is unresolved.
+User-supplied Android logs were subsequently received and reviewed below;
+their installed source/APK identity is not yet verified.
 
 - Baseline: tag `v336`, commit
   `dc955483a97daa99cb1f9db06e2334464fa1664d`, also the current remote `master`.
@@ -602,3 +604,127 @@ emulator parser/hook is **not** itself a missing hardware feature.
 - Native failure remains unresolved. Highest-priority concrete discrepancy
   is boot-source policy; highest-priority missing evidence is a fresh
   unchanged-baseline device capture with verified configuration.
+
+## 2026-09-11 — first uploaded Android capture: logging suppression confirmed
+
+### Evidence identity and privacy
+
+Received `attached_assets/native-dd-logcat_1789181995975.txt` (15,730 lines,
+1,953,796 bytes), SHA-256
+`a981ee5941cddec07e098e300b0c758b5ba0e959c7f3c5e47183b6ea13c4659b`,
+and `attached_assets/installed-package_1789181995978.txt` (67 bytes),
+SHA-256 `84ca9f29c434e22e2ee242e3814f1eaccfbf02a2c16f8a79e3f8fb1d0535d199`.
+Line references below refer to the original log upload, not a filtered copy.
+Raw logs include unrelated device/app information: do not publish them to
+GitHub. Only this selected technical analysis is intended for publication.
+
+The package report contains only:
+`Unable to find package: org.mupen64plusae.turnip.pwnedbygary.debug`.
+The two relevant late launches use
+`org.mupen64plusae.turnip.pwnedbygary` (without `.debug`). Correct the prior
+capture command; do not uninstall/reinstall anything to match its old name.
+The log also contains earlier debug-package history. Package name alone does
+not prove release/debug compiler settings, source revision or APK hash.
+
+### Separate the launch attempts
+
+Logcat includes buffered history from 20:25 through 22:59 in device-reported
+time; these are not all one test. Two late DD-configured attempts are visible:
+
+| Device time / PID | Observed evidence |
+| --- | --- |
+| 22:55:53 / 24315 | IPL copy request at line 13059; separate disk copy at 13069; native logging disabled at 13073; cartridge file opened at 13074; parallel graphics/RSP selected at 13111/13125. |
+| 22:59:06 / 24679 | IPL copy request at 14677; separate disk copy at 14690; native logging disabled at 14695; cartridge file opened at 14696; parallel graphics/RSP selected at 14744/14750. |
+
+Selected filenames indicate `F-Zero X.z64`, `F-Zero X.ndd`, and
+`N64DD IPLROM [Proto] [USA].n64`; autosave labels identify F-ZERO X (U).
+This supports attempted native cart-plus-disk setup, not successful core
+validation or verified matching disk/IPL regions. Filenames are not hashes.
+Disk copy uses the cartridge header-derived working filename; an absent
+`.ndd` suffix on that cache target is not itself evidence of an incorrect copy.
+
+Earlier PIDs 23224, 23527 and 23671 report a missing DDROM file, attempted
+disk load from the working directory, and Dynamic Recompiler startup
+(lines 6638–6851, 8546–8819, 10005–10287). **Do not attribute those CPU
+messages or disk-load failures to PIDs 24315/24679.** The earlier sessions
+are not evidence of the effective CPU engine for the late DD attempts.
+
+### Confirmed observation blocker, not stall cause
+
+Both DD attempts explicitly report
+`Disable core debug due to 64DD ROM found`.
+This matches `java/jni/CoreInterface.java:537-556`: if the cached DD IPL
+file exists, CoreStartup receives a null native debug callback. Otherwise
+it receives the normal logging callback. This suppresses INFO, WARNING and
+ERROR as well as verbose core output, hiding the expected disk/IPL checks
+and actual-engine startup messages.
+
+This explains **missing diagnostic evidence**, not why the emulated game
+fails. Another identical logcat capture cannot restore messages the app
+never emits. Do not ask the user to repeatedly reproduce without addressing
+this observation boundary. The callback condition is file existence, not
+explicit support activation; any new diagnostics need the stricter gate.
+
+`java/jni/CoreService.java:579-627` has two distinct paths: a directly
+launched NDD uses global Japan IPL selection, whereas a cartridge launch
+uses the per-game configured IPL/disk. Therefore a proposed logging gate
+of `enable64DdSupport && isNdd` would **exclude this cart-plus-disk case**
+and is not acceptable. Gate on explicit per-game support for this
+investigation, independently of the cart file's `isNdd` classification.
+
+### Other observations and limits
+
+- The final run initializes Vulkan/Turnip and opens/starts Android audio
+  (e.g. lines 14792–14915). That proves host subsystem activity, not visible
+  guest frames, correct menu output, non-silent audio or guest progress.
+- Exit/autosave operations are visible for both attempts (14348–14400 and
+  15579–15637). A label at ERROR severity saying “Save completed” is not a
+  reported save failure. This is emulator save-state activity, not proof of
+  native DD RAM persistence or EK WritableROM persistence.
+- No affirmative save-state *load* marker was identified for these launches.
+  With core logging suppressed, absence is not proof autoload was disabled.
+- Bridge unresolved-symbol messages include the JNA invokePointer symbol
+  and SendVRUWord (13122/13126 and 14747/14751); plugin/host initialization
+  continues afterward. These need context, not immediate causal attribution.
+- Repeated external-app-directory creation warnings also exist; internal
+  cache operations and autosave completion coexist with them. No demonstrated
+  disk read failure follows from those warnings alone.
+- No fatal native signal/Java FATAL EXCEPTION was identified for the two late
+  attempts. Their exits include UI exit/autosave/shutdown. This does not
+  establish either successful gameplay or an exact point of guest stall.
+- An independent review incorrectly reported no DD copy/suppression markers
+  and equated the F-ZERO X (U) autosave label with a non-DD run. Direct line
+  inspection disproved both assertions; they are rejected, not findings.
+
+### Next action, deliberately narrow
+
+**User-reported visible boundary, received after log review:** the application
+freezes on the IPL loading menu, before the screen where the IPL would report
+that the time has not been set. This is reported visual evidence, not a
+decoded trace or independently inspected screenshot. It supports reaching
+IPL presentation and focuses investigation on early IPL progression. It does
+not establish which instruction stopped, successful disk-code loading, or an
+RTC defect: execution could stop before the clock check. Do not describe
+this run as a proven post-LeoBootGame/game-context stall. The cartridge-first
+hardware discrepancy remains relevant for the intended combo launch.
+No audio observation or elapsed-to-freeze measurement has yet been supplied.
+
+1. Obtain package metadata for the actual non-suffixed package, local build
+   commit/dirty diff, and audio/timing details if needed to distinguish the
+   two late attempts. Visible behavior is now reported above; do not ask
+   the user to repeat it. Do not infer a verified baseline from filenames.
+2. Prepare a separate diagnostic-only candidate that enables bounded
+   startup/load/engine information only when N64DD support is explicitly
+   enabled. Preserve the existing DD-disabled callback behavior exactly.
+   Do not simply enable all verbose logging: DD register/DMA messages can
+   flood output and perturb timing. Filtering after JNA delivery still incurs
+   callback overhead; prefer filtering at the native emission boundary.
+3. Verify the exact packaged build carries the diagnostic change, then
+   collect one fresh DD attempt. Keep original signing and all saves.
+4. Retain boot-priority mismatch as a hypothesis. This upload does not
+   expose boot-source/CIC/guest execution sufficiently to confirm or reject it.
+
+No runtime code, configuration defaults, APKs or saves changed in this
+capture-review pass. Task remains unresolved; no acceptance test is marked
+passed. The earlier “no fresh traces” wording is now superseded by this
+received capture, while “no source-verified baseline trace” remains true.
