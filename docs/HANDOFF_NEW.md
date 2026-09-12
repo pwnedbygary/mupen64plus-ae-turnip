@@ -2045,3 +2045,103 @@ retain the old DDSTART7 snapshots as a separate comparison. If DDSTART8
 records do not appear, establish which hook/filter was reached before
 assuming the fault disappeared. Root-cause attribution, correction,
 dynarec gameplay/audio acceptance and save regressions are still pending.
+
+## DDSTART8 native result and DDSTART9 candidate correction — 2026-09-12
+
+The new upload is `ddstart8-logcat_1789249640409.txt`, SHA-256
+`407c7bf0832d2de22af9958c2de6493345d0c0684f9131481ac83f655b95c9f6`
+(2,153 lines / 294,232 bytes). Full bounded analysis and arithmetic are in
+[DDSTART8_RUNTIME_ANALYSIS.md](DDSTART8_RUNTIME_ANALYSIS.md). Raw device logs
+are not published.
+
+### Native findings
+
+- One arm64 **Dynamic Recompiler** launch, explicit DD support, the same
+  cart/disk/IPL configuration, cartridge combo boot and no requested autoload.
+- Launch again reports count-per-op 1 / denominator 0. These were already
+  present in the preceding captures. **Do not manually change timing settings
+  for the next comparison**; preserve the original dynarec profile.
+- A complete 15-record live fault confirms PC/EPC `800ad4ac`, BD 0, TLBL,
+  BadVAddr/a0 `079bb080`, SP `800d4203`, RA `800bb6b0`. Both the compiled and
+  current instruction are `8c830000`, `lw v1,0(a0)`.
+- The stale caller is identified by the game's reversible BootGame2 decode
+  with key `bd`: current JAL `0c02f8e4` reverses to `0c02b527`, which calls
+  **`800ad49c`**, exactly the actual faulting block. Current delay slot
+  `2405013c` reverses to `2405be7f`, exactly matching live `a1=...be7f`.
+  Observed RA is the return address of that same call.
+- Compilation generation 175 spans 307 words from `800bb540` to exclusive
+  end `800bba0c`, including the still-encoded next function. Its initial
+  copied/current hash is `bd23a6d4`.
+- Invalidation occurs before the fault, but the 24 C dirty verifications
+  occur afterward. All reject the old copy against current hash `62e2e755`.
+  The active internal call did not pass through that validation.
+- There are zero slow-path byte-store records. Do not fabricate an exact
+  writer from the invalidation event. The diagnosis uses reconstructed caller
+  instructions with independent live target/argument/RA corroboration.
+
+This establishes stale encoded boot-code execution as the cause of this
+dynarec fault. It does not establish native success after a correction, fix
+the separate cached-interpreter gameplay failure, or prove audio/save behavior.
+
+### DDSTART9 correction
+
+Pass 1 previously recognized a non-linking unconditional transfer and its
+delay slot as a block end, then reopened that boundary if an earlier branch
+targeted nearby following code. This pulled encoded BootGame2 into the
+currently executing translation and allowed a direct internal call after
+the guest rewrote it.
+
+The candidate retains that boundary under the explicit DD-support flag
+provided by the selected game's launch settings. DD-disabled sessions keep
+the original forward-target scan. This is an early block-formation change:
+the existing allocator, dirty-register writeback, external resolver and
+linker consistently treat the excluded callee as external. It is not a
+late branch-patching workaround.
+
+No guest addresses, title checks, WritableROM conditions, timing/count
+changes, CACHE/TLB changes, register repairs or interpreter fallback were
+introduced. The policy applies to the new dynarec; cached interpreter is
+unchanged. A gated `DDSTART9 boundary:` initialization marker identifies it.
+
+Expected native evidence: the first boot block is **79 words**, ending at
+`800bb67c`, followed by a current/decoded compilation of that callee instead
+of the old call into `800ad49c`. This remains a device-test criterion.
+
+### Verification and artifact
+
+- Focused callback, production observer/reader and boundary-policy tests
+  pass. New tests check DD off/on/off, all three historical forward-target
+  offsets, external classification, and an actual ARM64 register-store
+  instruction emitted by the production writeback code.
+- Review approved the correction for native validation. The fixtures do
+  not execute the full compiler on the boot image or generated ARM64 code.
+- All-ABI debug assembly passed in 39 seconds. Packaged arm64 markers
+  DDSTART1–8 and DDSTART9 are present.
+- Artifact: `build-downloads/DDSTART9-debug.apk`.
+- APK SHA-256:
+  `6d49acbb76c91e7576cc1dbbaa80fd49c8ccabef3d8830ef7c0193dc36d5590a`.
+- Package: `org.mupen64plusae.turnip.pwnedbygary.debug`; upstream manifest
+  label `3.0.335 (beta) 1e0e1bfa`.
+- The native dirty diff from that local build base is confined to
+  `new_dynarec.c`: the boundary helper/call and gated initialization marker.
+  The accompanying regression and verifier changes are host-side only.
+- Certificate SHA-256:
+  `311f4e35e939256ae8df53ecbf15c43235d1ee97f8a0138d332839c5e53c2bfc`,
+  unchanged from DDSTART7/8. Keep signing material local.
+
+### Next capture and remaining acceptance
+
+Update with `adb install -r`, never uninstall or clear data. Keep the original
+dynarec profile, unchanged timing settings, the same inputs, explicit DD
+support and no save-state autoload.
+
+Capture one launch to `ddstart9-logcat.txt`. If the menu appears, try starting
+a race and continue capture for roughly a minute. If it remains black, keep
+the capture running for at least 45 seconds. Supply the log plus the observed
+screen state and audio behavior; include a screenshot if text is corrupted.
+Check the new boundary marker and compilation sequence before changing any
+other setting or broadening the correction.
+
+Native DD menu/gameplay/audio acceptance, the full cached-interpreter
+dispatcher comparison, and required plain-cart/WritableROM persistence
+regressions remain open. This task remains **IN_PROGRESS**.

@@ -8996,6 +8996,10 @@ void new_dynarec_init(void)
     dd_dynarec_coherence_writer_remaining=12;
   }
 #endif
+  if(DdStartupDiagnosticsEnabled())
+    DebugMessage(M64MSG_INFO,
+        "DDSTART9 boundary: retain_nonlink_terminators=true"
+        " delay_slot=preserved");
 
 #if defined(RECOMPILER_DEBUG) && !defined(RECOMP_DBG)
   recomp_dbg_init();
@@ -9125,6 +9129,28 @@ void new_dynarec_cleanup(void)
 #ifdef ROM_COPY
   if (munmap (ROM_COPY, 67108864) < 0) {DebugMessage(M64MSG_ERROR, "munmap() failed");}
 #endif
+}
+
+/*
+ * Keep the historical target scan for ordinary titles.  DD startup
+ * diagnostics deliberately do not reopen a block after a non-linking
+ * unconditional terminator: the caller's decision index still leaves the
+ * architectural delay slot to the existing assembler path.
+ */
+static int dd_dynarec_nonlink_block_continues(int decision_index)
+{
+  int j;
+
+  if(DdStartupDiagnosticsEnabled())
+    return 0;
+  for(j=decision_index-1;j>=0;j--)
+  {
+    if(ba[j]==start+decision_index*4
+        || ba[j]==start+decision_index*4+4
+        || ba[j]==start+decision_index*4+8)
+      return 1;
+  }
+  return 0;
 }
 
 int new_recompile_block(int addr)
@@ -9699,12 +9725,8 @@ int new_recompile_block(int addr)
       if(rt1[i-1]==0) { // Continue past subroutine call (JAL)
         done=1;
         // Does the block continue due to a branch?
-        for(j=i-1;j>=0;j--)
-        {
-          if(ba[j]==start+i*4) done=j=0; // Branch into delay slot
-          if(ba[j]==start+i*4+4) done=j=0;
-          if(ba[j]==start+i*4+8) done=j=0;
-        }
+        if(dd_dynarec_nonlink_block_continues(i))
+          done=0;
 
         // Stop if we're compiling junk
         if(type==UJUMP||type==CJUMP||type==SJUMP||type==RJUMP||type==FJUMP)

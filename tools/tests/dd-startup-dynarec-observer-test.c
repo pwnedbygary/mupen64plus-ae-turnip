@@ -90,6 +90,70 @@ static void begin_session(int enabled)
     assert(SetDebugCallback(capture, NULL) == M64ERR_SUCCESS);
 }
 
+static void test_nonlink_continuation_gate(void)
+{
+    const int decision_index = 3;
+    unsigned int offset;
+
+    start = UINT32_C(0x800bb540);
+    memset(ba, 0xff, sizeof(ba));
+    /*
+     * The decision index is the post-terminator scan point.  The existing
+     * assembler contract consumes the architectural delay slot at that
+     * boundary; this helper only decides whether to reopen the block.
+     */
+    begin_session(0);
+    assert(message_count == 0);
+    for (offset = 0; offset < 3; ++offset) {
+        ba[1] = start + (decision_index + offset) * 4;
+        assert(dd_dynarec_nonlink_block_continues(decision_index));
+    }
+
+    begin_session(1);
+    for (offset = 0; offset < 3; ++offset) {
+        ba[1] = start + (decision_index + offset) * 4;
+        assert(!dd_dynarec_nonlink_block_continues(decision_index));
+    }
+    assert(message_count == 1); /* DDSTART1 identity only */
+
+    begin_session(0);
+    for (offset = 0; offset < 3; ++offset) {
+        ba[1] = start + (decision_index + offset) * 4;
+        assert(dd_dynarec_nonlink_block_continues(decision_index));
+    }
+    memset(ba, 0xff, sizeof(ba));
+    assert(!dd_dynarec_nonlink_block_continues(decision_index));
+
+    /* The callee at the excluded final word remains an external target. */
+    slen = 5;
+    memset(requires_32bit, 0, sizeof(requires_32bit));
+    assert(internal_branch(0, start + 4));
+    assert(!internal_branch(0, start + slen * 4 - 4));
+    assert(!internal_branch(0, start + slen * 4));
+}
+
+static void test_external_store_regs_writeback(void)
+{
+    signed char regmap[HOST_REGS];
+    uint32_t code[4] = { 0, 0, 0, 0 };
+    uint32_t emitted;
+    uint32_t expected;
+
+    memset(regmap, -1, sizeof(regmap));
+    regmap[0] = 1;
+    start = UINT32_C(0x800bb540);
+    slen = 5;
+    out = (u_char *)code;
+    store_regs_bt(regmap, 0, UINT64_C(1),
+        start + slen * 4 - 4); /* internal_branch excludes this callee */
+    assert(out == (u_char *)code + 4);
+    memcpy(&emitted, code, sizeof(emitted));
+    expected = UINT32_C(0xb9000000)
+        | (u_int)(((fp_regs + 8) >> 2) << 10)
+        | (u_int)(FP << 5);
+    assert(emitted == expected);
+}
+
 static void reset_observer_budgets(void)
 {
     dd_dynarec_compile_generation = UINT32_C(0x100);
@@ -331,6 +395,8 @@ int main(void)
     dram = calloc(1, DRAM_BYTES);
     assert(dram != NULL);
 
+    test_nonlink_continuation_gate();
+    test_external_store_regs_writeback();
     test_disabled_gate();
     test_fault_observer();
     test_unavailable_fault_instruction();
