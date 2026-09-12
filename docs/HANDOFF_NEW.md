@@ -1908,3 +1908,140 @@ makes it relevant. If input normalization is excluded, the next diagnostic
 must cover the actual post-menu transition and live exception paths rather
 than repeating the unchanged startup-only capture. Preserve the separate
 dynarec boot-fault investigation; a common cause has not been established.
+
+## Cached IPL metadata result — V64 path excluded for this input
+
+The user supplied the metadata of the cached file actually loaded:
+
+- Size: **4,194,304 bytes**.
+- Raw first four bytes: **`80 27 07 40`** (Z64/big-endian).
+- SHA-256:
+  **`806400ec0df94b0755de6c5b8249d6b6a9866124c5ddbdac198bde22499bfb8b`**.
+
+This input selects the Z64 normalization branch, **not the V64 branch**.
+The V64 helper discrepancy cannot explain this run via that branch; do not
+apply a V64 correction as a proposed fix for this capture. The header and
+size are not a full known-good validation of all IPL/font bytes. No firmware
+was uploaded or downloaded for this metadata check.
+
+The user clarified that **dynarec must work for speed**; cached interpreter
+is not an acceptable final workaround. Working correctly under both engines
+remains the goal, with dynarec required and cached interpreter secondary.
+Next diagnostic work returns to the dynarec boot exception and boot-code
+transformations, with explicit verification of ARM64 data-TLB fast-path
+coverage before describing a capture as live exception evidence.
+
+## DDSTART8 — ARM64 post-spill fault and bounded boot-code evidence
+
+This is a **diagnostic APK, not a correction**. It leaves the Z64 IPL loader,
+guest CACHE/TLB behavior, disk timing, and existing invalidation semantics
+unchanged. All new probes require explicit per-game DD activation; the
+generated instrumentation and core-local state are ARM64-new-dynarec-only.
+Other engines receive no DDSTART8 execution hooks.
+
+### Live load-fault hook
+
+The observed dynamic `lw` path reaches `do_readstub`, through its C read
+helper, address translation and common TLB exception handler. Common C
+exception entry is too early to trust the guest GPR array: dirty registers
+may still be in ARM64 host registers.
+
+DDSTART8 instead emits an observer after the existing host restore,
+constant materialization, and `wb_dirtys`, on the pending-exception branch
+before `do_interrupt`. Its four compilation immediates identify guest PC,
+instruction word, block start and compilation generation. The observer is
+registered in the ARM64 trampoline table for out-of-range C calls; allocated
+caller-save registers are preserved around the call.
+
+The observer accepts TLBL from KSEG0 game code targeting low/TLB addresses,
+reserving full snapshots for the known PC `800ad4ac`, derived fault PC
+`800ad4ac`, or BadVAddr `079bb080`. At most two other eligible faults get
+filter-only records. Each full snapshot has **15 records**:
+
+- Final CP0 EPC/Cause/BadVAddr/Status/EntryHi/Context, load address,
+  compiled PC/block/generation, explicit BD and `pc_agreement`.
+- Compiled instruction versus the current, directly read RDRAM word.
+- All 32 spilled 64-bit GPRs and LO/HI.
+- Five-word direct-RDRAM windows at compiled PC, `800bb648`, the current
+  spilled RA, and candidate entry `800bb67c`. Each window carries its
+  snapshot number. The RA window includes RA-8, the usual JAL location.
+
+Two full snapshots plus two filter records exactly fit the independent
+**32-record fault budget**. No interrupt-ordinal trigger is required.
+EPC+BD-derived PC must agree with the compile-time PC before using that
+agreement as exception-PC evidence; nested exceptions may retain an older
+EPC. `current=unavailable` is not evidence of an instruction mismatch.
+
+### Boot-code and exact slow-path byte-store evidence
+
+The independent **64-record coherence budget** is divided into local caps:
+16 compilation, 24 C dirty-verification, 12 invalidation and 12 byte-store
+records. Only the relevant boot region/page is observed. Compilation emits
+generation/block plus copied/current hashes. Dirty verification reports
+the actual `memcmp` result. Invalidation records do not invent a writer PC.
+
+Byte-store observations wrap the existing masked RDRAM write in
+`write_byte_new`, using validated direct reads before and after. For
+KSEG0/KSEG1 targets in physical `[000bb540,000bb9a4)`, the record contains
+the target, byte, before/after aligned word, pending-exception flag, and
+writer PC derived from the **generated call argument**:
+`writer_pc=(pcarg & ~1)-4`, with the low bit identifying the delay slot.
+Both generated fallback call sites use that argument convention.
+
+For each emitted successful store, verify `pending_exception=0` and:
+`after = (before & ~(ff << shift)) | (byte << shift)`,
+where `shift=((address & 3) ^ 3)*8`.
+
+This is exact evidence for emitted **ARM64 `write_byte_new` slow-path
+stores**, including the C fallback called by `inline_writestub`. It is
+**not** coverage of direct inline generated writes, other store widths, or
+DMA. There is no generated block-entry hook, so compilation alone is not
+proof that a particular generation executed. Hash equality alone is not
+byte-for-byte proof; the separate dirty-verification result is a `memcmp`.
+Constant-address load fallbacks, non-ARM64 engines and the cached-interpreter
+gameplay stall remain outside the new live-fault hook's coverage.
+Coherence records are not a complete trace of every validation/reuse path;
+KSEG1-only invalidation events may also be absent.
+
+Callback budgets reset on callback registration; core-local caps and
+compilation generation reset at dynarec initialization. DD-disabled games
+emit no new records and perform no diagnostic RDRAM reads. Some cold C paths
+have an additional disabled-gate check; no performance improvement is claimed.
+
+### Verification and delivered artifact
+
+- All focused host tests passed: callback gates/caps/reset, the existing
+  production guest-word/ABI readers, and new fixtures including the actual
+  production dynarec C observers. They cover complete/filtered snapshots,
+  64-bit register values, BD/PC interpretation, invalid RAM/RA bounds,
+  instruction comparison, and independent per-stage limits.
+- The observer fixtures do **not** execute generated ARM64 instructions.
+  Source review checked the generated ABI, trampoline, observed dynamic-load
+  path, and byte-store PC provenance. Native execution remains pending.
+- All-ABI Android debug assembly passed in **39 seconds**.
+- Packaged arm64 core contains DDSTART1–7 and both DDSTART8 markers.
+- APK: `build-downloads/DDSTART8-debug.apk`.
+- APK SHA-256:
+  `5a283dfa2839d4d8e5293677793def5dec97e764e04141ec7b8e5b45bdc87255`.
+- Package remains `org.mupen64plusae.turnip.pwnedbygary.debug`; the upstream
+  displayed version is still `3.0.335 (beta)`. Identify this iteration by
+  APK hash and native DDSTART8 markers, not the displayed version.
+- Signing certificate SHA-256 remains
+  `311f4e35e939256ae8df53ecbf15c43235d1ee97f8a0138d332839c5e53c2bfc`,
+  matching DDSTART7. No signing material or raw inputs are published.
+
+### Next device capture
+
+Update the existing debug installation with `adb install -r`; stop on any
+installation/signature error, never uninstall or clear data. Restore the
+**original dynarec profile** for the Japanese DD test entry, leaving the
+cached-profile copy and other games unchanged. Keep the same cart/disk/IPL,
+explicit DD enablement, count-per-op 1, and no save-state autoload.
+
+Capture one fresh launch for **45 seconds** to `ddstart8-logcat.txt`, then
+stop logcat and supply the file. Verify the effective Dynamic Recompiler
+marker, DDSTART8 fault/byte-store records, PC agreement and mask equations;
+retain the old DDSTART7 snapshots as a separate comparison. If DDSTART8
+records do not appear, establish which hook/filter was reached before
+assuming the fault disappeared. Root-cause attribution, correction,
+dynarec gameplay/audio acceptance and save regressions are still pending.

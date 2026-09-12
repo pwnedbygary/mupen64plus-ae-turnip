@@ -55,6 +55,8 @@ static unsigned int dd_startup_remaining = 0;
  * the earlier trace classes or by DDSTART5.
  * DDSTART7 fault-context records are independent as well.  Two late
  * candidates each fit within this class's fixed snapshot budget.
+ * DDSTART8 dynarec records are independent by kind as well, so fault and
+ * coherence observations cannot consume one another's fixed budgets.
  */
 enum
 {
@@ -74,6 +76,8 @@ enum
      * The two late candidates therefore require 2 * 9 = 18 records.
      */
     DD_TRACE_FAULT_BUDGET = 18,
+    DD_TRACE_DYNAREC_FAULT_BUDGET = 32,
+    DD_TRACE_DYNAREC_COHERENCE_BUDGET = 64,
     DD_TRACE_EARLY_SAMPLES = 8
 };
 
@@ -86,6 +90,19 @@ static unsigned int dd_trace_scheduler_remaining = 0;
 static unsigned int dd_trace_scheduler_seen = 0;
 static unsigned int dd_trace_fault_remaining = 0;
 static unsigned int dd_trace_fault_seen = 0;
+static unsigned int dd_dynarec_remaining[DD_DYNAREC_TRACE_KIND_COUNT];
+static unsigned int dd_dynarec_seen[DD_DYNAREC_TRACE_KIND_COUNT];
+
+static unsigned int dd_dynarec_trace_budget(enum dd_dynarec_trace_kind kind)
+{
+    static const unsigned int budgets[DD_DYNAREC_TRACE_KIND_COUNT] = {
+        DD_TRACE_DYNAREC_FAULT_BUDGET,
+        DD_TRACE_DYNAREC_COHERENCE_BUDGET
+    };
+
+    return ((unsigned int)kind < DD_DYNAREC_TRACE_KIND_COUNT)
+        ? budgets[kind] : 0;
+}
 
 static int reserve_dd_trace(unsigned int *remaining)
 {
@@ -292,6 +309,41 @@ int DdStartupDiagnosticsTraceFault(const char *message, ...)
     return 1;
 }
 
+int DdStartupDiagnosticsTraceDynarec(enum dd_dynarec_trace_kind kind,
+                                     const char *message, ...)
+{
+    char msgbuf[512];
+    va_list args;
+    unsigned int ordinal;
+    unsigned int index = (unsigned int)kind;
+    int prefix_length;
+
+    if (!DdStartupDiagnosticsEnabled() || index >= DD_DYNAREC_TRACE_KIND_COUNT
+            || message == NULL
+            || !reserve_dd_trace(&dd_dynarec_remaining[index]))
+        return 0;
+
+    ordinal = __atomic_add_fetch(&dd_dynarec_seen[index], 1, __ATOMIC_RELAXED);
+    prefix_length = snprintf(msgbuf, sizeof(msgbuf), "record=%u ", ordinal);
+    if (prefix_length < 0)
+        return 0;
+    if ((size_t)prefix_length >= sizeof(msgbuf))
+        prefix_length = sizeof(msgbuf) - 1;
+
+    va_start(args, message);
+    vsnprintf(msgbuf + prefix_length, sizeof(msgbuf) - (size_t)prefix_length,
+            message, args);
+    va_end(args);
+
+    /*
+     * DDSTART8 is an explicitly gated, synchronous callback observation.
+     * This function only formats and emits a bounded message; it performs no
+     * allocation or file I/O and does not alter emulator state.
+     */
+    (*pDebugFunc)(DebugContext, M64MSG_INFO, msgbuf);
+    return 1;
+}
+
 /* global Functions for use by the Core */
 m64p_error SetDebugCallback(ptr_DebugCallback pFunc, void *Context)
 {
@@ -313,6 +365,12 @@ m64p_error SetDebugCallback(ptr_DebugCallback pFunc, void *Context)
     __atomic_store_n(&dd_trace_fault_remaining, DD_TRACE_FAULT_BUDGET,
             __ATOMIC_RELAXED);
     __atomic_store_n(&dd_trace_fault_seen, 0, __ATOMIC_RELAXED);
+    for (i = 0; i < DD_DYNAREC_TRACE_KIND_COUNT; ++i) {
+        __atomic_store_n(&dd_dynarec_remaining[i],
+                dd_dynarec_trace_budget((enum dd_dynarec_trace_kind)i),
+                __ATOMIC_RELAXED);
+        __atomic_store_n(&dd_dynarec_seen[i], 0, __ATOMIC_RELAXED);
+    }
     for (i = 0; i < DD_TRACE_KIND_COUNT; ++i) {
         __atomic_store_n(&dd_trace_kind_remaining[i],
                 dd_trace_kind_budget((enum dd_startup_trace_kind)i),

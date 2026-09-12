@@ -258,6 +258,12 @@ static uintptr_t jump_table_symbols[] = {
   (intptr_t)SWR_new,
   (intptr_t)SDL_new,
   (intptr_t)SDR_new,
+   /*
+    * DDSTART8 generated read-stub observer.  Keep this in the ARM64 jump
+    * table so emit_call() receives a valid trampoline when the core and JIT
+    * cache are more than +/-128MB apart.
+    */
+   (intptr_t)dd_dynarec_fault_observer,
   (intptr_t)breakpoint
 };
 

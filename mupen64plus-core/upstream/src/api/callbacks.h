@@ -57,6 +57,13 @@ enum dd_startup_trace_mode
     DD_TRACE_PROGRESS_SPARSE
 };
 
+enum dd_dynarec_trace_kind
+{
+    DD_DYNAREC_FAULT = 0,
+    DD_DYNAREC_COHERENCE = 1,
+    DD_DYNAREC_TRACE_KIND_COUNT
+};
+
 extern void DdStartupDiagnosticsTrace(enum dd_startup_trace_kind kind,
                                       enum dd_startup_trace_mode mode,
                                       const char *message, ...) ATTR_FMT(3,4);
@@ -89,6 +96,14 @@ extern int DdStartupDiagnosticsTraceScheduler(const char *message, ...)
  */
 extern int DdStartupDiagnosticsTraceFault(const char *message, ...)
     ATTR_FMT(1,2);
+/*
+ * DDSTART8 has independent 32-record fault and 64-record coherence budgets.
+ * Both classes are reset by every callback registration and remain subject
+ * to the same explicit host gate.
+ */
+extern int DdStartupDiagnosticsTraceDynarec(enum dd_dynarec_trace_kind kind,
+                                            const char *message, ...)
+    ATTR_FMT(2,3);
 extern m64p_error SetStateCallback(ptr_StateCallback pFunc, void *Context);
 extern void       DebugMessage(int level, const char *message, ...) ATTR_FMT(2,3);
 extern void       StateChanged(m64p_core_param param_type, int new_value);

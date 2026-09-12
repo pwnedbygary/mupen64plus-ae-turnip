@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -45,6 +46,7 @@
 #include "device/r4300/cp1.h"
 #include "device/r4300/interrupt.h"
 #include "device/r4300/tlb.h"
+#include "device/r4300/dd_fault_layout.h"
 #include "device/r4300/fpu.h"
 #include "device/rcp/mi/mi_controller.h"
 #include "device/rcp/rsp/rsp_core.h"
@@ -239,6 +241,11 @@ void *get_addr_32(u_int vaddr,u_int flags);
 
 static void load_regs_entry(int t);
 static void inline_readstub(int type,int i,u_int addr_const,char addr,struct regstat *i_regs,int target,int adj,u_int reglist);
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+static int dd_dynarec_prepare_byte_store(uint32_t address, uint32_t *beforeword);
+static void dd_dynarec_trace_byte_store(int pcaddr, uint32_t address,
+    uint32_t shifted_value, unsigned int shift, uint32_t beforeword);
+#endif
 
 void *base_addr;
 void *base_addr_rx;
@@ -302,6 +309,28 @@ static struct ll_entry *jump_in[4096];
 static struct ll_entry *jump_dirty[4096];
 static struct ll_entry *jump_out[4096];
 static unsigned char restore_candidate[512];
+
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+/*
+ * DDSTART8 is intentionally confined to the ARM64 new dynarec.  The
+ * callback gate is checked both while emitting the observer and by every
+ * observer, so non-DD titles neither get generated probes nor perform the
+ * direct RDRAM reads below.
+ *
+ * The coherence caps divide the 64-record callback budget between compile,
+ * verify, invalidation, and exact slow-path byte-store evidence.  Relevant
+ * compilation therefore cannot exhaust records before later evidence arrives.
+ * The fault filter has a separate,
+ * tiny allowance; it never consumes one of the two complete snapshots.
+ */
+static uint32_t dd_dynarec_compile_generation;
+static unsigned int dd_dynarec_fault_snapshots_remaining;
+static unsigned int dd_dynarec_fault_filter_remaining;
+static unsigned int dd_dynarec_coherence_compile_remaining;
+static unsigned int dd_dynarec_coherence_verify_remaining;
+static unsigned int dd_dynarec_coherence_invalidate_remaining;
+static unsigned int dd_dynarec_coherence_writer_remaining;
+#endif
 
 #if COUNT_NOTCOMPILEDS
 static int notcompiledCount = 0;
@@ -2143,7 +2172,22 @@ static void write_byte_new(int pcaddr, int count)
   r4300->delay_slot = pcaddr & 1;
   unsigned int shift = bshift(state->address);
   state->wword <<= shift;
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  /*
+   * This is a C slow-path observation, not a generated ABI call.  The gate
+   * precedes all diagnostic snapshots/direct RDRAM reads; the store below is
+   * the pre-existing masked aligned-word implementation of the byte store.
+   */
+  uint32_t beforeword;
+  int trace_byte_store=0;
+  if(DdStartupDiagnosticsEnabled())
+    trace_byte_store=dd_dynarec_prepare_byte_store(state->address,&beforeword);
+#endif
   r4300_write_aligned_word(r4300, state->address, state->wword, UINT32_C(0xff) << shift);
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  if(trace_byte_store)
+    dd_dynarec_trace_byte_store(pcaddr,state->address,state->wword,shift,beforeword);
+#endif
   UPDATE_COUNT_OUT
 }
 
@@ -2285,6 +2329,273 @@ static void SDR_new(int pcaddr, int count)
   UPDATE_COUNT_OUT
 }
 
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+#define DD_DYNAREC_BOOT_FIRST UINT32_C(0x800bb540)
+#define DD_DYNAREC_BOOT_LAST  UINT32_C(0x800bb9a4) /* exclusive */
+#define DD_DYNAREC_KSEG_LAST  UINT32_C(0x80800000)
+
+static int dd_dynarec_boot_overlap(uint32_t block_start, size_t bytes)
+{
+  uint64_t block_end=(uint64_t)block_start+bytes;
+  return block_start<DD_DYNAREC_BOOT_LAST
+      && block_end>DD_DYNAREC_BOOT_FIRST;
+}
+
+static uint32_t dd_dynarec_hash_words(const uint32_t *words, size_t count)
+{
+  uint32_t hash=UINT32_C(2166136261);
+  size_t i;
+  for(i=0;i<count;i++) {
+    hash^=words[i];
+    hash*=UINT32_C(16777619);
+  }
+  return hash;
+}
+
+/* This is deliberately a direct, range-checked RDRAM reader, never MMIO. */
+static uint32_t dd_dynarec_hash_rdram(uint32_t address, size_t count, int *valid)
+{
+  uint32_t hash=UINT32_C(2166136261),word;
+  size_t i;
+  for(i=0;i<count;i++) {
+    if(!dd_fault_guest_read_u32(g_dev.rdram.dram,g_dev.rdram.dram_size,
+          address+(uint32_t)(i*4),&word)) {
+      *valid=0;
+      return 0;
+    }
+    hash^=word;
+    hash*=UINT32_C(16777619);
+  }
+  *valid=1;
+  return hash;
+}
+
+static void dd_dynarec_trace_compile(uint32_t block_start, size_t words,
+    uint32_t generation, const uint32_t *copied)
+{
+  uint32_t copied_hash,current_hash;
+  int current_valid;
+
+  if(!DdStartupDiagnosticsEnabled() || copied==NULL
+      || dd_dynarec_coherence_compile_remaining==0
+      || !dd_dynarec_boot_overlap(block_start,words*4))
+    return;
+
+  copied_hash=dd_dynarec_hash_words(copied,words);
+  current_hash=dd_dynarec_hash_rdram(block_start,words,&current_valid);
+  if(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
+        "DDSTART8 coherence: stage=compile generation=%" PRIu32
+        " block=%08" PRIx32 " words=%zu copied_hash=%08" PRIx32
+        " current_hash=%08" PRIx32 " current=%s compare=%s"
+        " entry=not-instrumented host_abi_risk",
+        generation,block_start,words,copied_hash,current_hash,
+        current_valid ? "direct-rdram" : "unavailable",
+        current_valid && copied_hash==current_hash ? "match" : "reject"))
+    dd_dynarec_coherence_compile_remaining--;
+}
+
+static void dd_dynarec_trace_verify(const struct ll_entry *head, int dirty)
+{
+  size_t words;
+  uint32_t copied_hash,current_hash;
+  int current_valid;
+
+  if(!DdStartupDiagnosticsEnabled() || head==NULL || head->copy==NULL
+      || dd_dynarec_coherence_verify_remaining==0 || head->length==0
+      || (head->length&3)!=0
+      || !dd_dynarec_boot_overlap(head->start,head->length))
+    return;
+
+  words=head->length/4;
+  copied_hash=dd_dynarec_hash_words((const uint32_t *)head->copy,words);
+  current_hash=dd_dynarec_hash_rdram(head->start,words,&current_valid);
+  if(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
+        "DDSTART8 coherence: stage=verify result=%s vaddr=%08" PRIx32
+        " block=%08" PRIx32 " words=%zu copied_hash=%08" PRIx32
+        " current_hash=%08" PRIx32 " current=%s evidence=memcmp",
+        dirty ? "reject" : "match",head->vaddr,head->start,words,
+        copied_hash,current_hash,current_valid ? "direct-rdram" : "unavailable"))
+    dd_dynarec_coherence_verify_remaining--;
+}
+
+static void dd_dynarec_trace_invalidate(uint32_t block, uint32_t page)
+{
+  if(!DdStartupDiagnosticsEnabled()
+      || dd_dynarec_coherence_invalidate_remaining==0
+      || (block!=UINT32_C(0x800bb) && page!=UINT32_C(0x0bb)))
+    return;
+
+  if(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
+        "DDSTART8 coherence: stage=invalidate block=%08" PRIx32
+        " invalidation_page=%05" PRIx32
+        " writer=unavailable no_generated_store_evidence",
+        block<<12,page))
+    dd_dynarec_coherence_invalidate_remaining--;
+}
+
+static int dd_dynarec_boot_alias_address(uint32_t address)
+{
+  uint32_t segment=address&UINT32_C(0xe0000000);
+  uint32_t physical=address&UINT32_C(0x1fffffff);
+  return (segment==UINT32_C(0x80000000) || segment==UINT32_C(0xa0000000))
+      && physical>=(DD_DYNAREC_BOOT_FIRST&UINT32_C(0x1fffffff))
+      && physical<(DD_DYNAREC_BOOT_LAST&UINT32_C(0x1fffffff));
+}
+
+/*
+ * write_byte_new is reached from an emitted write stub with pcaddr set to
+ * (start + (i + 1) * 4) + delay_slot.  It is therefore safe to derive an
+ * exact writer PC here, unlike an arbitrary sampled PC.
+ */
+static int dd_dynarec_prepare_byte_store(uint32_t address, uint32_t *beforeword)
+{
+  if(!DdStartupDiagnosticsEnabled()
+      || dd_dynarec_coherence_writer_remaining==0
+      || !dd_dynarec_boot_alias_address(address))
+    return 0;
+  return dd_fault_guest_read_u32(g_dev.rdram.dram,g_dev.rdram.dram_size,
+      address&~UINT32_C(3),beforeword);
+}
+
+static void dd_dynarec_trace_byte_store(int pcaddr, uint32_t address,
+    uint32_t shifted_value, unsigned int shift, uint32_t beforeword)
+{
+  uint32_t afterword=0;
+  int after_valid;
+
+  if(!DdStartupDiagnosticsEnabled()
+      || dd_dynarec_coherence_writer_remaining==0
+      || !dd_dynarec_boot_alias_address(address))
+    return;
+  after_valid=dd_fault_guest_read_u32(g_dev.rdram.dram,g_dev.rdram.dram_size,
+      address&~UINT32_C(3),&afterword);
+  if(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
+        "DDSTART8 coherence: stage=byte-store address=%08" PRIx32
+        " value=%02" PRIx32 " beforeword=%08" PRIx32 " afterword=%08" PRIx32
+        " after=%s pending_exception=%d writer_pc=%08" PRIx32
+        " delay_slot=%d writer_provenance=generated-write_byte_new-pcarg",
+        address,(shifted_value>>shift)&UINT32_C(0xff),beforeword,afterword,
+        after_valid ? "direct-rdram" : "unavailable",
+        g_dev.r4300.new_dynarec_hot_state.pending_exception,
+        ((uint32_t)pcaddr&~UINT32_C(1))-4,pcaddr&1))
+    dd_dynarec_coherence_writer_remaining--;
+}
+
+static void dd_dynarec_trace_fault_window(unsigned int snapshot,
+    const char *stage, uint32_t center)
+{
+  uint32_t words[5];
+  unsigned int i;
+  int valid=1;
+  for(i=0;i<5;i++) {
+    if(!dd_fault_guest_read_u32(g_dev.rdram.dram,g_dev.rdram.dram_size,
+          center-8+i*4,&words[i])) {
+      valid=0;
+      break;
+    }
+  }
+  if(valid) {
+    (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+        "DDSTART8 fault: snapshot=%u stage=%s center=%08" PRIx32
+        " words=%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32
+        ",%08" PRIx32 " evidence=direct-rdram",
+        snapshot,stage,center,words[0],words[1],words[2],words[3],words[4]);
+  } else {
+    (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+        "DDSTART8 fault: snapshot=%u stage=%s center=%08" PRIx32
+        " evidence=direct-rdram-unavailable",snapshot,stage,center);
+  }
+}
+
+/*
+ * This is called only by an ARM64 generated read stub after restore_regs(),
+ * constant materialization, and wb_dirtys().  Thus hot_state contains the
+ * spilled architectural GPR values that CP0 will observe; no live host
+ * register is sampled.  The call site saves the ordinary caller-save set
+ * before entering C, preserving the generated-code ABI.
+ */
+static void dd_dynarec_fault_observer(uint32_t compiled_pc,
+    uint32_t compiled_instruction, uint32_t block_start, uint32_t generation)
+{
+  struct new_dynarec_hot_state *hot=&g_dev.r4300.new_dynarec_hot_state;
+  uint32_t *cp0=hot->cp0_regs;
+  uint32_t cause,epc,badvaddr,current_instruction,fault_pc;
+  unsigned int snapshot,i;
+  int known,valid_instruction;
+
+  if(!DdStartupDiagnosticsEnabled())
+    return;
+
+  cause=cp0[CP0_CAUSE_REG];
+  epc=cp0[CP0_EPC_REG];
+  badvaddr=cp0[CP0_BADVADDR_REG];
+  fault_pc=epc+((cause&UINT32_C(0x80000000)) ? 4 : 0);
+  if((cause&CP0_CAUSE_EXCCODE_MASK)!=CP0_CAUSE_EXCCODE_TLBL
+      || compiled_pc<UINT32_C(0x80000000) || compiled_pc>=DD_DYNAREC_KSEG_LAST
+      || (hot->address>=UINT32_C(0x80000000)
+          && hot->address<UINT32_C(0xc0000000)))
+    return;
+
+  known=fault_pc==UINT32_C(0x800ad4ac)
+      || compiled_pc==UINT32_C(0x800ad4ac)
+      || badvaddr==UINT32_C(0x079bb080);
+  if(!known) {
+    if(dd_dynarec_fault_filter_remaining!=0
+        && DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+          "DDSTART8 fault: stage=filter result=not-snapshotted"
+          " coverage=tlbl-kseg-rdram-to-low-or-tlb compiled_pc=%08" PRIx32
+          " derived_fault_pc=%08" PRIx32 " badvaddr=%08" PRIx32,
+          compiled_pc,fault_pc,badvaddr))
+      dd_dynarec_fault_filter_remaining--;
+    return;
+  }
+  if(dd_dynarec_fault_snapshots_remaining==0)
+    return;
+  dd_dynarec_fault_snapshots_remaining--;
+  snapshot=2-dd_dynarec_fault_snapshots_remaining;
+  current_instruction=0;
+  valid_instruction=dd_fault_guest_read_u32(g_dev.rdram.dram,
+      g_dev.rdram.dram_size,compiled_pc,&current_instruction);
+
+  (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+      "DDSTART8 fault: snapshot=%u stage=pending_exception"
+      " compiled_pc=%08" PRIx32 " block=%08" PRIx32 " generation=%" PRIu32
+      " epc=%08" PRIx32 " cause=%08" PRIx32 " badvaddr=%08" PRIx32
+      " status=%08" PRIx32 " entryhi=%08" PRIx32 " context=%08" PRIx32
+      " load_address=%08" PRIx32 " derived_fault_pc=%08" PRIx32
+      " bd=%u pc_agreement=%s"
+      " gpr_source=hot_state_after_wb_dirtys host_live=not_sampled",
+      snapshot,compiled_pc,block_start,generation,epc,cause,badvaddr,
+      cp0[CP0_STATUS_REG],cp0[CP0_ENTRYHI_REG],cp0[CP0_CONTEXT_REG],
+      hot->address,fault_pc,(cause&UINT32_C(0x80000000)) ? 1u : 0u,
+      compiled_pc==fault_pc ? "match" : "reject");
+  (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+      "DDSTART8 fault: snapshot=%u stage=instruction compiled=%08" PRIx32
+      " current=%08" PRIx32 " current_source=%s compare=%s",
+      snapshot,compiled_instruction,current_instruction,
+      valid_instruction ? "direct-rdram" : "unavailable",
+      valid_instruction && compiled_instruction==current_instruction
+          ? "match" : "reject");
+  for(i=0;i<32;i+=4) {
+    (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+        "DDSTART8 fault: snapshot=%u stage=gprs"
+        " r%02u=%016" PRIx64 " r%02u=%016" PRIx64
+        " r%02u=%016" PRIx64 " r%02u=%016" PRIx64
+        " source=spilled",
+        snapshot,i,(uint64_t)hot->regs[i],i+1,(uint64_t)hot->regs[i+1],
+        i+2,(uint64_t)hot->regs[i+2],i+3,(uint64_t)hot->regs[i+3]);
+  }
+  (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+      "DDSTART8 fault: snapshot=%u stage=hilo lo=%016" PRIx64
+      " hi=%016" PRIx64 " source=spilled",
+      snapshot,(uint64_t)hot->lo,(uint64_t)hot->hi);
+  dd_dynarec_trace_fault_window(snapshot,"pc_window",compiled_pc);
+  dd_dynarec_trace_fault_window(snapshot,"boot_window",UINT32_C(0x800bb648));
+  dd_dynarec_trace_fault_window(snapshot,"ra_window",(uint32_t)hot->regs[31]);
+  dd_dynarec_trace_fault_window(snapshot,"candidate_window",UINT32_C(0x800bb67c));
+}
+#endif
+
 #if NEW_DYNAREC == NEW_DYNAREC_X86
 #include "x86/assem_x86.c"
 #elif NEW_DYNAREC == NEW_DYNAREC_X64
@@ -2367,10 +2678,13 @@ u_int verify_dirty(struct ll_entry * head)
   else
     assert(0);
 
-  if(memcmp(source,head->copy,head->length))
-    return head->vaddr;
-  else
-    return 0;
+  {
+    int dirty=memcmp(source,head->copy,head->length)!=0;
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+    dd_dynarec_trace_verify(head,dirty);
+#endif
+    return dirty ? head->vaddr : 0;
+  }
 }
 
 // Add virtual address mapping for 32-bit compiled block
@@ -2824,6 +3138,9 @@ void invalidate_block(u_int block)
   if(page>262143&&g_dev.r4300.cp0.tlb.LUT_r[block]) page=(g_dev.r4300.cp0.tlb.LUT_r[block]^0x80000000)>>12;
   if(page>2048) page=2048+(page&2047);
   inv_debug("INVALIDATE: %x (%d)\n",block<<12,page);
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  dd_dynarec_trace_invalidate(block,page);
+#endif
   u_int first,last;
   first=last=page;
   struct ll_entry *head;
@@ -4875,6 +5192,23 @@ static void do_readstub(int n)
   if(!ds) load_all_consts(regs[i].regmap_entry,regs[i].was32,regs[i].wasdirty,regs[i].wasconst,i);
   wb_dirtys(i_regs->regmap_entry,i_regs->was32,i_regs->wasdirty);
 
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  /*
+   * Keep this after restore_regs(), constant materialization and wb_dirtys:
+   * CP0's pending-exception path then observes the same spilled GPR state as
+   * this observer.  save/restore protects the generated ARM64 caller-save
+   * set around the C ABI call; its four arguments are compilation immediates.
+   */
+  if(DdStartupDiagnosticsEnabled()) {
+    save_regs(reglist);
+    emit_movimm(start+i*4,ARG1_REG);
+    emit_movimm(source[i],ARG2_REG);
+    emit_movimm(start,ARG3_REG);
+    emit_movimm(dd_dynarec_compile_generation,ARG4_REG);
+    emit_call((intptr_t)dd_dynarec_fault_observer);
+    restore_regs(reglist);
+  }
+#endif
   emit_jmp((intptr_t)&do_interrupt);
   set_jump_target(jaddr,(intptr_t)out);
 
@@ -8647,6 +8981,22 @@ void new_dynarec_init(void)
 {
   DebugMessage(M64MSG_INFO, "Init new dynarec");
 
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  /*
+   * These are local reservation caps, separate from the callback-owned
+   * DDSTART8 budgets reset at callback registration.
+   */
+  if(DdStartupDiagnosticsEnabled()) {
+    dd_dynarec_compile_generation=0;
+    dd_dynarec_fault_snapshots_remaining=2;
+    dd_dynarec_fault_filter_remaining=2;
+    dd_dynarec_coherence_compile_remaining=16;
+    dd_dynarec_coherence_verify_remaining=24;
+    dd_dynarec_coherence_invalidate_remaining=12;
+    dd_dynarec_coherence_writer_remaining=12;
+  }
+#endif
+
 #if defined(RECOMPILER_DEBUG) && !defined(RECOMP_DBG)
   recomp_dbg_init();
 #endif
@@ -8826,6 +9176,16 @@ int new_recompile_block(int addr)
     DebugMessage(M64MSG_ERROR, "Compile at bogus memory address: %x", (int)addr);
     exit(1);
   }
+
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  /*
+   * This number is copied into every generated DDSTART8 observer call as an
+   * immediate.  It therefore identifies this compilation, not a later
+   * global counter value.
+   */
+  if(DdStartupDiagnosticsEnabled())
+    dd_dynarec_compile_generation++;
+#endif
 
   /* Pass 1: disassemble */
   /* Pass 2: register dependencies, branch targets */
@@ -11824,6 +12184,11 @@ int new_recompile_block(int addr)
   memcpy(copy,(char*)source,slen*4);
   u_int *ptr=(u_int*)copy;
   ptr[slen]=dirty_entry_count;
+
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  dd_dynarec_trace_compile(start,slen,dd_dynarec_compile_generation,
+      (const uint32_t *)copy);
+#endif
 
   #if NEW_DYNAREC >= NEW_DYNAREC_ARM
   intptr_t beginning_rx=((intptr_t)beginning-(intptr_t)base_addr)+(intptr_t)base_addr_rx;

@@ -17,13 +17,23 @@ static unsigned pi_boundary_traces;
 static unsigned context_traces;
 static unsigned scheduler_traces;
 static unsigned fault_traces;
+static unsigned dynarec_fault_traces;
+static unsigned dynarec_coherence_traces;
+static unsigned dynarec_fault_ordinal;
+static unsigned dynarec_coherence_ordinal;
+static unsigned dynarec_bad_ordinals;
+static unsigned dynarec_bad_prefixes;
+static unsigned dynarec_bad_buffers;
+static unsigned dynarec_max_message_length;
 static void capture(void *context, int level, const char *message)
 {
     const char *ordinal;
+    size_t message_length;
 
     (void)context;
     (void)level;
     ++count;
+    message_length = strlen(message);
     if (strstr(message, "limit reached"))
         ++limits;
     if (strstr(message, "DDSTART3"))
@@ -51,6 +61,37 @@ static void capture(void *context, int level, const char *message)
         ++scheduler_traces;
     if (strstr(message, "DDSTART7 fault"))
         ++fault_traces;
+    if (strstr(message, "DDSTART8 dynarec fault")) {
+        ++dynarec_fault_traces;
+        if (strncmp(message, "record=", 7) != 0)
+            ++dynarec_bad_prefixes;
+        ordinal = strstr(message, "record=");
+        if (ordinal == NULL
+                || strtoul(ordinal + 7, NULL, 10) != dynarec_fault_ordinal + 1)
+            ++dynarec_bad_ordinals;
+        else
+            ++dynarec_fault_ordinal;
+        if (message_length > dynarec_max_message_length)
+            dynarec_max_message_length = (unsigned)message_length;
+        if (message_length >= 512)
+            ++dynarec_bad_buffers;
+    }
+    if (strstr(message, "DDSTART8 dynarec coherence")) {
+        ++dynarec_coherence_traces;
+        if (strncmp(message, "record=", 7) != 0)
+            ++dynarec_bad_prefixes;
+        ordinal = strstr(message, "record=");
+        if (ordinal == NULL
+                || strtoul(ordinal + 7, NULL, 10)
+                    != dynarec_coherence_ordinal + 1)
+            ++dynarec_bad_ordinals;
+        else
+            ++dynarec_coherence_ordinal;
+        if (message_length > dynarec_max_message_length)
+            dynarec_max_message_length = (unsigned)message_length;
+        if (message_length >= 512)
+            ++dynarec_bad_buffers;
+    }
 }
 
 int main(void)
@@ -246,5 +287,113 @@ int main(void)
     assert(count == 1); /* identity after reset */
     DdStartupDiagnosticsTraceFault("DDSTART7 fault: reset");
     assert(count == 2 && fault_traces == 1);
+
+    /*
+     * DDSTART8 is independently gated and has separate fault (32) and
+     * coherence (64) record classes.  Invalid calls do not consume either
+     * class, and each emitted record has its own ordinal prefix.
+     */
+    count = 0;
+    dynarec_fault_traces = 0;
+    dynarec_coherence_traces = 0;
+    dynarec_fault_ordinal = 0;
+    dynarec_coherence_ordinal = 0;
+    dynarec_bad_ordinals = 0;
+    dynarec_bad_prefixes = 0;
+    dynarec_bad_buffers = 0;
+    dynarec_max_message_length = 0;
+    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "0", 1);
+    SetDebugCallback(capture, NULL);
+    assert(!DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+        "DDSTART8 dynarec fault: disabled"));
+    assert(!DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
+        "DDSTART8 dynarec coherence: disabled"));
+    assert(count == 0);
+
+    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "1", 1);
+    SetDebugCallback(capture, NULL);
+    assert(count == 1); /* identity */
+    assert(!DdStartupDiagnosticsTraceDynarec(
+        (enum dd_dynarec_trace_kind)DD_DYNAREC_TRACE_KIND_COUNT,
+        "DDSTART8 dynarec fault: invalid kind"));
+    assert(!DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT, NULL));
+    assert(count == 1);
+    for (unsigned i = 0; i < 32; ++i)
+        assert(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+            "DDSTART8 dynarec fault: exact cap"));
+    assert(!DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+        "DDSTART8 dynarec fault: exhausted"));
+    for (unsigned i = 0; i < 64; ++i)
+        assert(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
+            "DDSTART8 dynarec coherence: exact cap"));
+    assert(!DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
+        "DDSTART8 dynarec coherence: exhausted"));
+    assert(count == 1 + 32 + 64);
+    assert(dynarec_fault_traces == 32 && dynarec_coherence_traces == 64);
+    assert(dynarec_fault_ordinal == 32 && dynarec_coherence_ordinal == 64);
+    assert(dynarec_bad_ordinals == 0 && dynarec_bad_prefixes == 0);
+
+    /*
+     * Exhausting the earlier aggregate trace budget does not affect either
+     * DDSTART8 class.  They also remain independent from one another.
+     */
+    count = 0;
+    traces = 0;
+    bm_traces = 0;
+    bm_ordinal = 0;
+    bm_bad_ordinals = 0;
+    dynarec_fault_traces = 0;
+    dynarec_coherence_traces = 0;
+    dynarec_fault_ordinal = 0;
+    dynarec_coherence_ordinal = 0;
+    dynarec_bad_ordinals = 0;
+    dynarec_bad_prefixes = 0;
+    dynarec_bad_buffers = 0;
+    dynarec_max_message_length = 0;
+    SetDebugCallback(capture, NULL);
+    for (unsigned i = 0; i < 700; ++i)
+        DdStartupDiagnosticsTrace(DD_TRACE_BM_HANDSHAKE, DD_TRACE_EARLY,
+            "DDSTART4 BM observation before DDSTART8");
+    assert(bm_traces == 512 && count == 1 + 512);
+    assert(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+        "DDSTART8 dynarec fault: after early cap"));
+    assert(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
+        "DDSTART8 dynarec coherence: after early cap"));
+    assert(count == 1 + 512 + 2);
+    assert(dynarec_fault_traces == 1 && dynarec_coherence_traces == 1);
+    assert(dynarec_fault_ordinal == 1 && dynarec_coherence_ordinal == 1);
+    assert(dynarec_bad_ordinals == 0 && dynarec_bad_prefixes == 0);
+
+    /*
+     * A new callback registration resets both DDSTART8 remaining budgets
+     * and both seen ordinals.  The callback buffer remains bounded at 512
+     * bytes, including the record prefix.
+     */
+    {
+        char long_message[1024];
+
+        memset(long_message, 'x', sizeof(long_message) - 1);
+        long_message[sizeof(long_message) - 1] = '\0';
+        count = 0;
+        dynarec_fault_traces = 0;
+        dynarec_coherence_traces = 0;
+        dynarec_fault_ordinal = 0;
+        dynarec_coherence_ordinal = 0;
+        dynarec_bad_ordinals = 0;
+        dynarec_bad_prefixes = 0;
+        dynarec_bad_buffers = 0;
+        dynarec_max_message_length = 0;
+        SetDebugCallback(capture, NULL);
+        assert(count == 1); /* identity after reset */
+        assert(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
+            "DDSTART8 dynarec fault: reset"));
+        assert(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
+            "DDSTART8 dynarec coherence: reset"));
+        assert(dynarec_fault_ordinal == 1 && dynarec_coherence_ordinal == 1);
+        assert(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT, "%s",
+            long_message));
+        assert(dynarec_max_message_length < 512 && dynarec_bad_buffers == 0);
+        assert(dynarec_bad_ordinals == 0 && dynarec_bad_prefixes == 0);
+    }
     return 0;
 }

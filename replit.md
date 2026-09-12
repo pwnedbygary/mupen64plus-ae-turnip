@@ -17,6 +17,11 @@ boundary or save/regression requirements. Distinguish reference-source
 comparisons and synthetic diagnostic checks from actual device results;
 measure performance before claiming an improvement.
 
+Working native DD under dynarec is required for speed. Cached interpreter is
+a diagnostic comparison, not an acceptable final workaround or substitute
+for dynarec acceptance. Correct operation under both engines is the goal,
+with dynarec the required target and cached interpreter a secondary target.
+
 The active GitHub branch is `dd-eos-watchdog-checkpoint`. Its previous
 experimental history is preserved under
 `dd-eos-watchdog-archive-pre-v336-20260911`. Do not merge that history back
