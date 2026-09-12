@@ -1553,3 +1553,54 @@ The complete track-464 block/C2 acknowledgement remains counterevidence to
 the next relevant test: identify blocked/stopped threads and correlate their
 wait with these differences. No new runtime code/APK was made for this
 reference comparison. Root cause and acceptance remain unresolved.
+
+## DDSTART6 device evidence — main-thread fault pointer
+
+Input SHA-256:
+`afe407991a5170946fb747238088e23020ed14e04527caa005780812c2c33527`.
+Both samples (65536 and 1048576, 11:38:41.313 and 11:38:51.902)
+match on scheduler payload; effective engine is Dynamic Recompiler,
+explicit DD support is enabled, and autoload was not requested.
+
+The JP/rev0 reference map at revision
+`4fd50c7ca6b44f996aa0fbb68ec86df75855d5b8` names
+`__osFaultedThread = 0x800D1D94`. DDSTART6 raw root base is
+`0x800d1d80`; **raw5 is the word at base + 0x14**, i.e. that mapped
+fault-pointer slot. Its value is `0x800dc1d0` in both snapshots.
+The corresponding real thread has:
+
+| Field | Value |
+| --- | --- |
+| ID / priority | 3 / 99 |
+| State | 1 (stopped) |
+| Saved PC | `800ad4ac` |
+| Saved SP | `ffffffff800d4203` |
+| Saved RA | `ffffffff800bb6b0` |
+
+Reference `include/fzx_thread.h` explicitly identifies ID 3 as MAIN and
+ID 1 as IDLE; `src/sys/sys_main.c` creates those threads accordingly.
+Thus the **mapped guest fault pointer names the stopped main thread**,
+while the idle thread runs and the run queue points to its sentinel.
+This is substantially more specific than "all useful threads are waiting."
+The saved SP is unaligned, but this alone does not establish the exception
+type, the faulting instruction, or the writer of that value. The sparse
+symbol map does not safely identify the saved-PC/RA functions.
+
+### Diagnostic limitation found in this capture
+
+`800d1d80` is the eight-byte fake queue-tail object, not a full OSThread.
+DDSTART6 erroneously decodes it as a thread and follows its supposed
+tlnext, which is actually the adjacent active-list pointer. Its nonsensical
+ID/state/context fields are a **diagnostic interpretation defect, not
+guest corruption**. The subsequently visited real objects can still be
+read individually; do not call the displayed walk a valid complete thread
+list. It is also truncated at eight objects.
+
+Next diagnostic should terminate at the sentinel, explicitly identify the
+mapped fault-pointer slot, and capture that thread's saved flags,
+Cause/BadVAddr/Status and instruction words around saved PC, with bounded
+read-only checks. Saved context is necessary: live CP0 state sampled while
+idle is not necessarily the earlier main-thread exception. Until then,
+do not diagnose RTC, a missed DD interrupt, or an address-error exception
+as the established cause, and do not patch the saved SP or idle loop.
+No runtime correction or new APK accompanies this analysis.
