@@ -2547,6 +2547,7 @@ ReturnMode CPU::run()
 	   GPRs + DMEM window around sp + IMEM) at that wait-spin, plus at any
 	   ucode `break` (MODE_BREAK).  One dump per run to bound file size. */
 	static int wd_sp_dumped = 0;
+	static unsigned wd_break76_lines = 0;   /* ROUND-76: the break ledger cap */
 	auto wd_sp_capture = [&]() {
 		if (wd_sp_dumped) return;
 		wd_sp_dumped = 1;
@@ -2598,6 +2599,28 @@ ReturnMode CPU::run()
 		{
 		case MODE_BREAK:
 			*state.cp0.cr[CP0_REGISTER_SP_STATUS] |= SP_STATUS_BROKE | SP_STATUS_HALT;
+			/* ROUND-76: the break ledger (DD route, files/wd_break76.txt,
+			   capped at 64 lines).  The r75 stall: the last audio task broke
+			   WITHOUT writing SIG2 (HALT|BROKE|SIG0|INTR_BREAK), so the
+			   SIG-gated SP raise was skipped and MAIN's YIELDING case never
+			   advanced.  The break's pc names the ucode location that broke
+			   silently (a legit yield/completion break has SIG1/SIG2 set
+			   first; a silent break is an error path or a fault). */
+			if (rsp_ares_budget_enabled() && wd_break76_lines < 64)
+			{
+				static FILE* bf76 = NULL;
+				wd_break76_lines++;
+				if (bf76 == NULL)
+					bf76 = fopen("/data/data/org.mupen64plusae.turnip.pwnedbygary.debug/files/wd_break76.txt", "a");
+				if (bf76 != NULL)
+				{
+					fprintf(bf76, "BRK pc=%04x st=%08x audio=%08x r0=%08x ra=%08x t8=%08x\n",
+					        state.pc & 0xfff, *state.cp0.cr[CP0_REGISTER_SP_STATUS],
+					        ((uint32_t*)state.dmem)[0xfc0 / 4], state.sr[0],
+					        state.sr[31], state.sr[24]);
+					fflush(bf76);
+				}
+			}
 			if (*state.cp0.cr[CP0_REGISTER_SP_STATUS] & SP_STATUS_INTR_BREAK)
 				*state.cp0.irq |= 1;
 			if (rsp_ares_budget_enabled())
