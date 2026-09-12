@@ -249,7 +249,7 @@ void pi_end_of_dma_event(void* opaque)
 {
     struct pi_controller* pi = (struct pi_controller*)opaque;
     if (DdStartupDiagnosticsEnabled() && pi->dd != NULL) {
-        DdStartupDiagnosticsTrace(DD_TRACE_PI_DMA, DD_TRACE_EARLY,
+        DdStartupDiagnosticsTrace(DD_TRACE_PI_BOUNDARY, DD_TRACE_EARLY,
             "DDSTART3 PI boundary: phase=completion dma_identity=unknown"
             " cart_reg=%08" PRIX32 " dram_reg=%08" PRIX32
             " rd_len_reg=%08" PRIX32 " wr_len_reg=%08" PRIX32,

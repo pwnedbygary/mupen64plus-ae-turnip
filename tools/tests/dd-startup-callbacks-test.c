@@ -9,8 +9,15 @@ static unsigned limits;
 static unsigned traces;
 static unsigned progress_traces;
 static unsigned ordinal_256;
+static unsigned bm_traces;
+static unsigned bm_ordinal;
+static unsigned bm_bad_ordinals;
+static unsigned pi_dma_traces;
+static unsigned pi_boundary_traces;
 static void capture(void *context, int level, const char *message)
 {
+    const char *ordinal;
+
     (void)context;
     (void)level;
     ++count;
@@ -22,6 +29,18 @@ static void capture(void *context, int level, const char *message)
         ++progress_traces;
         if (strstr(message, "ordinal=256"))
             ++ordinal_256;
+    }
+    if (strstr(message, "DDSTART3 PI DMA start"))
+        ++pi_dma_traces;
+    if (strstr(message, "DDSTART3 PI boundary"))
+        ++pi_boundary_traces;
+    if (strstr(message, "DDSTART4 BM")) {
+        ++bm_traces;
+        ordinal = strstr(message, "ordinal=");
+        if (ordinal == NULL || strtoul(ordinal + 8, NULL, 10) != bm_ordinal + 1)
+            ++bm_bad_ordinals;
+        else
+            ++bm_ordinal;
     }
 }
 
@@ -65,25 +84,43 @@ int main(void)
         DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_READ, DD_TRACE_SPARSE, "DDSTART3 read");
     assert(count == 267 && traces == 11);
 
-    /* Each trace class has its own strict budget; aggregate output is <= 96. */
+    /*
+     * PI boundaries cannot consume the separate DD DMA-start class.  The
+     * DDSTART4 BM class is also independent and bounded at 512 records.
+     */
     count = 0;
     traces = 0;
     limits = 0;
+    bm_traces = 0;
+    bm_ordinal = 0;
+    bm_bad_ordinals = 0;
+    pi_dma_traces = 0;
+    pi_boundary_traces = 0;
     SetDebugCallback(capture, NULL);
     for (unsigned i = 0; i < 100; ++i) {
         DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_COMMAND, DD_TRACE_EARLY, "DDSTART3 command");
         DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_READ, DD_TRACE_EARLY, "DDSTART3 response");
-        DdStartupDiagnosticsTrace(DD_TRACE_PI_DMA, DD_TRACE_EARLY, "DDSTART3 dma");
+        DdStartupDiagnosticsTrace(DD_TRACE_PI_DMA, DD_TRACE_EARLY,
+            "DDSTART3 PI DMA start");
+        DdStartupDiagnosticsTrace(DD_TRACE_PI_BOUNDARY, DD_TRACE_EARLY,
+            "DDSTART3 PI boundary");
         DdStartupDiagnosticsTrace(DD_TRACE_INTERRUPT, DD_TRACE_EARLY, "DDSTART3 irq");
         DdStartupDiagnosticsTrace(DD_TRACE_PROGRESS, DD_TRACE_EARLY, "DDSTART3 progress");
     }
-    assert(count == 97 && traces == 96);
+    for (unsigned i = 0; i < 600; ++i) {
+        DdStartupDiagnosticsTrace(DD_TRACE_BM_HANDSHAKE, DD_TRACE_EARLY,
+            "DDSTART4 BM observation");
+    }
+    assert(count == 629 && traces == 116);
+    assert(bm_traces == 512 && bm_ordinal == 512 && bm_bad_ordinals == 0);
+    assert(pi_dma_traces == 20 && pi_boundary_traces == 20);
 
     /* Progress samples are 1, then powers of four, not early power-of-two. */
     count = 0;
     traces = 0;
     progress_traces = 0;
     ordinal_256 = 0;
+    bm_traces = 0;
     SetDebugCallback(capture, NULL);
     for (unsigned i = 0; i < 128; ++i)
         DdStartupDiagnosticsTrace(DD_TRACE_PROGRESS, DD_TRACE_PROGRESS_SPARSE,
@@ -98,6 +135,7 @@ int main(void)
     count = 0;
     traces = 0;
     progress_traces = 0;
+    bm_traces = 0;
     setenv("M64P_DD_STARTUP_DIAGNOSTICS", "0", 1);
     SetDebugCallback(capture, NULL);
     DdStartupDiagnosticsTrace(DD_TRACE_PROGRESS, DD_TRACE_EARLY, "disabled");

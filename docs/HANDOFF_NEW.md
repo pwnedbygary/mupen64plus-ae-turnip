@@ -1200,8 +1200,10 @@ this change.
   earlier start. There is no persistent DMA correlation slot or latched DD
   filter, so reset, queued-event, and savestate boundaries cannot
   misattribute a prior transfer. PI boundary observations are emitted only in
-  a DD-enabled session. PI DMA-boundary events have a strict 20-event budget
-  and interrupt observations a strict 16-event budget. DD CART interrupt
+  a DD-enabled session. PI DMA-start observations have a strict 20-event
+  budget and interrupt observations a strict 16-event budget. Unpaired PI
+  completion boundaries have their own strict 20-event class and cannot
+  consume the separate 20-event DD DMA-start class. DD CART interrupt
   assert/clear plus PI buffer acknowledgements remain separate observations;
   none alter PI scheduling or completion.
 - Guest progress is sampled at the existing `gen_interrupt` emulation-thread
@@ -1214,8 +1216,9 @@ this change.
   during the first few hundred boundaries. There is no per-instruction hook,
   dynarec writer probe, or claim that a sampled PC wrote DD state.
 
-DDSTART3 has an independent aggregate callback budget of 96 records
-(24+24+20+16+12), so the existing 256-total `DebugMessage` DDSTART1 cap
+DDSTART3 has an independent aggregate callback budget of 628 records
+(24+24+20+20+16+12+512), including the separate 512-record DDSTART4 BM
+handshake class, so the existing 256-total `DebugMessage` DDSTART1 cap
 cannot consume the later sparse observations. Formatting uses the existing
 synchronous callback and a fixed stack buffer only: no allocation, trace
 file, timer, polling loop, or new thread is introduced. Atomic reservations
@@ -1226,13 +1229,15 @@ non-authoritative.
 ### Verification and limitations
 
 `bash tools/test-dd-startup.sh` passes focused disabled-session, independent
-DDSTART1/DDSTART3-budget, sparse read/progress-threshold, callback reset, and
+DDSTART1/DDSTART3-budget, separate PI-boundary versus DD-DMA classes, bounded
+DDSTART4 ordinal, sparse read/progress-threshold, callback reset, and
 aggregate budget checks. Host `-fsyntax-only` checks pass for the changed PI,
 interrupt, DD-controller and callback sources (the baseline's existing
 unused-parameter warnings remain when `-Werror` is applied to standalone DD
 and interrupt files). The APK marker helper now requires DDSTART3 register
 read, PI DMA-start and progress strings in addition to the DDSTART1/DDSTART2
-markers; packaged-core verification and device capture are still pending.
+markers and DDSTART4 BM entry/ack strings; packaged-core verification and
+device capture are still pending.
 
 The records show emulator-side observations only. A missing record can mean a
 budget threshold, callback suppression, an unexecuted path, or packaging
@@ -1259,3 +1264,67 @@ Device results are pending. Install as an update to the existing debug app,
 never uninstall the release or clear data; stop if signature verification
 rejects the update. Use the same Japanese cart/disk/IPL, DD enabled, existing
 profile and no autoload. Capture to `ddstart3-logcat.txt`.
+
+## 2026-09-12 — DDSTART4 targeted BM handshake diagnostic
+
+This pass preserves DD behavior and adds only an explicitly enabled,
+bounded observation path. No timing, interrupt delivery, guest, renderer, or
+save behavior was changed. Build verification is recorded below.
+
+### DDSTART3 upload evidence and interpretation
+
+The DDSTART3 device artifact is
+`attached_assets/ddstart3-logcat_1789224996356.txt`, SHA-256
+`e87c2e44706cb2d5a7f75c54b72de6b66db95946c0980be7c1cfc88772ee19c6`.
+Exact marker counts in that file are: 24 register writes, 17 register reads,
+20 PI boundaries, 0 `DDSTART3 PI DMA start` records, 16 interrupt records,
+and 11 progress records (88 DDSTART3 records total). The 20 PI-boundary
+records therefore exhausted the old shared 20-record PI class before a DD
+DMA-start marker could be emitted; this is a coverage limit, not proof that
+the guest issued no DD DMA.
+
+The command writes include `09`, `1b`, and `01`, consistent with the observed
+Japanese DD CART boot sequence, followed by BM register writes while IRQ
+observations continue. The ordinary boundary cart registers beginning
+`0x10...` (for example `0x10101004` and `0x10278d78`) are cartridge
+addresses, not DD addresses: the source classifier accepts only
+`0x05000000 <= address < 0x08000000`. Separately, the BM value `0x50000000`
+is `MNGRMODE` (`0x40000000`) plus `RESET` (`0x10000000`), not `START`
+(`0x80000000`). A `0xc0000000` value is the corresponding MNGRMODE+START
+combination. These distinctions prevent ordinary cartridge PI traffic or a
+BM reset write from being labeled as a DD DMA start.
+
+### DDSTART4 coverage
+
+PI completion boundaries now use their own DDSTART3 class and 20-record
+budget; the actual DD DMA-start class retains its separate 20-record budget.
+This prevents ordinary cartridge boundaries from starving a later
+DD-address DMA-start observation without pairing a completion to a start.
+
+The new `DDSTART4 BM` class has a strict 512-record budget and is emitted
+only while `DdStartupDiagnosticsEnabled()` is true. It records
+`ordinal`, phase/action, current sector, head/track, command/status, and BM
+status at `dd_update_bm` entry and after each update, plus the post-side-effect
+DS and C2 acknowledgements in `dd_on_pi_cart_addr_write`. The ordinal is a
+monotonically increasing diagnostic observation index; it is not a fabricated
+DMA identity. The budget is sized to observe a block's 85 data sectors,
+four C2 sectors, and gap without adding polling read loops, but earlier
+attempts, resets and retries consume this same session budget. It is not a
+guarantee of a complete first valid block. The total independent trace bound
+is now 628 records:
+`24+24+20+20+16+12+512`.
+
+The focused callback test verifies the separate PI classes, the 512-record
+DDSTART4 bound and contiguous emitted ordinals, aggregate bounds, disabled
+sessions, sparse thresholds, and callback reset. The packaged-core marker
+helper now also requires `DDSTART4 BM entry:` and `DDSTART4 BM ack:`. Device
+capture with this diagnostic remains pending; no result should be read as a
+behavioral fix for the DD-enabled black screen.
+
+Final checks: focused tests passed; Android debug build passed in 40 seconds;
+packaged arm64 DDSTART4 entry/ack and earlier diagnostic markers verified.
+APK SHA-256:
+`f1a590be8e334d423d43ac921eec90bf19c44005887f32c8699d3cc30bdb7122`.
+Read-only code review found no runtime implementation blocker; its coverage
+wording correction is incorporated above and in the source comment. Raw
+Android logs are excluded from selective GitHub publication.

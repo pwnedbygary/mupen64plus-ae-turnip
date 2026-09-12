@@ -42,16 +42,22 @@ static unsigned int dd_startup_remaining = 0;
 /*
  * DDSTART3 deliberately uses a separate callback budget.  Startup messages
  * retain their DDSTART1 cap, but cannot consume the observations needed after
- * the guest begins issuing DD commands.
+ * the guest begins issuing DD commands.  PI DMA starts and unpaired PI
+ * completion boundaries have separate classes so ordinary cartridge traffic
+ * cannot consume the DD DMA-start observations.  DDSTART4 BM observations
+ * have a larger bounded window sized for a block handshake; prior retries
+ * can consume it, so complete-block coverage is not guaranteed.
  */
 enum
 {
-    DD_TRACE_TOTAL_BUDGET = 96,
+    DD_TRACE_TOTAL_BUDGET = 628,
     DD_TRACE_REGISTER_COMMAND_BUDGET = 24,
     DD_TRACE_REGISTER_READ_BUDGET = 24,
     DD_TRACE_PI_DMA_BUDGET = 20,
+    DD_TRACE_PI_BOUNDARY_BUDGET = 20,
     DD_TRACE_INTERRUPT_BUDGET = 16,
     DD_TRACE_PROGRESS_BUDGET = 12,
+    DD_TRACE_BM_HANDSHAKE_BUDGET = 512,
     DD_TRACE_EARLY_SAMPLES = 8
 };
 
@@ -88,8 +94,10 @@ static unsigned int dd_trace_kind_budget(enum dd_startup_trace_kind kind)
         DD_TRACE_REGISTER_COMMAND_BUDGET,
         DD_TRACE_REGISTER_READ_BUDGET,
         DD_TRACE_PI_DMA_BUDGET,
+        DD_TRACE_PI_BOUNDARY_BUDGET,
         DD_TRACE_INTERRUPT_BUDGET,
-        DD_TRACE_PROGRESS_BUDGET
+        DD_TRACE_PROGRESS_BUDGET,
+        DD_TRACE_BM_HANDSHAKE_BUDGET
     };
 
     return ((unsigned int)kind < DD_TRACE_KIND_COUNT) ? budgets[kind] : 0;
@@ -124,7 +132,7 @@ void DdStartupDiagnosticsTrace(enum dd_startup_trace_kind kind,
             || !reserve_dd_trace(&dd_trace_remaining))
         return;
 
-    if (kind == DD_TRACE_PROGRESS) {
+    if (kind == DD_TRACE_PROGRESS || kind == DD_TRACE_BM_HANDSHAKE) {
         prefix_length = snprintf(msgbuf, sizeof(msgbuf), "ordinal=%u ",
                 ordinal);
         if (prefix_length < 0)
