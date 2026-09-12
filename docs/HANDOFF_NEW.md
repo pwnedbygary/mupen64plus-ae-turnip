@@ -738,3 +738,31 @@ No runtime code, configuration defaults, APKs or saves changed in this
 capture-review pass. Task remains unresolved; no acceptance test is marked
 passed. The earlier “no fresh traces” wording is now superseded by this
 received capture, while “no source-verified baseline trace” remains true.
+
+### Corrected installed-package report
+
+Received `attached_assets/installed-package-corrected_1789182363125.txt`.
+Selected fields (original report line numbers):
+
+- Line 258: package `org.mupen64plusae.turnip.pwnedbygary`.
+- Lines 265–266: primary ABI `arm64-v8a`, no secondary ABI.
+- Lines 268–270: versionCode 335; versionName
+  `3.0.335 (beta) dc955483`; minSdk 23, targetSdk 34.
+- Lines 274/292: package flags do not include DEBUGGABLE. Do not assume
+  `run-as` access from the previously installed debug app carries over.
+- Line 287: last update `2026-09-11 22:49:50` in device-reported time,
+  preceding the two late DD attempts.
+
+The embedded revision `dc955483` matches the v336 baseline commit prefix,
+and version 335 matches that tag's known Gradle metadata. This is positive
+baseline-identification evidence, not a wrong-release finding. A version
+string is not a cryptographic verification of the packaged native libraries,
+nor does it prove a clean local working tree. Exact APK hash/dirty-diff
+verification remains unavailable; do not block the diagnostic design merely
+to ask again for identity already supplied by this report.
+
+This supersedes the package-identity uncertainty from the failed `.debug`
+lookup. The native core's DD logging suppression remains the next concrete
+observation blocker. Keep original signing and the non-suffixed package for
+any update; do not switch package variants, uninstall, or clear data to gain
+diagnostic access. No raw package dump is published with this summary.
