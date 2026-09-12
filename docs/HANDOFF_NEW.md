@@ -13,8 +13,9 @@ their installed source/APK identity is not yet verified.
 - Active investigation branch: `dd-eos-watchdog-checkpoint`.
 - Previous experimental tip: `45d3e5a735951a4d3e82d027427caa555fd36122`.
   Preserved on `dd-eos-watchdog-archive-pre-v336-20260911`.
-- This restart keeps the v336 application source unchanged. This handoff is
-  the only intended difference from that baseline in the remote branch.
+- The restart initially kept v336 application source unchanged. Subsequent
+  DDSTART1 diagnostics and the DDSTART2 comparison below are explicit,
+  separately documented changes; the original baseline remains the control.
 - The tag is called v336, but committed `build_common/version_common.gradle`
   still declares versionCode 335 / versionName 3.0.335. Record the installed
   APK hash and local build overrides; do not identify a build by label alone.
@@ -974,3 +975,82 @@ and game code so a region mismatch is not confused with boot priority.
 No scheduler/context/RTC/renderer correction is justified by this capture.
 No runtime code changed in this analysis pass; task and acceptance remain
 open.
+
+## 2026-09-11 — stopped-logo confirmation and DDSTART2 comparison candidate
+
+The user confirmed the DDSTART1 run shows the **same logo screen with the
+logo stopped moving**. In a subsequent clarification, the user reported
+approximately half a second of audio as the 3D N64 logo starts, followed by
+audio and video freezing together. This is reported playback, not a measured
+audio trace. It does not identify CPU, RSP, graphics or RTC as the cause.
+This establishes reproduction
+of the visible symptom under bounded diagnostics, not an exact stalled PC.
+
+### Why this comparison, rather than a context or RTC patch
+
+The native trace establishes a real US F-Zero cartridge is loaded but DD IPL
+is selected. LuigiBlood's Emulation Info explicitly describes cartridge-first
+boot for combo games. Testing that documented mismatch is justified before
+assuming the guest reached expansion reboot or a corrupting context writer.
+This is a deliberate change from the earlier plan's context-first premise:
+the current evidence identifies an earlier boot-policy discrepancy.
+It remains a comparison candidate, not a root-cause claim or accepted fix.
+
+### Precise gate and changes
+
+- Java passes the actual `isNdd` launch classification into coreStartup.
+- Process-local `M64P_DD_COMBO_CART_BOOT` is set to `1` only for
+  `enable64DdSupport && !directNdd`; otherwise it is overwritten with `0`.
+  This is independent of the diagnostic-output flag. Users should not set
+  either flag manually. A setenv error aborts explicitly.
+- Native boot selection preserves the baseline expression, then selects
+  cartridge IPL3 only when the exact option is `1` and both cartridge and
+  DD IPL sizes are nonzero. The helper rejects missing/empty/malformed flags.
+- Direct-NDD launches still pass the dummy ROM through the original
+  disk-first path because their frontend option is `0`. A nonempty dummy
+  ROM alone cannot activate the comparison.
+- DD-disabled ordinary carts and DD-disabled EK cart hacks keep original
+  boot selection. No ROM-name heuristic, WritableROM flag, timing, IRQ,
+  RSP, renderer, disk write or save format was changed.
+- The false hardware assertion in the old boot comment was replaced with
+  an explanation of the controlled policy. `DDSTART2 boot selection` reports
+  selected source and whether the combo override applied.
+- Gated metadata now prints parsed disk region/development classification
+  and the first six disk-ID bytes in explicitly labeled stored byte order.
+  Bounds are checked; these bytes are not a hash or automatic proof of a
+  valid cart/disk/IPL combination. The old “Loading a saved disk” warning
+  remains unchanged and retains the caveat documented above.
+
+Expected comparison result: the same real combo should now report
+`source=CART combo_cart_boot=1`, with cartridge CIC rather than the DD IPL's
+CIC at PIF boot. Whether it then detects/loads the expansion or reaches a
+menu remains unknown. Reaching only ordinary F-Zero without the expansion
+would not count as native EK success. A continued freeze after cartridge
+selection would reject the simple claim that IPL priority alone explains it.
+
+### Verification and device instructions
+
+Host helper tests cover disabled/null/malformed flags, missing cart/IPL,
+and enabled real combo selection, alongside existing callback cap tests.
+These do not replace actual DD-disabled game regression tests.
+The APK verifier now requires DDSTART2 boot/region markers plus the native
+DDSTART1 identity/coverage markers. DDSTART1 is still the logging mechanism;
+DDSTART2 identifies the behavior comparison.
+
+Update the previously supplied diagnostic debug app using `adb install -r`;
+do not uninstall, clear data or change the release app. Keep all input and
+plugin settings identical. Start a fresh launch without a save state and
+record logcat before opening the game. For clarity, save this capture as
+`ddstart2-logcat.txt`. Report whether it remains on the IPL logo, boots
+ordinary F-Zero only, detects the Expansion Kit, or fails elsewhere; also
+report audio/input response if a menu appears. Keep original disk/save
+copies intact. Native menu/audio and all regression acceptance remain pending.
+
+DDSTART2 verification: host callback/boot-policy tests passed; final
+`:app:assembleDebug` passed in 40 seconds; packaged arm64 comparison and
+logging markers verified; focused code review passed with no actionable
+blocker. Device execution and regressions are not yet verified.
+Comparison APK SHA-256:
+`0dcec790f4a452d0788a31088e6ffc1231b92e4119777415bc63cc9d30a43eeb`.
+This is a separately signed `.debug` build compatible with the prior supplied
+debug installation, not an update for the original release package.

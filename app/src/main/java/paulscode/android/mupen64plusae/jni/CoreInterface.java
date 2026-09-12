@@ -535,7 +535,7 @@ class CoreInterface
      * creating data structures, and loading the configuration file.
      */
     int coreStartup(String configDirPath, String dataDirPath, String userDataPath, String userCachePath,
-                    boolean enable64DdSupport)
+                    boolean enable64DdSupport, boolean directNdd)
     {
         LibC.INSTANCE.setenv("XDG_DATA_HOME", userDataPath, 1);
         LibC.INSTANCE.setenv("XDG_CACHE_HOME", userCachePath, 1);
@@ -546,6 +546,13 @@ class CoreInterface
         mCoreContext.setString(0, coreContextText);
 
         CoreLibrary.DebugCallback debugCallback = null;
+        // Comparison candidate: only explicit DD support plus a real cart route.
+        // Reset on every launch so direct disks/ordinary carts cannot inherit it.
+        if (LibC.INSTANCE.setenv("M64P_DD_COMBO_CART_BOOT",
+                enable64DdSupport && !directNdd ? "1" : "0", 1) != 0) {
+            Log.e(TAG, "Unable to configure DD combo boot comparison");
+            return -1;
+        }
         // The native core filters/bounds these messages before crossing JNA.
         // Reset for every session, including DD-disabled cartridge launches.
         if (LibC.INSTANCE.setenv("M64P_DD_STARTUP_DIAGNOSTICS",

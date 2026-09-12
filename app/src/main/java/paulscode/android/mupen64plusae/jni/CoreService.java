@@ -633,7 +633,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                         + "; countPerOpDen=" + mGamePrefs.countPerOpDen);
             }
             loadingSuccess = mCoreInterface.coreStartup(mGamePrefs.getCoreUserConfigDir(), null, mGlobalPrefs.coreUserDataDir,
-                    mGlobalPrefs.coreUserCacheDir, mGamePrefs.enable64DdSupport) == 0;
+                    mGlobalPrefs.coreUserCacheDir, mGamePrefs.enable64DdSupport, isNdd) == 0;
             final boolean coreInitialized = loadingSuccess;
 
             // Disk only games still require a ROM image, so use a dummy test ROM

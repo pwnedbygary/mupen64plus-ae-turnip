@@ -21,6 +21,8 @@
 
 #include "device.h"
 #include "api/callbacks.h"
+#include "dd/boot_policy.h"
+#include <stdlib.h>
 
 #include "memory/memory.h"
 #include "pif/pif.h"
@@ -195,18 +197,21 @@ void init_device(struct device* dev,
     init_si(&dev->si, si_dma_duration, &dev->mi, &dev->pif, &dev->ri);
     init_vi(&dev->vi, vi_clock, expected_refresh_rate, count_per_scanline_override, &dev->mi, &dev->dp);
 
-    /* Boot via the 64DD IPL whenever a disk is inserted: on real hardware an
-     * inserted disk always takes boot priority, even with a combo ('C') cart
-     * such as F-Zero X + Expansion Kit. */
+    /* Preserve the baseline unless the frontend explicitly enables the
+     * cartridge-first DD combo comparison documented in HANDOFF_NEW.md. */
     uint32_t rom_base = (dd_rom_size > 0)
         ? MM_DD_ROM
         : MM_CART_ROM;
+    const int combo_cart_boot = dd_combo_cart_boot(
+        getenv("M64P_DD_COMBO_CART_BOOT"), rom_size, dd_rom_size);
+    if (combo_cart_boot)
+        rom_base = MM_CART_ROM;
 
     if (DdStartupDiagnosticsEnabled())
         DebugMessage(M64MSG_INFO,
-            "DDSTART1 boot selection: cart_bytes=%zu ipl_bytes=%zu source=%s (baseline policy unchanged)",
+            "DDSTART2 boot selection: cart_bytes=%zu ipl_bytes=%zu source=%s combo_cart_boot=%d",
             (size_t)rom_size, (size_t)dd_rom_size,
-            rom_base == MM_DD_ROM ? "DD_IPL" : "CART");
+            rom_base == MM_DD_ROM ? "DD_IPL" : "CART", combo_cart_boot);
 
     init_pif(&dev->pif,
         (uint8_t*)mem_base_u32(base, MM_PIF_MEM),

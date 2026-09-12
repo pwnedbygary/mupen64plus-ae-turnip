@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "api/callbacks.h"
+#include "device/dd/boot_policy.h"
 
 static unsigned count;
 static unsigned limits;
@@ -16,6 +17,13 @@ static void capture(void *context, int level, const char *message)
 
 int main(void)
 {
+    assert(!dd_combo_cart_boot(NULL, 16, 4));
+    assert(!dd_combo_cart_boot("0", 16, 4));
+    assert(!dd_combo_cart_boot("10", 16, 4));
+    assert(!dd_combo_cart_boot("", 16, 4));
+    assert(!dd_combo_cart_boot("1", 0, 4));
+    assert(!dd_combo_cart_boot("1", 16, 0));
+    assert(dd_combo_cart_boot("1", 16, 4));
     /* DD off retains all baseline levels, with no cap. */
     setenv("M64P_DD_STARTUP_DIAGNOSTICS", "0", 1);
     SetDebugCallback(capture, NULL);
