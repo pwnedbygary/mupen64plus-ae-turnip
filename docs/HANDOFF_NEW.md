@@ -1814,3 +1814,97 @@ the boot-region instruction changes/invalidation around the observed
 return-address region. A later RDRAM code window is not a transcript of
 executed translated code. No emulation correction or new APK was produced
 for this analysis. Native success and final acceptance remain pending.
+
+## DDSTART7 cached-interpreter result — menu corruption and gameplay black screen
+
+Input log SHA-256:
+`56d26b16a08bc13111fbaf129d1029ac54bc1cb7265e07089ae34a4b1e68691e`.
+The 12,997-line capture contains **three native launches**, not one
+continuous 90-second game session:
+
+| Launch / native engine timestamp | Effective engine | Last emitted progress sample |
+| --- | --- | --- |
+| 16:58:39.101 / 16:58:39.362 | Cached Interpreter | ordinal 16384 at 16:58:40.626 |
+| 16:59:19.028 / 16:59:19.252 | Cached Interpreter | ordinal 16384 at 16:59:20.499 |
+| 17:00:22.706 / 17:00:22.952 | Cached Interpreter | ordinal 16384 at 17:00:24.184 |
+
+Each launch reports explicit DD support, cart-plus-disk (not direct NDD),
+IPL/disk configured, no requested autoload, count-per-op 1 and denominator
+0, Japan disk, and cartridge-first combo boot. These logged settings agree
+with the preceding dynarec capture except for the execution engine. This
+is not a complete comparison of every profile/renderer setting.
+
+### Observed behavior and trace coverage
+
+The user reports the same cached-interpreter symptoms seen in earlier local
+work: title/menu loads, text is garbled, and starting either a race or attract
+gameplay produces a black screen. Supplied screenshots show the Expansion
+Kit title with N64DD branding, noisy text over recognizable menu art/course
+graphics, and a black screen. Audio was **not reported** for this run.
+This is partial menu boot, not successful native gameplay or acceptance.
+
+All three sessions have exactly 512 DDSTART4 records, matching the independent
+BM budget. Each includes track-464 C2 processing and acknowledgement, then
+track-316 activity before the cap. Ending at BM ordinal 512 is **not** a
+stalled disk transaction. There are **zero DDSTART5, DDSTART6, or DDSTART7
+records** in this file. The late probes require interrupt candidates 65536
+and 1048576; neither appears. Their absence does not establish that the
+gameplay black screen is fault-free or shares the dynarec exception.
+
+All three last emitted progress samples have `pc_sample=8012b844`. They are
+startup interrupt-boundary observations roughly one second after engine
+start, not exact writers or gameplay-failure PCs. No full cached-interpreter
+dispatcher pass was captured. Do not treat this file's final core log line
+as the point at which emulation stopped.
+
+### IPL/font-data review and conditional format discrepancy
+
+The trace records 128-byte IPL-to-RDRAM transfers such as
+`060a4900 -> 00400008`. The public LEO header defines DDROM_FONT_START as
+`000a0000`. This makes IPL font data relevant to the corrupt text, but the
+log contains neither the transferred payload nor evidence that this
+particular transfer produced a displayed corrupt glyph.
+
+Current DD DMA uses the same `^ S8` byte-lane copying as cartridge ROM DMA
+and explicitly invalidates both KSEG code aliases. MMIO's word index
+`(address & 3fffff) >> 2` and DMA's byte index agree for these addresses.
+`direction=write` in this core means **DD/cart to RDRAM**, not the reverse.
+No missing normal DD DMA invalidation caller was found.
+
+Separately, `main.c::load_dd_rom` handles the raw V64 header `27 80 40 07`
+by swapping each 16-bit pair only. On a little-endian host, that leaves
+`80 27 07 40`, whereas the normalized word backing needs `40 07 27 80`.
+A host check using the unchanged byte-swap function definitions extracted
+from production `util.c`, with their production header, produced:
+
+| Raw input format | Host word after the corresponding loader helper call |
+| --- | --- |
+| Z64 | `80270740` — expected |
+| N64 | `80270740` — expected |
+| V64 | `40072780` — differs |
+
+This verifies the helper-level format discrepancy, not a device cause or
+an end-to-end loader correction. No runtime change was made. In particular,
+the log does **not** establish V64 input. Android copies/extracts the chosen
+IPL to the fixed cache name `dd_rom.n64`; that suffix is not format evidence.
+The logged MD5 beginning `58D200D4` belongs to the **cartridge**, not the IPL.
+
+### Immediate next check — cached IPL metadata only
+
+Obtain size, first four raw bytes, and SHA-256 of the cache file actually
+loaded, without exporting the IPL or changing saves:
+
+```sh
+~/Downloads/platform-tools/adb shell run-as org.mupen64plusae.turnip.pwnedbygary.debug toybox stat -c %s cache/WorkingPath/dd_rom.n64 > "$HOME/Desktop/ddstart7-ipl-info.txt"
+~/Downloads/platform-tools/adb shell run-as org.mupen64plusae.turnip.pwnedbygary.debug toybox od -An -tx1 -N4 cache/WorkingPath/dd_rom.n64 >> "$HOME/Desktop/ddstart7-ipl-info.txt"
+~/Downloads/platform-tools/adb shell run-as org.mupen64plusae.turnip.pwnedbygary.debug toybox sha256sum cache/WorkingPath/dd_rom.n64 >> "$HOME/Desktop/ddstart7-ipl-info.txt"
+```
+
+If a command fails, retain the error; do not clear data, uninstall, or change
+inputs to bypass it. These commands have not run here because no Android
+device is connected. Request the small metadata text file, not the full IPL.
+Do not apply the V64 correction to this investigation unless input evidence
+makes it relevant. If input normalization is excluded, the next diagnostic
+must cover the actual post-menu transition and live exception paths rather
+than repeating the unchanged startup-only capture. Preserve the separate
+dynarec boot-fault investigation; a common cause has not been established.
