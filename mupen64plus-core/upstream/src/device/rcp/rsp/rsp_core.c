@@ -21,6 +21,8 @@
 
 #include "rsp_core.h"
 
+#include <inttypes.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "device/memory/memory.h"
@@ -35,6 +37,477 @@
 #endif
 #include "plugin/plugin.h"
 #include "api/callbacks.h"
+
+/*
+ * DDSTART11 is deliberately a core-side observer.  It records only the
+ * CPU-to-IMEM form of an SP DMA, after the normal DMA descriptor has been
+ * captured and before the normal copy starts.  In particular, this must not
+ * become another DMA implementation: all address masking, copying, and
+ * completion scheduling remain in do_sp_dma().
+ */
+enum
+{
+    DD_IMEM_DMA_RECORD_LIMIT = 256,
+    DD_IMEM_DMA_DEDUP_LIMIT = 512,
+    DD_IMEM_DMA_SAMPLE_BYTES = 16
+};
+
+struct dd_imem_dma_identity
+{
+    int used;
+    uint32_t raw_memaddr;
+    uint32_t raw_dramaddr;
+    uint32_t raw_rd_len;
+    uint32_t raw_wr_len;
+    uint32_t programmed_dir;
+    uint32_t programmed_memaddr;
+    uint32_t programmed_dramaddr;
+    uint32_t programmed_length;
+    uint64_t payload_hash;
+    uint64_t before_hash;
+    uint64_t after_hash;
+};
+
+struct dd_imem_dma_observation
+{
+    int active;
+    int valid;
+    unsigned int sequence;
+    uint32_t raw_memaddr;
+    uint32_t raw_dramaddr;
+    uint32_t raw_rd_len;
+    uint32_t raw_wr_len;
+    uint32_t programmed_dir;
+    uint32_t programmed_memaddr;
+    uint32_t programmed_dramaddr;
+    uint32_t programmed_length;
+    unsigned int decoded_length;
+    unsigned int decoded_count;
+    unsigned int decoded_skip;
+    unsigned int memaddr;
+    unsigned int dramaddr;
+    unsigned int dest_bank;
+    size_t dest_start;
+    size_t total_bytes;
+    size_t imem_start;
+    size_t imem_end;
+    unsigned int probe_memaddr;
+    size_t probe_bytes;
+    unsigned int payload_sample_count;
+    unsigned int before_sample_count;
+    unsigned int after_sample_count;
+    unsigned char payload_sample[DD_IMEM_DMA_SAMPLE_BYTES];
+    unsigned char before_sample[DD_IMEM_DMA_SAMPLE_BYTES];
+    unsigned char after_sample[DD_IMEM_DMA_SAMPLE_BYTES];
+    uint64_t payload_hash;
+    uint64_t before_hash;
+    uint64_t after_hash;
+    unsigned char *spmem;
+};
+
+static struct dd_imem_dma_identity dd_imem_dma_identities[DD_IMEM_DMA_DEDUP_LIMIT];
+static unsigned int dd_imem_dma_sequence;
+static unsigned int dd_imem_dma_record_count;
+static int dd_imem_dma_session_active;
+static int dd_imem_dma_record_exhausted;
+static int dd_imem_dma_dedup_exhausted;
+
+static uint64_t dd_imem_dma_hash_init(void)
+{
+    return UINT64_C(14695981039346656037);
+}
+
+static uint64_t dd_imem_dma_hash_byte(uint64_t hash, unsigned char value)
+{
+    return (hash ^ value) * UINT64_C(1099511628211);
+}
+
+static uint64_t dd_imem_dma_hash_u32(uint64_t hash, uint32_t value)
+{
+    unsigned int i;
+
+    for (i = 0; i < 4; ++i)
+        hash = dd_imem_dma_hash_byte(hash, (unsigned char)(value >> (i * 8)));
+    return hash;
+}
+
+static uint64_t dd_imem_dma_hash_u64(uint64_t hash, uint64_t value)
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; ++i)
+        hash = dd_imem_dma_hash_byte(hash, (unsigned char)(value >> (i * 8)));
+    return hash;
+}
+
+static void dd_imem_dma_reset_observer(void)
+{
+    memset(dd_imem_dma_identities, 0, sizeof(dd_imem_dma_identities));
+    dd_imem_dma_sequence = 0;
+    dd_imem_dma_record_count = 0;
+    dd_imem_dma_session_active = 0;
+    dd_imem_dma_record_exhausted = 0;
+    dd_imem_dma_dedup_exhausted = 0;
+}
+
+static int dd_imem_dma_identity_equal(
+    const struct dd_imem_dma_identity *identity,
+    const struct dd_imem_dma_observation *observation)
+{
+    return identity->raw_memaddr == observation->raw_memaddr
+        && identity->raw_dramaddr == observation->raw_dramaddr
+        && identity->raw_rd_len == observation->raw_rd_len
+        && identity->raw_wr_len == observation->raw_wr_len
+        && identity->programmed_dir == observation->programmed_dir
+        && identity->programmed_memaddr == observation->programmed_memaddr
+        && identity->programmed_dramaddr == observation->programmed_dramaddr
+        && identity->programmed_length == observation->programmed_length
+        && identity->payload_hash == observation->payload_hash
+        && identity->before_hash == observation->before_hash
+        && identity->after_hash == observation->after_hash;
+}
+
+static uint64_t dd_imem_dma_identity_hash(
+    const struct dd_imem_dma_observation *observation)
+{
+    uint64_t hash = dd_imem_dma_hash_init();
+
+    hash = dd_imem_dma_hash_u32(hash, observation->raw_memaddr);
+    hash = dd_imem_dma_hash_u32(hash, observation->raw_dramaddr);
+    hash = dd_imem_dma_hash_u32(hash, observation->raw_rd_len);
+    hash = dd_imem_dma_hash_u32(hash, observation->raw_wr_len);
+    hash = dd_imem_dma_hash_u32(hash, observation->programmed_dir);
+    hash = dd_imem_dma_hash_u32(hash, observation->programmed_memaddr);
+    hash = dd_imem_dma_hash_u32(hash, observation->programmed_dramaddr);
+    hash = dd_imem_dma_hash_u32(hash, observation->programmed_length);
+    hash = dd_imem_dma_hash_u64(hash, observation->payload_hash);
+    hash = dd_imem_dma_hash_u64(hash, observation->before_hash);
+    return dd_imem_dma_hash_u64(hash, observation->after_hash);
+}
+
+/*
+ * Return 1 for a newly inserted identity, 0 for a repeated identity, and -1
+ * when the bounded table is full.  The table is intentionally larger than the
+ * output budget: repeated frame DMA traffic therefore does not spend the
+ * output budget or emit an exhaustion message on every frame.
+ */
+static int dd_imem_dma_claim_identity(
+    const struct dd_imem_dma_observation *observation)
+{
+    uint64_t hash = dd_imem_dma_identity_hash(observation);
+    unsigned int start = (unsigned int)(hash % DD_IMEM_DMA_DEDUP_LIMIT);
+    unsigned int i;
+
+    for (i = 0; i < DD_IMEM_DMA_DEDUP_LIMIT; ++i) {
+        unsigned int index = (start + i) % DD_IMEM_DMA_DEDUP_LIMIT;
+        struct dd_imem_dma_identity *identity = &dd_imem_dma_identities[index];
+
+        if (!identity->used) {
+            identity->used = 1;
+            identity->raw_memaddr = observation->raw_memaddr;
+            identity->raw_dramaddr = observation->raw_dramaddr;
+            identity->raw_rd_len = observation->raw_rd_len;
+            identity->raw_wr_len = observation->raw_wr_len;
+            identity->programmed_dir = observation->programmed_dir;
+            identity->programmed_memaddr = observation->programmed_memaddr;
+            identity->programmed_dramaddr = observation->programmed_dramaddr;
+            identity->programmed_length = observation->programmed_length;
+            identity->payload_hash = observation->payload_hash;
+            identity->before_hash = observation->before_hash;
+            identity->after_hash = observation->after_hash;
+            return 1;
+        }
+        if (dd_imem_dma_identity_equal(identity, observation))
+            return 0;
+    }
+
+    return -1;
+}
+
+static void dd_imem_dma_emit_sample(char *text, size_t text_size,
+                                    const unsigned char *sample,
+                                    unsigned int sample_count)
+{
+    unsigned int i;
+
+    if (text_size == 0)
+        return;
+    text[0] = '\0';
+    for (i = 0; i < sample_count && (size_t)(i * 2 + 2) <= text_size; ++i)
+        (void)snprintf(text + i * 2, text_size - i * 2, "%02x", sample[i]);
+}
+
+static void dd_imem_dma_emit_message(const char *message)
+{
+    void *context = NULL;
+    ptr_DdStartupDiagnosticsCallback callback =
+        DdStartupDiagnosticsGetCallback(&context);
+
+    if (callback != NULL)
+        (*callback)(context, M64MSG_INFO, message);
+}
+
+static void dd_imem_dma_emit_exhaustion(const char *reason,
+                                        unsigned int sequence,
+                                        unsigned int count,
+                                        unsigned int limit)
+{
+    char message[192];
+
+    (void)snprintf(message, sizeof(message),
+        "DDSTART11 IMEMDMA exhaustion reason=%s sequence=%u records=%u limit=%u",
+        reason, sequence, count, limit);
+    dd_imem_dma_emit_message(message);
+}
+
+static int dd_imem_dma_source_is_valid(const struct rdram *rdram,
+                                       uint32_t dramaddr,
+                                       unsigned int length,
+                                       unsigned int count,
+                                       unsigned int skip)
+{
+    uint64_t current = dramaddr;
+    unsigned int row;
+
+    if (rdram == NULL || rdram->dram == NULL)
+        return 0;
+
+    /*
+     * DMA reads each source byte through (address ^ S8).  A row can therefore
+     * touch up to three bytes past its logical end when its start is not
+     * word-aligned.  Check that conservative bound before any probe read.
+     */
+    for (row = 0; row < count; ++row) {
+        if (current > UINT32_MAX
+                || current >= rdram->dram_size
+                || (uint64_t)length + 3 > rdram->dram_size - current)
+            return 0;
+        current += (uint64_t)length + skip;
+    }
+    return 1;
+}
+
+static void dd_imem_dma_hash_payload(const unsigned char *dram,
+                                     uint32_t dramaddr,
+                                     unsigned int length,
+                                     unsigned int count,
+                                     unsigned int skip,
+                                     uint64_t *hash,
+                                     unsigned char *sample,
+                                     unsigned int *sample_count)
+{
+    uint64_t current = dramaddr;
+    unsigned int row;
+    unsigned int copied = 0;
+    unsigned int i;
+
+    *hash = dd_imem_dma_hash_init();
+    for (row = 0; row < count; ++row) {
+        for (i = 0; i < length; ++i) {
+            unsigned char value = dram[((uint32_t)(current + i)) ^ S8];
+
+            *hash = dd_imem_dma_hash_byte(*hash, value);
+            if (copied < DD_IMEM_DMA_SAMPLE_BYTES)
+                sample[copied++] = value;
+        }
+        current += (uint64_t)length + skip;
+    }
+    *sample_count = copied;
+}
+
+static void dd_imem_dma_hash_destination(const unsigned char *spmem,
+                                         unsigned int memaddr,
+                                         size_t total_bytes,
+                                         uint64_t *hash,
+                                         unsigned char *sample,
+                                         unsigned int *sample_count)
+{
+    size_t i;
+    unsigned int copied = 0;
+
+    *hash = dd_imem_dma_hash_init();
+    for (i = 0; i < total_bytes; ++i) {
+        unsigned char value = spmem[(memaddr + i) ^ S8];
+
+        *hash = dd_imem_dma_hash_byte(*hash, value);
+        if (copied < DD_IMEM_DMA_SAMPLE_BYTES)
+            sample[copied++] = value;
+    }
+    *sample_count = copied;
+}
+
+static void dd_imem_dma_begin(struct rsp_core *sp,
+                              const struct sp_dma *dma,
+                              unsigned int length,
+                              unsigned int count,
+                              unsigned int skip,
+                              unsigned int memaddr,
+                              unsigned int dramaddr,
+                              unsigned char *spmem,
+                              struct dd_imem_dma_observation *observation)
+{
+    size_t destination_end;
+    int source_valid;
+    int destination_valid;
+    int imem_intersects;
+
+    if (!DdStartupDiagnosticsEnabled())
+        return;
+
+    memset(observation, 0, sizeof(*observation));
+    if (!dd_imem_dma_session_active) {
+        dd_imem_dma_reset_observer();
+        dd_imem_dma_session_active = 1;
+    }
+
+    if (dma->dir != SP_DMA_WRITE)
+        return;
+
+    observation->sequence = ++dd_imem_dma_sequence;
+    observation->raw_memaddr = sp->regs[SP_MEM_ADDR_REG];
+    observation->raw_dramaddr = sp->regs[SP_DRAM_ADDR_REG];
+    observation->raw_rd_len = sp->regs[SP_RD_LEN_REG];
+    observation->raw_wr_len = sp->regs[SP_WR_LEN_REG];
+    observation->programmed_dir = dma->dir;
+    observation->programmed_memaddr = dma->memaddr;
+    observation->programmed_dramaddr = dma->dramaddr;
+    observation->programmed_length = dma->length;
+    observation->decoded_length = length;
+    observation->decoded_count = count;
+    observation->decoded_skip = skip;
+    observation->memaddr = memaddr;
+    observation->dramaddr = dramaddr;
+    observation->dest_bank = dma->memaddr & 0x1000;
+    observation->dest_start = observation->dest_bank + memaddr;
+    observation->total_bytes = (size_t)length * count;
+    observation->spmem = spmem;
+
+    destination_end = observation->dest_start + observation->total_bytes;
+    imem_intersects = observation->dest_start < 0x2000
+        && destination_end > 0x1000
+        && destination_end >= observation->dest_start;
+    if (!imem_intersects)
+        return;
+
+    observation->active = 1;
+    observation->imem_start = observation->dest_start < 0x1000
+        ? 0x1000 : observation->dest_start;
+    observation->imem_end = destination_end > 0x2000
+        ? 0x2000 : destination_end;
+    observation->probe_memaddr =
+        (unsigned int)(observation->imem_start - observation->dest_bank);
+    observation->probe_bytes = observation->imem_end - observation->imem_start;
+
+    /*
+     * Keep raw/programmed metadata even when a probe range is not safe.  The
+     * actual DMA remains responsible for its existing behavior; diagnostics
+     * simply mark payload/IMEM samples skipped rather than reading outside
+     * allocated RDRAM or SP memory.
+     */
+    destination_valid = sp != NULL && sp->mem != NULL
+        && observation->dest_start <= SP_MEM_SIZE;
+    if (destination_valid)
+        destination_valid = destination_end >= observation->dest_start
+            && destination_end <= SP_MEM_SIZE;
+
+    source_valid = sp != NULL && sp->ri != NULL
+        && dd_imem_dma_source_is_valid(sp->ri->rdram, dramaddr, length,
+                                       count, skip);
+    observation->valid = source_valid && destination_valid;
+    if (observation->valid) {
+        dd_imem_dma_hash_payload(
+            (const unsigned char *)sp->ri->rdram->dram, dramaddr, length,
+            count, skip, &observation->payload_hash,
+            observation->payload_sample, &observation->payload_sample_count);
+        dd_imem_dma_hash_destination(
+            spmem, observation->probe_memaddr, observation->probe_bytes,
+            &observation->before_hash, observation->before_sample,
+            &observation->before_sample_count);
+    }
+}
+
+static void dd_imem_dma_finish(struct dd_imem_dma_observation *observation)
+{
+    char payload_sample[DD_IMEM_DMA_SAMPLE_BYTES * 2 + 1];
+    char before_sample[DD_IMEM_DMA_SAMPLE_BYTES * 2 + 1];
+    char after_sample[DD_IMEM_DMA_SAMPLE_BYTES * 2 + 1];
+    char message[512];
+    int identity;
+    unsigned int record;
+    size_t destination_end;
+
+    if (!observation->active || !DdStartupDiagnosticsEnabled())
+        return;
+
+    if (observation->valid) {
+        dd_imem_dma_hash_destination(
+            observation->spmem, observation->probe_memaddr,
+            observation->probe_bytes, &observation->after_hash,
+            observation->after_sample, &observation->after_sample_count);
+    }
+
+    identity = dd_imem_dma_claim_identity(observation);
+    if (identity < 0) {
+        if (!dd_imem_dma_dedup_exhausted) {
+            dd_imem_dma_dedup_exhausted = 1;
+            dd_imem_dma_emit_exhaustion("dedup-table", observation->sequence,
+                                        DD_IMEM_DMA_DEDUP_LIMIT,
+                                        DD_IMEM_DMA_DEDUP_LIMIT);
+        }
+        return;
+    }
+    if (identity == 0)
+        return;
+    if (dd_imem_dma_record_count >= DD_IMEM_DMA_RECORD_LIMIT) {
+        if (!dd_imem_dma_record_exhausted) {
+            dd_imem_dma_record_exhausted = 1;
+            dd_imem_dma_emit_exhaustion("record-budget", observation->sequence,
+                                        dd_imem_dma_record_count,
+                                        DD_IMEM_DMA_RECORD_LIMIT);
+        }
+        return;
+    }
+
+    record = ++dd_imem_dma_record_count;
+    destination_end = observation->dest_start + observation->total_bytes;
+    dd_imem_dma_emit_sample(payload_sample, sizeof(payload_sample),
+                            observation->payload_sample,
+                            observation->valid
+                                ? observation->payload_sample_count : 0);
+    dd_imem_dma_emit_sample(before_sample, sizeof(before_sample),
+                            observation->before_sample,
+                            observation->valid
+                                ? observation->before_sample_count : 0);
+    dd_imem_dma_emit_sample(after_sample, sizeof(after_sample),
+                            observation->after_sample,
+                            observation->valid
+                                ? observation->after_sample_count : 0);
+    (void)snprintf(message, sizeof(message),
+        "DDSTART11 RSP CPU->IMEM seq=%u rec=%u dir=%u "
+        "raw={m=0x%08" PRIx32 " d=0x%08" PRIx32
+        " rd=0x%08" PRIx32 " wr=0x%08" PRIx32 "}"
+        " prog={m=0x%08" PRIx32 " d=0x%08" PRIx32
+        " l=0x%08" PRIx32 "} decoded={l=%u c=%u s=%u} "
+        "dest={bank=%s range=[0x%04zx,0x%04zx)"
+        " imem=[0x%04zx,0x%04zx) probe=%s} "
+        "payload={h=0x%016" PRIx64 " s=%s} "
+        "before={h=0x%016" PRIx64 " s=%s} "
+        "after={h=0x%016" PRIx64 " s=%s}",
+        observation->sequence, record, observation->programmed_dir,
+        observation->raw_memaddr, observation->raw_dramaddr,
+        observation->raw_rd_len, observation->raw_wr_len,
+        observation->programmed_memaddr, observation->programmed_dramaddr,
+        observation->programmed_length, observation->decoded_length,
+        observation->decoded_count, observation->decoded_skip,
+        observation->dest_bank == 0x1000 ? "IMEM" : "DMEM",
+        observation->dest_start, destination_end,
+        observation->imem_start, observation->imem_end,
+        observation->valid ? "valid" : "skipped",
+        observation->payload_hash, payload_sample,
+        observation->before_hash, before_sample,
+        observation->after_hash, after_sample);
+    dd_imem_dma_emit_message(message);
+}
 
 static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
 {
@@ -51,6 +524,12 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
 
     unsigned char *spmem = (unsigned char*)sp->mem + (dma->memaddr & 0x1000);
     unsigned char *dram = (unsigned char*)sp->ri->rdram->dram;
+    struct dd_imem_dma_observation dd_observation;
+    int dd_observe = DdStartupDiagnosticsEnabled();
+
+    if (dd_observe)
+        dd_imem_dma_begin(sp, dma, length, count, skip, memaddr, dramaddr,
+                          spmem, &dd_observation);
 
     if (dma->dir == SP_DMA_READ)
     {
@@ -78,6 +557,9 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma)
             dramaddr+=skip;
         }
     }
+
+    if (dd_observe)
+        dd_imem_dma_finish(&dd_observation);
 
     /* schedule end of dma event */
     cp0_update_count(sp->mi->r4300);
@@ -208,6 +690,8 @@ void init_rsp(struct rsp_core* sp,
               struct rdp_core* dp,
               struct ri_controller* ri)
 {
+    if (DdStartupDiagnosticsEnabled())
+        dd_imem_dma_reset_observer();
     sp->mem = sp_mem;
     sp->mi = mi;
     sp->dp = dp;
@@ -216,6 +700,8 @@ void init_rsp(struct rsp_core* sp,
 
 void poweron_rsp(struct rsp_core* sp)
 {
+    if (DdStartupDiagnosticsEnabled())
+        dd_imem_dma_reset_observer();
     memset(sp->mem, 0, SP_MEM_SIZE);
     memset(sp->regs, 0, SP_REGS_COUNT*sizeof(uint32_t));
     memset(sp->regs2, 0, SP_REGS2_COUNT*sizeof(uint32_t));

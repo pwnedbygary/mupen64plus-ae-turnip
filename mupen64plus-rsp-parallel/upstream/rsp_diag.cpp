@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <stdio.h>
+#include <string.h>
 
 namespace RSP
 {
@@ -13,6 +14,7 @@ constexpr unsigned JIT_RECORD_BUDGET = 2048;
 constexpr unsigned RSP_ENTRY_RECORD_BUDGET = 128;
 constexpr unsigned JIT_COMPILE_WORD_BUDGET = 32768;
 constexpr unsigned JIT_COMPILE_WORDS_PER_LINE = 64;
+constexpr unsigned DMA_RECORD_BUDGET = 512;
 constexpr int DIAGNOSTIC_INFO_LEVEL = 3; // M64MSG_INFO; M64MSG_ERROR is 1.
 
 std::atomic<DebugCallback> g_callback(nullptr);
@@ -25,6 +27,11 @@ std::atomic<bool> g_jit_exhausted(false);
 
 std::atomic<unsigned> g_jit_compile_words_remaining(0);
 std::atomic<bool> g_jit_compile_words_exhausted(false);
+
+std::atomic<unsigned> g_dma_remaining(0);
+std::atomic<unsigned> g_dma_records(0);
+std::atomic<unsigned long long> g_imem_dma_sequence(0);
+std::atomic<bool> g_dma_exhausted(false);
 
 std::atomic<unsigned> g_entry_remaining(0);
 std::atomic<unsigned> g_entry_seen(0);
@@ -40,6 +47,23 @@ struct RspIdentity
 
 RspIdentity g_seen_rsp_identities[RSP_ENTRY_RECORD_BUDGET];
 unsigned g_seen_rsp_identity_count = 0;
+uint32_t g_task_snapshot[DMA_TASK_WORD_COUNT] = {};
+bool g_task_snapshot_valid = false;
+
+struct DmaIdentity
+{
+	uint32_t raw_dma_cache;
+	uint32_t raw_dma_dram;
+	uint32_t raw_read_length;
+	uint32_t count;
+	uint32_t skip;
+	uint64_t payload_hash;
+	uint64_t imem_before_hash;
+	uint64_t imem_after_hash;
+};
+
+DmaIdentity g_seen_dma_identities[DMA_RECORD_BUDGET];
+unsigned g_seen_dma_identity_count = 0;
 
 bool reserve(std::atomic<unsigned> &remaining)
 {
@@ -110,6 +134,21 @@ void emit_exhaustion(std::atomic<bool> &already_emitted, const char *kind,
 		emit(message);
 	}
 }
+
+void emit_dd11_exhaustion(std::atomic<bool> &already_emitted,
+                          const char *kind, unsigned limit)
+{
+	bool expected = false;
+	if (already_emitted.compare_exchange_strong(expected, true,
+	                                            std::memory_order_relaxed,
+	                                            std::memory_order_relaxed))
+	{
+		char message[192];
+		snprintf(message, sizeof(message),
+		         "DDSTART11 RSP %s exhaustion: limit=%u", kind, limit);
+		emit(message);
+	}
+}
 } // namespace
 
 void set_callback(DebugCallback callback, void *context)
@@ -129,18 +168,34 @@ void set_callback(DebugCallback callback, void *context)
 	g_jit_compile_words_remaining.store(JIT_COMPILE_WORD_BUDGET,
 	                                    std::memory_order_relaxed);
 	g_jit_compile_words_exhausted.store(false, std::memory_order_relaxed);
+	g_dma_remaining.store(DMA_RECORD_BUDGET, std::memory_order_relaxed);
+	g_dma_records.store(0, std::memory_order_relaxed);
+	g_imem_dma_sequence.store(0, std::memory_order_relaxed);
+	g_dma_exhausted.store(false, std::memory_order_relaxed);
 	g_entry_remaining.store(RSP_ENTRY_RECORD_BUDGET, std::memory_order_relaxed);
 	g_entry_seen.store(0, std::memory_order_relaxed);
 	g_entry_exhausted.store(false, std::memory_order_relaxed);
 	g_entry_count.store(0, std::memory_order_relaxed);
 	g_return_count.store(0, std::memory_order_relaxed);
 	g_seen_rsp_identity_count = 0;
+	g_task_snapshot_valid = false;
+	memset(g_task_snapshot, 0, sizeof(g_task_snapshot));
+	g_seen_dma_identity_count = 0;
 }
 
 bool enabled()
 {
 	return g_enabled.load(std::memory_order_acquire)
 	    && g_callback.load(std::memory_order_acquire) != nullptr;
+}
+
+bool imem_dma_eligible(uint32_t dest, uint32_t effective_length,
+                       uint32_t transfer_count)
+{
+	if (dest & 0x1000)
+		return true;
+	return static_cast<uint64_t>(effective_length) * transfer_count
+	    > (0x1000 - (dest & 0xfff));
 }
 
 bool trace_jit(uintptr_t host_start, uintptr_t host_end,
@@ -164,7 +219,7 @@ bool trace_jit(uintptr_t host_start, uintptr_t host_end,
 	ordinal = g_jit_seen.fetch_add(1, std::memory_order_relaxed) + 1;
 	snprintf(message, sizeof(message),
 	         "DDSTART10 RSP jit_region %s record=%u "
-	         "host_range=[0x%llx,0x%llx) imem_start_pc=0x%03x "
+         "allocation_range=[0x%llx,0x%llx) imem_start_pc=0x%03x "
 	         "instruction_count=%u existing_region_hash=0x%016llx",
 	         event, ordinal, (unsigned long long)host_start,
 	         (unsigned long long)host_end, imem_start_pc, instruction_count,
@@ -243,7 +298,8 @@ const unsigned chunk_imem_start_pc = imem_start_pc + offset * 4;
 }
 
 bool trace_rsp_entry(uint64_t task_hash, uint64_t imem_hash,
-                     uint32_t task_type, uint32_t sp_pc)
+                     uint32_t task_type, uint32_t sp_pc,
+                     const uint32_t *task_words)
 {
 	char message[512];
 	unsigned ordinal;
@@ -254,6 +310,13 @@ bool trace_rsp_entry(uint64_t task_hash, uint64_t imem_hash,
 		return false;
 
 	entry_count = g_entry_count.fetch_add(1, std::memory_order_relaxed) + 1;
+	if (task_words != nullptr)
+	{
+		memcpy(g_task_snapshot, task_words, sizeof(g_task_snapshot));
+		g_task_snapshot_valid = true;
+	}
+	else
+		g_task_snapshot_valid = false;
 	const bool already_seen = seen_rsp_identity(task_hash, imem_hash);
 
 	if (already_seen)
@@ -278,6 +341,141 @@ bool trace_rsp_entry(uint64_t task_hash, uint64_t imem_hash,
 	         sp_pc);
 	emit(message);
 	return true;
+}
+
+void trace_rsp_dma_read(const DmaReadObservation &observation)
+{
+	char message[4096];
+	unsigned long long sequence;
+	bool already_seen = false;
+
+	if (!enabled())
+		return;
+
+	sequence = g_imem_dma_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+	for (unsigned i = 0; i < g_seen_dma_identity_count; ++i)
+	{
+		const DmaIdentity &identity = g_seen_dma_identities[i];
+		if (identity.raw_dma_cache == observation.raw_dma_cache
+		    && identity.raw_dma_dram == observation.raw_dma_dram
+		    && identity.raw_read_length == observation.raw_read_length
+		    && identity.count == observation.count
+		    && identity.skip == observation.skip
+		    && identity.payload_hash == observation.payload_hash
+		    && identity.imem_before_hash == observation.imem_before_hash
+		    && identity.imem_after_hash == observation.imem_after_hash)
+		{
+			already_seen = true;
+			break;
+		}
+	}
+	if (already_seen)
+		return;
+
+	if (g_seen_dma_identity_count < DMA_RECORD_BUDGET)
+	{
+		g_seen_dma_identities[g_seen_dma_identity_count++] = {
+			observation.raw_dma_cache,
+			observation.raw_dma_dram,
+			observation.raw_read_length,
+			observation.count,
+			observation.skip,
+			observation.payload_hash,
+			observation.imem_before_hash,
+			observation.imem_after_hash
+		};
+	}
+
+	if (!reserve(g_dma_remaining))
+	{
+		emit_dd11_exhaustion(g_dma_exhausted, "dma_read", DMA_RECORD_BUDGET);
+		return;
+	}
+	const unsigned record = g_dma_records.fetch_add(1, std::memory_order_relaxed) + 1;
+	int length = snprintf(
+	    message, sizeof(message),
+	    "DDSTART11 RSP dma_read record=%u imem_dma_sequence=%llu entry_count=%llu "
+	    "site_pc=unknown raw_dma_cache=0x%08x raw_dma_dram=0x%08x "
+	    "raw_read_length=0x%08x requested_length=%u aligned_length=%u "
+	    "effective_length=%u count=%u transfer_count=%u skip=%u "
+	    "payload_hash=0x%016llx payload_word_count=%u "
+	    "imem_before_hash=0x%016llx imem_after_hash=0x%016llx "
+	    "imem_before_samples=[%08x,%08x,%08x,%08x] "
+	    "imem_after_samples=[%08x,%08x,%08x,%08x] "
+	    "first_imem_range=0x%03x-0x%03x imem_bank_mask=0x%x "
+	    "imem_min=0x%03x imem_max=0x%03x imem_range_count=%u "
+	    "imem_write_word_count=%u payload_samples_truncated=%u "
+	    "payload_first=[",
+	    record, sequence,
+	    (unsigned long long)g_entry_count.load(std::memory_order_relaxed),
+	    observation.raw_dma_cache, observation.raw_dma_dram,
+	    observation.raw_read_length, observation.requested_length,
+	    observation.aligned_length, observation.effective_length,
+	    observation.count, observation.transfer_count, observation.skip,
+	    (unsigned long long)observation.payload_hash,
+	    observation.payload_word_count,
+	    (unsigned long long)observation.imem_before_hash,
+	    (unsigned long long)observation.imem_after_hash,
+	    observation.imem_before_samples[0], observation.imem_before_samples[1],
+	    observation.imem_before_samples[2], observation.imem_before_samples[3],
+	    observation.imem_after_samples[0], observation.imem_after_samples[1],
+	    observation.imem_after_samples[2], observation.imem_after_samples[3],
+	    observation.first_imem_start, observation.first_imem_end,
+	    observation.imem_bank_mask, observation.imem_min_start,
+	    observation.imem_max_end, observation.imem_range_count,
+	    observation.imem_write_word_count,
+	    observation.payload_samples_truncated ? 1 : 0);
+	for (unsigned i = 0;
+	     i < observation.payload_first_count && length < (int)sizeof(message);
+	     ++i)
+	{
+		length += snprintf(message + length, sizeof(message) - length,
+		                   "%s%08x", i == 0 ? "" : ",",
+		                   observation.payload_first[i]);
+	}
+	length += snprintf(message + length, sizeof(message) - length,
+	                   "] source_first=[");
+	for (unsigned i = 0;
+	     i < observation.source_first_count && length < (int)sizeof(message);
+	     ++i)
+	{
+		length += snprintf(message + length, sizeof(message) - length,
+		                   "%s0x%06x", i == 0 ? "" : ",",
+		                   observation.source_first[i]);
+	}
+	length += snprintf(message + length, sizeof(message) - length,
+	                   "] payload_last=[");
+	for (unsigned i = 0;
+	     i < observation.payload_last_count && length < (int)sizeof(message);
+	     ++i)
+	{
+		length += snprintf(message + length, sizeof(message) - length,
+		                   "%s%08x", i == 0 ? "" : ",",
+		                   observation.payload_last[i]);
+	}
+	length += snprintf(message + length, sizeof(message) - length,
+	                   "] source_last=[");
+	for (unsigned i = 0;
+	     i < observation.source_last_count && length < (int)sizeof(message);
+	     ++i)
+	{
+		length += snprintf(message + length, sizeof(message) - length,
+		                   "%s0x%06x", i == 0 ? "" : ",",
+		                   observation.source_last[i]);
+	}
+	length += snprintf(message + length, sizeof(message) - length,
+	                   "] task_snapshot_valid=%u task_words=[",
+	                   g_task_snapshot_valid ? 1 : 0);
+	for (unsigned i = 0;
+	     i < DMA_TASK_WORD_COUNT && length < (int)sizeof(message);
+	     ++i)
+	{
+		length += snprintf(message + length, sizeof(message) - length,
+		                   "%s%08x", i == 0 ? "" : ",", g_task_snapshot[i]);
+	}
+	snprintf(message + (length < (int)sizeof(message) ? length : sizeof(message) - 1),
+	         length < (int)sizeof(message) ? sizeof(message) - length : 1, "]");
+	emit(message);
 }
 
 void rsp_return()

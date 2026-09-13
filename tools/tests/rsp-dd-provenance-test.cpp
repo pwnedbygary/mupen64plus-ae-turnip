@@ -10,6 +10,7 @@ static unsigned message_count;
 static unsigned jit_count;
 static unsigned unknown_count;
 static unsigned compile_word_lines;
+static unsigned dma_lines;
 static unsigned entry_count;
 static unsigned exhaustion_count;
 static unsigned bad_messages;
@@ -30,6 +31,8 @@ static void capture(void *, int level, const char *message)
 		++unknown_count;
 	if (strstr(message, "jit_compile_input") != nullptr)
 		++compile_word_lines;
+	if (strstr(message, "DDSTART11 RSP dma_read record=") != nullptr)
+		++dma_lines;
 	if (strstr(message, "RSP entry") != nullptr)
 		++entry_count;
 	if (strstr(message, "exhaustion") != nullptr)
@@ -44,6 +47,7 @@ static void reset_capture()
 	jit_count = 0;
 	unknown_count = 0;
 	compile_word_lines = 0;
+	dma_lines = 0;
 	entry_count = 0;
 	exhaustion_count = 0;
 	bad_messages = 0;
@@ -69,7 +73,7 @@ static void test_gate_and_jit_budget()
 	RSP::Diagnostics::set_callback(capture, nullptr);
 	assert(RSP::Diagnostics::trace_jit(0x1000, 0x2000, 0, 1, 1, "after-reset"));
 	assert(jit_count == 1);
-	assert(strstr(last_message, "host_range=[0x1000,0x2000)") != nullptr);
+assert(strstr(last_message, "allocation_range=[0x1000,0x2000)") != nullptr);
 	for (unsigned i = 1; i < 2048; ++i)
 		assert(RSP::Diagnostics::trace_jit(
 		    0x1000, 0x2000, 0, 1, i, "commit"));
@@ -166,11 +170,105 @@ assert(strstr(last_message, "region_host_start=0x1000") != nullptr);
 	assert(bad_messages == 0);
 }
 
+static void test_dma_observation()
+{
+	RSP::Diagnostics::DmaReadObservation observation = {};
+	uint32_t task_words[16];
+	for (unsigned i = 0; i < 16; ++i)
+		task_words[i] = 0xabc00000u + i;
+
+	observation.raw_dma_cache = 0x1ffc;
+	observation.raw_dma_dram = 0x7ffffc;
+	observation.raw_read_length = 0x12345678;
+	observation.requested_length = 5;
+	observation.aligned_length = 8;
+	observation.effective_length = 4;
+	observation.count = 1;
+	observation.transfer_count = 2;
+	observation.skip = 0x20;
+	observation.payload_hash = 0x1122334455667788ull;
+	observation.payload_word_count = 2;
+	observation.payload_first_count = 2;
+	observation.payload_first[0] = 0x11111111;
+	observation.payload_first[1] = 0x22222222;
+	observation.payload_last_count = 2;
+	observation.payload_last[0] = 0x11111111;
+	observation.payload_last[1] = 0x22222222;
+	observation.source_first_count = 2;
+	observation.source_first[0] = 0x7ffffc;
+	observation.source_first[1] = 0x000000;
+	observation.source_last_count = 2;
+	observation.source_last[0] = 0x7ffffc;
+	observation.source_last[1] = 0x000000;
+	observation.imem_before_hash = 0x0102030405060708ull;
+	observation.imem_after_hash = 0x1112131415161718ull;
+	observation.imem_before_samples[0] = 0x00000000;
+	observation.imem_before_samples[2] = 0xf60f60f6;
+	observation.imem_after_samples[0] = 0xdeadbeef;
+	observation.imem_after_samples[2] = 0xcafebabe;
+	observation.first_imem_start = 0x1ff0;
+	observation.first_imem_end = 0x1ff8;
+	observation.imem_min_start = 0x1000;
+	observation.imem_max_end = 0x2000;
+	observation.imem_bank_mask = 0x2;
+	observation.imem_range_count = 2;
+	observation.imem_write_word_count = 2;
+	observation.payload_samples_truncated = true;
+
+	reset_capture();
+	RSP::Diagnostics::set_callback(capture, nullptr);
+	assert(RSP::Diagnostics::trace_rsp_entry(
+	    1, 2, 3, 0x40, task_words));
+	RSP::Diagnostics::rsp_return();
+	RSP::Diagnostics::trace_rsp_dma_read(observation);
+	assert(dma_lines == 1);
+	assert(strstr(last_message, "raw_dma_cache=0x00001ffc") != nullptr);
+	assert(strstr(last_message, "requested_length=5 aligned_length=8 effective_length=4") != nullptr);
+	assert(strstr(last_message, "first_imem_range=0x1ff0-0x1ff8") != nullptr);
+	assert(strstr(last_message, "source_first=[0x7ffffc,0x000000]") != nullptr);
+	assert(strstr(last_message, "task_snapshot_valid=1") != nullptr);
+	assert(strstr(last_message, "abc00000") != nullptr);
+
+	RSP::Diagnostics::trace_rsp_dma_read(observation);
+	assert(dma_lines == 1);
+	observation.payload_hash++;
+	RSP::Diagnostics::trace_rsp_dma_read(observation);
+	assert(dma_lines == 2);
+	assert(strstr(last_message, "imem_dma_sequence=3") != nullptr);
+
+	reset_capture();
+	RSP::Diagnostics::set_callback(capture, nullptr);
+	for (unsigned i = 0; i < 512; ++i)
+	{
+		observation.raw_dma_dram = i;
+		observation.payload_hash = i;
+		RSP::Diagnostics::trace_rsp_dma_read(observation);
+	}
+	observation.raw_dma_dram = 512;
+	observation.payload_hash = 512;
+	RSP::Diagnostics::trace_rsp_dma_read(observation);
+	assert(dma_lines == 512);
+	assert(exhaustion_count == 1);
+	assert(strstr(last_message, "DDSTART11 RSP dma_read exhaustion") != nullptr);
+}
+
+static void test_dma_eligibility()
+{
+	RSP::Diagnostics::set_callback(nullptr, nullptr);
+	assert(!RSP::Diagnostics::imem_dma_eligible(0x0000, 0x1000, 1));
+	assert(!RSP::Diagnostics::imem_dma_eligible(0x0ff8, 0x0008, 1));
+	assert(RSP::Diagnostics::imem_dma_eligible(0x0ff8, 0x0008, 2));
+	assert(RSP::Diagnostics::imem_dma_eligible(0x1000, 0x0008, 1));
+	assert(!RSP::Diagnostics::enabled());
+}
+
 int main()
 {
 	test_gate_and_jit_budget();
 	test_unknown_range_budget();
 	test_entry_budget_and_counters();
 	test_compile_input_budget();
+	test_dma_observation();
+	test_dma_eligibility();
 	return 0;
 }

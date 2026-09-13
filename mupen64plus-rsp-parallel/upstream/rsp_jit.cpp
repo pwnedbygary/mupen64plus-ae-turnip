@@ -78,6 +78,9 @@ void CPU::invalidate_code()
 	if (!state.dirty_blocks)
 		return;
 
+	if (diagnostics_enabled && Diagnostics::enabled())
+		diagnostic_imem_hash_valid = false;
+
 	for (unsigned i = 0; i < CODE_BLOCKS; i++)
 	{
 		if (state.dirty_blocks & (1 << i))

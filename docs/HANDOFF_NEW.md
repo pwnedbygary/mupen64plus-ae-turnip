@@ -2366,3 +2366,53 @@ logcat before launch, identifies a unique newly launched root capture against
 a pre-launch directory snapshot, and waits on its own status. The already
 installed device helper/one-line entry are unchanged. Return its fresh Desktop
 ZIP for same-process host-range/IMEM correlation; do not mix it with old PCs.
+
+### DDSTART10 native result and diagnostic limitations
+
+The new Mac orchestration completed correctly and retrieved fresh
+`capture.ZveDAv`, with Dynamic Recompiler and explicit DD support confirmed.
+See [DDSTART10_NATIVE_ANALYSIS.md](DDSTART10_NATIVE_ANALYSIS.md).
+
+The first native sample maps to allocation record 97 and IMEM `0xf60..0xfff`;
+the second is in Parallel-RSP's JIT block lookup via its dispatcher. The
+emulation thread accumulated approximately 45.66 user CPU seconds across
+approximately 46 seconds. Compile words at `0xf60`, `0xb20`, `0x000` and
+`0x200` strongly resemble CPU rendering code/data rather than expected RSP
+microcode, but their precise source RAM address and corrupting writer remain
+unknown.
+
+Correct two earlier diagnostic claims: the recorded host extent is allocation
+capacity, not an exact emitted-byte interval; and the separate full-IMEM hash
+can remain stale after internal DMA refreshes the JIT's cached IMEM. The last
+distinct task identity is not necessarily the stalled invocation. Do not infer
+the write's timing or origin from absent subsequent identity lines.
+
+Prepare DDSTART11 as observation only, covering both CPU/core and RSP-internal
+IMEM DMA writers with raw/derived transfer parameters and before/after evidence.
+Keep normal DMEM traffic and shared startup log caps from exhausting that
+coverage. Preserve DDSTART9 and all DMA/CPU/RSP execution semantics.
+
+### DDSTART11 ready for native writer correlation
+
+Implemented and reviewed both IMEM DMA observer paths; see
+[DDSTART11_IMEM_DMA_PROVENANCE.md](DDSTART11_IMEM_DMA_PROVENANCE.md).
+Neither DMA implementation was corrected or otherwise changed. The separate
+diagnostic hash now invalidates on dirty-code refresh, and region extents are
+labeled allocation ranges.
+
+Review closed three coverage hazards: ordinary internal DMEM traffic consuming
+the IMEM budget, core observations being suppressed by the shared DDSTART1
+logger cap, and core eligibility missing DMEM-to-IMEM crossings. Tests include
+these cases. Core and Parallel-RSP hashes use different algorithms/coverage;
+compare addresses, samples and within-path changes, not their numeric equality.
+
+The final all-ABI APK passed packaging/signature/symbol checks:
+`build-downloads/DDSTART11-debug.apk`, SHA-256
+`ffc6459fc6c7a5ae53a11f5cf54b7bc8f8c9aa880e53600a7a1633de15cb2df1`.
+Package/signing identity match previous debug builds. The Mac/root helpers
+are unchanged; pass the new APK path/hash. Their Desktop ZIP prefix remains
+`ddstart10-rsp`, so identify this build by its verified APK hash.
+
+Await native evidence assigning the suspicious IMEM contents to a transfer and
+its task/input state. Exact writer/cause, a minimal correction and gameplay/audio/
+plain-cart/writable-cart validation are not yet complete.

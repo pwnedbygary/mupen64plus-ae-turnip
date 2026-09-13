@@ -124,7 +124,8 @@ extern "C"
 			memcpy(&task_type, RSP::rsp.DMEM + 0xfc0, sizeof(task_type));
 			recorded_entry = RSP::Diagnostics::trace_rsp_entry(
 			    hash_rsp_task(RSP::rsp.DMEM),
-			    RSP::cpu.diagnostic_imem_hash(), task_type, sp_pc);
+			    RSP::cpu.diagnostic_imem_hash(), task_type, sp_pc,
+			    reinterpret_cast<const uint32_t *>(RSP::rsp.DMEM + 0xfc0));
 		}
 
 #ifdef INTENSE_DEBUG

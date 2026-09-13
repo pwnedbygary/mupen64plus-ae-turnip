@@ -5,6 +5,12 @@ capture identifies Parallel-RSP generated-code ownership, but not the offending
 guest instruction or corrupting writer. See
 [DDSTART9_RSP_OWNERSHIP_ANALYSIS.md](DDSTART9_RSP_OWNERSHIP_ANALYSIS.md).
 
+**Post-capture correction:** DDSTART10's recorded host extent is allocation
+capacity, not exact emitted-code length. Its full-IMEM diagnostic hash can also
+remain stale after internal DMA/cache refresh. See
+[DDSTART10_NATIVE_ANALYSIS.md](DDSTART10_NATIVE_ANALYSIS.md) before interpreting
+its task hashes or region ranges.
+
 ## Scope and gating
 
 Keep DDSTART9's CPU block-boundary correction unchanged. Do not alter RSP
@@ -22,16 +28,18 @@ not enable these observers.
 
 ## Records
 
-- `DDSTART10 RSP jit_region`: exact emitted host `[start,end)`, guest IMEM start
+- `DDSTART10 RSP jit_region`: host allocation `[start,end)`, guest IMEM start
   PC, instruction count, existing region hash, and commit/cache-hit event.
-  End means emitted code end, not page-aligned allocator padding.
+  Despite the original intent, the size variable includes allocator sizing;
+  do not interpret it as an exact emitted-code end.
 - `DDSTART10 RSP jit_compile_input`: instruction words from the same IMEM array
   used by that compilation. `region_host_start` identifies the region; each
   chunk has its own advancing IMEM PC. It is not a linear mapping from guest
   instructions to ARM64 instruction offsets.
 - `DDSTART10 RSP entry`: task descriptor hash, full IMEM hash, task type, initial
-  SP PC, and entry/return counters. The IMEM hash is cached and invalidated by
-  detected IMEM changes. Every enabled, non-HALT/BROKE entry is counted, even
+  SP PC, and entry/return counters. The IMEM hash is cached; the post-capture
+  correction above describes a missing invalidation path. Every enabled,
+  non-HALT/BROKE entry is counted, even
   when its identity is already known or the log budget has expired.
 - `cache-range-unavailable`: a cached region predates diagnostic provenance.
   Do not invent its extent or force recompilation to obtain it.
