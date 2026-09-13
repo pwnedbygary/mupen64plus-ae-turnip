@@ -40,6 +40,14 @@ static void *            StateContext = NULL;
 static int dd_startup_diagnostics = 0;
 static unsigned int dd_startup_remaining = 0;
 /*
+ * Explicit DD runtime policy (P03).  Default off: sessions never gain
+ * corrected semantics by accident.  Written by the front-end launch path
+ * (M64CMD_DD_RUNTIME_POLICY_SET) and cleared at ROM close; it is
+ * deliberately not tied to pDebugFunc, dd_startup_diagnostics or any trace
+ * budget, so logging availability cannot change hardware semantics.
+ */
+static int dd_runtime_policy = 0;
+/*
  * DDSTART3 deliberately uses a separate callback budget.  Startup messages
  * retain their DDSTART1 cap, but cannot consume the observations needed after
  * the guest begins issuing DD commands.  PI DMA starts and unpaired PI
@@ -163,6 +171,19 @@ ptr_DdStartupDiagnosticsCallback DdStartupDiagnosticsGetCallback(void **Context)
     if (Context != NULL)
         *Context = DebugContext;
     return (ptr_DdStartupDiagnosticsCallback)pDebugFunc;
+}
+
+m64p_error SetDdRuntimePolicy(int enabled)
+{
+    if (enabled != 0 && enabled != 1)
+        return M64ERR_INPUT_INVALID;
+    __atomic_store_n(&dd_runtime_policy, enabled, __ATOMIC_RELEASE);
+    return M64ERR_SUCCESS;
+}
+
+int DdRuntimePolicyGet(void)
+{
+    return __atomic_load_n(&dd_runtime_policy, __ATOMIC_ACQUIRE);
 }
 
 void DdStartupDiagnosticsTrace(enum dd_startup_trace_kind kind,

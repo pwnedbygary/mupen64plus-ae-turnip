@@ -105,7 +105,14 @@ public class CoreTypes {
         M64CMD_NETPLAY_INIT,
         M64CMD_NETPLAY_CONTROL_PLAYER,
         M64CMD_NETPLAY_GET_VERSION,
-        M64CMD_NETPLAY_CLOSE
+        M64CMD_NETPLAY_CLOSE,
+        // These two exist in the core's m64p_command but were previously
+        // missing here; they must stay in the core's ordinal order.
+        M64CMD_PIF_OPEN,
+        M64CMD_ROM_SET_SETTINGS,
+        // Explicit per-game DD runtime policy (P03): ParamInt 1 enables
+        // corrected DD DMA semantics for this session, 0 keeps legacy.
+        M64CMD_DD_RUNTIME_POLICY_SET
     }
 
     enum m64p_msg_level {

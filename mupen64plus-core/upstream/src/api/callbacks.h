@@ -40,6 +40,15 @@
 extern m64p_error SetDebugCallback(ptr_DebugCallback pFunc, void *Context);
 extern int DdStartupDiagnosticsEnabled(void);
 extern ptr_DdStartupDiagnosticsCallback DdStartupDiagnosticsGetCallback(void **Context);
+/*
+ * Explicit DD runtime-policy channel.  The front-end sets this from its
+ * per-game DD preference; it is deliberately independent of the debug
+ * callback, of DdStartupDiagnosticsEnabled() and of any log budget, and it
+ * carries hardware-policy authorization only (it never enables
+ * diagnostics).  Default is off (legacy semantics).
+ */
+extern m64p_error SetDdRuntimePolicy(int enabled);
+extern int DdRuntimePolicyGet(void);
 enum dd_startup_trace_kind
 {
     DD_TRACE_REGISTER_COMMAND = 0,

@@ -109,6 +109,7 @@ static const rsp_plugin_functions dummy_rsp = {
     dummyrsp_DoRspCycles,
     dummyrsp_InitiateRSP,
     dummyrsp_RomClosed,
+    NULL,
     NULL
 };
 
@@ -450,6 +451,13 @@ static void plugin_disconnect_rsp(void)
 {
     if (rsp.setDdStartupDiagnostics != NULL)
         rsp.setDdStartupDiagnostics(NULL, NULL);
+    /*
+     * Detach must also drop any DD runtime-policy authorization the plugin
+     * holds, so a detached or replaced plugin never retains corrected-mode
+     * state (validation G10).
+     */
+    if (rsp.setDdRuntimePolicy != NULL)
+        rsp.setDdRuntimePolicy(0);
     rsp = dummy_rsp;
     l_RspAttached = 0;
 }
@@ -464,6 +472,14 @@ static void plugin_update_rsp_diagnostics(void)
 
     callback = DdStartupDiagnosticsGetCallback(&context);
     rsp.setDdStartupDiagnostics(callback, context);
+}
+
+void plugin_update_dd_runtime_policy(void)
+{
+    if (rsp.setDdRuntimePolicy == NULL)
+        return;
+
+    rsp.setDdRuntimePolicy(DdRuntimePolicyGet());
 }
 
 static m64p_error plugin_connect_rsp(m64p_dynlib_handle plugin_handle)
@@ -505,7 +521,23 @@ static m64p_error plugin_connect_rsp(m64p_dynlib_handle plugin_handle)
         rsp.setDdStartupDiagnostics =
             (void (*)(ptr_DdStartupDiagnosticsCallback, void *))
             osal_dynlib_getproc(plugin_handle, "DdStartupDiagnosticsSetCallback");
+        /*
+         * This symbol is optional too.  It carries the explicit per-game DD
+         * runtime policy decided at launch, independently of diagnostics.
+         * An old plugin without it simply keeps legacy DMA semantics; when
+         * the policy is enabled but the symbol is missing, say so plainly
+         * instead of silently claiming a corrected plugin (validation G13).
+         */
+        rsp.setDdRuntimePolicy =
+            (void (*)(int))
+            osal_dynlib_getproc(plugin_handle, "DdRspRuntimePolicySet");
+        if (rsp.setDdRuntimePolicy == NULL && DdRuntimePolicyGet())
+            DebugMessage(M64MSG_WARNING,
+                         "DD runtime policy is enabled, but the selected RSP "
+                         "plugin does not support DdRspRuntimePolicySet; "
+                         "corrected DMA policy cannot be applied");
         plugin_update_rsp_diagnostics();
+        plugin_update_dd_runtime_policy();
         l_RspAttached = 1;
     }
     else

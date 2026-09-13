@@ -30,6 +30,8 @@
 extern m64p_error plugin_connect(m64p_plugin_type, m64p_dynlib_handle plugin_handle);
 extern m64p_error plugin_start(m64p_plugin_type);
 extern m64p_error plugin_check(void);
+/* Push the current explicit DD runtime policy to an attached RSP plugin. */
+extern void plugin_update_dd_runtime_policy(void);
 
 enum { NUM_CONTROLLER = 4 };
 extern CONTROL Controls[NUM_CONTROLLER];
@@ -119,6 +121,12 @@ typedef struct _rsp_plugin_functions
 	ptr_RomClosed           romClosed;
 	/* Optional DD-only diagnostic bridge; never required for RSP plugins. */
 	void (*setDdStartupDiagnostics)(ptr_DdStartupDiagnosticsCallback, void *);
+	/*
+	 * Optional DD runtime-policy receiver (P03).  The core pushes the
+	 * explicit per-game policy here; absence means the selected plugin
+	 * cannot apply the corrected DMA policy and legacy semantics remain.
+	 */
+	void (*setDdRuntimePolicy)(int);
 } rsp_plugin_functions;
 
 extern rsp_plugin_functions rsp;

@@ -143,6 +143,15 @@ EXPORT m64p_error CALL CoreShutdown(void)
     if (DdStartupDiagnosticsEnabled())
         SetDebugCallback(NULL, NULL);
 
+    /*
+     * The DD runtime policy is per-session.  Clearing it here also covers
+     * the failed-launch path where M64CMD_ROM_CLOSE is rejected because no
+     * ROM was ever opened (G09): the next session must not inherit it, even
+     * if the front-end forgets to send a fresh value.
+     */
+    SetDdRuntimePolicy(0);
+    plugin_update_dd_runtime_policy();
+
     l_CoreInit = 0;
     return M64ERR_SUCCESS;
 }
@@ -208,6 +217,16 @@ EXPORT m64p_error CALL CoreDoCommand(m64p_command Command, int ParamInt, void *P
             l_ROMOpen = 0;
             cheat_delete_all(&g_cheat_ctx);
             cheat_uninit(&g_cheat_ctx);
+            /*
+             * The explicit DD runtime policy is a per-session launch
+             * parameter.  Clear it here so no later session in this process
+             * can inherit it even if the front-end fails to send a new
+             * value (validation G06/G09).  The push also clears any
+             * still-attached plugin's copy; the detach itself happens via
+             * CoreDetachPlugin (or the front-end's teardown), not here.
+             */
+            SetDdRuntimePolicy(0);
+            plugin_update_dd_runtime_policy();
             return close_rom();
         case M64CMD_PIF_OPEN:
             if (g_EmulatorRunning)
@@ -249,6 +268,24 @@ EXPORT m64p_error CALL CoreDoCommand(m64p_command Command, int ParamInt, void *P
                 ParamInt = sizeof(m64p_rom_settings);
             memcpy(&ROM_SETTINGS, ParamPtr, ParamInt);
             return M64ERR_SUCCESS;
+        case M64CMD_DD_RUNTIME_POLICY_SET:
+            /*
+             * Explicit per-game DD runtime policy (P03).  The front-end
+             * sends this from its launch path, before any RSP task runs.
+             * Refusing while the emulator is running keeps mode changes
+             * serialized with emulation; the value is deliberately not
+             * tied to the debug callback or to DD diagnostics.
+             */
+            if (!l_CoreInit)
+                return M64ERR_NOT_INIT;
+            if (g_EmulatorRunning)
+                return M64ERR_INVALID_STATE;
+            if (ParamInt != 0 && ParamInt != 1)
+                return M64ERR_INPUT_INVALID;
+            rval = SetDdRuntimePolicy(ParamInt);
+            if (rval == M64ERR_SUCCESS)
+                plugin_update_dd_runtime_policy();
+            return rval;
         case M64CMD_EXECUTE:
             if (g_EmulatorRunning || !l_ROMOpen)
                 return M64ERR_INVALID_STATE;

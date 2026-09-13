@@ -234,6 +234,7 @@ These existing host scripts were verified to exist when the plan was written:
 
 ```bash
 bash tools/test-dd-startup.sh
+bash tools/test-dd-policy.sh
 bash tools/test-dd-dma-transfer.sh
 bash tools/test-dd-core-imem-dma.sh
 bash tools/test-dd-rsp-mac.sh
@@ -246,6 +247,15 @@ the P01 policy ledger. Its legacy suite must always pass; its corrected suite
 reports the documented pre-fix divergences (XFAIL) until the P03/P04 policy
 seam lands, and `DD_DMA_REQUIRE_CORRECTED=1 bash tools/test-dd-dma-transfer.sh`
 must be used to gate commits after P04.
+
+`tools/test-dd-policy.sh` (added by P03) compiles the real `api/callbacks.c`
+and asserts the core-side DD runtime-policy truth table (default off, strict
+values, independence from the debug callback and from the diagnostics gate),
+then the Parallel-RSP receiver's readback contract (`dd_policy.cpp`) and its
+independence from the diagnostics observer. The full validation §3 lifecycle
+matrix (connect/detach, reset, savestates, old-plugin handling) is verified
+by the reviewed code paths plus the P06 native run; the host suite covers the
+state semantics only.
 
 Run from the repository root in the supported host environment.
 Some fixtures use GNU/Linux linker options such as `-Wl,--gc-sections`.

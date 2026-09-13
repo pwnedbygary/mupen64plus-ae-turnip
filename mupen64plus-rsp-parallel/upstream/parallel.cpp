@@ -4,6 +4,7 @@
 #include "rsp_jit.hpp"
 #endif
 #include "rsp_diag.hpp"
+#include "dd_policy.hpp"
 #include <stdint.h>
 #include <stdarg.h>
 #include <string.h>
@@ -75,6 +76,19 @@ extern "C"
 	{
 		RSP::Diagnostics::set_callback(callback, context);
 		RSP::cpu.set_diagnostics_enabled(callback != NULL);
+	}
+
+	/*
+	 * Optional core-to-plugin DD runtime-policy receiver (P03).  The core
+	 * pushes the explicit per-game launch policy through this symbol; the
+	 * historical RSP ABI does not require it, and the DMA correction that
+	 * consumes this state is applied separately (P04).  The core clears
+	 * the policy on detach and at ROM close, so the flag never outlives
+	 * the authorized session.
+	 */
+	EXPORT void CALL DdRspRuntimePolicySet(int enabled)
+	{
+		RSP::DdRuntimePolicySet(enabled);
 	}
 }
 

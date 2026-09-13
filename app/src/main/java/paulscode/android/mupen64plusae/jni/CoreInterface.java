@@ -572,6 +572,22 @@ class CoreInterface
 
         int returnValue = mMupen64PlusLibrary.CoreStartup(CoreLibrary.coreAPIVersion, configDirPath,
                 dataDirPath, mCoreContext, debugCallback, null, mStateCallBack);
+        if (returnValue == CoreTypes.m64p_error.M64ERR_SUCCESS.ordinal()) {
+            // Explicit per-game DD runtime policy (P03).  This launch-policy
+            // channel is independent of the debug callback and of DD startup
+            // diagnostics, and it is re-issued on every launch so a DD-disabled
+            // game can never inherit a previous session's mode.
+            int policyResult = mMupen64PlusLibrary.CoreDoCommand(
+                    CoreTypes.m64p_command.M64CMD_DD_RUNTIME_POLICY_SET.ordinal(),
+                    enable64DdSupport ? 1 : 0, null);
+            if (policyResult != CoreTypes.m64p_error.M64ERR_SUCCESS.ordinal()) {
+                Log.w(TAG, "DD runtime policy command failed (" + policyResult +
+                        "); corrected DD DMA policy cannot be applied by this core");
+            }
+            else {
+                Log.i(TAG, "DD runtime policy set: " + (enable64DdSupport ? 1 : 0));
+            }
+        }
         mAeBridgeLibrary.overrideAeVidExtFuncs();
         mAeBridgeLibrary.registerFpsCounterCallback(mFpsCounterCallback);
         return returnValue;

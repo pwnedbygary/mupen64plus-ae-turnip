@@ -2597,3 +2597,63 @@ Next eligible package and required inputs: P03 (explicit DD runtime-policy
   ownership: core callbacks.c/plugin.c/h + app CoreInterface.java +
   parallel.cpp setter) — analysis/implementation independent of P02's files.
 ```
+## P03 explicit DD runtime-policy seam — 2026-09-13
+
+```markdown
+Package: P03 — Introduce the explicit DD runtime-policy seam (P03a+P03b+P03c
+  delivered together; channel + lifecycle only; no DMA behavior changed)
+Baseline / Reviewed snapshot: dd-eos-watchdog-checkpoint @ 47a2d8ce3; changed
+  core TUs syntax-checked with clang (host gcc cc1 spawn broke mid-session,
+  environment issue; callbacks.c additionally compiled+run by the new suite
+  with gcc before that) and app Java verified by a successful
+  ./gradlew :app:compileDebugJavaWithJavac --offline build.
+Verified observations: preference trace recorded — GamePrefs.enable64dd
+  (key "support64dd") -> CoreService launch -> CoreInterface.coreStartup
+  (enable64DdSupport, isNdd). The pre-existing gates are unusable as policy
+  authority, exactly as the plan warned: dd_startup_diagnostics is computed
+  inside SetDebugCallback from pFunc != NULL && getenv(M64P_DD_STARTUP_DIAG-
+  NOSTICS)=="1", and M64P_DD_COMBO_CART_BOOT is a device.c boot-order
+  experiment, not DD activation. The core already had the optional-symbol
+  pattern for RSP plugins (plugin.c resolved DdStartupDiagnosticsSetCallback).
+Derived results and inputs: new channel M64CMD_DD_RUNTIME_POLICY_SET (enum
+  appended after M64CMD_ROM_SET_SETTINGS; CoreTypes.java also gained the two
+  previously missing PIF_OPEN/ROM_SET_SETTINGS entries to keep ordinals
+  aligned). Core state SetDdRuntimePolicy/DdRuntimePolicyGet in api/callbacks
+  .c (default off, strict 0/1, atomics, independent of debug callback and
+  budgets). frontend.c: new case (rejects while emulator running ->
+  serialized with emulation) + clear-on-ROM-CLOSE that also pushes 0 to a
+  still-attached plugin. plugin.c: optional DdRspRuntimePolicySet resolved at
+  RSP connect, current policy pushed on connect and on change
+  (plugin_update_dd_runtime_policy), detach pushes 0; absence while policy
+  enabled logs a plain "corrected DMA policy cannot be applied" warning
+  (G13). Parallel-RSP: new dd_policy.hpp/.cpp atomic receiver +
+  DdRspRuntimePolicySet export in parallel.cpp; P04 will consume
+  RSP::DdRuntimePolicyEnabled() in cp0.cpp (untouched here).
+Remaining hypotheses: none material; the connect-time propagation path is
+  verified by code review only until P06 exercises it natively (stated gap);
+  G08 reset, G11/G12 savestates, G14 budgets and G15 warm-JIT are satisfied
+  by construction (nothing else reads or serializes the policy) and will be
+  re-verified in the P06/P10 native runs.
+Changed files: api/m64p_types.h, api/callbacks.h, api/callbacks.c,
+  api/frontend.c, plugin/plugin.h, plugin/plugin.c,
+  mupen64plus-rsp-parallel/upstream/{dd_policy.hpp,dd_policy.cpp,parallel.cpp},
+  app CoreTypes.java + CoreInterface.java, tools/tests/
+  {dd-runtime-policy-test.c,rsp-dd-policy-test.cpp}, tools/test-dd-policy.sh,
+  docs/N64DD_DMA_AUDIO_VALIDATION.md (§7), docs/HANDOFF_NEW.md (this section).
+Checks actually run and why: bash tools/test-dd-policy.sh (core-state truth
+  table + receiver readback, both pass); bash tools/test-dd-dma-transfer.sh
+  re-run (legacy suite all-pass, corrected XFAILs unchanged -> P03 changed no
+  DMA behavior); test-dd-startup.sh callbacks step, test-dd-core-imem-dma.sh
+  and test-dd-root-stacks.sh all pass (exit 0); ./gradlew
+  :app:compileDebugJavaWithJavac --offline BUILD SUCCESSFUL; clang
+  -fsyntax-only on frontend.c, plugin.c, parallel.cpp.
+Independent reviewer and verdict: (pending — filled in commit message per
+  protocol; reviewed snapshot hashes recorded there)
+Commit, if approved: (pending)
+Remaining blockers: none for P04.
+Next eligible package and required inputs: P04 — minimal internal-read DMA
+  correction behind RSP::DdRuntimePolicyEnabled() (inputs: P01 ledger §4
+  decision rows, P02 fixture suite with DD_DMA_REQUIRE_CORRECTED=1 as the
+  gate, cp0.cpp rsp_dma_read; the corrected mode of the P02 suite must be
+  wired to drive the new seam and the runner default flipped).
+```
