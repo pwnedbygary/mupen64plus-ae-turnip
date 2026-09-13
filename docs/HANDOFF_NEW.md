@@ -2416,3 +2416,29 @@ are unchanged; pass the new APK path/hash. Their Desktop ZIP prefix remains
 Await native evidence assigning the suspicious IMEM contents to a transfer and
 its task/input state. Exact writer/cause, a minimal correction and gameplay/audio/
 plain-cart/writable-cart validation are not yet complete.
+
+### DDSTART11 native result: internal DMA writer established
+
+The new upload's old filename prefix is harmless: its APK hash matches DDSTART11,
+and fresh capture `dSOS6x` completed with dynarec enabled. See
+[DDSTART11_NATIVE_ANALYSIS.md](DDSTART11_NATIVE_ANALYSIS.md).
+
+Internal DMA record 8 directly captures the IMEM overwrite during audio entry
+1512: SP destination `0xfb0`, RDRAM source zero, length register `0xffffffff`.
+The plugin clamps 4096-byte rows to 80 bytes, performs 256 rows with raw skip
+4095, and crosses from DMEM into IMEM. It records 3052 IMEM word writes and
+before/after samples matching the subsequently compiled suspect words.
+Both native samples fall within allocations compiled after that event.
+
+Static microcode analysis explains the register values as an extracted zero
+command length decremented in a call delay slot and a zero low-24-bit source.
+The upstream origin of those fields remains unknown. The task is audio type 2,
+flags zero; do not resurrect an older yielded-graphics handoff explanation.
+
+Ares's latched-bank/12-bit-address model supports correcting the demonstrated
+bank and row-length discrepancy; a destination-mask-only patch is insufficient.
+Skip alignment and post-transfer register behavior need explicit choices because
+the compared implementations differ. No emulation correction was made in this
+analysis, and no new capture is needed solely to prove the same writer again.
+The overall task remains open for a minimal DD-gated correction and native
+gameplay/audio/cart/save validation.
