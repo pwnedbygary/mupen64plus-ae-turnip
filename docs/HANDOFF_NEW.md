@@ -2442,3 +2442,24 @@ the compared implementations differ. No emulation correction was made in this
 analysis, and no new capture is needed solely to prove the same writer again.
 The overall task remains open for a minimal DD-gated correction and native
 gameplay/audio/cart/save validation.
+
+### Detailed implementation plan for local-LLM handoff
+
+Planning documents now separate the demonstrated DMA defect from the unresolved
+audio-command origin:
+
+- [Repair plan](N64DD_DMA_AUDIO_REPAIR_PLAN.md): evidence, invariants, reference
+  decisions, explicit DD policy and logging separation, and completion criteria.
+- [Work packages](N64DD_DMA_AUDIO_WORK_PACKAGES.md): P00–P12, with conditional
+  audio work and smaller subdivisions for policy wiring and exact producer tracing.
+- [Validation runbook](N64DD_DMA_AUDIO_VALIDATION.md): production-path fixtures,
+  mode/lifecycle checks, audio provenance, native acceptance and save persistence.
+
+Recommended execution: complete the reference-policy gate, failing production
+fixtures, explicit DD policy seam, minimal internal-read correction and bounded
+post-correction evidence; then obtain the first native result before selecting an
+audio correction. Corrected DMA must work with logging disabled. Diagnostics must
+still observe the suspect request when it no longer writes IMEM.
+
+This update supplies a plan only. No DMA/audio correction was implemented, no new
+APK was built, and the overall native repair remains open.
