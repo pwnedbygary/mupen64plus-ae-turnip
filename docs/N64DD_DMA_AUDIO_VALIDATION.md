@@ -282,6 +282,13 @@ by hash. A future generic prefix is optional housekeeping, not part of the DMA f
 
 ## 8. Review requirements before native delivery
 
+Every commit must first pass the
+[independent commit-review protocol](N64DD_DMA_AUDIO_WORK_PACKAGES.md#independent-review-before-every-commit),
+including documentation, diagnostic-only, fixup and amended commits. A native
+delivery review is an additional release gate, not a substitute for per-commit
+review. If delegation is unavailable, use a fresh model session or human reviewer;
+otherwise committing is blocked. This document does not install an enforcement hook.
+
 An independent reviewer should answer:
 
 - Does the production loop implement every P01 decision?

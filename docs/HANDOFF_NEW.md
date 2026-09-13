@@ -1,5 +1,14 @@
 # N64DD investigation from the v336 release baseline
 
+## Local-agent execution and review prompts
+
+The [work-package guide](N64DD_DMA_AUDIO_WORK_PACKAGES.md) now includes a reusable
+evidence-based diagnostic prompt and a mandatory independent review gate before
+every commit. It specifies claim classification, competing explanations, bounded
+discriminating experiments, exact-snapshot review, reviewer prompts and a separate
+session/human fallback when subagents are unavailable. These are workflow
+instructions, not an installed Git hook. No emulator correction is introduced.
+
 ## Status and scope
 
 Started 2026-09-11. No new Android runtime test has been performed by this

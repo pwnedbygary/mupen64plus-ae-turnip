@@ -6,6 +6,9 @@ These are assignments to execute later; writing this document does not execute t
 
 ## Common prompt to prepend to every assignment
 
+Prepend the diagnostic prompt and commit-review protocol below as well. They apply
+to every package, including documentation, tests, diagnostic-only patches and fixes.
+
 > Work only on package PXX below. Read the repair plan's evidence limits and
 > non-negotiable constraints. Verify named files/symbols before editing.
 > Preserve DDSTART9, DD-disabled behavior, independently enabled WritableROM,
@@ -28,11 +31,154 @@ These are assignments to execute later; writing this document does not execute t
   evidence boundary before editing additional subsystems.
 - The model should produce a patch and results, not a narrative alone, for
   implementation packages. Analysis packages must not change execution.
-- Capture a commit/checkpoint after a reviewed package. Do not overwrite unrelated
+- Create a commit only after the independent review gate below passes. An automatic
+  workspace checkpoint is not a reviewed commit or release. Do not overwrite unrelated
   working changes or force-update the shared branch.
 - “Unknown” is an acceptable evidence result. An invented answer is not.
 - ARM64 generated-code modifications require experienced review; delegate those
   to a stronger model/human if the local model cannot explain register/ABI safety.
+
+## Evidence-based diagnostic prompt
+
+Copy this prompt into the implementing agent's initial context:
+
+```text
+Act as an empirical emulator diagnostician, not an advocate for a preferred fix.
+Work only on the assigned package and preserve the repair plan's constraints.
+Produce concise, auditable findings and decisions, not private internal reasoning.
+
+1. Establish identity before interpreting behavior: current source/diff, APK hash,
+   effective engine, explicit DD mode, plugin/capability, capture/run identity,
+   and relevant task or buffer generation. Mark unavailable fields UNKNOWN.
+   A build label or frontend selection alone does not prove runtime identity.
+2. Maintain a claim ledger:
+   claim | DIRECT / DERIVED / REFERENCE / HYPOTHESIS / UNKNOWN |
+   exact artifact and location | limits | next discriminating check.
+   Cite trace event/sequence/time, source symbol and revision, or pinned reference.
+   For derived values, supply inputs and a reproducible calculation.
+3. Start with the earliest demonstrated divergence, not the final symptom.
+   An observed overwrite establishes that operation, not why its inputs arose.
+   Sampled PCs and JIT allocation containment are not exact guest writers.
+   Static disassembly is not proof that a particular site executed in this run.
+4. For unresolved behavior, retain competing explanations that fit the evidence.
+   For each, state the predicted observation and what would contradict it.
+   Choose the smallest safe experiment that distinguishes the leading alternatives.
+   Do not add unrelated probes or change multiple behaviors in the same experiment.
+5. Check whether a probe could miss the event: enablement, callback availability,
+   eligibility, budget, deduplication, coverage, lifecycle and compiled fast paths.
+   No record is not proof of no event. After a fix, retain a bounded independent
+   trigger if the fix removes the old trigger condition.
+6. Treat this plan as a baseline, not authority over newer evidence. Verify current
+   source and pinned references. Record contradictions explicitly. Reference
+   disagreement requires a documented decision; do not invent consensus.
+7. Keep demonstrated DMA transfer-model defects separate from the audio input
+   question. A zero extracted size/source field alone does not prove an invalid
+   command or producer corruption. Distinguish producer, consumer, corruption,
+   legal encoding and premature reuse until evidence separates them.
+8. Correct only an established defect after the package's decision gates pass.
+   Preserve DDSTART9, dynarec, DD-off behavior, independent WritableROM and saves.
+   DD correction policy must not depend on logging. Do not suppress symptoms with
+   watchdogs, fake completion/yield signals or timing changes.
+9. Test the actual production path against independent expectations. Distinguish
+   a reproduced defect, a passing host fixture and successful native acceptance.
+   Record exact commands, actual results, coverage gaps and unavailable checks.
+10. Stop when required evidence, capability, coverage or review is missing.
+    Return the smallest specific next action. Never invent a successful run.
+
+Before handing off, report:
+- Verified observations and derived results, with citations.
+- Leading conclusion and its scope; alternatives still consistent with evidence.
+- Changed files and why this patch is the minimum justified change.
+- Checks actually performed and their results, including failures.
+- Independent reviewer verdict and exact reviewed snapshot.
+- Remaining unknowns and the next discriminating observation.
+Do not declare the overall repair complete from a package-level success.
+```
+
+## Independent review before EVERY commit
+
+This is a required workflow gate, not an automatically installed Git hook.
+It covers source, tests, documentation, follow-up fixes, amended commits and
+publication commits. No agent may describe a self-review as independent review.
+
+### Coordinator procedure
+
+1. Finish one coherent patch and proportionate checks. Freeze the proposed commit
+   snapshot: base revision, intended paths, exact diff, and hashes for new files.
+   Include untracked files; a plain `git diff` can omit them. Keep unrelated dirty
+   files outside the proposed commit. Do not stage or publish secrets/raw assets.
+2. Spawn a separate read-only reviewer/architect subagent using the platform's
+   actual delegation facility. Give it the reviewer prompt below, the exact
+   snapshot, package requirements, relevant full source, evidence and test output.
+   The reviewer must not edit, commit, push or silently run device operations.
+3. If subagents are unavailable, open a separate fresh model session or obtain
+   a human review of the same snapshot. A separate session of the same model is
+   acceptable; a second model is optional. Do not invent tool calls or pretend a
+   second persona in the implementing session provides independent review.
+   If no independent reviewer is available, retain the patch and mark COMMIT
+   BLOCKED. Report the missing capability; do not silently waive this requirement.
+4. Resolve each finding explicitly: fix it, or provide evidence for disagreement.
+   Send the changed snapshot and response to the reviewer. A disputed blocker
+   remains blocking until resolved by the reviewer or an independent human.
+   Request focused re-review of the changed areas and affected interactions.
+5. Require PASS for the exact final snapshot, with no unresolved correctness,
+   evidence, scope, safety or required-validation blockers. Nonblocking suggestions
+   may remain if documented. NEEDS CHANGES and BLOCKED both prohibit committing.
+6. Verify the intended commit still matches the reviewed files/diff and base.
+   Any code, test or document change after review requires review of that delta.
+   Stage only reviewed paths. If the remote base moved, inspect the integration
+   delta and obtain review of the resulting candidate before non-force publication.
+   Never reuse approval for an unexamined merge or silently overwrite newer work.
+7. Keep the reviewer/session identifier, reviewed snapshot identifier, verdict,
+   findings/dispositions and actual check results in a review record or commit
+   message. Commit metadata can hold the final verdict without editing reviewed
+   files merely to record approval. Human-created fixup/amend commits follow the
+   same gate; automatic platform backups do not count as approved commits.
+
+### Copy-pastable reviewer prompt
+
+```text
+You are an independent read-only reviewer, not the implementing agent.
+Review this proposed commit against its assigned package and the N64DD plan.
+Do not edit files, commit, push, or operate a device. Do not assume the author's
+summary is correct. Inspect the exact diff, new files, relevant surrounding source,
+evidence and actual check results. Request missing inputs rather than guessing.
+
+Review:
+- Are conclusions supported by direct/derived/reference evidence at the claimed
+  scope? Are sampled PCs, static paths or missing logs overstated?
+- Does the patch solve only an established defect or add justified bounded
+  diagnostics? Are competing explanations and unverified assumptions preserved?
+- Are all package prerequisites satisfied? In particular, are complete DMA policy
+  decisions approved before correction, and production-path fixtures real?
+- Are DD policy and logging independent? Are attach/detach, reset, old-plugin
+  capability failure and DD-off relaunch safe?
+- Are full row geometry, bank behavior, alignment/skip, memory mapping, final
+  registers, dirty/JIT state and completion semantics consistent with the approved
+  policy? Do not silently extend the fix into CPU DMA or RSP DMA writes.
+- Can post-fix probes still see the suspect request? Are eligibility, actual IMEM
+  writes, dropped/skipped probes, exact-site confidence and generations distinct?
+- Are dynarec fast paths, delay slots, widths and ABI/register preservation covered
+  where affected? Are independent expected values tested through production code?
+- Are DDSTART9, plain carts, independently enabled WritableROM, saves and signing
+  protected? Is native acceptance honestly separated from host verification?
+- Are raw captures, game assets, binaries, secrets and unrelated changes excluded?
+
+Apply checks relevant to this patch; mark the rest N/A with a reason.
+For documentation-only changes, inspect consistency, evidence limits, executable
+instructions and links. Do not demand an emulator build for unchanged runtime code.
+For implementation changes, identify required checks that are missing or failed.
+
+Return:
+1. Snapshot reviewed: base, exact patch/file identifiers and intended paths.
+2. Verdict: PASS / NEEDS CHANGES / BLOCKED.
+3. Findings: severity, file/location, concrete problem, evidence and required action.
+4. Validation examined and limitations; do not claim tests you did not observe/run.
+5. Nonblocking suggestions, separately.
+
+PASS means this exact commit is acceptable for its scope, not that native repair
+or release is complete. Missing required inputs or checks means BLOCKED.
+```
 
 ## P00 — Establish the current baseline
 
