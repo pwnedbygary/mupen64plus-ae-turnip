@@ -2543,3 +2543,57 @@ Next eligible package and required inputs: P02 (production-path failing fixtures
   parallel with P03 (explicit DD runtime-policy seam) with disjoint file
   ownership. P04 waits for both.
 ```
+
+## P02 production-path DMA fixtures — 2026-09-13
+
+```markdown
+Package: P02 — Build tests that exercise the real transfer (test infrastructure;
+  no production source changes)
+Baseline / Reviewed snapshot: dd-eos-watchdog-checkpoint @ de4b63026; new files
+  tools/tests/rsp-dd-dma-transfer-test.cpp and tools/test-dd-dma-transfer.sh;
+  docs/N64DD_DMA_AUDIO_VALIDATION.md §2/§7 updated (command ledger + D02 status).
+Verified observations: the fixture compiles the REAL production TUs
+  (rsp/cp0.cpp + rsp_diag.cpp with PARALLEL_INTEGRATION/M64P_PLUGIN_API) and
+  drives RSP_MTC0 — the same entry the JIT uses — with guarded DMEM/IMEM/RDRAM
+  mappings (PROT_NONE guard pages, D24) and nonuniform self-identifying
+  patterns. The production observer (Diagnostics::set_callback) reports
+  payload=5120 / imem_writes=3052 for the captured request — matching the
+  DDSTART11 record from the production side, not just the oracle.
+Derived results and inputs: independent oracle implements P01 §2/§4 directly
+  (legacy + corrected models); 21 table rows (D09a/b and D23a/b are paired
+  sub-cases): shared D03/D09/D10/D12 (both models
+  agree, cross-checked), legacy pins D01/D22a/D22b/D14L/D18/D21(128 random
+  seeded)/D23a/b, corrected D02/D05/D06/D07/D08/D11/D13/D14/D16/D19. Pre-fix
+  result: legacy suite passes fully; every corrected case XFAILs on exactly
+  the ledger-predicted field (D05 cache_reg 0x1000-vs-0x0 poststate, D19
+  dram_reg 0x10f0-vs-0x10e0 trailing skip, D02/D06/D07/D08/D16 crossing/wrap
+  bytes, D11/D14 alignment, D13 skip low bits). Deferred validation-§2 sweeps
+  for later packages: the remaining D09/D10/D11/D12/D13 field sets and
+  standalone D04/D15/D20 rows (D17 substance is covered by exact dirty_blocks
+  assertions in D07/D14/D01/D21). DD_DMA_REQUIRE_CORRECTED=1
+  makes corrected divergences hard failures (verified exit 1 pre-fix); P04
+  must flip the runner default.
+Remaining hypotheses: none added; corrected-mode production wiring is
+  intentionally absent until P03/P04 (the test binary's corrected mode
+  exercises whatever production implements until the seam exists).
+Changed files: tools/tests/rsp-dd-dma-transfer-test.cpp (new),
+  tools/test-dd-dma-transfer.sh (new), docs/N64DD_DMA_AUDIO_VALIDATION.md
+  (§2 D02 status, §7 command ledger), docs/HANDOFF_NEW.md (this section).
+Checks actually run and why: bash tools/test-dd-dma-transfer.sh (legacy mode:
+  all pass incl. production observer counts; corrected mode: all 10
+  corrected-kind cases XFAIL as
+  expected); DD_DMA_REQUIRE_CORRECTED=1 run verified to fail (exit 1) pre-fix;
+  earlier harness bugs (driver dirty reset, count-field nibble errors,
+  XPASS classification for shared cases, decimal-in-0x detail strings) were
+  caught by the suite's own ORACLE-BUG/XPASS checks and fixed.
+Independent reviewer and verdict: (pending — filled in commit message per
+  protocol; the reviewed snapshot hash is recorded there)
+Commit, if approved: (pending)
+Remaining blockers: none. P03 and P04 can consume this suite; P04 must wire
+  the test's corrected mode to the real policy seam and flip
+  DD_DMA_REQUIRE_CORRECTED.
+Next eligible package and required inputs: P03 (explicit DD runtime-policy
+  seam; inputs: repair plan §6.1 properties, validation §3 G01–G16, file
+  ownership: core callbacks.c/plugin.c/h + app CoreInterface.java +
+  parallel.cpp setter) — analysis/implementation independent of P02's files.
+```

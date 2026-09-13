@@ -29,7 +29,7 @@ No fixture requires proprietary ROM or microcode data.
 | ID | Case | Required assertion |
 |---|---|---|
 | D01 | Captured request: SP `0xfb0`, DRAM 0, length `0xffffffff` | Legacy reproduces 80-byte rows, 5120 words and 3052 IMEM writes |
-| D02 | Same request, candidate corrected policy; BLOCKED pending P01 approval | Target: 4096-byte rows × 256 = 1,048,576 copied bytes; DMEM bank retained; IMEM unchanged |
+| D02 | Same request, candidate corrected policy; target approved by P01 (`docs/P01_DMA_POLICY_LEDGER.md` §4/§5) | Target: 4096-byte rows × 256 = 1,048,576 copied bytes; DMEM bank retained; IMEM unchanged; final registers `0xfb0`/`0x1fe808` |
 | D03 | Start `0x0000`, short DMEM row | Ordinary bytes and poststate correct |
 | D04 | Start `0x1000`, short IMEM row | Only intended IMEM bytes change; proper dirty/invalidation state |
 | D05 | DMEM exact fit ending at `0x1000` | No off-by-one crossing or lost final beat |
@@ -234,10 +234,18 @@ These existing host scripts were verified to exist when the plan was written:
 
 ```bash
 bash tools/test-dd-startup.sh
+bash tools/test-dd-dma-transfer.sh
 bash tools/test-dd-core-imem-dma.sh
 bash tools/test-dd-rsp-mac.sh
 bash tools/test-dd-root-stacks.sh
 ```
+
+`tools/test-dd-dma-transfer.sh` (added by P02) runs the production-path SP DMA
+fixtures of `tools/tests/rsp-dd-dma-transfer-test.cpp` against the oracle from
+the P01 policy ledger. Its legacy suite must always pass; its corrected suite
+reports the documented pre-fix divergences (XFAIL) until the P03/P04 policy
+seam lands, and `DD_DMA_REQUIRE_CORRECTED=1 bash tools/test-dd-dma-transfer.sh`
+must be used to gate commits after P04.
 
 Run from the repository root in the supported host environment.
 Some fixtures use GNU/Linux linker options such as `-Wl,--gc-sections`.
