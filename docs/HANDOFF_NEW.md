@@ -2260,3 +2260,23 @@ preservation. The 58 host assertions and shell syntax checks pass; actual
 Retroid invocation and stack collection remain unverified. Next: run the
 one-line launcher and reproduce the freeze during the same 90-second delay;
 if no capture appears, retrieve the top-level startup log before retrying.
+
+### Successful root captures: anonymous execution on the emulation thread
+
+The uploaded diagnostics now prove that both root captures completed, with four
+successful snapshots of the same PID/start time and 31 threads per snapshot.
+See [DDSTART9_NATIVE_STACK_ANALYSIS.md](DDSTART9_NATIVE_STACK_ANALYSIS.md) for
+archive identity, timestamps, address table, symbol verification, and limits.
+The Terminal wait/download issue did not prevent the detached native captures.
+
+The primary emulation-service thread has a single anonymous-code frame at four
+different offsets across about 48.5 seconds. The video workers resolve against
+the preserved matching DDSTART9 library to queue condition waits. This does not
+show a graphics-driver blocking call on the emulation thread, but neither does
+it establish a particular CPU/RSP loop or the cause of corrupt graphics.
+
+CPU dynarec and Parallel-RSP generated code can execute on the same thread.
+Next obtain same-process memory-map metadata and thread CPU-accounting deltas,
+not another identical stack-only capture. If the process has restarted, gather
+maps and stacks together rather than using old anonymous addresses. No emulator
+source, APK, save, SELinux, or timing changes were made. Task remains IN_PROGRESS.

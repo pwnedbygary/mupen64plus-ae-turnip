@@ -100,3 +100,9 @@ The delivered scripts passed POSIX shell syntax checks and 58 host assertions,
 including both root gates, identity changes/reuse/ambiguity, bounded dump
 calls, failure output, detached launch, completion-marker timing, and the
 one-line entry point in a simulated line-oriented runner.
+
+Device follow-up: the uploaded archive now confirms two successful captures,
+four real backtraces, and completed markers after the one-line entry was used.
+See [DDSTART9_NATIVE_STACK_ANALYSIS.md](DDSTART9_NATIVE_STACK_ANALYSIS.md).
+Do not repeat stack-only collection for this anonymous-code result; the next
+missing evidence is same-process mapping metadata and thread CPU accounting.
