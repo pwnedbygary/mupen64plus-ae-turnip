@@ -446,6 +446,40 @@ done
 assert_file_contains "$CAPTURE_ROOT/latest-complete" "capture_dir=$MENU_DIR" \
     'detached menu worker eventually publishes completion'
 
+# Emulate a vendor runner that starts a fresh shell for each physical line.
+# Only Android paths are substituted; the delivered launcher is the input.
+ENTRY_SCRIPT=$SCRIPT_DIR/launch-dd-root-stacks.sh
+assert_equal "$(awk 'END { print NR }' "$ENTRY_SCRIPT")" 1 \
+    'vendor launcher is exactly one physical command line'
+assert_equal "$(cat "$ENTRY_SCRIPT")" \
+    '/system/bin/sh /sdcard/Download/ddstart9-root-stacks.sh >> /sdcard/Download/ddstart9-root-launch.log 2>&1' \
+    'vendor launcher uses an explicit interpreter and appends startup output'
+cat > "$TEST_ROOT/entry-helper.sh" <<'EOF'
+fixture_function() {
+    printf 'multiline helper executed\n'
+    printf 'fixture startup error\n' >&2
+    return 23
+}
+fixture_function
+EOF
+printf 'previous startup output\n' > "$TEST_ROOT/entry.log"
+sed -e "s|/system/bin/sh|$(command -v sh)|" \
+    -e "s|/sdcard/Download/ddstart9-root-stacks.sh|'$TEST_ROOT/entry-helper.sh'|" \
+    -e "s|/sdcard/Download/ddstart9-root-launch.log|'$TEST_ROOT/entry.log'|" \
+    "$ENTRY_SCRIPT" > "$TEST_ROOT/entry.sh"
+ENTRY_RC=0
+while IFS= read -r command_line || [ -n "$command_line" ]; do
+    sh -c "$command_line"
+    ENTRY_RC=$?
+done < "$TEST_ROOT/entry.sh"
+assert_equal "$ENTRY_RC" 23 'vendor launcher preserves helper failure status'
+assert_file_contains "$TEST_ROOT/entry.log" 'multiline helper executed' \
+    'line-oriented runner executes the whole helper in one shell'
+assert_file_contains "$TEST_ROOT/entry.log" 'fixture startup error' \
+    'vendor launcher retains startup stderr'
+assert_file_contains "$TEST_ROOT/entry.log" 'previous startup output' \
+    'vendor launcher preserves earlier startup output'
+
 printf '\nHost tests: %s passed, %s failed\n' "$PASS_COUNT" "$FAIL_COUNT"
 printf 'Fixture files:\n'
 find "$CAPTURE_ROOT" -type f -print | sort

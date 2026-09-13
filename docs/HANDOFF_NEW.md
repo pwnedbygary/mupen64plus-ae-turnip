@@ -2238,3 +2238,25 @@ in the capture's `launcher.log`. No emulator build was needed.
 
 The overall task remains **IN_PROGRESS** pending those native results and
 the existing gameplay/display/audio and cart/save regression requirements.
+
+### Retroid runner entry-point follow-up
+
+The user reports that selecting the multiline helper displayed **538 steps**
+and **Script ran**, but no capture appeared. This is consistent with the
+vendor treating physical lines as commands rather than parsing a complete
+shell program; that implementation detail is not yet confirmed. No native
+stacks or new emulator-fault evidence resulted from this attempt.
+
+Keep the helper and DDSTART9 APK unchanged. Add a one-line menu entry point
+that explicitly invokes `/system/bin/sh /sdcard/Download/ddstart9-root-stacks.sh`
+and appends stdout/stderr to `ddstart9-root-launch.log` in Download. Select
+**ddstart9-run-as-root.sh**, not the multiline helper. Startup errors are
+therefore retained even when no capture directory is created. Existing
+diagnostic files, SELinux, app settings, and saves remain untouched.
+
+The host suite now includes a fresh-shell-per-line runner fixture, a
+multiline helper stub, failure-status/stderr checks, and prior-log
+preservation. The 58 host assertions and shell syntax checks pass; actual
+Retroid invocation and stack collection remain unverified. Next: run the
+one-line launcher and reproduce the freeze during the same 90-second delay;
+if no capture appears, retrieve the top-level startup log before retrying.

@@ -23,12 +23,24 @@ backtraces from unrelated apps. Taking stacks can briefly pause the target.
 
 - Source helper: `tools/capture-dd-root-stacks.sh`
 - Device installation path: `/sdcard/Download/ddstart9-root-stacks.sh`
+- One-line menu launcher: `tools/launch-dd-root-stacks.sh`
+- Launcher device path: `/sdcard/Download/ddstart9-run-as-root.sh`
+- Appended startup output: `/sdcard/Download/ddstart9-root-launch.log`
 - Diagnostic directory: `/sdcard/Download/ddstart9-root-capture`
 
-Install the script at the specified path. The background worker uses that
-known path rather than assuming how the vendor runner invokes the script.
+Install both files at their specified paths. Select the **one-line launcher**
+in the vendor menu, not the multiline helper. The launcher explicitly starts
+`/system/bin/sh` to parse the complete helper in one shell session. The
+background worker also uses the known helper path.
 The source is supplied through a commit-pinned GitHub download with a SHA-256
-check in the accompanying chat instructions.
+check in the accompanying chat instructions; the one-line launcher can also
+be created verbatim with the supplied Mac `printf` command.
+
+The first device attempt displayed **538 steps** followed by **Script ran**
+without producing a capture. This is consistent with a line-oriented command
+runner, but its implementation has not been inspected. Do not interpret that
+UI message as evidence that the full helper was parsed, a worker started,
+or a stack dump succeeded.
 
 Each invocation creates a separate capture directory, preserving earlier
 logs. Only the helper's own diagnostic directories/files are made readable
@@ -38,12 +50,13 @@ a completed attempt that reports an error instead of stack frames.
 
 ## Device procedure
 
-1. Download/check the helper and push it to the specified device path using
+1. Download/check the helper and push both files to their device paths using
    the supplied Mac command block. ADB is at
    `~/Downloads/platform-tools/adb`; it need not be on PATH.
-2. In the existing root-script menu, select `ddstart9-root-stacks.sh` from
-   Download. It schedules a background capture and returns; it does not need
-   to keep the Settings screen open.
+2. In the existing root-script menu, select **`ddstart9-run-as-root.sh`** from
+   Download. This is a single command invoking the helper. A successful
+   helper startup schedules a background capture and returns; it does not
+   need to keep the Settings screen open.
 3. Return to DDSTART9 with the same Japanese cart/IPL/disk and dynarec
    profile. Reproduce the manual race freeze or let attract mode reach its
    race. Once frozen, leave the emulation view open without pressing Pause,
@@ -57,6 +70,9 @@ a completed attempt that reports an error instead of stack frames.
    observation, not proof of a particular emulation fault.
 
 If the script menu does not return or shows an error, preserve the message.
+If no capture appears, retrieve `ddstart9-root-launch.log` from Download:
+it retains helper startup errors even before a capture directory exists.
+The capture directory's separate `launcher.log` retains worker launch errors.
 Do not try permission, SELinux or firmware changes as a workaround. If the
 capture occurs before the game freezes, label it accordingly; do not
 describe a normal-running stack as a frozen one.
@@ -80,6 +96,7 @@ merely because it has the same upstream version label.
 Host helper tests exercise mocked Android commands and isolated diagnostic
 paths; they never dump real processes as root. They establish helper logic,
 not success of the vendor runner, stack collection, or native DD gameplay.
-The delivered helper passed POSIX shell syntax checks and 52 host assertions,
+The delivered scripts passed POSIX shell syntax checks and 58 host assertions,
 including both root gates, identity changes/reuse/ambiguity, bounded dump
-calls, failure output, detached launch, and completion-marker timing.
+calls, failure output, detached launch, completion-marker timing, and the
+one-line entry point in a simulated line-oriented runner.

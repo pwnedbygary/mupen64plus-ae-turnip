@@ -1,0 +1,1 @@
+/system/bin/sh /sdcard/Download/ddstart9-root-stacks.sh >> /sdcard/Download/ddstart9-root-launch.log 2>&1
