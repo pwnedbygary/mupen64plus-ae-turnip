@@ -2200,3 +2200,41 @@ The delivered APK remains DDSTART9, SHA-256
 No runtime code changed in this analysis iteration. The task remains
 **IN_PROGRESS** for gameplay/display/audio, full cached-dispatcher coverage
 and required cart/WritableROM persistence regressions.
+
+## Screenshot/audio follow-up and Retroid root-script capture — 2026-09-12
+
+The user supplied title/menu/cup/vehicle screenshots. Backgrounds, cup icons,
+and vehicle models render, while text/texture regions are noisy or corrupted.
+They confirm music plays before stopping at either a manual race transition
+or an attract-mode race. Do not treat a vehicle preview as successful gameplay
+or infer an IPL/renderer root cause solely from the corrupted text.
+
+The rootless stack upload is six lines / 164 bytes, SHA-256
+`4977e66ddf8d5d2a8d25c7b2b04f90c0f8a9a3690e6987a33f2af44566f63dd8`.
+Both normal shell and same-UID `run-as` report `debuggerd: root is required`
+for each of two samples. **No stacks were collected.**
+
+The user has now offered the existing Retroid settings **Run script as Root**
+facility. This supersedes immediately building another phase-observer APK:
+first obtain scoped native thread stacks using that facility. Leave the
+Force SELinux switch and emulator configuration unchanged. No permanent
+rooting/unlocking, app reinstall, permission workaround, or save deletion
+is required by this procedure.
+
+The capture helper and procedure are documented in
+[DD_NATIVE_STACK_CAPTURE.md](DD_NATIVE_STACK_CAPTURE.md). It delays capture
+so the user can leave Settings, return to the game, and reproduce the freeze,
+then requests two stack-only dumps of the exact emulation process.
+Only diagnostic files are created; emulator source and the DDSTART9 APK are
+unchanged. Helper host tests do not establish that the vendor root runner
+or native backtrace collection succeeded on the device.
+
+Verification: both helper/test scripts pass POSIX shell syntax checks;
+52 mocked host assertions pass. Review-required fixes enforce one unique
+process with stable PID/start time across both samples and test the actual
+root gate through host `sh`, rather than mistaking a missing Android shebang
+interpreter for a successful refusal. Detached launch errors are retained
+in the capture's `launcher.log`. No emulator build was needed.
+
+The overall task remains **IN_PROGRESS** pending those native results and
+the existing gameplay/display/audio and cart/save regression requirements.

@@ -150,3 +150,31 @@ Only if native stacks cannot be obtained should a new DD-gated diagnostic
 publish atomic RSP/video entry/exit state plus an interrupt heartbeat for
 reading outside the blocked emulation thread. Do not asynchronously read
 dirty guest registers or replace this with another exhausted startup log.
+
+## Follow-up screenshots, audio, and root-capture access
+
+The user subsequently supplied six screenshots taken on 2026-09-12 between
+20:44:28 and 20:45:09. The title/backdrop, DD-1/DD-2 cup icons, vehicle grid,
+and blue vehicle preview render. Yellow menu-heading regions are filled
+with noisy pixels; regions below the title logo and within track labels
+also appear corrupted. A vehicle-selection preview is not proof of a
+working race. These images narrow the visual symptoms but do not establish
+which asset source, memory operation, or graphics subsystem is responsible.
+
+The user confirms music plays before the freeze and then stops at either
+the manually selected race transition or the automatic attract-mode race.
+This is evidence of working pre-transition audio, not gameplay/audio acceptance.
+
+The requested rootless stack capture contains only six lines / 164 bytes:
+two attempts for PID 6401, with both shell and same-UID `run-as` paths
+reporting `debuggerd: root is required`. Its SHA-256 is
+`4977e66ddf8d5d2a8d25c7b2b04f90c0f8a9a3690e6987a33f2af44566f63dd8`.
+There are **no native backtraces** in that file.
+
+The user then offered the device's existing Retroid **Run script as Root**
+setting. Use that existing facility for the scoped stack capture before
+adding another APK diagnostic. Do not change Force SELinux, root/unlock the
+device, change emulator settings, or restore old watchdog experiments.
+See [DD_NATIVE_STACK_CAPTURE.md](DD_NATIVE_STACK_CAPTURE.md) for the helper
+and capture procedure. The proposed phase-sampling APK is on hold; DDSTART9
+and its previously verified native boot correction remain unchanged.
