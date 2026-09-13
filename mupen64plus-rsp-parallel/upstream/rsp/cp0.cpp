@@ -4,6 +4,7 @@
 #ifdef PARALLEL_INTEGRATION
 #include "../rsp_1.1.h"
 #include "../rsp_diag.hpp"
+#include "../dd_policy.hpp"
 #include "m64p_plugin.h"
 namespace RSP
 {
@@ -214,6 +215,112 @@ extern "C"
 	}
 
 #ifdef PARALLEL_INTEGRATION
+	/*
+	 * Corrected internal-RSP-DMA-read arm (P04), implementing the P01
+	 * policy ledger (docs/P01_DMA_POLICY_LEDGER.md §4, pinned Ares model):
+	 * the bank is latched from bit 12 and never changes (row 1), the
+	 * destination wraps inside that bank (row 2), the full decoded row
+	 * length is used with no bank-boundary clamp (row 3), the skip is
+	 * aligned to 8 bytes and added only between rows (rows 7 and 10), and
+	 * the final registers follow rows 9 and 10.  Dirty blocks are marked
+	 * with the production expression for actual IMEM word writes only
+	 * (row 12), covering wrapped regions.  Raw operands are snapshotted in
+	 * rsp_dma_read before any alignment or register mutation; this arm
+	 * re-derives geometry from the raw length register and never touches
+	 * the legacy path above it.
+	 */
+	static int rsp_dma_read_corrected(RSP::CPUState *rsp, uint32_t length_reg,
+	                                  RSP::Diagnostics::DmaReadObservation &observation,
+	                                  bool diagnostics_enabled)
+	{
+		const uint32_t row_length = ((length_reg & 0xFFF) | 7) + 1;
+		const unsigned rows = ((length_reg >> 12) & 0xFF) + 1;
+		const uint32_t skip = ((length_reg >> 20) & 0xFFF) & 0xFF8;
+		const uint32_t cache13 =
+		    *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] & 0x1fff;
+		const uint32_t region = (cache13 >> 12) & 1;
+		uint32_t dest_offset = cache13 & 0xFF8;
+		uint32_t source = *rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] & ~0x7u;
+
+		if (diagnostics_enabled)
+		{
+			observation.aligned_length = row_length;
+			/* No bank-boundary clamp exists on this path. */
+			observation.effective_length = row_length;
+		}
+
+		/* Observer eligibility uses the corrected 8-byte-aligned start so
+		 * the boundary matches the transfer this arm actually performs. */
+		const bool diagnostics_eligible =
+		    diagnostics_enabled
+		    && RSP::Diagnostics::imem_dma_eligible(
+		           cache13 & 0x1FF8, row_length, rows);
+
+		if (diagnostics_eligible)
+		{
+			observation.payload_hash = DMA_FNV_OFFSET;
+			observation.imem_before_hash = dma_hash_imem(rsp->imem);
+			dma_imem_samples(rsp->imem, observation.imem_before_samples);
+		}
+
+		for (unsigned i = 0; i < rows; ++i)
+		{
+			for (uint32_t j = 0; j < row_length; j += 8)
+			{
+				const uint32_t source_addr = source & 0x7FFFFC;
+				const uint32_t word_lo = rsp->rdram[source_addr >> 2];
+				const uint32_t source_addr_hi = (source + 4) & 0x7FFFFC;
+				const uint32_t word_hi = rsp->rdram[source_addr_hi >> 2];
+				if (diagnostics_eligible)
+				{
+					dma_payload_word(observation, source_addr, word_lo);
+					dma_payload_word(observation, source_addr_hi, word_hi);
+				}
+
+				if (region)
+				{
+					const uint32_t dest_a = 0x1000u | dest_offset;
+					const uint32_t dest_b = 0x1000u | (dest_offset + 4);
+					if (diagnostics_eligible)
+					{
+						dma_imem_range(observation, dest_a);
+						dma_imem_range(observation, dest_b);
+					}
+					const unsigned block_a = (dest_a & 0xfff) / CODE_BLOCK_SIZE;
+					const unsigned block_b = (dest_b & 0xfff) / CODE_BLOCK_SIZE;
+					rsp->dirty_blocks |= (0x3 << block_a) >> 1;
+					rsp->dirty_blocks |= (0x3 << block_b) >> 1;
+					rsp->imem[dest_offset >> 2] = word_lo;
+					rsp->imem[(dest_offset + 4) >> 2] = word_hi;
+				}
+				else
+				{
+					rsp->dmem[dest_offset >> 2] = word_lo;
+					rsp->dmem[(dest_offset + 4) >> 2] = word_hi;
+				}
+
+				dest_offset = (dest_offset + 8) & 0xFFF;
+				source += 8;
+			}
+			/* Row 10: skip advances the DRAM address only between rows. */
+			if (i + 1 < rows)
+				source += skip;
+		}
+
+		/* Rows 9 and 10: exposed final register poststates. */
+		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] = source & 0x00ffffff;
+		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] = (region << 12) | dest_offset;
+
+		if (diagnostics_eligible)
+		{
+			observation.imem_after_hash = dma_hash_imem(rsp->imem);
+			dma_imem_samples(rsp->imem, observation.imem_after_samples);
+			RSP::Diagnostics::trace_rsp_dma_read(observation);
+		}
+
+		return rsp->dirty_blocks ? MODE_CHECK_FLAGS : MODE_CONTINUE;
+	}
+
 	static int rsp_dma_read(RSP::CPUState *rsp)
 	{
 		uint32_t length_reg = *rsp->cp0.cr[CP0_REGISTER_DMA_READ_LENGTH];
@@ -236,6 +343,17 @@ extern "C"
 			observation.transfer_count = count + 1;
 			observation.skip = skip;
 		}
+
+		/*
+		 * Explicit DD runtime policy (P03 seam).  The corrected arm runs
+		 * only for an explicitly DD-authorized session; the legacy path
+		 * below is the DD-off behavior and is kept byte-for-byte identical.
+		 * Raw operands were snapshotted above before any alignment or
+		 * register mutation.
+		 */
+		if (RSP::DdRuntimePolicyEnabled() != 0)
+			return rsp_dma_read_corrected(
+			    rsp, length_reg, observation, diagnostics_enabled);
 
 		// Force alignment.
 		length = (length + 0x7) & ~0x7;

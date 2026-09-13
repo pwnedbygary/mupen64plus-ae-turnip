@@ -241,12 +241,14 @@ bash tools/test-dd-rsp-mac.sh
 bash tools/test-dd-root-stacks.sh
 ```
 
-`tools/test-dd-dma-transfer.sh` (added by P02) runs the production-path SP DMA
-fixtures of `tools/tests/rsp-dd-dma-transfer-test.cpp` against the oracle from
-the P01 policy ledger. Its legacy suite must always pass; its corrected suite
-reports the documented pre-fix divergences (XFAIL) until the P03/P04 policy
-seam lands, and `DD_DMA_REQUIRE_CORRECTED=1 bash tools/test-dd-dma-transfer.sh`
-must be used to gate commits after P04.
+`tools/test-dd-dma-transfer.sh` (added by P02, wired to the real policy seam
+at P04) runs the production-path SP DMA fixtures of
+`tools/tests/rsp-dd-dma-transfer-test.cpp` against the oracle from the P01
+policy ledger. Both modes are hard gates: the legacy suite drives the seam
+off and pins the documented DD-off behavior; the corrected suite drives the
+same seam on so production `rsp_dma_read` takes the corrected arm. (Before
+P04 the corrected suite reported documented pre-fix divergences behind
+`DD_DMA_REQUIRE_CORRECTED=1`; that tolerance no longer exists.)
 
 `tools/test-dd-policy.sh` (added by P03) compiles the real `api/callbacks.c`
 and asserts the core-side DD runtime-policy truth table (default off, strict

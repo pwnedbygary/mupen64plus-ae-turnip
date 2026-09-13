@@ -13,17 +13,13 @@
  * section 4 corrected decision rows). It deliberately does not call or
  * include production helpers.
  *
- * Usage: rsp-dd-dma-transfer-test [legacy|corrected] [--strict]
- * - legacy (default): asserts the documented legacy (DD-off) semantics.
- *   Must pass before and after the correction (validation D22).
- * - corrected: asserts the P01 corrected policy. Before P03/P04 deliver the
- *   policy seam, production only implements the legacy path, so each
- *   corrected-mode case is expected to diverge; the divergence fields are
- *   reported (XFAIL) and count as pass only without --strict. After P04,
- *   run with --strict (tools/test-dd-dma-transfer.sh honors
- *   DD_DMA_REQUIRE_CORRECTED=1). A corrected case that MATCHES production
- *   before the fix (XPASS) is always a failure: it means the case was
- *   misclassified or the oracle is wrong.
+ * Usage: rsp-dd-dma-transfer-test [legacy|corrected]
+ * - legacy: drives the real P03 policy seam to off (DD-off) and asserts the
+ *   documented legacy semantics.  Must always pass (validation D22).
+ * - corrected: drives the real seam to on via RSP::DdRuntimePolicySet — the
+ *   same receiver state the core's optional capability pushes — and asserts
+ *   the P01 corrected policy through the production rsp_dma_read.  Wired at
+ *   P04; both modes are hard gates in tools/test-dd-dma-transfer.sh.
  *
  * Guards (validation D24): the DMEM, IMEM and RDRAM arrays are carved out
  * of mappings with PROT_NONE guard pages on both sides, so a production
@@ -36,6 +32,7 @@
 #include "rsp_op.hpp"
 #include "rsp_1.1.h"
 #include "rsp_diag.hpp"
+#include "dd_policy.hpp"
 
 #include <sys/mman.h>
 #include <unistd.h>
@@ -330,7 +327,7 @@ enum class Kind
 	Shared,    // both models agree; asserted in both modes
 	Legacy,    // pins current/legacy behavior (D01, D22, D23, D18)
 	Corrected  // P01 corrected expectations (D02, D06, D07, D08, D11, D13,
-	           //  D14, D16, D19); XFAIL until the policy seam exists
+	           //  D14, D16, D19); pinned by the production corrected arm (P04)
 };
 
 struct Case
@@ -365,7 +362,7 @@ const Case kCases[] = {
 	 0x1230203f, Kind::Legacy, false, 48, 0},
 	{"D14L", "legacy 4-byte SP alignment at 4-mod-8", 0x1ab4, 0x00006000,
 	 0x0000001f, Kind::Legacy, false, 8, 8},
-	// ---- Corrected expectations (XFAIL until P03/P04) ----
+	// ---- Corrected expectations (production corrected arm, P04) ----
 	// D05 (exact fit ending at 0x1000) is here, not Shared: bytes agree but
 	// the final register poststate diverges (legacy writes back the raw
 	// accumulated 0x1000; corrected writes back 0x0000 per ledger row 9).
@@ -373,6 +370,9 @@ const Case kCases[] = {
 	 0x00000200, 0x00000038, Kind::Corrected, false, 16, 0},
 	{"D02", "captured request under corrected policy", 0x0fb0, 0x00000000,
 	 0xffffffff, Kind::Corrected, false, 262144, 0},
+	{"D02diag", "captured request, diagnostics on: still observed, zero "
+	 "IMEM writes", 0x0fb0, 0x00000000, 0xffffffff, Kind::Corrected, true,
+	 262144, 0},
 	{"D06", "DMEM row wraps inside bank, never IMEM", 0x0fb0, 0x00002000,
 	 0x00000fff, Kind::Corrected, false, 1024, 0},
 	{"D07", "IMEM row wraps inside bank, never DMEM", 0x1fb0, 0x00003000,
@@ -477,7 +477,7 @@ std::vector<Diff> compare(const Result &expected)
 }
 
 void run_case(const Case &c, Result (*oracle)(uint32_t, uint32_t, uint32_t),
-              const char *oracle_name, bool strict_corrected)
+              const char *oracle_name)
 {
 	g_state.refill();
 
@@ -554,30 +554,9 @@ void run_case(const Case &c, Result (*oracle)(uint32_t, uint32_t, uint32_t),
 		}
 	}
 
-	const bool xfail_expected = c.kind == Kind::Corrected && !strict_corrected;
 	if (diffs.empty())
 	{
-		if (xfail_expected)
-		{
-			fprintf(stderr,
-			        "[XPASS-FAIL] %s: corrected expectation MATCHED legacy "
-			        "production; case is misclassified or the oracle is "
-			        "wrong\n",
-			        c.id);
-			g_failures++;
-		}
-		else
-		{
-			printf("[PASS] %s (%s)\n", c.id, c.why);
-		}
-		return;
-	}
-
-	if (xfail_expected)
-	{
-		printf("[XFAIL] %s diverges as expected before the P03/P04 policy "
-		       "seam; first divergence %s: %s\n",
-		       c.id, diffs[0].field, diffs[0].detail.c_str());
+		printf("[PASS] %s (%s)\n", c.id, c.why);
 		return;
 	}
 
@@ -716,7 +695,7 @@ void run_random_legacy()
 
 void usage(const char *argv0)
 {
-	fprintf(stderr, "usage: %s [legacy|corrected] [--strict]\n", argv0);
+	fprintf(stderr, "usage: %s [legacy|corrected]\n", argv0);
 }
 
 } // namespace
@@ -724,15 +703,12 @@ void usage(const char *argv0)
 int main(int argc, char **argv)
 {
 	const char *mode = "legacy";
-	bool strict = false;
 	for (int i = 1; i < argc; ++i)
 	{
 		if (strcmp(argv[i], "legacy") == 0)
 			mode = "legacy";
 		else if (strcmp(argv[i], "corrected") == 0)
 			mode = "corrected";
-		else if (strcmp(argv[i], "--strict") == 0)
-			strict = true;
 		else
 		{
 			usage(argv[0]);
@@ -741,13 +717,12 @@ int main(int argc, char **argv)
 	}
 
 	g_state.init();
-	printf("rsp-dd-dma-transfer-test: mode=%s strict=%d\n", mode,
-	       strict ? 1 : 0);
+	printf("rsp-dd-dma-transfer-test: mode=%s\n", mode);
 
 	// Oracle cross-check on shared cases: the two models must agree exactly
 	// when nothing diverges (no crossing, no unaligned skip, no trailing
 	// skip effect). This validates the corrected oracle against the
-	// production-verified legacy oracle without touching production.
+	// production-verified legacy oracle.
 	for (const Case &c : kCases)
 	{
 		if (c.kind != Kind::Shared)
@@ -773,21 +748,27 @@ int main(int argc, char **argv)
 
 	if (strcmp(mode, "legacy") == 0)
 	{
+		/* DD-off: drive the real receiver state the core pushes. */
+		RSP::DdRuntimePolicySet(0);
 		for (const Case &c : kCases)
 		{
 			if (c.kind == Kind::Shared || c.kind == Kind::Legacy)
-				run_case(c, oracle_legacy, "legacy", strict);
+				run_case(c, oracle_legacy, "legacy");
 		}
 		run_d18_compound();
 		run_random_legacy();
 	}
 	else
 	{
+		/* Explicitly DD-authorized session: enable the real seam (P03
+		 * receiver) so production rsp_dma_read takes the corrected arm. */
+		RSP::DdRuntimePolicySet(1);
 		for (const Case &c : kCases)
 		{
 			if (c.kind == Kind::Shared || c.kind == Kind::Corrected)
-				run_case(c, oracle_corrected, "corrected", strict);
+				run_case(c, oracle_corrected, "corrected");
 		}
+		RSP::DdRuntimePolicySet(0);
 	}
 
 	run_write_pins();
