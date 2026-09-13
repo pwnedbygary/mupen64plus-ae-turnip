@@ -2502,3 +2502,44 @@ attached by USB). P00 was executed read-only; see
 
 No emulator behavior changed. P01 (complete DMA policy decision table against
 the pinned reference and CXD4) is the next package.
+
+## P01 DMA policy ledger completed — 2026-09-13
+
+```markdown
+Package: P01 — Decide the complete DMA policy (analysis only; no emulator changes)
+Baseline / Reviewed snapshot: branch dd-eos-watchdog-checkpoint at 017ef41ca
+  (P00 record), clean tracked tree; pinned Ares reference
+  ~/LLM-Projects/phobos @ f1174e7654141accad40b9ffc2c7d978e93a00f0.
+Verified observations: legacy rsp_dma_read decode/clamp/13-bit-walk/raw-skip/
+  trailing-skip/writeback/dirty/return behavior transcribed with line citations;
+  Ares decodes 8-byte-aligned SP/DRAM/skip fields, latches pbusRegion (bit 12),
+  wraps a 12-bit offset, adds skip only between rows, and forces a 0xFF8 length
+  poststate; CXD4 allows 13-bit crossings and floors addresses per 8-byte beat
+  with no register writeback; core do_sp_dma walks contiguously, no writeback.
+Derived results and inputs: completed §6.2 decision table (docs/P01_DMA_POLICY_LEDGER.md
+  §4) selecting the pinned Ares model coherently for the corrected internal-read
+  path: latched bank, 12-bit wrap, full row length (clamp removed), 8-byte SP/DRAM
+  alignment, skip aligned to 8 at decode, no trailing skip, defined 12+1-bit final
+  SP poststate, 24-bit final DRAM poststate, dirty flags only for actual IMEM
+  destinations, scheduling unchanged. Observed request calculated under both
+  policies (legacy: 80-byte rows/5120 words/3052 IMEM writes/final DRAM 0x104f00;
+  corrected: 4096-byte rows × 256 = 1,048,576 bytes, zero IMEM writes, final DRAM
+  0x1fe808 — that final value follows from decision row 7, the Ares-aligned skip).
+Remaining hypotheses: hardware truth for skip alignment, 4-vs-8-byte SP start,
+  and register poststates is not verifiable locally — the choice is the pinned
+  reference model, to be validated natively (P06). CXD4/core divergences are
+  documented, not adopted.
+Changed files: docs/P01_DMA_POLICY_LEDGER.md (new), docs/HANDOFF_NEW.md (this section).
+Checks actually run and why: source/reference line-level verification of every
+  decision row; algebraic identity round-down-8(x)+8 == round-up-8(x+1) checked
+  for row-length equivalence; backing-bounds check 0x7FFFFC>>2 < 2^21 words
+  against the 8 MB RDRAM backing; no tests claimed beyond that.
+Independent reviewer and verdict: (pending — filled before commit)
+Commit, if approved: (pending)
+Remaining blockers: none for P02/P03. P02 needs the §4 table as its oracle
+  specification; P03 needs the corrected-vs-legacy selector requirement only.
+Next eligible package and required inputs: P02 (production-path failing fixtures;
+  inputs: this ledger §4/§5/§7, cp0.cpp, tools/tests layout) — may run in
+  parallel with P03 (explicit DD runtime-policy seam) with disjoint file
+  ownership. P04 waits for both.
+```
