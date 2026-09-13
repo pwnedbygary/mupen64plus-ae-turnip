@@ -12,12 +12,16 @@ change Force SELinux, unlock/root the device, reinstall the app, change CPU/
 timing/rendering settings, clear app data, or delete saves for this capture.
 The user has offered an already available privileged script runner.
 
-The helper only requests stack-only `debuggerd -b` dumps from the exact
-debug app's `:EmulationProcess`, after checking its PID and command line.
+The helper requests stack-only `debuggerd -b` dumps plus process-map and thread
+accounting metadata from the exact debug app's `:EmulationProcess`, after
+checking its PID and command line.
 It requires a unique match and the same PID/process start time for both
 samples; ambiguous, replaced, or reused PIDs are rejected.
 It does not request a full tombstone, memory dump, broad system log or
 backtraces from unrelated apps. Taking stacks can briefly pause the target.
+Memory maps list address ranges, permissions, and mapped file names; they do
+not contain the mapped memory contents. Thread accounting records help
+distinguish a CPU-consuming loop from waiting without assuming a fixed tick rate.
 
 ## Files
 
@@ -61,13 +65,15 @@ a completed attempt that reports an error instead of stack frames.
    profile. Reproduce the manual race freeze or let attract mode reach its
    race. Once frozen, leave the emulation view open without pressing Pause,
    Exit or Home.
-4. The worker waits **90 seconds** from launch, then requests two native
-   stack samples separated by two seconds. A dump can take additional time.
-   The Mac command waits for a new completion marker before pulling the
-   diagnostic directory to Desktop.
-5. Upload the new capture's `native-stacks.txt` and any accompanying status/
-   error information. An empty, denied or missing-process result is a failed
-   observation, not proof of a particular emulation fault.
+4. The worker waits **90 seconds** from launch, then takes two sample groups,
+   with a two-second pause between groups. Each group gathers process maps and
+   thread metadata before its native stack dump. Collection takes additional
+   time; use recorded timestamps rather than assuming exactly two seconds
+   between CPU-accounting readings.
+5. Upload the new capture folder including stacks, both map snapshots, both
+   thread-accounting snapshots, metadata, and status/error information. An
+   empty, denied or missing-process result is a failed observation, not proof
+   of a particular emulation fault.
 
 If the script menu does not return or shows an error, preserve the message.
 If no capture appears, retrieve `ddstart9-root-launch.log` from Download:
@@ -77,8 +83,10 @@ Do not try permission, SELinux or firmware changes as a workaround. If the
 capture occurs before the game freezes, label it accordingly; do not
 describe a normal-running stack as a frozen one.
 
-The Mac wait is bounded. If no completion arrives within ten minutes, it
-reports a timeout rather than silently pulling an older successful capture.
+The accompanying Mac commands poll for a changed completion marker from the
+Mac rather than keeping one long-running remote shell open. If no new completion
+arrives within ten minutes, they report that explicitly and still retrieve
+available diagnostics, rather than treating an older capture as a new success.
 Older diagnostic captures are not deleted.
 
 ## Interpretation
@@ -96,7 +104,7 @@ merely because it has the same upstream version label.
 Host helper tests exercise mocked Android commands and isolated diagnostic
 paths; they never dump real processes as root. They establish helper logic,
 not success of the vendor runner, stack collection, or native DD gameplay.
-The delivered scripts passed POSIX shell syntax checks and 58 host assertions,
+The stack-only version passed POSIX shell syntax checks and 58 host assertions,
 including both root gates, identity changes/reuse/ambiguity, bounded dump
 calls, failure output, detached launch, completion-marker timing, and the
 one-line entry point in a simulated line-oriented runner.
@@ -104,5 +112,20 @@ one-line entry point in a simulated line-oriented runner.
 Device follow-up: the uploaded archive now confirms two successful captures,
 four real backtraces, and completed markers after the one-line entry was used.
 See [DDSTART9_NATIVE_STACK_ANALYSIS.md](DDSTART9_NATIVE_STACK_ANALYSIS.md).
-Do not repeat stack-only collection for this anonymous-code result; the next
-missing evidence is same-process mapping metadata and thread CPU accounting.
+Because the user closed/restarted that process, the enhanced helper collects
+fresh stacks alongside mapping metadata and thread CPU accounting. Old anonymous
+addresses must not be paired with a new process's maps. No APK change is needed.
+
+The enhanced helper reports `ddstart9-root-stacks-v2` in `run-metadata.txt`.
+New files are `sample-1-maps.txt`, `sample-2-maps.txt`,
+`sample-1-threads.txt`, and `sample-2-threads.txt`. Each metadata read has
+timestamps and an explicit outcome. The cap is 128 threads, 1 MiB per maps
+read, and 8 KiB per thread-file read; exceeding a bound or a required-read
+failure marks the capture `complete_with_errors` while preserving available
+stacks and metadata. Raw tick counters and reported `CLK_TCK` are retained;
+the helper does not assume a tick rate or calculate CPU utilization.
+
+Verification: the enhanced helper/test scripts pass shell syntax checks and
+73 host assertions, including process identity, spaced/parenthesized proc-stat
+names, metadata failures, thread bounds, and the unchanged one-line launcher.
+Actual enhanced metadata collection remains to be verified on the device.

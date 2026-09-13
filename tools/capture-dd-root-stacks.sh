@@ -12,6 +12,9 @@ DELAY_SECONDS=90
 SAMPLE_GAP_SECONDS=2
 DUMP_TIMEOUT_SECONDS=20
 MAX_MATCHING_PIDS=4
+MAX_THREAD_IDS=128
+PROC_FILE_LIMIT=1048576
+THREAD_FILE_LIMIT=8192
 
 CAPTURE_ROOT=${DD_CAPTURE_ROOT:-/sdcard/Download/ddstart9-root-capture}
 SCRIPT_PATH=${DD_SCRIPT_PATH:-/sdcard/Download/ddstart9-root-stacks.sh}
@@ -31,6 +34,11 @@ PROC_ROOT=${DD_PROC_ROOT:-/proc}
 TR_BIN=${DD_TR_BIN:-tr}
 SED_BIN=${DD_SED_BIN:-sed}
 AWK_BIN=${DD_AWK_BIN:-awk}
+GETCONF_BIN=${DD_GETCONF_BIN:-getconf}
+HEAD_BIN=${DD_HEAD_BIN:-head}
+CAT_BIN=${DD_CAT_BIN:-cat}
+WC_BIN=${DD_WC_BIN:-wc}
+RM_BIN=${DD_RM_BIN:-rm}
 # DD_* overrides are test-only fixture hooks. The installed Settings action
 # supplies no overrides and therefore uses the fixed Android defaults above.
 
@@ -39,6 +47,10 @@ OUTPUT_DIR=
 STATUS_FILE=
 METADATA_FILE=
 STACK_FILE=
+MAP_FILE_1=
+MAP_FILE_2=
+THREAD_FILE_1=
+THREAD_FILE_2=
 FAILURE=0
 ERROR_NUMBER=0
 ROOT_UID=
@@ -46,6 +58,8 @@ CAPTURE_NAME=
 PINNED_PID=
 PINNED_STARTTIME=
 IDENTITY_PINNED=0
+READ_SEQUENCE=0
+CLK_TCK=unavailable
 
 timestamp() {
     value=$("$DATE_BIN" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null)
@@ -177,19 +191,40 @@ prepare_files() {
     STATUS_FILE=$OUTPUT_DIR/status.txt
     METADATA_FILE=$OUTPUT_DIR/run-metadata.txt
     STACK_FILE=$OUTPUT_DIR/native-stacks.txt
+    MAP_FILE_1=$OUTPUT_DIR/sample-1-maps.txt
+    MAP_FILE_2=$OUTPUT_DIR/sample-2-maps.txt
+    THREAD_FILE_1=$OUTPUT_DIR/sample-1-threads.txt
+    THREAD_FILE_2=$OUTPUT_DIR/sample-2-threads.txt
     : > "$STATUS_FILE" || return 1
     : > "$METADATA_FILE" || return 1
     : > "$STACK_FILE" || return 1
-    "$CHMOD_BIN" 644 "$STATUS_FILE" "$METADATA_FILE" "$STACK_FILE" 2>/dev/null || return 1
+    : > "$MAP_FILE_1" || return 1
+    : > "$MAP_FILE_2" || return 1
+    : > "$THREAD_FILE_1" || return 1
+    : > "$THREAD_FILE_2" || return 1
+    "$CHMOD_BIN" 644 "$STATUS_FILE" "$METADATA_FILE" "$STACK_FILE" \
+        "$MAP_FILE_1" "$MAP_FILE_2" "$THREAD_FILE_1" "$THREAD_FILE_2" \
+        2>/dev/null || return 1
     printf 'state=running\nstarted_at=%s\n' "$(timestamp)" > "$STATUS_FILE"
-    printf 'format=ddstart9-root-stacks-v1\n' > "$METADATA_FILE"
+    printf 'format=ddstart9-root-stacks-v2\n' > "$METADATA_FILE"
     printf 'capture_dir=%s\n' "$OUTPUT_DIR" >> "$METADATA_FILE"
     printf 'root_uid=%s\n' "$ROOT_UID" >> "$METADATA_FILE"
     printf 'expected_process=%s\n' "$EXPECTED_PROCESS" >> "$METADATA_FILE"
     printf 'delay_seconds=%s\nsample_gap_seconds=%s\n' "$DELAY_SECONDS" "$SAMPLE_GAP_SECONDS" >> "$METADATA_FILE"
     printf 'sample_count=2\nmax_matching_pids=%s\ndump_timeout_seconds=%s\n' \
         "$MAX_MATCHING_PIDS" "$DUMP_TIMEOUT_SECONDS" >> "$METADATA_FILE"
+    printf 'max_thread_ids=%s\nproc_file_limit_bytes=%s\nthread_file_limit_bytes=%s\n' \
+        "$MAX_THREAD_IDS" "$PROC_FILE_LIMIT" "$THREAD_FILE_LIMIT" >> "$METADATA_FILE"
     printf 'selected_expected_name=%s\n' "$EXPECTED_PROCESS" >> "$METADATA_FILE"
+    if command -v "$GETCONF_BIN" >/dev/null 2>&1; then
+        CLK_TCK=$("$GETCONF_BIN" CLK_TCK 2>/dev/null)
+        case "$CLK_TCK" in
+            ''|*[!0-9]*) CLK_TCK=unavailable; record_error 'getconf_CLK_TCK_failed' ;;
+        esac
+    else
+        CLK_TCK=unavailable
+    fi
+    printf 'clk_tck=%s\n' "$CLK_TCK" >> "$METADATA_FILE"
     return 0
 }
 
@@ -198,10 +233,120 @@ read_starttime() {
     if [ ! -r "$stat_file" ]; then
         return 1
     fi
-    STARTTIME=$("$AWK_BIN" '{ print $22; exit }' "$stat_file" 2>/dev/null)
+    # /proc/PID/stat's comm may contain spaces and parentheses.  Strip through
+    # the final ") " delimiter first; the resulting tail starts at state
+    # (tail field 1), making starttime tail field 20.
+    stat_tail=$("$SED_BIN" -n 's/^.*) //p' "$stat_file" 2>/dev/null)
+    if ! STARTTIME=$(printf '%s\n' "$stat_tail" | "$AWK_BIN" '
+        NF >= 20 && $20 ~ /^[0-9][0-9]*$/ { print $20; found++ }
+        END { if (found != 1) exit 1 }
+    ' 2>/dev/null); then
+        return 1
+    fi
     case "$STARTTIME" in
         ''|*[!0-9]*) return 1 ;;
     esac
+    return 0
+}
+
+revalidate_identity() {
+    sample=$1
+    pid=$2
+    context=$3
+    if [ "$IDENTITY_PINNED" -ne 1 ] || [ "$pid" != "$PINNED_PID" ]; then
+        record_error "sample_${sample}_${context}_identity_not_pinned"
+        return 1
+    fi
+    cmdline_file=$PROC_ROOT/$pid/cmdline
+    if [ ! -r "$cmdline_file" ]; then
+        record_error "sample_${sample}_${context}_cmdline_unreadable"
+        return 1
+    fi
+    first_arg=$("$TR_BIN" '\000' '\n' < "$cmdline_file" 2>/dev/null | "$SED_BIN" -n '1p' 2>/dev/null)
+    if [ "$first_arg" != "$EXPECTED_PROCESS" ]; then
+        record_error "sample_${sample}_${context}_wrong_first_arg"
+        return 1
+    fi
+    if ! read_starttime "$pid"; then
+        record_error "sample_${sample}_${context}_starttime_unreadable"
+        return 1
+    fi
+    if [ "$STARTTIME" != "$PINNED_STARTTIME" ]; then
+        record_error "sample_${sample}_${context}_starttime_changed"
+        return 1
+    fi
+    return 0
+}
+
+read_proc_file() {
+    sample=$1
+    label=$2
+    source_file=$3
+    target_file=$4
+    limit_bytes=$5
+    READ_SEQUENCE=$((READ_SEQUENCE + 1))
+    temp_file=$OUTPUT_DIR/.proc-read.$$.$READ_SEQUENCE
+    printf '\n[file=%s source=%s]\nread_started=%s\n' "$label" "$source_file" \
+        "$(timestamp)" >> "$target_file"
+    if ! revalidate_identity "$sample" "$SELECTED_PID" "before_${label}_read"; then
+        printf 'read_outcome=identity_changed\nread_finished=%s\n' "$(timestamp)" \
+            >> "$target_file"
+        return 1
+    fi
+    if [ ! -e "$source_file" ]; then
+        printf 'read_outcome=disappeared\nread_finished=%s\n' "$(timestamp)" \
+            >> "$target_file"
+        record_error "sample_${sample}_${label}_disappeared"
+        return 1
+    fi
+    if [ ! -r "$source_file" ]; then
+        printf 'read_outcome=permission_denied\nread_finished=%s\n' "$(timestamp)" \
+            >> "$target_file"
+        record_error "sample_${sample}_${label}_permission_denied"
+        return 1
+    fi
+    if [ -e "$temp_file" ] || [ -L "$temp_file" ]; then
+        printf 'read_outcome=temp_collision\nread_finished=%s\n' "$(timestamp)" \
+            >> "$target_file"
+        record_error "sample_${sample}_${label}_temp_collision"
+        return 1
+    fi
+    if [ "$TIMEOUT_AVAILABLE" -ne 1 ]; then
+        printf 'read_outcome=timeout_unavailable\nread_finished=%s\n' "$(timestamp)" \
+            >> "$target_file"
+        record_error "sample_${sample}_${label}_timeout_unavailable"
+        return 1
+    fi
+    "$TIMEOUT_BIN" "$DUMP_TIMEOUT_SECONDS" "$HEAD_BIN" -c "$limit_bytes" \
+        "$source_file" > "$temp_file" 2>&1
+    read_rc=$?
+    "$CAT_BIN" "$temp_file" >> "$target_file" 2>/dev/null || {
+        record_error "sample_${sample}_${label}_output_write_failed"
+    }
+    read_bytes=$("$WC_BIN" -c < "$temp_file" 2>/dev/null)
+    case "$read_bytes" in
+        ''|*[!0-9]*) read_bytes=unknown ;;
+    esac
+    if [ "$read_rc" -ne 0 ]; then
+        printf 'read_outcome=read_failed_rc_%s\n' "$read_rc" >> "$target_file"
+        record_error "sample_${sample}_${label}_read_failed_rc=$read_rc"
+    elif [ "$read_bytes" = unknown ]; then
+        printf 'read_outcome=size_unknown\n' >> "$target_file"
+        record_error "sample_${sample}_${label}_size_unknown"
+    elif [ "$read_bytes" -ge "$limit_bytes" ]; then
+        printf 'read_outcome=file_limit_reached\n' >> "$target_file"
+        record_error "sample_${sample}_${label}_file_limit_reached=$limit_bytes"
+    else
+        printf 'read_outcome=ok\n' >> "$target_file"
+    fi
+    printf 'bytes=%s\nread_finished=%s\n' "$read_bytes" "$(timestamp)" >> "$target_file"
+    "$RM_BIN" -f "$temp_file" 2>/dev/null || :
+    if [ "$read_rc" -ne 0 ] || [ "$read_bytes" = unknown ]; then
+        return 1
+    fi
+    if [ "$read_bytes" -ge "$limit_bytes" ]; then
+        return 1
+    fi
     return 0
 }
 
@@ -321,6 +466,68 @@ select_verified_pid() {
     return 0
 }
 
+collect_sample_metadata() {
+    sample=$1
+    pid=$2
+    case "$sample" in
+        1) map_file=$MAP_FILE_1; thread_file=$THREAD_FILE_1 ;;
+        2) map_file=$MAP_FILE_2; thread_file=$THREAD_FILE_2 ;;
+        *) record_error "sample_${sample}_invalid_metadata_index"; return 1 ;;
+    esac
+    append_metadata "sample_${sample}_metadata_started=$(timestamp)"
+    printf 'format=ddstart9-maps-v1\nsample=%s\npid=%s\nexpected_process=%s\n' \
+        "$sample" "$pid" "$EXPECTED_PROCESS" >> "$map_file"
+    printf 'format=ddstart9-threads-v1\nsample=%s\npid=%s\nexpected_process=%s\nclk_tck=%s\n' \
+        "$sample" "$pid" "$EXPECTED_PROCESS" "$CLK_TCK" >> "$thread_file"
+    read_proc_file "$sample" process-maps "$PROC_ROOT/$pid/maps" "$map_file" "$PROC_FILE_LIMIT" || :
+    read_proc_file "$sample" process-stat "$PROC_ROOT/$pid/stat" "$thread_file" "$PROC_FILE_LIMIT" || :
+    task_dir=$PROC_ROOT/$pid/task
+    thread_count=0
+    thread_cap_hit=0
+    if ! revalidate_identity "$sample" "$pid" before-thread-enumeration; then
+        printf 'thread_enumeration=identity_changed\n' >> "$thread_file"
+    elif [ ! -d "$task_dir" ] || [ ! -r "$task_dir" ]; then
+        printf 'thread_enumeration=unreadable\n' >> "$thread_file"
+        record_error "sample_${sample}_thread_directory_unreadable"
+    else
+        for tid_path in "$task_dir"/*; do
+            tid=${tid_path##*/}
+            case "$tid" in
+                ''|*[!0-9]*|0) continue ;;
+            esac
+            thread_count=$((thread_count + 1))
+            if [ "$thread_count" -gt "$MAX_THREAD_IDS" ]; then
+                thread_cap_hit=1
+                record_error "sample_${sample}_thread_cap_reached=$MAX_THREAD_IDS"
+                break
+            fi
+            if [ ! -d "$tid_path" ]; then
+                printf '[tid=%s]\nthread_outcome=disappeared\n' "$tid" >> "$thread_file"
+                record_error "sample_${sample}_tid_${tid}_disappeared"
+                continue
+            fi
+            printf '\n[tid=%s]\nthread_started=%s\n' "$tid" "$(timestamp)" >> "$thread_file"
+            read_proc_file "$sample" "tid-${tid}-stat" \
+                "$task_dir/$tid/stat" "$thread_file" "$THREAD_FILE_LIMIT" || :
+            read_proc_file "$sample" "tid-${tid}-schedstat" \
+                "$task_dir/$tid/schedstat" "$thread_file" "$THREAD_FILE_LIMIT" || :
+            read_proc_file "$sample" "tid-${tid}-status" \
+                "$task_dir/$tid/status" "$thread_file" "$THREAD_FILE_LIMIT" || :
+            read_proc_file "$sample" "tid-${tid}-wchan" \
+                "$task_dir/$tid/wchan" "$thread_file" "$THREAD_FILE_LIMIT" || :
+            read_proc_file "$sample" "tid-${tid}-comm" \
+                "$task_dir/$tid/comm" "$thread_file" "$THREAD_FILE_LIMIT" || :
+            printf 'thread_finished=%s\n' "$(timestamp)" >> "$thread_file"
+        done
+    fi
+    if [ "$thread_count" -eq 0 ] && [ "$thread_cap_hit" -eq 0 ]; then
+        record_error "sample_${sample}_no_numeric_threads"
+    fi
+    append_metadata "sample_${sample}_thread_count=$thread_count"
+    append_metadata "sample_${sample}_metadata_finished=$(timestamp)"
+    return 0
+}
+
 find_timeout() {
     if [ -n "$TIMEOUT_BIN" ]; then
         if [ -x "$TIMEOUT_BIN" ] || command -v "$TIMEOUT_BIN" >/dev/null 2>&1; then
@@ -344,26 +551,7 @@ run_dump() {
     pid=$2
     # Re-read cmdline directly before debuggerd.  The earlier pidof result is
     # intentionally not sufficient because a PID may have been recycled.
-    if [ "$IDENTITY_PINNED" -ne 1 ] || [ "$pid" != "$PINNED_PID" ]; then
-        record_error "sample_${sample}_identity_not_pinned_before_dump"
-        return 1
-    fi
-    cmdline_file=$PROC_ROOT/$pid/cmdline
-    if [ ! -r "$cmdline_file" ]; then
-        record_error "sample_${sample}_pid_${pid}_cmdline_unreadable_before_dump"
-        return 1
-    fi
-    first_arg=$("$TR_BIN" '\000' '\n' < "$cmdline_file" 2>/dev/null | "$SED_BIN" -n '1p' 2>/dev/null)
-    if [ "$first_arg" != "$EXPECTED_PROCESS" ]; then
-        record_error "sample_${sample}_pid_${pid}_wrong_first_arg_before_dump"
-        return 1
-    fi
-    if ! read_starttime "$pid"; then
-        record_error "sample_${sample}_pid_${pid}_missing_stat_before_dump"
-        return 1
-    fi
-    if [ "$STARTTIME" != "$PINNED_STARTTIME" ]; then
-        record_error "sample_${sample}_pid_${pid}_starttime_changed_before_dump"
+    if ! revalidate_identity "$sample" "$pid" before-debuggerd; then
         return 1
     fi
     append_metadata "sample_${sample}_pid_rechecked_at=$(timestamp)"
@@ -392,6 +580,7 @@ capture_sample() {
     sample=$1
     append_metadata "sample_${sample}_started=$(timestamp)"
     if select_verified_pid "$sample"; then
+        collect_sample_metadata "$sample" "$SELECTED_PID" || :
         run_dump "$sample" "$SELECTED_PID" || :
     fi
 }
@@ -438,7 +627,8 @@ finish_worker() {
     append_metadata "finished_at=$(timestamp)"
     append_metadata "final_state=$final_state"
     publish_marker "$final_state" || :
-    "$CHMOD_BIN" 644 "$STATUS_FILE" "$METADATA_FILE" "$STACK_FILE" 2>/dev/null || :
+    "$CHMOD_BIN" 644 "$STATUS_FILE" "$METADATA_FILE" "$STACK_FILE" \
+        "$MAP_FILE_1" "$MAP_FILE_2" "$THREAD_FILE_1" "$THREAD_FILE_2" 2>/dev/null || :
 }
 
 worker() {

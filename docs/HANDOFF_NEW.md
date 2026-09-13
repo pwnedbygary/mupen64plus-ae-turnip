@@ -2280,3 +2280,30 @@ Next obtain same-process memory-map metadata and thread CPU-accounting deltas,
 not another identical stack-only capture. If the process has restarted, gather
 maps and stacks together rather than using old anonymous addresses. No emulator
 source, APK, save, SELinux, or timing changes were made. Task remains IN_PROGRESS.
+
+### Restarted process: collect fresh stacks and metadata together
+
+The user confirms the captured game process was closed or restarted. Do not
+request maps for old PID 14559 or reuse its anonymous-code addresses.
+
+The next root-helper iteration retains the working one-line menu entry and
+90-second preparation delay. It collects process maps and bounded per-thread
+accounting metadata before each of two fresh stack dumps, with exact-process
+identity/start-time checks. These are metadata reads, not process-memory dumps.
+Read failures must remain explicit and must not masquerade as complete evidence.
+
+The Mac collection instructions poll completion using separate short ADB reads
+and retrieve available diagnostics even after a reported timeout. This avoids
+relying on the previous long-running remote wait, whose failure cause remains
+unestablished. Earlier device captures are preserved.
+
+No emulator source or APK change is required. Reproduce the same race/attract
+freeze under DDSTART9/dynarec, leave the frozen view open, and return the complete
+new capture folder so stacks and map/CPU-accounting samples can be correlated.
+
+Verification: helper format v2, shell syntax checks passed, and 73 mocked host
+assertions passed. Review identified a proc-stat parser weakness for names with
+spaces/parentheses; the parser now locates start time after the final comm
+delimiter and regression fixtures cover changed start times with those names.
+The new maps/thread files use explicit read outcomes, bounded reads and a
+128-thread cap. No claim of device success is made for this enhanced version.

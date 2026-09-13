@@ -67,7 +67,7 @@ if [ "$count" -eq 1 ] && [ -n "${MOCK_DUMP_GATE:-}" ]; then
     done
 fi
 if [ "$count" -eq 1 ] && [ -n "${MOCK_AFTER_FIRST_DUMP_STAT:-}" ]; then
-    printf '%s\n' "${MOCK_AFTER_FIRST_DUMP_STAT_VALUE:-1 (fixture) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 999 0}" \
+    printf '%s\n' "${MOCK_AFTER_FIRST_DUMP_STAT_VALUE:-1 (fixture worker) name) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 999 0}" \
         > "$MOCK_AFTER_FIRST_DUMP_STAT"
 fi
 printf '%s\n' "${MOCK_DUMP_TEXT:-fixture native stack}"
@@ -78,6 +78,30 @@ cat > "$MOCK_BIN/nohup-fail" <<'EOF'
 printf 'simulated launcher failure\n' >&2
 exit 127
 EOF
+cat > "$MOCK_BIN/head" <<'EOF'
+#!/bin/sh
+last_arg=
+for arg do
+    last_arg=$arg
+done
+case "$last_arg" in
+    *"${MOCK_HEAD_DENY_PATTERN:-}"*)
+        if [ -n "${MOCK_HEAD_DENY_PATTERN:-}" ]; then
+            printf 'fixture permission denied\n' >&2
+            exit 13
+        fi
+        ;;
+esac
+"$REAL_HEAD_BIN" "$@"
+rc=$?
+if [ -n "${MOCK_METADATA_MUTATE_STAT:-}" ] && [ ! -e "$MOCK_METADATA_MUTATE_MARKER" ]; then
+    : > "$MOCK_METADATA_MUTATE_MARKER"
+    printf '%s\n' 'changed.process:wrong' > "$MOCK_METADATA_MUTATE_CMDLINE"
+    printf '%s\n' "${MOCK_METADATA_MUTATE_STAT_VALUE:-4242 (fixture worker) name) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 999 0}" \
+        > "$MOCK_METADATA_MUTATE_STAT"
+fi
+exit "$rc"
+EOF
 chmod 755 "$MOCK_BIN"/*
 
 export DD_CAPTURE_ROOT=$CAPTURE_ROOT
@@ -87,6 +111,8 @@ export DD_SLEEP_BIN=$MOCK_BIN/sleep
 export DD_TIMEOUT_BIN=$MOCK_BIN/timeout
 export DD_DEBUGGERD_BIN=$MOCK_BIN/debuggerd
 export DD_PROC_ROOT=$PROC_ROOT
+export DD_HEAD_BIN=$MOCK_BIN/head
+export REAL_HEAD_BIN=$(command -v head)
 export MOCK_UID=0
 export MOCK_PID_RC=0
 export MOCK_DUMP_RC=0
@@ -100,6 +126,11 @@ export MOCK_DUMP_GATE=
 export MOCK_DUMP_RELEASE=$TEST_ROOT/dump.release
 export MOCK_AFTER_FIRST_DUMP_STAT=
 export MOCK_AFTER_FIRST_DUMP_STAT_VALUE=
+export MOCK_METADATA_MUTATE_STAT=
+export MOCK_METADATA_MUTATE_STAT_VALUE=
+export MOCK_METADATA_MUTATE_CMDLINE=
+export MOCK_METADATA_MUTATE_MARKER=$TEST_ROOT/metadata.mutated
+export MOCK_HEAD_DENY_PATTERN=
 
 pass() {
     PASS_COUNT=$((PASS_COUNT + 1))
@@ -165,6 +196,11 @@ reset_calls() {
     MOCK_PID_LIST_2=
     MOCK_AFTER_FIRST_DUMP_STAT=
     MOCK_AFTER_FIRST_DUMP_STAT_VALUE=
+    MOCK_METADATA_MUTATE_STAT=
+    MOCK_METADATA_MUTATE_STAT_VALUE=
+    MOCK_METADATA_MUTATE_CMDLINE=
+    MOCK_HEAD_DENY_PATTERN=
+    rm -f "$MOCK_METADATA_MUTATE_MARKER"
     export MOCK_DUMP_GATE
 }
 
@@ -174,15 +210,37 @@ new_capture() {
     printf '%s\n' "$dir"
 }
 
+make_stat() {
+    pid=$1
+    starttime=${2:-100}
+    awk -v pid="$pid" -v starttime="$starttime" \
+        'BEGIN { printf "%s (fixture worker) name) S", pid; for (i = 4; i <= 21; i++) printf " 0"; printf " %s 0\n", starttime }' \
+        > "$3"
+}
+
+make_thread() {
+    pid=$1
+    tid=$2
+    starttime=${3:-100}
+    thread_dir=$PROC_ROOT/$pid/task/$tid
+    mkdir -p "$thread_dir"
+    make_stat "$tid" "$starttime" "$thread_dir/stat"
+    printf '1 2 3\n' > "$thread_dir/schedstat"
+    printf 'Name:\tEmulationProcess\nState:\tS (sleeping)\n' > "$thread_dir/status"
+    printf 'futex_wait_queue_me\n' > "$thread_dir/wchan"
+    printf 'EmulationProcess\n' > "$thread_dir/comm"
+}
+
 make_process() {
     pid=$1
     first_arg=$2
     starttime=${3:-100}
     mkdir -p "$PROC_ROOT/$pid"
     printf '%s\0fixture-argument\0' "$first_arg" > "$PROC_ROOT/$pid/cmdline"
-    awk -v pid="$pid" -v starttime="$starttime" \
-        'BEGIN { printf "%s (fixture) S", pid; for (i = 4; i <= 21; i++) printf " 0"; printf " %s 0\n", starttime }' \
-        > "$PROC_ROOT/$pid/stat"
+    make_stat "$pid" "$starttime" "$PROC_ROOT/$pid/stat"
+    printf '700ab000-700ac000 r-xp 00000000 00:00 0 /fixture/libcore.so\n' \
+        > "$PROC_ROOT/$pid/maps"
+    make_thread "$pid" "$pid" "$starttime"
 }
 
 run_worker() {
@@ -250,10 +308,24 @@ fi
 assert_file_contains "$SUCCESS/status.txt" 'state=complete' 'success status is complete'
 assert_file_contains "$SUCCESS/run-metadata.txt" "root_uid=0" 'root UID recorded'
 assert_file_contains "$SUCCESS/run-metadata.txt" "selected_expected_name=$EXPECTED" 'expected process recorded'
+assert_file_contains "$SUCCESS/run-metadata.txt" 'identity_pinned_starttime=100' \
+    'starttime parses past a spaced parenthesized comm'
+assert_file_contains "$SUCCESS/run-metadata.txt" 'format=ddstart9-root-stacks-v2' \
+    'metadata format is updated'
+assert_file_contains "$SUCCESS/run-metadata.txt" 'clk_tck=' 'CLK_TCK metadata is recorded'
 assert_file_contains "$SUCCESS/native-stacks.txt" 'fixture native stack' 'native dump output recorded'
+assert_file_contains "$SUCCESS/sample-1-maps.txt" '/fixture/libcore.so' \
+    'sample one maps are captured'
+assert_file_contains "$SUCCESS/sample-2-maps.txt" '/fixture/libcore.so' \
+    'sample two maps are captured'
+assert_file_contains "$SUCCESS/sample-1-threads.txt" 'schedstat' \
+    'sample one thread metadata is captured'
+assert_file_contains "$SUCCESS/sample-2-threads.txt" 'wchan' \
+    'sample two thread metadata is captured'
 assert_equal "$(wc -l < "$MOCK_PIDOF_CALLS")" 2 'pidof is refreshed for each sample'
 assert_equal "$(wc -l < "$MOCK_DEBUGGERD_CALLS")" 2 'two debuggerd calls made'
-assert_equal "$(wc -l < "$MOCK_TIMEOUT_CALLS")" 2 'two bounded timeout calls made'
+assert_equal "$(grep -c 'debuggerd' "$MOCK_TIMEOUT_CALLS")" 2 \
+    'two bounded debuggerd timeout calls made'
 assert_file_contains "$MOCK_TIMEOUT_CALLS" '20 ' 'debuggerd timeout is about 20 seconds'
 assert_file_contains "$MOCK_DEBUGGERD_CALLS" '-b 4242' 'debuggerd target is verified PID'
 assert_equal "$(wc -l < "$MOCK_SLEEP_CALLS")" 2 'delay and sample gap are bounded calls'
@@ -292,7 +364,7 @@ reset_calls
 MOCK_PID_LIST=4242
 export MOCK_PID_LIST
 MOCK_AFTER_FIRST_DUMP_STAT=$PROC_ROOT/4242/stat
-MOCK_AFTER_FIRST_DUMP_STAT_VALUE='4242 (fixture) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 200 0'
+MOCK_AFTER_FIRST_DUMP_STAT_VALUE='4242 (fixture worker) name) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 200 0'
 export MOCK_AFTER_FIRST_DUMP_STAT MOCK_AFTER_FIRST_DUMP_STAT_VALUE
 REUSED_PID=$(new_capture capture-reused-pid)
 run_worker "$REUSED_PID"
@@ -312,6 +384,61 @@ assert_file_contains "$NO_IDENTITY/status.txt" 'missing_stat_starttime' \
     'missing initial identity is explicit'
 assert_equal "$(wc -l < "$MOCK_DEBUGGERD_CALLS")" 0 \
     'missing initial identity gets no debuggerd call'
+make_process 4242 "$EXPECTED" 100
+
+# If identity changes during metadata collection, metadata and debuggerd
+# reject the recycled process rather than silently using it.
+reset_calls
+MOCK_PID_LIST=4242
+MOCK_METADATA_MUTATE_STAT=$PROC_ROOT/4242/stat
+MOCK_METADATA_MUTATE_STAT_VALUE='4242 (fixture worker) name) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 999 0'
+MOCK_METADATA_MUTATE_CMDLINE=$PROC_ROOT/4242/cmdline
+export MOCK_PID_LIST MOCK_METADATA_MUTATE_STAT MOCK_METADATA_MUTATE_STAT_VALUE \
+    MOCK_METADATA_MUTATE_CMDLINE
+IDENTITY_METADATA=$(new_capture capture-identity-before-metadata)
+run_worker "$IDENTITY_METADATA"
+assert_file_contains "$IDENTITY_METADATA/status.txt" 'wrong_first_arg' \
+    'identity change before metadata is explicit'
+assert_equal "$(wc -l < "$MOCK_DEBUGGERD_CALLS")" 0 \
+    'identity change before metadata gets no debuggerd call'
+make_process 4242 "$EXPECTED" 100
+
+# A required maps read failure is retained while stack capture remains
+# nonfatal; completion is explicitly with errors.
+reset_calls
+MOCK_PID_LIST=4242
+MOCK_HEAD_DENY_PATTERN=/maps
+export MOCK_PID_LIST MOCK_HEAD_DENY_PATTERN
+MAP_DENIED=$(new_capture capture-maps-denied)
+run_worker "$MAP_DENIED"
+assert_file_contains "$MAP_DENIED/status.txt" 'process-maps_read_failed_rc=13' \
+    'maps readability failure is explicit'
+assert_file_contains "$MAP_DENIED/status.txt" 'state=complete_with_errors' \
+    'maps failure cannot report successful completion'
+assert_equal "$(wc -l < "$MOCK_DEBUGGERD_CALLS")" 2 \
+    'maps failure still collects both stacks'
+MOCK_HEAD_DENY_PATTERN=
+export MOCK_HEAD_DENY_PATTERN
+
+# More than 128 numeric TIDs is bounded and reported instead of silently
+# truncating thread metadata.
+reset_calls
+MOCK_PID_LIST=4242
+export MOCK_PID_LIST
+i=1
+while [ "$i" -le 129 ]; do
+    make_thread 4242 "$i" 100
+    i=$((i + 1))
+done
+THREAD_BOUND=$(new_capture capture-thread-bound)
+run_worker "$THREAD_BOUND"
+assert_file_contains "$THREAD_BOUND/status.txt" 'thread_cap_reached=128' \
+    'thread enumeration cap is explicit'
+assert_file_contains "$THREAD_BOUND/status.txt" 'state=complete_with_errors' \
+    'thread cap cannot report successful completion'
+assert_file_contains "$THREAD_BOUND/run-metadata.txt" 'max_thread_ids=128' \
+    'thread cap is recorded in metadata'
+rm -rf "$PROC_ROOT/4242/task"
 make_process 4242 "$EXPECTED" 100
 
 # Wrong process: pidof output is not trusted without the immediate /proc
@@ -374,7 +501,7 @@ GATED=$(new_capture capture-gated)
 OLD_MARKER=$(cat "$CAPTURE_ROOT/latest-complete")
 sh "$CAPTURE_SCRIPT" --worker "$GATED" >/dev/null 2>&1 &
 WORKER_PID=$!
-for n in 1 2 3 4 5 6 7 8 9 10; do
+for n in $(awk 'BEGIN { for (i = 1; i <= 250; i++) print i }'); do
     [ -e "$MOCK_DUMP_GATE" ] && break
     /bin/sleep 0.02
 done
@@ -438,7 +565,7 @@ assert_text_contains "$MENU_OUTPUT" 'worker_launch_requested=1' \
     'menu reports launch request without claiming completion'
 assert_file_contains "$MENU_DIR/launcher.log" 'format=ddstart9-launcher-v1' \
     'menu launcher log is created readably'
-for n in 1 2 3 4 5 6 7 8 9 10; do
+for n in $(awk 'BEGIN { for (i = 1; i <= 250; i++) print i }'); do
     [ -e "$CAPTURE_ROOT/latest-complete" ] && \
         grep -F "capture_dir=$MENU_DIR" "$CAPTURE_ROOT/latest-complete" >/dev/null 2>&1 && break
     /bin/sleep 0.02
