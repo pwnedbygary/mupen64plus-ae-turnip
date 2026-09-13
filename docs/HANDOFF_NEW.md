@@ -2472,3 +2472,33 @@ still observe the suspect request when it no longer writes IMEM.
 
 This update supplies a plan only. No DMA/audio correction was implemented, no new
 APK was built, and the overall native repair remains open.
+
+## P00 baseline established on the local Linux host — 2026-09-13
+
+The investigation resumed on a new local host (CachyOS Linux, Retroid Pocket 6
+attached by USB). P00 was executed read-only; see
+[P00_BASELINE.md](P00_BASELINE.md) for the full record. Verified:
+
+- Branch `dd-eos-watchdog-checkpoint` at `9df1b637d`, in sync with origin, clean
+  tracked tree; both documented baseline publications present. Untracked paths
+  are accounted scratch (`.fzxwork/`, `.gradle_home/`, `files/`, generated
+  Gradle daemon properties).
+- `rsp_dma_read` still implements the documented legacy behavior: bank-boundary
+  80-byte clamp, 13-bit destination progression, raw 12-bit skip, 4/8-byte
+  register masking. The captured request decodes exactly as DDSTART11 recorded.
+- The device still installs exactly DDSTART11 (pulled `base.apk` re-hashes to
+  `ffc6459f…cb2df1`). The local stale APK output (`384b673a…`) is not that build.
+- The Phobos reference is locally available as a clean checkout pinned at
+  `f1174e7654141accad40b9ffc2c7d978e93a00f0` with all four plan-named Ares RSP
+  files; the latched-bank/12-bit-offset model was spot-checked. Its DMA-relevant
+  equivalence to the plan's original archive must be confirmed in P01. The raw
+  capture archive is not on this host; the committed analysis carries the evidence.
+- Host suites: callbacks, core IMEM DMA (DDSTART11) and root-stack suites pass.
+  The dynarec-observer test fails to compile under gcc 16 `-Werror`
+  (`new_dynarec.c` unused-variable warnings) and the Mac capture-helper mock
+  suite fails 8/14 on this host — both are toolchain/portability issues of the
+  test harness, recorded as findings, not emulator defects and not baseline
+  changes.
+
+No emulator behavior changed. P01 (complete DMA policy decision table against
+the pinned reference and CXD4) is the next package.
