@@ -60,3 +60,9 @@ tx.exe
 # Release signing
 keystore.properties
 *.keystore
+
+# Local workspace scratch (never publish)
+.fzxwork/
+.gradle_home/
+files/
+gradle/gradle-daemon-jvm.properties
