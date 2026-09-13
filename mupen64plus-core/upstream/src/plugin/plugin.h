@@ -117,6 +117,8 @@ typedef struct _rsp_plugin_functions
 	ptr_DoRspCycles         doRspCycles;
 	ptr_InitiateRSP         initiateRSP;
 	ptr_RomClosed           romClosed;
+	/* Optional DD-only diagnostic bridge; never required for RSP plugins. */
+	void (*setDdStartupDiagnostics)(ptr_DdStartupDiagnosticsCallback, void *);
 } rsp_plugin_functions;
 
 extern rsp_plugin_functions rsp;

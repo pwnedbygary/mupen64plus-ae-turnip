@@ -108,7 +108,8 @@ static const rsp_plugin_functions dummy_rsp = {
     dummyrsp_PluginGetVersion,
     dummyrsp_DoRspCycles,
     dummyrsp_InitiateRSP,
-    dummyrsp_RomClosed
+    dummyrsp_RomClosed,
+    NULL
 };
 
 static GFX_INFO gfx_info;
@@ -447,8 +448,22 @@ static m64p_error plugin_start_input(void)
 
 static void plugin_disconnect_rsp(void)
 {
+    if (rsp.setDdStartupDiagnostics != NULL)
+        rsp.setDdStartupDiagnostics(NULL, NULL);
     rsp = dummy_rsp;
     l_RspAttached = 0;
+}
+
+static void plugin_update_rsp_diagnostics(void)
+{
+    void *context = NULL;
+    ptr_DdStartupDiagnosticsCallback callback = NULL;
+
+    if (rsp.setDdStartupDiagnostics == NULL)
+        return;
+
+    callback = DdStartupDiagnosticsGetCallback(&context);
+    rsp.setDdStartupDiagnostics(callback, context);
 }
 
 static m64p_error plugin_connect_rsp(m64p_dynlib_handle plugin_handle)
@@ -481,6 +496,16 @@ static m64p_error plugin_connect_rsp(m64p_dynlib_handle plugin_handle)
             return M64ERR_INCOMPATIBLE;
         }
 
+        /*
+         * This symbol is optional.  It gives the selected plugin the already
+         * gated core callback without making the historical RSP ABI mandatory.
+         * DD-disabled carts therefore pass a NULL callback even when the
+         * frontend supplied an ordinary core debug callback.
+         */
+        rsp.setDdStartupDiagnostics =
+            (void (*)(ptr_DdStartupDiagnosticsCallback, void *))
+            osal_dynlib_getproc(plugin_handle, "DdStartupDiagnosticsSetCallback");
+        plugin_update_rsp_diagnostics();
         l_RspAttached = 1;
     }
     else
@@ -518,6 +543,9 @@ static m64p_error plugin_start_rsp(void)
     rsp_info.ProcessAlistList = audio.processAList;
     rsp_info.ProcessRdpList = gfx.processRDPList;
     rsp_info.ShowCFB = gfx.showCFB;
+
+    /* Reset the optional observer at each ROM/plugin start boundary. */
+    plugin_update_rsp_diagnostics();
 
     /* call the RSP plugin  */
     rsp.initiateRSP(rsp_info, NULL);

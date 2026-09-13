@@ -20,6 +20,7 @@ add_library(${NAME_PLUGIN_M64P} SHARED
 #		main.cpp
 		parallel.cpp
 #		debug_rsp.cpp
+		rsp_diag.cpp rsp_diag.hpp
 		rsp/vfunctions.cpp
 		rsp_jit.cpp rsp_jit.hpp
 		jit_allocator.cpp jit_allocator.hpp

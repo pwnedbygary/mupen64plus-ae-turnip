@@ -152,6 +152,19 @@ int DdStartupDiagnosticsEnabled(void)
     return dd_startup_diagnostics;
 }
 
+ptr_DdStartupDiagnosticsCallback DdStartupDiagnosticsGetCallback(void **Context)
+{
+    if (Context != NULL)
+        *Context = NULL;
+
+    if (!DdStartupDiagnosticsEnabled() || pDebugFunc == NULL)
+        return NULL;
+
+    if (Context != NULL)
+        *Context = DebugContext;
+    return (ptr_DdStartupDiagnosticsCallback)pDebugFunc;
+}
+
 void DdStartupDiagnosticsTrace(enum dd_startup_trace_kind kind,
                                enum dd_startup_trace_mode mode,
                                const char *message, ...)

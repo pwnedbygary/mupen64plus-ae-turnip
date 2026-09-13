@@ -107,6 +107,11 @@ int main(void)
     setenv("M64P_DD_STARTUP_DIAGNOSTICS", "0", 1);
     SetDebugCallback(capture, NULL);
     assert(!DdStartupDiagnosticsEnabled());
+    {
+        void *context = (void *)1;
+        assert(DdStartupDiagnosticsGetCallback(&context) == NULL);
+        assert(context == NULL);
+    }
     for (unsigned i = 0; i < 300; ++i)
         DebugMessage(M64MSG_VERBOSE, "plain %u", i);
     assert(count == 300);
@@ -116,6 +121,11 @@ int main(void)
     setenv("M64P_DD_STARTUP_DIAGNOSTICS", "1", 1);
     SetDebugCallback(capture, NULL);
     assert(DdStartupDiagnosticsEnabled());
+    {
+        void *context = (void *)1;
+        assert(DdStartupDiagnosticsGetCallback(&context) != NULL);
+        assert(context == NULL);
+    }
     assert(count == 1);
     DebugMessage(M64MSG_VERBOSE, "ignored");
     DebugMessage(M64MSG_STATUS, "ignored");

@@ -2307,3 +2307,62 @@ spaces/parentheses; the parser now locates start time after the final comm
 delimiter and regression fixtures cover changed start times with those names.
 The new maps/thread files use explicit read outcomes, bounded reads and a
 128-thread cap. No claim of device success is made for this enhanced version.
+
+### Enhanced capture retrieved before its completion
+
+Archive `ddstart9-metadata.h8qFXw_1789273779262.zip` has SHA-256
+`3d3d8abe922bf811ac817a9834fa53d6f8dd580d362f7ada8c61c5ced7ab65d1`.
+Its `capture.g1vOZS` targets PID 26570/start time 437212 with root UID 0
+and CLK_TCK 100. Sample 1 maps completed successfully; thread metadata reaches
+00:28:45 UTC−04:00 on 2026-09-13 but is partial. Its own status is still
+`running`; native stacks and both second-sample files are empty.
+
+The archive's shared `latest-complete` instead names `capture.SXe0e8`,
+completed at 00:28:42. That directory is not included in this archive.
+A shared-marker change therefore does not establish completion of the intended
+run. The Mac wait can return prematurely with another attempt outstanding.
+This is incomplete evidence, not proof that the enhanced worker failed.
+
+Retrieve existing `capture.g1vOZS` after its own terminal status, without starting
+another root capture. Do not pair these new maps with the previous process's
+anonymous addresses. A sampled ServiceStartArg thread is running (TID 26612),
+but matching fresh stacks and the second accounting sample remain necessary.
+
+### Completed metadata identifies Parallel-RSP generated code
+
+The completed archive for the same capture now includes both fresh stacks,
+both maps and both accounting sweeps; its own final state is `complete`.
+See [DDSTART9_RSP_OWNERSHIP_ANALYSIS.md](DDSTART9_RSP_OWNERSHIP_ANALYSIS.md)
+for integrity, addresses, exact allocator comparison and accounting values.
+
+Both sampled PCs fall in a `0x76000` execute-only VMA followed by a PROT_NONE
+remainder, together exactly 1 GiB: Parallel-RSP's ARM64 JIT allocation layout.
+The distinct CPU dynarec cache is independently mapped as 32 MiB RWX elsewhere.
+TID 26612 accumulated 44.60 user CPU seconds across about 45 seconds, corroborated
+by 44.642214347 scheduler-runtime seconds. This identifies busy execution on the
+emulation thread with sampled PCs in RSP-generated code, not a native waiting
+thread. It does not establish the exact RSP loop or a compiler bug.
+
+Prepare DDSTART10 as diagnostic-only RSP host-range/IMEM provenance, gated by
+explicit per-game DD activation. Retain DDSTART9's correction and all baseline
+execution semantics. No additional generic root capture is needed before that
+observer exists; the next sample must be paired with its range logs.
+
+### DDSTART10 diagnostic build prepared
+
+[DDSTART10_RSP_PROVENANCE.md](DDSTART10_RSP_PROVENANCE.md) records the optional
+DD-gated core/RSP bridge, exact host ranges, compile-input instruction chunks,
+bounded distinct task identities and actual entry/return counters. DDSTART9
+behavior remains unchanged; no speculative RSP correction is included.
+
+Host tests, focused review fixes and final all-ABI APK assembly passed.
+APK SHA-256 is
+`bcd78f4d0126c8d2fc65fef0f60fb6c6230bf531b3732cf17c964fcfef2139ba`.
+Package and signing identity match DDSTART9. Matching ARM64 symbols are
+preserved locally; no device gameplay or save-regression result is claimed.
+
+The new Mac orchestrator validates that APK, uses `install -r`, starts Core
+logcat before launch, identifies a unique newly launched root capture against
+a pre-launch directory snapshot, and waits on its own status. The already
+installed device helper/one-line entry are unchanged. Return its fresh Desktop
+ZIP for same-process host-range/IMEM correlation; do not mix it with old PCs.

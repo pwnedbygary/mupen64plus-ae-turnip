@@ -26,6 +26,7 @@
 #if !defined(API_CALLBACKS_H)
 #define API_CALLBACKS_H
 
+#include "m64p_common.h"
 #include "m64p_frontend.h"
 #include "m64p_types.h"
 
@@ -38,6 +39,7 @@
 /* Functions for use by the Core, to send information back to the front-end app */
 extern m64p_error SetDebugCallback(ptr_DebugCallback pFunc, void *Context);
 extern int DdStartupDiagnosticsEnabled(void);
+extern ptr_DdStartupDiagnosticsCallback DdStartupDiagnosticsGetCallback(void **Context);
 enum dd_startup_trace_kind
 {
     DD_TRACE_REGISTER_COMMAND = 0,

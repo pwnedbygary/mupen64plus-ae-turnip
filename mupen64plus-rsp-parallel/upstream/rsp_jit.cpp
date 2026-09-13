@@ -1,5 +1,6 @@
 #include "rsp_jit.hpp"
 #include "rsp_disasm.hpp"
+#include "rsp_diag.hpp"
 #include <utility>
 #include <assert.h>
 
@@ -43,9 +44,33 @@ CPU::~CPU()
 
 void CPU::invalidate_imem()
 {
+	bool changed = false;
 	for (unsigned i = 0; i < CODE_BLOCKS; i++)
 		if (memcmp(cached_imem + i * CODE_BLOCK_WORDS, state.imem + i * CODE_BLOCK_WORDS, CODE_BLOCK_SIZE))
+		{
 			state.dirty_blocks |= (0x3 << i) >> 1;
+			changed = true;
+		}
+
+	if (changed)
+		diagnostic_imem_hash_valid = false;
+}
+
+void CPU::set_diagnostics_enabled(bool enabled)
+{
+	diagnostics_enabled = enabled;
+	reported_cache_hits.clear();
+	diagnostic_imem_hash_valid = false;
+}
+
+uint64_t CPU::diagnostic_imem_hash()
+{
+	if (!diagnostic_imem_hash_valid)
+	{
+		cached_diagnostic_imem_hash = hash_imem(0, IMEM_WORDS);
+		diagnostic_imem_hash_valid = true;
+	}
+	return cached_diagnostic_imem_hash;
 }
 
 void CPU::invalidate_code()
@@ -450,6 +475,7 @@ Func CPU::get_jit_block(uint32_t pc)
 	pc &= IMEM_SIZE - 1;
 	uint32_t word_pc = pc >> 2;
 	auto &block = blocks[word_pc];
+	bool cache_hit = block != nullptr;
 
 	if (!block)
 	{
@@ -461,9 +487,39 @@ Func CPU::get_jit_block(uint32_t pc)
 		uint64_t hash = hash_imem(word_pc, end - word_pc);
 		auto &ptr = cached_blocks[word_pc][hash];
 		if (ptr)
+		{
 			block = ptr;
+			cache_hit = true;
+		}
 		else
+		{
 			block = ptr = jit_region(hash, word_pc, end - word_pc);
+		}
+	}
+
+	/*
+	 * A region can have been compiled before DD diagnostics were enabled.
+	 * Report a cache-selected region once per session so that a later capture
+	 * still has its exact host range and IMEM provenance without logging every
+	 * execution of the block.
+	 */
+	if (cache_hit && diagnostics_enabled && Diagnostics::enabled())
+	{
+		const uintptr_t host_entry = reinterpret_cast<uintptr_t>(block);
+		if (reported_cache_hits.emplace(host_entry, true).second)
+		{
+			auto it = region_provenance.find(host_entry);
+			if (it != region_provenance.end())
+			{
+				const auto &provenance = it->second;
+				Diagnostics::trace_jit(
+				    provenance.host_start, provenance.host_end,
+				    provenance.imem_start_pc, provenance.instruction_count,
+				    provenance.existing_region_hash, "cache-hit");
+			}
+			else
+				Diagnostics::trace_jit_range_unavailable(host_entry);
+		}
 	}
 	return block;
 }
@@ -1911,6 +1967,26 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 
 	if (!Allocator::commit_code(block_code, code_size))
 		abort();
+
+	if (diagnostics_enabled && Diagnostics::enabled())
+	{
+		const RegionProvenance provenance = {
+			reinterpret_cast<uintptr_t>(block_code),
+			reinterpret_cast<uintptr_t>(block_code) + code_size,
+			pc_word << 2,
+			instruction_count,
+			hash
+		};
+		region_provenance[reinterpret_cast<uintptr_t>(ret)] = provenance;
+		Diagnostics::trace_jit(
+		    provenance.host_start, provenance.host_end,
+		    provenance.imem_start_pc, provenance.instruction_count,
+		    provenance.existing_region_hash, "commit");
+		Diagnostics::trace_jit_compile_words(
+		    provenance.host_start, provenance.imem_start_pc,
+		    state.imem + pc_word, instruction_count);
+		reported_cache_hits.emplace(reinterpret_cast<uintptr_t>(ret), true);
+	}
 	return ret;
 }
 

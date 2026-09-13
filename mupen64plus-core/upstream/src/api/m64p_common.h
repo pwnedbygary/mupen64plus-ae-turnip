@@ -33,6 +33,13 @@
 extern "C" {
 #endif
 
+/*
+ * Optional diagnostic callback used by the DD-only RSP provenance bridge.
+ * This is deliberately separate from the mandatory plugin entry points: old
+ * RSP plugins remain loadable when they do not export the optional setter.
+ */
+typedef void (*ptr_DdStartupDiagnosticsCallback)(void *, int, const char *);
+
 /* PluginGetVersion()
  *
  * This function retrieves version information from a library. This
