@@ -360,6 +360,10 @@ const Case kCases[] = {
 	 0x000010ff, Kind::Legacy, false, 64, 32},
 	{"D22b", "raw unaligned skip, word-floor source", 0x0100, 0x00001000,
 	 0x1230203f, Kind::Legacy, false, 48, 0},
+	{"X1", "plain full-IMEM load: no crossing tag", 0x1000, 0x00007000,
+	 0x00000fff, Kind::Legacy, true, 1024, 1024},
+	{"X2", "genuine DMEM-started crossing across rows", 0x0ff0,
+	 0x00008000, 0x0000101f, Kind::Legacy, true, 8, 4},
 	{"D14L", "legacy 4-byte SP alignment at 4-mod-8", 0x1ab4, 0x00006000,
 	 0x0000001f, Kind::Legacy, false, 8, 8},
 	// ---- Corrected expectations (production corrected arm, P04) ----
@@ -409,6 +413,25 @@ bool parse_u32_field(const std::string &lines, const char *field,
 		return false;
 	*out = strtoull(lines.c_str() + pos + strlen(field), nullptr, 10);
 	return true;
+}
+
+bool parse_hex_field(const std::string &lines, const char *field,
+                     uint64_t *out)
+{
+	const size_t pos = lines.rfind(field);
+	if (pos == std::string::npos)
+		return false;
+	*out = strtoull(lines.c_str() + pos + strlen(field), nullptr, 16);
+	return true;
+}
+
+unsigned count_substring(const std::string &text, const char *needle)
+{
+	unsigned count = 0;
+	for (size_t pos = text.find(needle); pos != std::string::npos;
+	     pos = text.find(needle, pos + 1))
+		++count;
+	return count;
 }
 
 struct Diff
@@ -552,6 +575,60 @@ void run_case(const Case &c, Result (*oracle)(uint32_t, uint32_t, uint32_t),
 			       " imem_writes=%" PRIu64 " (matches DDSTART11 record)\n",
 			       c.id, payload_words, imem_writes);
 		}
+
+		/* P05 evidence-contract fields on the same emitted record. */
+		{
+			uint64_t policy = 0, trigger = 0, eligible = 0, actual = 0;
+			uint64_t skip_effective = 0, probe_skipped = 0;
+			uint64_t final_cache = 0, final_dram = 0;
+			const bool have =
+			    parse_u32_field(all, "policy=", &policy)
+			    && parse_u32_field(all, "trigger=", &trigger)
+			    && parse_u32_field(all, "capture_eligible=", &eligible)
+			    && parse_u32_field(all, "actual_imem_writes=", &actual)
+			    && parse_u32_field(all, "skip_effective=", &skip_effective)
+			    && parse_u32_field(all, "probe_skipped=", &probe_skipped)
+			    && parse_hex_field(all, "final_cache=0x", &final_cache)
+			    && parse_hex_field(all, "final_dram=0x", &final_dram);
+			const bool corrected_mode = oracle_name[0] == 'c';
+			uint64_t want_trigger = 0;
+			if (c.len == 0xffffffffu
+			    && (c.dram & 0x00ffffffu) == 0)
+				want_trigger = 1;
+			else if (!corrected_mode
+			         && (c.cache & 0x1000u) == 0
+			         && c.oracle_imem != 0)
+				want_trigger = 2;
+			const uint64_t want_skip_effective =
+			    corrected_mode
+			        ? ((c.len >> 20) & 0xFFF) & 0xFF8
+			        : ((c.len >> 20) & 0xFFF);
+			if (!have || policy != (corrected_mode ? 1u : 0u)
+			    || trigger != want_trigger || eligible == 0
+			    || actual != c.oracle_imem
+			    || skip_effective != want_skip_effective
+			    || probe_skipped != 0
+			    || final_cache != expected.final_cache
+			    || final_dram != expected.final_dram)
+			{
+				fprintf(stderr,
+				        "[FAIL] %s: P05 contract fields wrong "
+				        "(policy=%llu trigger=%llu eligible=%llu "
+				        "actual=%llu skip_eff=%llu probe=%llu "
+				        "final=%llx/%llx want %llx/%llx)\n",
+				        c.id, (unsigned long long)policy,
+				        (unsigned long long)trigger,
+				        (unsigned long long)eligible,
+				        (unsigned long long)actual,
+				        (unsigned long long)skip_effective,
+				        (unsigned long long)probe_skipped,
+				        (unsigned long long)final_cache,
+				        (unsigned long long)final_dram,
+				        (unsigned long long)expected.final_cache,
+				        (unsigned long long)expected.final_dram);
+				g_failures++;
+			}
+		}
 	}
 
 	if (diffs.empty())
@@ -564,6 +641,77 @@ void run_case(const Case &c, Result (*oracle)(uint32_t, uint32_t, uint32_t),
 	for (const auto &d : diffs)
 		fprintf(stderr, "       %s: %s\n", d.field, d.detail.c_str());
 	g_failures++;
+}
+
+/* P05: the suspect request recurs every audio task.  The first four
+ * occurrences emit detailed trigger snapshots (dedup-exempt, own budget);
+ * later occurrences are counted, reported once as exhaustion, and summarized
+ * at diagnostics re-registration.  Guest behavior must be identical in every
+ * run, and the GPR snapshot must capture the live t9/k0 registers (origin:
+ * exact, per the static DDSTART11 helper analysis). */
+void run_trigger_duplicates()
+{
+	g_trace_lines.clear();
+	RSP::Diagnostics::set_callback(&trace_capture, nullptr);
+	g_state.cpu.sr[25] = 0x12345678; // t9
+	g_state.cpu.sr[26] = 0x0abcdef0; // k0
+	int bad = 0;
+	for (int iter = 0; iter < 6; ++iter)
+	{
+		g_state.refill();
+		const uint32_t mode = production_dma_read(0x0fb0, 0, 0xffffffff);
+		g_state.last_read_mode = mode;
+		const Result expected = oracle_corrected(0x0fb0, 0, 0xffffffff);
+		const std::vector<Diff> diffs = compare(expected);
+		if (!diffs.empty())
+		{
+			if (bad == 0)
+				fprintf(stderr,
+				        "[FAIL] T-dup run %d diverged: %s: %s\n",
+				        iter, diffs[0].field,
+				        diffs[0].detail.c_str());
+			bad++;
+		}
+	}
+	if (bad != 0)
+	{
+		fprintf(stderr, "[FAIL] T-dup: %d/6 runs changed guest state\n", bad);
+		g_failures++;
+		return;
+	}
+
+	/* Resetting diagnostics emits the session summary while the capture is
+	 * still installed, then clears the budget state. */
+	RSP::Diagnostics::set_callback(nullptr, nullptr);
+
+	std::string all;
+	for (const auto &l : g_trace_lines)
+		all += l + "\n";
+	const unsigned snapshots = count_substring(all, "trigger=1 ");
+	const unsigned exhaustion =
+	    count_substring(all, "DDSTART11 RSP trigger_budget exhaustion");
+	uint64_t summary_snapshots = 0, summary_duplicates = 0;
+	const bool have_summary =
+	    parse_u32_field(all, "trigger_summary snapshots=", &summary_snapshots)
+	    && parse_u32_field(all, "duplicates=", &summary_duplicates);
+	uint64_t t9 = 0, k0 = 0;
+	const bool have_gprs = parse_hex_field(all, "t9=0x", &t9)
+	    && parse_hex_field(all, "k0=0x", &k0);
+	if (snapshots != 4 || exhaustion != 1 || !have_summary
+	    || summary_snapshots != 4 || summary_duplicates != 2 || !have_gprs
+	    || t9 != 0x12345678u || k0 != 0x0abcdef0u)
+	{
+		fprintf(stderr,
+		        "[FAIL] T-dup: snapshots=%u exhaustion=%u summary=%llu/%llu "
+		        "have_summary=%d t9=0x%llx k0=0x%llx\n",
+		        snapshots, exhaustion, (unsigned long long)summary_snapshots,
+		        (unsigned long long)summary_duplicates, have_summary ? 1 : 0,
+		        (unsigned long long)t9, (unsigned long long)k0);
+		g_failures++;
+		return;
+	}
+	printf("[PASS] T-dup (4 trigger snapshots, duplicates counted and "
+	       "summarized, guest state unchanged, GPR capture exact)\n");
 }
 
 /* D23: pin the rsp_dma_write path (deliberately unchanged by the repair). */
@@ -768,6 +916,7 @@ int main(int argc, char **argv)
 			if (c.kind == Kind::Shared || c.kind == Kind::Corrected)
 				run_case(c, oracle_corrected, "corrected");
 		}
+		run_trigger_duplicates();
 		RSP::DdRuntimePolicySet(0);
 	}
 

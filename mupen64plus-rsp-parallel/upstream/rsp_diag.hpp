@@ -16,6 +16,36 @@ using DebugCallback = void (*)(void *, int, const char *);
 
 constexpr unsigned DMA_IMEM_SAMPLE_COUNT = 4;
 constexpr unsigned DMA_TASK_WORD_COUNT = 16;
+constexpr unsigned DMA_GPR_SNAPSHOT_COUNT = 32;
+/*
+ * P05 trigger snapshots are bounded independently of the ordinary DMA
+ * record budget (repair plan section 7): at most four detailed snapshots of
+ * the suspect request shape per session, with duplicates counted and
+ * reported rather than silently suppressed.
+ */
+constexpr unsigned DMA_TRIGGER_SNAPSHOT_BUDGET = 4;
+/* Version of the DmaReadObservation record contract emitted below. */
+constexpr unsigned DMA_OBSERVATION_SCHEMA_VERSION = 2;
+
+enum DmaTriggerReason : uint32_t
+{
+	DMA_TRIGGER_NONE = 0,
+	/* Raw shape observed in DDSTART11: zero extracted size (length
+	 * register 0xffffffff after the microcode decrement) with a zero
+	 * 24-bit DRAM address.  Logging-only; never alters behavior. */
+	DMA_TRIGGER_SUSPECT_REQUEST = 1,
+	/* Legacy arm wrote IMEM from a DMEM-started transfer (the DDSTART11
+	 * corruption shape; only possible under legacy policy). */
+	DMA_TRIGGER_LEGACY_CROSSING = 2
+};
+
+enum DmaProbeSkipReason : uint32_t
+{
+	DMA_PROBE_SKIP_NONE = 0,
+	/* Ordinary eligibility was not met: IMEM hash/range probes were not
+	 * taken for this event (trigger snapshots still emit). */
+	DMA_PROBE_SKIP_NOT_ELIGIBLE = 1
+};
 
 struct DmaReadObservation
 {
@@ -51,6 +81,29 @@ struct DmaReadObservation
 	uint16_t imem_bank_mask;
 	unsigned imem_range_count;
 	unsigned imem_write_word_count;
+	/*
+	 * P05 evidence contract (schema version 2).  A captured event does not
+	 * by itself mean IMEM was touched or that every probe succeeded: use
+	 * trigger_reason / capture_eligible / probe_skipped /
+	 * actual_imem_write_count to classify.  The GPR snapshot is taken at
+	 * the MTC0 launch from the live guest registers (origin: exact, not
+	 * reconstructed from memory) so the operands that produced the raw
+	 * request survive any later DMEM overwrite.
+	 */
+	uint32_t schema_version;
+	uint32_t policy_corrected;
+	uint32_t trigger_reason;
+	uint32_t capture_eligible;
+	uint32_t probe_skipped;
+	uint32_t probe_skip_reason;
+	uint32_t actual_imem_write_count;
+	uint32_t skip_effective;
+	uint32_t dirty_blocks_after;
+	uint32_t final_dma_cache;
+	uint32_t final_dma_dram;
+	uint32_t sp_pc;
+	uint32_t gpr_snapshot[DMA_GPR_SNAPSHOT_COUNT];
+	uint64_t entry_generation;
 };
 
 void set_callback(DebugCallback callback, void *context);
@@ -70,5 +123,7 @@ bool trace_rsp_entry(uint64_t task_hash, uint64_t imem_hash,
                      const uint32_t *task_words = nullptr);
 void trace_rsp_dma_read(const DmaReadObservation &observation);
 void rsp_return();
+/* Monotonic task-entry generation for stamping DMA observations. */
+uint64_t entry_generation();
 } // namespace Diagnostics
 } // namespace RSP

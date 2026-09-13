@@ -33,6 +33,18 @@ std::atomic<unsigned> g_dma_records(0);
 std::atomic<unsigned long long> g_imem_dma_sequence(0);
 std::atomic<bool> g_dma_exhausted(false);
 
+/*
+ * P05 trigger-snapshot budget: independent of the ordinary DMA record
+ * budget so a suspect request stays observable even when the DDSTART11
+ * budget is exhausted, and exempt from identity dedup so recurrences of
+ * the same raw request are not silently swallowed.  Duplicates beyond the
+ * budget are counted and reported (once at exhaustion, and in a session
+ * summary when the diagnostics are re-registered or detached).
+ */
+std::atomic<unsigned> g_trigger_remaining(0);
+std::atomic<unsigned> g_trigger_duplicates(0);
+std::atomic<bool> g_trigger_exhausted(false);
+
 std::atomic<unsigned> g_entry_remaining(0);
 std::atomic<unsigned> g_entry_seen(0);
 std::atomic<bool> g_entry_exhausted(false);
@@ -158,6 +170,24 @@ void set_callback(DebugCallback callback, void *context)
 	 * starts, or while it is stopped.  Atomics make accidental observer reads
 	 * during teardown benign without adding a lock to DoRspCycles.
 	 */
+	{
+		/* Session summary for the P05 trigger budget, emitted while the
+		 * previous callback (if any) is still registered. */
+		const unsigned snapshots =
+		    DMA_TRIGGER_SNAPSHOT_BUDGET - g_trigger_remaining.load(
+		                                     std::memory_order_relaxed);
+		const unsigned duplicates =
+		    g_trigger_duplicates.load(std::memory_order_relaxed);
+		if (snapshots != 0 || duplicates != 0)
+		{
+			char summary[160];
+			snprintf(summary, sizeof(summary),
+			         "DDSTART11 RSP trigger_summary snapshots=%u "
+			         "duplicates=%u limit=%u",
+			         snapshots, duplicates, DMA_TRIGGER_SNAPSHOT_BUDGET);
+			emit(summary);
+		}
+	}
 	g_callback.store(callback, std::memory_order_release);
 	g_context.store(context, std::memory_order_release);
 	g_enabled.store(callback != nullptr, std::memory_order_release);
@@ -172,6 +202,10 @@ void set_callback(DebugCallback callback, void *context)
 	g_dma_records.store(0, std::memory_order_relaxed);
 	g_imem_dma_sequence.store(0, std::memory_order_relaxed);
 	g_dma_exhausted.store(false, std::memory_order_relaxed);
+	g_trigger_remaining.store(DMA_TRIGGER_SNAPSHOT_BUDGET,
+	                          std::memory_order_relaxed);
+	g_trigger_duplicates.store(0, std::memory_order_relaxed);
+	g_trigger_exhausted.store(false, std::memory_order_relaxed);
 	g_entry_remaining.store(RSP_ENTRY_RECORD_BUDGET, std::memory_order_relaxed);
 	g_entry_seen.store(0, std::memory_order_relaxed);
 	g_entry_exhausted.store(false, std::memory_order_relaxed);
@@ -343,6 +377,11 @@ bool trace_rsp_entry(uint64_t task_hash, uint64_t imem_hash,
 	return true;
 }
 
+uint64_t entry_generation()
+{
+	return g_entry_count.load(std::memory_order_relaxed);
+}
+
 void trace_rsp_dma_read(const DmaReadObservation &observation)
 {
 	char message[4096];
@@ -353,6 +392,25 @@ void trace_rsp_dma_read(const DmaReadObservation &observation)
 		return;
 
 	sequence = g_imem_dma_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+
+	/*
+	 * Trigger snapshots bypass the identity dedup (a recurring suspect
+	 * request must stay observable) and use their own budget.  Duplicates
+	 * beyond the budget are counted and reported once; they never emit a
+	 * per-occurrence line, so logging stays bounded.
+	 */
+	if (observation.trigger_reason != DMA_TRIGGER_NONE)
+	{
+		if (!reserve(g_trigger_remaining))
+		{
+			g_trigger_duplicates.fetch_add(1, std::memory_order_relaxed);
+			emit_dd11_exhaustion(g_trigger_exhausted, "trigger_budget",
+			                     DMA_TRIGGER_SNAPSHOT_BUDGET);
+			return;
+		}
+	}
+	else
+	{
 	for (unsigned i = 0; i < g_seen_dma_identity_count; ++i)
 	{
 		const DmaIdentity &identity = g_seen_dma_identities[i];
@@ -391,6 +449,7 @@ void trace_rsp_dma_read(const DmaReadObservation &observation)
 		emit_dd11_exhaustion(g_dma_exhausted, "dma_read", DMA_RECORD_BUDGET);
 		return;
 	}
+	}
 	const unsigned record = g_dma_records.fetch_add(1, std::memory_order_relaxed) + 1;
 	int length = snprintf(
 	    message, sizeof(message),
@@ -405,7 +464,11 @@ void trace_rsp_dma_read(const DmaReadObservation &observation)
 	    "first_imem_range=0x%03x-0x%03x imem_bank_mask=0x%x "
 	    "imem_min=0x%03x imem_max=0x%03x imem_range_count=%u "
 	    "imem_write_word_count=%u payload_samples_truncated=%u "
-	    "payload_first=[",
+	    "schema=%u policy=%u trigger=%u capture_eligible=%u "
+	    "probe_skipped=%u probe_skip_reason=%u actual_imem_writes=%u "
+	    "skip_effective=%u dirty_after=0x%08x final_cache=0x%08x "
+	    "final_dram=0x%08x entry_generation=%llu sp_pc=0x%04x "
+	    "t9=0x%08x k0=0x%08x gprs=[",
 	    record, sequence,
 	    (unsigned long long)g_entry_count.load(std::memory_order_relaxed),
 	    observation.raw_dma_cache, observation.raw_dma_dram,
@@ -424,7 +487,22 @@ void trace_rsp_dma_read(const DmaReadObservation &observation)
 	    observation.imem_bank_mask, observation.imem_min_start,
 	    observation.imem_max_end, observation.imem_range_count,
 	    observation.imem_write_word_count,
-	    observation.payload_samples_truncated ? 1 : 0);
+	    observation.payload_samples_truncated ? 1 : 0,
+	    observation.schema_version,
+	    observation.policy_corrected,
+	    observation.trigger_reason,
+	    observation.capture_eligible,
+	    observation.probe_skipped,
+	    observation.probe_skip_reason,
+	    observation.actual_imem_write_count,
+	    observation.skip_effective,
+	    observation.dirty_blocks_after,
+	    observation.final_dma_cache,
+	    observation.final_dma_dram,
+	    (unsigned long long)observation.entry_generation,
+	    observation.sp_pc,
+	    observation.gpr_snapshot[25],
+	    observation.gpr_snapshot[26]);
 	for (unsigned i = 0;
 	     i < observation.payload_first_count && length < (int)sizeof(message);
 	     ++i)
@@ -472,6 +550,16 @@ void trace_rsp_dma_read(const DmaReadObservation &observation)
 	{
 		length += snprintf(message + length, sizeof(message) - length,
 		                   "%s%08x", i == 0 ? "" : ",", g_task_snapshot[i]);
+	}
+	length += snprintf(message + length, sizeof(message) - length,
+	                   "] gprs_full=[");
+	for (unsigned i = 0;
+	     i < DMA_GPR_SNAPSHOT_COUNT && length < (int)sizeof(message);
+	     ++i)
+	{
+		length += snprintf(message + length, sizeof(message) - length,
+		                   "%s%08x", i == 0 ? "" : ",",
+		                   observation.gpr_snapshot[i]);
 	}
 	snprintf(message + (length < (int)sizeof(message) ? length : sizeof(message) - 1),
 	         length < (int)sizeof(message) ? sizeof(message) - length : 1, "]");

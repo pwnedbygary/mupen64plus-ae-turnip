@@ -311,10 +311,31 @@ extern "C"
 		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] = source & 0x00ffffff;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] = (region << 12) | dest_offset;
 
-		if (diagnostics_eligible)
+		observation.policy_corrected = 1;
+		observation.capture_eligible = diagnostics_eligible ? 1 : 0;
+		if (diagnostics_enabled && !diagnostics_eligible)
 		{
-			observation.imem_after_hash = dma_hash_imem(rsp->imem);
-			dma_imem_samples(rsp->imem, observation.imem_after_samples);
+			observation.probe_skipped = 1;
+			observation.probe_skip_reason =
+			    RSP::Diagnostics::DMA_PROBE_SKIP_NOT_ELIGIBLE;
+		}
+		observation.skip_effective = skip;
+		observation.dirty_blocks_after = rsp->dirty_blocks;
+		observation.final_dma_cache =
+		    *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE];
+		observation.final_dma_dram = *rsp->cp0.cr[CP0_REGISTER_DMA_DRAM];
+		observation.actual_imem_write_count =
+		    observation.imem_write_word_count;
+
+		if (diagnostics_eligible
+		    || observation.trigger_reason == RSP::Diagnostics::DMA_TRIGGER_SUSPECT_REQUEST)
+		{
+			if (diagnostics_eligible)
+			{
+				observation.imem_after_hash = dma_hash_imem(rsp->imem);
+				dma_imem_samples(rsp->imem,
+				                 observation.imem_after_samples);
+			}
 			RSP::Diagnostics::trace_rsp_dma_read(observation);
 		}
 
@@ -330,6 +351,12 @@ extern "C"
 		unsigned count = (length_reg >> 12) & 0xFF;
 		const bool diagnostics_enabled = RSP::Diagnostics::enabled();
 		RSP::Diagnostics::DmaReadObservation observation;
+		/* The emission gates read these unconditionally; keep them
+		 * defined even when diagnostics are off (the trace itself stays
+		 * gated). */
+		observation.trigger_reason =
+		    RSP::Diagnostics::DMA_TRIGGER_NONE;
+		observation.policy_corrected = 0;
 
 		if (diagnostics_enabled)
 		{
@@ -342,6 +369,34 @@ extern "C"
 			observation.count = count;
 			observation.transfer_count = count + 1;
 			observation.skip = skip;
+		}
+
+		/*
+		 * P05 evidence contract captures.  The guest GPR/PC snapshot is
+		 * taken at the MTC0 launch from the live registers (origin:
+		 * exact), so the operands that produced the raw request survive
+		 * any later DMEM overwrite.  The suspect-request trigger is the
+		 * raw shape demonstrated in DDSTART11: a zero extracted size
+		 * (length register 0xffffffff after the microcode decrement)
+		 * with a zero 24-bit DRAM address.  It is a logging-only
+		 * condition and never alters behavior.
+		 */
+		if (diagnostics_enabled)
+		{
+			observation.schema_version =
+			    RSP::Diagnostics::DMA_OBSERVATION_SCHEMA_VERSION;
+			observation.entry_generation =
+			    RSP::Diagnostics::entry_generation();
+			observation.sp_pc = rsp->pc;
+			for (unsigned gpr = 0;
+			     gpr < RSP::Diagnostics::DMA_GPR_SNAPSHOT_COUNT; ++gpr)
+				observation.gpr_snapshot[gpr] = rsp->sr[gpr];
+			observation.trigger_reason =
+			    (length_reg == 0xffffffffu
+			         && (*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM]
+			             & 0x00ffffffu) == 0)
+			        ? RSP::Diagnostics::DMA_TRIGGER_SUSPECT_REQUEST
+			        : RSP::Diagnostics::DMA_TRIGGER_NONE;
 		}
 
 		/*
@@ -371,6 +426,9 @@ extern "C"
 		unsigned i = 0;
 		uint32_t source = *rsp->cp0.cr[CP0_REGISTER_DMA_DRAM];
 		uint32_t dest = *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE];
+		/* Start bank, captured before the row advance mutates dest:
+		 * bit 12 survives the 4-byte alignment mask. */
+		const bool started_in_dmem = (dest & 0x1000u) == 0;
 		const bool diagnostics_eligible =
 		    diagnostics_enabled
 		    && RSP::Diagnostics::imem_dma_eligible(
@@ -424,10 +482,38 @@ extern "C"
 		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] = source;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] = dest;
 
-		if (diagnostics_eligible)
+		observation.policy_corrected = 0;
+		observation.capture_eligible = diagnostics_eligible ? 1 : 0;
+		if (diagnostics_enabled && !diagnostics_eligible)
 		{
-			observation.imem_after_hash = dma_hash_imem(rsp->imem);
-			dma_imem_samples(rsp->imem, observation.imem_after_samples);
+			observation.probe_skipped = 1;
+			observation.probe_skip_reason =
+			    RSP::Diagnostics::DMA_PROBE_SKIP_NOT_ELIGIBLE;
+		}
+		observation.skip_effective = skip;
+		observation.dirty_blocks_after = rsp->dirty_blocks;
+		observation.final_dma_cache = dest;
+		observation.final_dma_dram = source;
+		observation.actual_imem_write_count =
+		    observation.imem_write_word_count;
+		if (observation.trigger_reason == RSP::Diagnostics::DMA_TRIGGER_NONE
+		    && started_in_dmem
+		    && observation.imem_write_word_count != 0)
+		{
+			/* A DMEM-started legacy transfer that actually wrote IMEM:
+			 * the DDSTART11 corruption shape (informational reason on
+			 * the ordinary record path). */
+			observation.trigger_reason = RSP::Diagnostics::DMA_TRIGGER_LEGACY_CROSSING;
+		}
+
+		if (diagnostics_eligible
+		    || observation.trigger_reason == RSP::Diagnostics::DMA_TRIGGER_SUSPECT_REQUEST)
+		{
+			if (diagnostics_eligible)
+			{
+				observation.imem_after_hash = dma_hash_imem(rsp->imem);
+				dma_imem_samples(rsp->imem, observation.imem_after_samples);
+			}
 			RSP::Diagnostics::trace_rsp_dma_read(observation);
 		}
 
