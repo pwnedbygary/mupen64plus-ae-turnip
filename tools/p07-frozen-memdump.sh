@@ -41,7 +41,10 @@ RSP_WINDOW_BYTES=8192
 CURTASK_OFF_HEX=771D68
 
 # awk hex helper: parse hex-digit strings exactly (doubles are exact below
-# 2^53) and print decimal. Usage: a64 <hexstring> +|- <hexstring>
+# 2^53). Usage: a64 <hexstring> +|- <hexstring>  -> decimal (for dd)
+#               a64 <hexstring> round ""          -> HEX to the next 64 KiB
+# boundary (posix_memalign alignment in mupen64plus-core memory.c); it must
+# stay hex so the result can be fed to the other operations unchanged.
 a64() {
     awk -v a="$1" -v op="$2" -v b="$3" '
         function h2d(s,   v,i,d,ch){ v=0
@@ -52,8 +55,13 @@ a64() {
                 v=v*16+d
             }
             return v }
+        function d2h(v,   s,r,dig){ dig="0123456789abcdef"; s=""
+            if (v==0) return "0"
+            while (v>0) { r=v-int(v/16)*16; s=substr(dig,r+1,1) s; v=int(v/16) }
+            return s }
         BEGIN { x=h2d(a); y=h2d(b)
-            printf "%.0f", (op=="-") ? x-y : x+y }'
+            if (op=="round") printf "%s", d2h(int((x + 65535) / 65536) * 65536)
+            else printf "%.0f", (op=="-") ? x-y : x+y }'
 }
 
 DIR=/sdcard/Download/p07-memdump-$(date '+%Y%m%d-%H%M%S')
@@ -104,18 +112,23 @@ for region in $(grep 'rw-p' /proc/$PID/maps 2>/dev/null \
     # Compare in awk: device `[` wraps decimal operands >= 2^31.
     big=$(awk -v s="$size" 'BEGIN{print (s >= 500000000) ? 1 : 0}')
     [ "$big" = "1" ] || continue
-    BASE=$s
+    BASE_MAP_START=$s
     BASE_SIZE=$size
     break
 done
 
-if [ -z "$BASE" ]; then
+if [ -z "$BASE_MAP_START" ]; then
     echo "p07-memdump: mem_base mapping not found; see $DIR/run-metadata.txt"
     exit 1
 fi
+# mem_base is the 64 KiB-aligned posix_memalign pointer inside the mapping
+# (the mapping start itself need not be aligned; the first capture proved a
+# +0x1000 interior offset). Round up rather than using the raw map start.
+BASE=$(a64 "$BASE_MAP_START" round "")
 RSP_PHYS=$(a64 "$BASE" + "$MM_RSP_MEM_HEX")
 CURTASK_PHYS=$(a64 "$BASE" + "$CURTASK_OFF_HEX")
 {
+    echo "mem_base_map_start=0x$BASE_MAP_START"
     echo "mem_base=0x$BASE"
     echo "mem_base_size=$BASE_SIZE"
     echo "rsp_mem_phys=$RSP_PHYS"

@@ -3229,3 +3229,58 @@ Next: run the launcher, pull /sdcard/Download/p07-memdump-<timestamp>/,
   both slots), command buffer bytes, DMEM state (the s7+4 counter), IMEM vs
   the aspMain image, and the identity/read_ok/stopped fields.
 ```
+
+## P07 COMPLETE: the consumed command is a zero word in a zeroed 3 MB heap — 2026-09-14
+
+```markdown
+Package: P07 — Identify the consumed audio command and its validity (COMPLETE:
+  input explained at the buffer level; P08 identified as the next package)
+Baseline / Reviewed snapshot: dd-eos-watchdog-checkpoint @ f6b74c3ab;
+  capture p07-memdump-20260914-113959 (device root, uid=0, coherent:
+  stopped_state=T and both windows read at exact lengths with rc=0; the
+  sampled word at the mapping-relative curtask offset was identical before
+  and after the stop — note that sample used the unrounded base, so
+  coherence rests on the STOP state and the read results);
+  local copies in .fzxwork/p07-final/ (never published); new script
+  revision rounds mem_base to the 64 KiB alignment after the first capture
+  proved a +0x1000 interior offset.
+Verified observations (exact):
+  - Active task: gCurAudioTask 0x806EEAA0 (rspTask[0]); descriptor type 2,
+    data_ptr 0x80411910, data_size 0x1a0 — matches the P05 task words except
+    the two KSEG0-bit forms (stored virtual 0x80768e60/0x80411910 vs P05's
+    converted 0x00768e60/0x00411910).
+  - The command buffer at 0x00411910 is ENTIRELY ZERO (all 416 bytes);
+    rspTask[1]'s buffer at 0x004132d0 is zero too.
+  - The zero region spans 0x3DA9EF..0x6ECA10 bytewise = 3,219,489 bytes
+    (~3.07 MB; word-aligned start 0x3DA9F0) and ends exactly at gAudioCtx
+    (0x806ECA10, jp/ek symbol), which is intact (the rspTask slots and the
+    audio context are non-zero); aspMain at 0x768e60 and DMEM are populated.
+  - Boot-time PI DMA copies wrote into 0x400008+ at 08:02:36, so the region
+    had content earlier in the session; the zeroing happened between boot
+    and the freeze. The bounded PI trace budget was exhausted at boot, so
+    this capture does not identify the zeroing event.
+Derived results and inputs: the zero size/source operands, the 0xffffffff
+  length register and the repeating DMA-helper calls are consequences of
+  consuming a zero-filled command list; the microcode loop then never
+  terminates. The divergence boundary is the producer/loader side. The DMA
+  correction remains necessary and is why this no longer corrupts IMEM.
+Remaining hypotheses: (1) game-side heap clear at the race transition
+  without a completed rebuild; (2) an emulated disk/cart load delivering
+  zeros (DD-specific); (3) an emulator-side RAM clear. P08 discriminates by
+  watching [0x3DA9F0, 0x6ECA10) for writers with generation tracking.
+Changed files: tools/p07-frozen-memdump.sh (64 KiB base rounding),
+  tools/test-p07-memdump.sh (executable a64 regression), docs/P07_COMMAND_EVIDENCE.md §8
+  (native findings), docs/HANDOFF_NEW.md (this record).
+Checks actually run and why: host analysis of the pulled capture (all
+  values above recomputed from the files); device-side check that the new
+  rounding yields 0x6fc2c60000; host test suite (exit 0); mksh -n on the
+  pushed copy.
+Independent reviewer and verdict: (pending — filled in commit message)
+Commit, if approved: (pending)
+Remaining blockers: none for P08.
+Next eligible package and required inputs: P08 (conditional, now justified)
+  — bounded writer observation on the zeroed heap range with generation
+  tracking: the plan's P08a (range/generation/ring infrastructure), then one
+  proven-needed writer family, then a native capture. No emulator behavior
+  change; the DMA correction and DDSTART9 stay untouched.
+```

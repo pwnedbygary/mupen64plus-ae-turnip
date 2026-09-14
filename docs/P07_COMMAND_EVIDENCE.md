@@ -200,3 +200,53 @@ correct chain is `gCurAudioTask` 0x80771D68 → the active OSTask; the
   guessed); no stale snapshot is used as proof; no emulator change was made;
   the historical yielded-graphics explanation is not substituted for this
   non-yielded audio task.
+
+## 8. Native findings — the command is a zero word in a zeroed heap (2026-09-14)
+
+Capture `p07-memdump-20260914-113959` (device, root; coherence from
+`stopped_state=T` and both windows reading at exact lengths with rc=0 — the
+curtask race-check sample used the pre-rounding base, so it does not
+establish pointer identity across the stop). Local copy (never published):
+`.fzxwork/p07-final/`. The host analysis compensates for a +0x1000 interior
+offset of `mem_base` inside the scoped mapping (the mapping start is not
+64 KiB-aligned); the script now rounds the mapping start up to the 64 KiB
+alignment for future runs, and the missing IMEM portion of the RSP window
+(the 8 KiB read started 0x1000 below `mem_base + 0x04000000`) is noted as a
+gap that P08's runs will cover with the corrected base.
+
+Direct observations (exact):
+
+| Item | Value |
+|---|---|
+| `gCurAudioTask` (RDRAM 0x771D68) | `0x806EEAA0` = `rspTask[0]` (slot 1 also holds a type-2 audio task) |
+| Active descriptor | type 2, flags 0, ucode `0x80768e60`/0x1000, ucode_data `0x80768e60`/0x1000, `data_ptr 0x80411910`, `data_size 0x1a0`; matches the P05 task words word-for-word except the two KSEG0-bit forms (stored virtual `0x80768e60`/`0x80411910` vs the P05 capture's converted `0x00768e60`/`0x00411910`) |
+| Command buffer at 0x00411910 (0x1a0 = 416 bytes) | **every word is 0x00000000** |
+| `rspTask[1]` buffer at 0x004132d0 (size 0x1c0) | also zeros |
+| Zero region containing both buffers | bytewise zero run `0x3DA9EF`–`0x6ECA10` = 3,219,489 bytes (~3.07 MB; word-aligned start `0x3DA9F0`); the region ends exactly at `gAudioCtx` (0x806ECA10, jp/ek decompilation symbol; `0x6EEAA0 − 0x2090`), which is intact, as are the `rspTask` slots at +0x2090 |
+| aspMain image at 0x768e60 (4 KiB) | present and non-zero |
+| DMEM | populated (992/1024 non-zero words; microcode/audio data state intact) |
+
+Boot-time context: `DDSTART3 PI DMA` records at 08:02:36 show cart-to-RAM
+copies into `dram=0x400008…` — the same region that is now zero. The region
+therefore had content earlier in the session; the zeroing happened between
+boot and the freeze, and the bounded PI-DMA trace budget was exhausted at
+boot, so this capture does not identify the zeroing event.
+
+Conclusion: the consumed audio command is a genuine zero word. The
+microcode's zero size/source extraction, the `0xffffffff` length register
+and the repeated DMA-helper calls are consequences of consuming a
+zero-filled command list; the loop then never terminates and the audio task
+never returns. The divergence boundary is the producer/loader side: the
+command list was never (re)generated, or the ~3 MB heap was cleared after
+generation, before the task was consumed. The DMA correction remains
+necessary (it is why this no longer corrupts IMEM) but is not the origin of
+the freeze.
+
+Selected next hypothesis and smallest discriminating observation (P08):
+watch the bounded physical range `[0x3DA9F0, 0x6ECA10)` (or a narrowed
+subrange around the two buffer addresses) for writers with task-generation
+tracking, covering CPU stores (dynarec fast/slow, partial/unaligned), core
+DMA and RSP DMA, and catch the event that zeroes the heap and its timing
+relative to the task submission. The competing mechanisms to separate:
+game-side heap clear without a completed rebuild; an emulated disk/cart load
+delivering zeros (DD-specific); an emulator-side RAM clear.
