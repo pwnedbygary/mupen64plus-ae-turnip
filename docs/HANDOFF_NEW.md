@@ -2852,3 +2852,70 @@ Next eligible package and required inputs: the same P06 route once signing
   classify strictly by the §5 first-run decision table. The audio question
   is decided only from that evidence.
 ```
+
+## P06 signing resolved; candidate installed in place — 2026-09-13
+
+```markdown
+Package: P06 (continued) — signing identity resolved, candidate installed,
+  device ready for the native route
+Baseline / Reviewed snapshot: dd-eos-watchdog-checkpoint @ 675fe5210; installed
+  APK app/build/outputs/apk/debug/Mupen64PlusAE-debug.apk SHA-256
+  fc23b8b4a2f2b19892aae94b758256eed11fa048c4d3e374f927f141c66834b9, versionName
+  '3.0.335 (beta) 675fe521', signing cert 311f4e35e939256ae8df53ecbf15c43235d1
+  ee97f8a0138d332839c5e53c2bfc (= the installed DDSTART11 identity).
+Verified observations: version bumped to 336 (the v336 release tag was
+  applied without incrementing build_common/version_common.gradle — verified:
+  zero version-file changes between the v335 and v336 tags, so every DDSTART
+  build shipped as 3.0.335; the corrected line restores the convention).
+  The prior record's "Mac debug keystore" attribution was
+  WRONG — corrected here. The DDSTART11 builds were made in the Replit
+  workspace by the Replit agent (versionName embeds commit 17cc6111, which
+  exists in no local branch), so cert 311f4e35… is the Replit workspace's
+  debug keystore, found by the user at
+  /home/runner/workspace/.config/.android/debug.keystore (XDG-relocated —
+  the plain ~/.android path never existed there). The keystore was
+  transferred out (hash-verified: decoded file sha256
+  f11201dd4209d16dac6b00d95a3b684d97db92eb60a972b402de5fcc56a2bb6c matches
+  the Replit original exactly) and placed on this host as
+  ~/.android/debug.keystore (the previous host keystore 5077094… is backed up
+  as ~/.android/debug.keystore.host-5077094-bak). Two rebuild/install cycles:
+  first the restored-identity build (APK fc23b8b4…, versionName 3.0.335),
+  then after the version bump the installed candidate — APK SHA-256
+  a6d88fa398b8e22ce2e2e692677ea0e331209dd02abb3aad5995b67f4b9913cb,
+  versionCode 336, versionName '3.0.336 (beta) 675fe521', cert
+  311f4e35…. adb install -r returned Success both times; the device now
+  runs 3.0.336 (beta) 675fe521 and run-as confirms app data intact
+  (files/ listing unchanged: CoreConfig, GameData, etc.). Packaged ARM64
+  Build IDs are unchanged (core d1ccfe79…, rsp-parallel 555bbd24… — native
+  code identical across all three builds); symbols re-preserved and
+  Build-ID-verified in .fzxwork/symbols-p06/. The earlier candidates
+  (c528a09f… and fc23b8b4…) are superseded and must not be installed.
+Remaining hypotheses: none about the build; the native behavior questions
+  remain open pending the route.
+Changed files: docs/HANDOFF_NEW.md (this section) plus the two-line version
+  bump in build_common/version_common.gradle (335 -> 336).
+Checks actually run and why: keytool cert check (31:1f4e35…), sha256
+  transfer verification against the user-reported Replit hash, gradle
+  assembleDebug BUILD SUCCESSFUL (twice), apksigner verify (311f4e35… both
+  builds), aapt badging (versionCode 336, versionName 3.0.336), adb install
+  -r Success (both cycles), dumpsys versionName 3.0.336 (beta) 675fe521,
+  run-as data listing, packaged Build ID + symbol re-verification.
+Security notes: the keystore transited a link-gated (unlisted) gist and this
+  session; the user should DELETE the gist now that the file is verified and
+  installed, and keep the local ~/.android/debug.keystore backed up. Because
+  the debug identity has existed on a public-fetchable URL, rotating the
+  debug keystore at a convenient future point (with the now-proven
+  backup/restore procedure) is a reasonable hygiene step — user decision,
+  not needed for P06.
+Independent reviewer and verdict: (pending — filled in commit message per
+  protocol)
+Commit, if approved: (pending)
+Remaining blockers: none for the route.
+Next: the interactive native route — the user launches the DD game on the
+  device (dynarec, explicit DD setting), plays the same boot/menu route as
+  DDSTART11 and reports what they see and hear; this host captures logcat
+  throughout (expect 'DD runtime policy set: 1', the Dynamic Recompiler
+  marker, and — if the suspect request recurs — P05 trigger snapshots with
+  GPR operands); root stacks only if it freezes. Then classify by the
+  validation §5 first-run decision table.
+```
