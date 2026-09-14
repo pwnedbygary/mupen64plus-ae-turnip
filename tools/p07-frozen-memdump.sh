@@ -56,7 +56,8 @@ for region in $(grep 'rw-p' /proc/$PID/maps 2>/dev/null \
     end=$((0x${region#*-}))
     [ $((end - start)) -lt 500000000 ] && continue
     off=0
-    while [ $off -le 0xf000 ]; do
+    # mksh's [ does not parse hex in integer comparisons: use decimal 0xf000.
+    while [ $off -le 61440 ]; do
         cand=$((start + off))
         val=$(peek_u32 $((cand + 0x771D68)))
         case "$val" in

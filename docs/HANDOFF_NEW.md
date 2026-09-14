@@ -3074,3 +3074,33 @@ Next eligible package and required inputs: run the P07 dump via the
   the completion of the command identification (P07 conclusion) and decides
   whether P08 (targeted producer/reuse observation) is needed at all.
 ```
+
+## P07 first device run: helper fixed (mksh hex comparison) — 2026-09-14
+
+The one-line launcher was added to the vendor root menu and run while the
+game was frozen. The first run failed closed with a clear message —
+`/sdcard/Download/p07-memdump.sh[83]: 0xf000: bad number '0xf000'` then
+`p07-memdump: active audio descriptor not found; aborting` — because mksh's
+`[` does not parse hexadecimal literals in integer comparisons, so the
+probe loop never executed. (mksh attributes the runtime error to the line
+where the enclosing compound command ends, hence `[83]`; the offending
+comparison itself was at the `while` line of the probe loop.) Root cause: a one-line portability bug in the
+probe bound (`[ $off -le 0xf000 ]`); the analogous comparison in the
+descriptor check is inside `$(( ))` arithmetic expansion and unaffected.
+The failure and clean abort are recorded in `/sdcard/Download/
+p07-launch.log`; no memory was dumped and the frozen process was not
+modified.
+
+Fixed to the decimal bound (61440) with an explanatory comment, and a host
+regression test now guards the class: `tools/test-p07-memdump.sh` asserts
+POSIX syntax, the launcher's exact one-line content, the probe loop's
+termination (16 candidates), the anchor addresses, and rejects bare hex
+inside `[ ]` comparisons — with the arithmetic expansions stripped first so
+the legitimate `$(( ))` forms pass. The guard was verified both ways: it
+passes the fixed helper and flags the original loop bound.
+
+The fixed helper is re-pushed to the device (`/sdcard/Download/
+p07-memdump.sh` sha256 `422e607b…`, identical to the repository copy). The
+frozen emulation process (pid 11604) remained alive throughout. Re-run
+pending; the analysis plan in `docs/P07_COMMAND_EVIDENCE.md` §6 is
+unchanged.
