@@ -3262,8 +3262,14 @@ Verified observations (exact):
 Derived results and inputs: the zero size/source operands, the 0xffffffff
   length register and the repeating DMA-helper calls are consequences of
   consuming a zero-filled command list; the microcode loop then never
-  terminates. The divergence boundary is the producer/loader side. The DMA
-  correction remains necessary and is why this no longer corrupts IMEM.
+  terminates. The DMA correction remains necessary and is why this no
+  longer corrupts IMEM. [Scope superseded at P07-C, recorded here so this
+  historical block is not read as current: "the divergence boundary is the
+  producer/loader side" is a HYPOTHESIS, not a derived result. The fetch
+  provenance — the address, bytes and generation of the command the
+  microcode actually fetched — is still missing, so a consumer-side
+  fetch/decode error and reuse of a stale buffer are not excluded. See the
+  P07-R and P07-C sections.]
 Offset validation: the aspMain image's first word (340a0fc0) matches word 0
   of the P06 observer's IMEM sample (word 0 of the image at both locations),
   independently confirming the +0x1000 interpretation; in unshifted file
@@ -3320,12 +3326,16 @@ Verified observations (recomputed host-side from local capture copies under
     First direct frozen-state evidence the DD correction keeps IMEM intact.
   - Window layout: mem_base + 0x04000000 reads [DMEM][IMEM] (CPU-side
     DMEM 0x04000000, IMEM 0x04001000 per the in-process DD trace).
-  - RDRAM byte-identical across captures 22 min apart (guest-aligned 8 MiB
-    diff: 0 bytes): the zeroed heap, the zero buffer at 0x411910, gAudioCtx
-    and both task slots unchanged; the zero run is still guest
-    [0x3DA9EF, 0x6ECA10). The heap zeroing is historic, not ongoing.
-  - The loop is active: utime ~100 ticks/s (full host core) through 16:06;
-    IMEM never changes; DMEM rewritten faster than a 62 ms interval
+  - RDRAM contents equal at every sample time: 0 differing bytes over a
+    2 h 25 min baseline — 12:02 ↔ 14:27 over the full 8 MiB window, and
+    11:39 ↔ 12:02/14:27 over guest 0..0x7FF000 (8 MiB − 4 KiB: the 11:39
+    file is shifted by +0x1000, so its last 4 KiB is not covered by that
+    comparison). Equal sampled contents only; a write-and-restore
+    between samples is not excluded. The zeroed heap, the zero buffer at
+    0x411910, gAudioCtx and both task slots are unchanged at every sample;
+    the zero run is still guest [0x3DA9EF, 0x6ECA10).
+  - The process is still executing: utime ~100 ticks/s (full host core)
+    through 18:27, and DMEM rewritten faster than a 62 ms interval
     (3.0-3.7 KB per interval in 300-700 fragments between samples that
     both hold a block). DMEM[0:752] equals RDRAM[src:src+752] in 10 of the
     32 sampled states (nine matches end exactly at 752, one at 754) — both
@@ -3335,19 +3345,28 @@ Verified observations (recomputed host-side from local capture copies under
     samples show shorter partial matches consistent with a write in
     flight, two are full 4 KiB copies of sparse regions (0x8EAD8, 19
     non-zero words; 0x85AF8, 20), and 14 samples caught DMEM fully zeroed.
+    This does not establish that the same loop ran throughout the
+    interval, nor identify the DMEM writer.
   - Descriptor cross-check: slot 0 matches the P05 task-word record on
     every word except 4, 6 and 12 (KSEG0-bit forms 0x80768e60, 0x80794e90,
     0x80411910); its words 12-13 are the record's 0x00411910/0x1a0 pair on
     that basis. Slot 1 matches the same way except that its words 12-13 are
     a different pair, 0x804132d0/0x1c0 — the buffer §8's table records at
-    guest 0x4132d0, which the 16-word record does not contain.
-Derived results and inputs: the freeze is a live, continuously running
-  loop that keeps reading RDRAM and rewriting DMEM while IMEM and RDRAM
-  stay untouched; the consumed zero command list remains the divergence
-  boundary. P08 can use the root-free method instead of (or alongside) an
+    guest 0x4132d0, which the 16-word record does not contain. Field map
+    corrected this round from the decomp: words 2-3 = ucode_boot, 4-5 =
+    ucode (aspMainTextStart), 6-7 = ucode_data (aspMainDataStart
+    0x80794e90/0x2df), 12-13 = data_ptr (0x80411910/0x1a0).
+Derived results and inputs: the zero-filled buffers and zero launch
+  operands support a producer/loader-side divergence; the fetch provenance
+  (address, bytes, generation of the command actually fetched) is still
+  missing, so a consumer-side fetch/decode error or buffer reuse is not
+  excluded. P08 can use the root-free method instead of (or alongside) an
   instrumented build.
 Remaining hypotheses: unchanged from §8 (producer-side zeroing: game heap
-  clear / DD load delivering zeros / emulator-side clear). Open from this
+  clear / DD load delivering zeros / emulator-side clear); P07-C adds the
+  consumer-side alternatives the missing fetch provenance does not exclude
+  — a fetch/decode error on a valid list, or reuse of a stale buffer — so
+  the producer-side set is not exhaustive. Open from this
   evidence: DMEM writer attribution (RSP vs emulated CPU through the
   0x04000000 window) and the scattered src pattern.
 Changed files: docs/P07_COMMAND_EVIDENCE.md (§9 frozen-state recapture),
@@ -3365,4 +3384,151 @@ Next eligible package and required inputs: P08 (conditional, now
   native run to reproduce the freeze, with the root-free sampler used
   alongside. No emulator behavior change; DMA correction and DDSTART9
   stay untouched.
+```
+
+## P07-C: corrections round — field map, hypothesis-scoped conclusion, fail-closed helper, verifier — 2026-09-14
+
+```markdown
+Package: P07-C — apply the external review's corrections to the P07/P07-R
+  record and tooling, and complete the record's process obligations: (1)
+  descriptor field map corrected from the decompilation (ucode_boot shifts
+  every later field); (2) the P07 conclusion scoped to a hypothesis with
+  the fetch-provenance link named as missing; (3) sampling claims restated
+  as equal-sampled-contents (third snapshot 14:27 folded in); (4) the
+  capture helper made fail-closed; (5) an independent verifier plus a
+  verification bundle; (6) this dedicated handoff record (the corrections
+  previously amended the P07-R section in place) and repo-side fail-closed
+  tests for the verifier. Documentation and host tooling only — no
+  emulator, device, or hardware-visible behavior change.
+Baseline / exact reviewed snapshot: 924a582a5 (the remote doc-only
+  fast-forward from c8fd7891f added docs/N64DD_EVIDENCE_REVIEW_PROMPT.md
+  and two instruction links; it touches none of this patch's paths — all
+  six prior patch files verified byte-identical across the ff by SHA-256
+  before and after).
+Verified observations (observed, host, this round):
+  - The verification bundle copy the user delivered
+    (/home/garyb/Mounts/Emulation/Emulation/APKs/p07-verification-20260914.zip)
+    checks out: sha256sum -c hashes.sha256 passes for every manifest
+    entry; the bundled verifier was byte-identical to the pre-extension
+    repo copy; verifier run on the extracted bundle: 44 PASS lines,
+    RESULT: 0 failure(s), exit 0. (An earlier summary's "37/37" was an
+    undercount — it dropped the four logcat-gated checks and one
+    series-classification check.)
+  - Pivotal claims reproduce by separate direct methods, not only the
+    supplied script: a from-scratch scan finds the zero run exactly
+    [0x3DA9EF, 0x6ECA10), 3,219,489 bytes; an independent FNV
+    implementation gives 0x3aaaf0f5f121410e for both the frozen IMEM and
+    the RDRAM aspMain image at guest 0x768E60; hashlib confirms the 12:02
+    and 14:27 RDRAM windows byte-identical; slot-0 descriptor words 4-7
+    and 12-13 match the corrected field map.
+  - The new tools/test-p07-verifier.sh caught a real gap before review:
+    the verifier's identity gate had NO sha256 expectations for the 14:27
+    pair (a mutated DMEM byte in rspmem-1427.bin was only caught by the
+    non-zero-word count check). Section A now pins both 14:27 hashes
+    (already documented in §9), and the mutation is caught at the
+    identity gate.
+  - The helper's fail-closed contract is now verified behaviorally, not
+    only structurally: tools/test-p07-memdump-behavior.sh (added this
+    round) runs the real helper against a synthetic target process and
+    checks each gate's failure and success paths, including a healthy
+    capture whose windows byte-match independently generated patterns.
+    See "Checks actually run" below for the covered cases and the two
+    recorded host substitutions.
+Derived results and inputs: ucode_data = aspMainDataStart
+  0x80794E90/0x2df is intact OUTSIDE the zeroed heap — the task
+  descriptor itself is coherent and only the data_ptr command buffer is
+  zeroed, so the freeze analysis stands with its conclusion correctly
+  scoped as a hypothesis. The repo verifier now runs 44 checks; the
+  bundle zip's embedded copy remains the pre-extension 42-check version
+  (delivered artifact, deliberately unchanged — raw files and manifest
+  unaffected).
+Remaining hypotheses: unchanged — producer-side zeroing (game heap clear
+  / DD load delivering zeros / emulator-side clear), consumer-side
+  fetch/decode error, buffer reuse; fetch provenance (address, bytes,
+  generation of the command actually fetched) still missing.
+Changed files: docs/P07_COMMAND_EVIDENCE.md, docs/P07_CHECKPOINT.md,
+  docs/HANDOFF_NEW.md, tools/p07-frozen-memdump.sh (P07-C fail-closed
+  revision: reason list, rc=0 read gate, hex-form anchor case, a test-only
+  DEST_DIR seam whose default is unchanged (/sdcard/Download), pre-stop
+  state recorded with resume only when this run stopped the process, and a
+  task-pointer stability check across the reads),
+  tools/test-p07-memdump.sh,
+  tools/verify-p07-captures.py (new), tools/test-p07-verifier.sh (new),
+  tools/test-p07-memdump-behavior.sh (new).
+Checks actually run and results (all host-side; the device was not
+  touched and no capture was re-executed this round):
+  - tools/test-p07-memdump.sh — pass (structural invariants: launcher,
+    32-bit arithmetic, anchor/completion gate, and the new DEST_DIR
+    default).
+  - tools/test-p07-memdump-behavior.sh — pass. Runs the REAL helper
+    against a synthetic target process (a 608 MiB
+    `[anon:scudo:secondary]` mapping at a fixed 64 KiB base, the name the
+    helper's mem_base discovery greps for) with `dd`/`pidof` doubles and
+    a redirected DEST_DIR. Verified: no-process gate exits nonzero
+    without an output directory; canary gate reports the failed read and
+    produces no window files; a non-KSEG0 anchor plus short window reads
+    accumulate reasons and print INCOMPLETE with a nonzero exit and no
+    success message; a hashing step that produces nothing
+    (`sha256sum` double) leaves the evidence windows in place but ends
+    INCOMPLETE with `hashes_missing`; a process that was already stopped
+    externally is recorded (`stopped_before_state=T`) and left stopped —
+    the run resumes only what it stopped; a healthy run prints
+    `complete (verified)`, records `status=verified`, reads the anchor
+    word back, observes the target stopped, and both windows byte-match
+    the independently generated patterns; SIGCONT is restored after every
+    run this helper stopped. Substitution recorded:
+    the double normalizes `skip=0x…` to decimal because this host's
+    command wrapper rejects letter-containing hex numbers, whereas
+    toybox on the device accepted the helper's hex form unchanged (the
+    11:39 capture read its 8 MiB window with `skip=0x<base>`); the test's
+    own /proc/<pid>/mem probe uses decimal for the same reason, and the
+    harness sets PR_SET_PTRACER_ANY because yama's ptrace_scope=1 refuses
+    a non-ancestor reader. Where /proc/<pid>/mem is unavailable the
+    real-read check reports SKIP and the suite exits 77 — never a silent
+    pass. Limitation recorded, not validated: the helper's `od -An -tx4`
+    anchor parse has no on-device evidence (the device exercised `-tu4`);
+    if `od` rejects the flag the form returns empty, which the anchor case
+    turns into `curtask_anchor_implausible` and an INCOMPLETE capture —
+    never `verified`.
+  - tools/test-p07-verifier.sh — pass (structural fail-closed elements;
+    fixtures: pristine pass, raw/ layout accepted, missing required file
+    → exit 2 with the file named, mutated byte → exit 1 at the identity
+    gate with no overall success line, truncated window → exit 1,
+    missing optional evidence → explicit SKIP with required gates still
+    passing, reclassified sample → exit 1 at an analytical gate rather
+    than the identity gate; the fixture includes the local P06 logcat
+    when available so the four logcat-backed gates execute here rather
+    than skipping, and a logcat-removed case asserts the group prints an
+    explicit SKIP and is counted — the verifier now reports both failure
+    and skipped-group counts on its result line).
+  - python3 tools/verify-p07-captures.py on the extracted bundle — 44
+    PASS, 0 failures.
+  - Repo host suites: test-dd-core-imem-dma.sh pass, test-dd-policy.sh
+    pass, test-dd-dma-transfer.sh pass (legacy and corrected policies),
+    test-dd-root-stacks.sh pass.
+Checks not run and why: test-dd-startup.sh fails in its compile step — its
+  callback tests print their pass line first, then the build stops on a
+  pre-existing host portability issue (`-Werror` unused-but-set-variable
+  at new_dynarec.c:4661/4739), identical under CC=clang, unchanged by
+  this patch, which touches no C source; the file also lacks its
+  executable bit, so it was invoked through bash. test-dd-rsp-mac.sh:
+  6 passed, 8 failed mocks — the documented Linux mock-portability
+  issue, unchanged. mksh -n (no local mksh; the suite treats it as a
+  conditional extra). No device run and no capture procedure
+  re-executed: capture provenance remains as recorded by the original
+  runs (run-metadata in the bundle), not re-established here.
+Independent reviewer, verdict and finding dispositions: (pending —
+  filled in commit message)
+Commit, if approved: (pending)
+Remaining blockers: none beyond review of this exact snapshot.
+Next eligible package and required inputs: P08 — fetch provenance first:
+  record, at the audio task's submission and at the microcode's command
+  fetch, the address fetched, the bytes returned and a generation
+  counter for the buffer; then the bounded writer watch on
+  [0x3DA9F0, 0x6ECA10) with generation tracking. One native run to
+  reproduce the freeze; root-free sampler alongside. Any runtime
+  instrumentation proposal must carry the hardware-evidence checklist
+  (wiki pinned revision + P01 ledger + the 5-point semantic-change
+  statement) before implementation. No emulator behavior change; DMA
+  correction and DDSTART9 untouched.
 ```

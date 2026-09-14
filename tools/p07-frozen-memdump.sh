@@ -20,14 +20,16 @@
 #       aspMain image 0x768e60
 #   [mem_base + 0x04000000, +8 KiB) DMEM + IMEM
 #
-# The process is briefly stopped (SIGSTOP, restored by an EXIT trap) so the
-# snapshot is coherent — a spinning RSP loop keeps rewriting DMEM/IMEM, and
-# a frozen display does not imply a static memory image. The active-task
-# pointer word is sampled before and after the stop as a race check.
+# The process is briefly stopped (SIGSTOP) so the snapshot is coherent — a
+# spinning RSP loop keeps rewriting DMEM/IMEM, and a frozen display does not
+# imply a static memory image. The pre-stop state is recorded and the process
+# is resumed only when this run stopped it. The active-task pointer word is
+# sampled before and after the window reads (both while stopped); a mismatch
+# degrades the capture.
 #
 # Writes go only under a per-run
-# /sdcard/Download/p07-memdump-<timestamp>/ directory.
-
+# /sdcard/Download/p07-memdump-<timestamp>/ directory. DEST_DIR overrides the
+# parent directory (host-side tests use it; on-device runs leave it unset).
 PKG=org.mupen64plusae.turnip.pwnedbygary.debug:EmulationProcess
 PID=$(pidof "$PKG")
 if [ -z "$PID" ]; then
@@ -64,7 +66,7 @@ a64() {
             else printf "%.0f", (op=="-") ? x-y : x+y }'
 }
 
-DIR=/sdcard/Download/p07-memdump-$(date '+%Y%m%d-%H%M%S')
+DIR=${DEST_DIR:-/sdcard/Download}/p07-memdump-$(date '+%Y%m%d-%H%M%S')
 if [ -e "$DIR" ]; then
     DIR="$DIR-$$"
 fi
@@ -135,39 +137,84 @@ CURTASK_PHYS=$(a64 "$BASE" + "$CURTASK_OFF_HEX")
     echo "curtask_phys=$CURTASK_PHYS"
 } >> "$DIR/run-metadata.txt"
 
-# Coherent snapshot: stop the process for the reads, restore on any exit.
+# Coherent snapshot: stop the process for the reads. Resume only when this
+# run stopped it — resuming a process that was already stopped externally
+# would change its state without consent.
+stopped_before=$(sed 's/.*) //' /proc/$PID/stat 2>/dev/null | awk '{print $1}')
+we_stopped=1
+if [ "$stopped_before" = "T" ]; then
+    we_stopped=0
+fi
 kill -STOP $PID 2>/dev/null
-trap 'kill -CONT $PID 2>/dev/null' EXIT
+trap 'if [ "$we_stopped" = 1 ]; then kill -CONT $PID 2>/dev/null; fi' EXIT
 sleep 1
+# Every degradation below is carried into status_reasons; "complete" is
+# printed only when this list is empty (a coherent, anchored capture).
+status_reasons=""
 stopped=$(sed 's/.*) //' /proc/$PID/stat 2>/dev/null | awk '{print $1}')
-echo "stopped_state=$stopped" >> "$DIR/run-metadata.txt"
+{
+    echo "stopped_before_state=${stopped_before:-unknown}"
+    echo "stopped_state=$stopped"
+} >> "$DIR/run-metadata.txt"
 if [ "$stopped" != "T" ]; then
     echo "snapshot_warning=process not confirmed stopped; memory may be racy" \
         >> "$DIR/run-metadata.txt"
+    status_reasons="$status_reasons process_not_stopped"
 fi
 
 peek_u32() {
     dd if=/proc/$PID/mem iflag=skip_bytes,count_bytes skip=$1 count=4 \
         2>/dev/null | od -An -tu4 2>/dev/null | tr -d ' \n'
 }
-echo "curtask_before=$(peek_u32 $CURTASK_PHYS)" >> "$DIR/run-metadata.txt"
+peek_u32_hex() {
+    # od -tx4 classifies the pointer's high byte only. The device exercised
+    # -tu4, not -tx4: if od rejects the flag the form comes back empty, the
+    # anchor check reports curtask_anchor_implausible, and the capture ends
+    # INCOMPLETE rather than "verified".
+    dd if=/proc/$PID/mem iflag=skip_bytes,count_bytes skip=$1 count=4 \
+        2>/dev/null | od -An -tx4 2>/dev/null | tr -d ' \n'
+}
+curtask_before=$(peek_u32 $CURTASK_PHYS)
+curtask_before_hex=$(peek_u32_hex $CURTASK_PHYS)
+{
+    echo "curtask_before=$curtask_before"
+    echo "curtask_before_hex=$curtask_before_hex"
+} >> "$DIR/run-metadata.txt"
+# Anchor check without shell arithmetic (mksh is 32-bit): a KSEG0 pointer
+# prints as 80?????? in hex. The rounded base is only a candidate until this
+# anchor and the offline image checks agree.
+case "$curtask_before_hex" in
+    80??????) : ;;
+    *)
+        echo "anchor_warning=curtask word not a KSEG0 pointer (got ${curtask_before_hex:-none})" \
+            >> "$DIR/run-metadata.txt"
+        status_reasons="$status_reasons curtask_anchor_implausible"
+        ;;
+esac
 
 read_window() {
     dd if=/proc/$PID/mem iflag=skip_bytes,count_bytes \
        skip=$1 count=$2 of="$DIR/$3" 2>/dev/null
     rc=$?
     got=$(stat -c %s "$DIR/$3" 2>/dev/null)
-    if [ -n "$got" ] && [ "$got" -eq "$2" ]; then
+    if [ -n "$got" ] && [ "$got" -eq "$2" ] && [ "$rc" -eq 0 ]; then
         echo "read_ok $3 $got rc=$rc" >> "$DIR/run-metadata.txt"
     else
         echo "read_SHORT $3 expected=$2 got=${got:-0} rc=$rc" >> "$DIR/run-metadata.txt"
+        status_reasons="$status_reasons read_${3}_rc${rc}_got${got:-0}"
     fi
 }
 
 read_window "0x$BASE" $RDRAM_WINDOW_BYTES rdram-window.bin
 read_window "$RSP_PHYS" $RSP_WINDOW_BYTES rspmem.bin
 
-echo "curtask_after=$(peek_u32 $CURTASK_PHYS)" >> "$DIR/run-metadata.txt"
+curtask_after=$(peek_u32 $CURTASK_PHYS)
+echo "curtask_after=$curtask_after" >> "$DIR/run-metadata.txt"
+if [ "$curtask_after" != "$curtask_before" ]; then
+    echo "curtask_warning=task pointer changed across the capture (before=$curtask_before after=$curtask_after)" \
+        >> "$DIR/run-metadata.txt"
+    status_reasons="$status_reasons curtask_changed_during_capture"
+fi
 
 if [ ! -s "$DIR/rdram-window.bin" ] || [ ! -s "$DIR/rspmem.bin" ]; then
     echo "p07-memdump: dd produced no data; see $DIR/run-metadata.txt"
@@ -177,9 +224,17 @@ fi
 sha256sum "$DIR"/*.bin 2>/dev/null > "$DIR/hashes.txt"
 if [ ! -s "$DIR/hashes.txt" ]; then
     echo "hash_warning=sha256sum produced no output" >> "$DIR/run-metadata.txt"
+    status_reasons="$status_reasons hashes_missing"
 fi
 {
     echo "finished_at=$(date '+%Y-%m-%dT%H:%M:%S%z')"
     ls -la "$DIR"
 } >> "$DIR/run-metadata.txt"
-echo "p07-memdump: complete -> $DIR"
+
+if [ -n "$status_reasons" ]; then
+    echo "status=incomplete reasons:$status_reasons" >> "$DIR/run-metadata.txt"
+    echo "p07-memdump: INCOMPLETE —$status_reasons; see $DIR/run-metadata.txt"
+    exit 1
+fi
+echo "status=verified" >> "$DIR/run-metadata.txt"
+echo "p07-memdump: complete (verified) -> $DIR"

@@ -172,11 +172,13 @@ host from the dumped windows:
 
 Each run writes to a fresh timestamped directory; both windows' exact
 lengths are validated and `dd`'s exit status recorded; the process is
-briefly stopped (`SIGSTOP`, restored by an `EXIT` trap) for coherent reads —
+briefly stopped (`SIGSTOP`) for coherent reads —
 a spinning RSP loop keeps rewriting DMEM/IMEM, and a frozen display does
-not imply a static memory image — with the active-task pointer word sampled
-before and after the stop as a race check, and `stopped_state` recorded
-(with an explicit warning if the stop did not take effect). The
+not imply a static memory image — with the pre-stop state recorded and the
+process resumed only when the run itself stopped it; the active-task
+pointer word is sampled before and after the window reads (both while
+stopped), and a change degrades the capture, as does `stopped_state`
+failing to show the stop took effect. The
 memory-read canary performs a real `/proc/<pid>/mem` read at the first
 mapping's start keeping `dd`'s exit status, byte count and stderr (reading
 `/proc/<pid>/stat` would not prove `/proc/<pid>/mem` access). mem_base is
@@ -219,12 +221,25 @@ Direct observations (exact):
 | Item | Value |
 |---|---|
 | `gCurAudioTask` (RDRAM 0x771D68) | `0x806EEAA0` = `rspTask[0]` (slot 1 also holds a type-2 audio task) |
-| Active descriptor | type 2, flags 0, ucode `0x80768e60`/0x1000, ucode_data `0x80768e60`/0x1000, `data_ptr 0x80411910`, `data_size 0x1a0`; matches the P05 task words word-for-word except the two KSEG0-bit forms (stored virtual `0x80768e60`/`0x80411910` vs the P05 capture's converted `0x00768e60`/`0x00411910`) |
-| Command buffer at 0x00411910 (0x1a0 = 416 bytes) | **every word is 0x00000000** |
+| Active descriptor | type 2, flags 0; `ucode_boot` `0x80768e60`/0x1000, `ucode` `0x80768e60`/0x1000 (= `aspMainTextStart`), `ucode_data` `0x80794e90`/`0x2df` (= `aspMainDataStart`), `data_ptr` `0x80411910`/`0x1a0`, dram_stack/output_buff/yield 0/0; equals the P05 task words on every word except the KSEG0-bit forms at words 4, 6 and 12 |
+| Command buffer at 0x00411910 (0x1a0 = 416 bytes) | the task's `data_ptr`; **every word is 0x00000000** |
 | `rspTask[1]` buffer at 0x004132d0 (size 0x1c0) | also zeros |
 | Zero region containing both buffers | bytewise zero run `0x3DA9EF`–`0x6ECA10` = 3,219,489 bytes (~3.07 MB; word-aligned start `0x3DA9F0`); the region ends exactly at `gAudioCtx` (0x806ECA10, jp/ek decompilation symbol; `0x6EEAA0 − 0x2090`), which is intact, as are the `rspTask` slots at +0x2090 |
 | aspMain image at 0x768e60 (4 KiB) | present and non-zero |
 | DMEM | populated (992/1024 non-zero words; microcode/audio data state intact) |
+
+Field map of the 16 words (decomp-verified, this corrects the earlier
+row): they are `OSTask_t` inside the 0x50-byte `AudioTask`
+(`src/audio/disk/lib/audio.h`, `include/PR/sptask.h`) — 0 type, 1 flags,
+2-3 `ucode_boot`, 4-5 `ucode`, 6-7 `ucode_data`, 8-9 `dram_stack`,
+10-11 `output_buff`, 12-13 `data_ptr`, 14-15 `yield_data_ptr`/size. The
+EK symbol table pins the pointers: `aspMainTextStart = 0x80768E60`,
+`aspMainDataStart = 0x80794E90`. The graphics task's recorded words
+confirm the layout independently: word 2 = `0x807504f0`/0xd0 (rspboot)
+with the ucode at word 4 (`0x007505c0`/0x1000). `gCurAudioTask` chains to
+`gAudioCtx + 0x2090` = `rspTask[0]`, and `rspTask[]` is a 2-element array
+whose index alternates (`thread.c:114`; `gAudioCtx.rspTask[2]` in older
+notes was the array declaration, not an index).
 
 Boot-time context: `DDSTART3 PI DMA` records at 08:02:36 show cart-to-RAM
 copies into `dram=0x400008…` — the same region that is now zero. The region
@@ -246,7 +261,8 @@ capture predates the rounding — its raw mapping start was unaligned and the
 rounds each mapping start up to the 64 KiB alignment at capture time.
 Descriptor and pointer-chain validation remains an offline host-side step
 over the dumped windows; on-device the script only samples the active-task
-pointer word as a race check.
+pointer word before and after the window reads — a capture-stability check,
+not descriptor validation.
 
 Scope of this snapshot (do not over-read it): the capture shows the buffer
 contents at the *frozen* state, and the P05 GPR captures independently show
@@ -256,23 +272,37 @@ distinguish is whether the buffer was never written for this generation or
 was written and then zeroed before consumption — no producer or clearing
 operation is identified from this snapshot.
 
-Conclusion: the consumed audio command is a genuine zero word. The
-microcode's zero size/source extraction, the `0xffffffff` length register
-and the repeated DMA-helper calls are consequences of consuming a
-zero-filled command list; the loop then never terminates and the audio task
-never returns. The divergence boundary is the producer/loader side: the
-command list was never (re)generated, or the ~3 MB heap was cleared after
-generation, before the task was consumed. The DMA correction remains
-necessary (it is why this no longer corrupts IMEM) but is not the origin of
-the freeze.
+Conclusion (hypothesis; the missing link is named): the zero-filled buffers
+and the zero launch operands **support** a producer/loader-side divergence —
+the command list was never (re)generated for this task, or the ~3 MB heap
+was cleared after generation and before consumption. What is still missing
+is the *fetch provenance*: the address, the bytes and the generation of the
+command the microcode actually fetched. Until that link exists,
+a consumer-side fetch/decode error (a wrong address computed from a valid
+list) or reuse of a stale or different buffer is not excluded. Consuming a
+zero-filled command list is consistent with the microcode's zero
+size/source extraction, the `0xffffffff` length register and the repeated
+DMA-helper calls; the loop then never terminates and the audio task never
+returns. The DMA correction remains necessary (it is why this no longer
+corrupts IMEM) but is not the origin of the freeze.
 
-Selected next hypothesis and smallest discriminating observation (P08):
-watch the bounded physical range `[0x3DA9F0, 0x6ECA10)` (or a narrowed
-subrange around the two buffer addresses) for writers with task-generation
-tracking, covering CPU stores (dynarec fast/slow, partial/unaligned), core
-DMA and RSP DMA, and catch the event that zeroes the heap and its timing
-relative to the task submission. The competing mechanisms to separate:
-game-side heap clear without a completed rebuild; an emulated disk/cart load
+Selected next hypotheses and smallest discriminating observations (P08):
+first connect *fetch provenance* — record at the audio task's submission and
+at the microcode's command fetch the address fetched, the bytes returned and
+a generation counter for the buffer — because a consumer-side fetch/decode
+error (a wrong address computed from a valid list) or reuse of a stale
+buffer is not excluded by the current evidence, and the zeroed buffers plus
+zero launch operands alone do not identify the producer. In parallel (or
+next), watch the bounded physical range `[0x3DA9F0, 0x6ECA10)` (or a
+narrowed subrange around the two buffer addresses) for writers with
+generation tracking, covering CPU stores (dynarec fast/slow,
+partial/unaligned), core DMA and RSP DMA, and catch the event that zeroes
+the heap and its timing relative to the task submission — without assuming
+that watching for a large heap clear will necessarily find the cause. The
+competing mechanisms to separate: game-side heap clear without a completed
+rebuild (the game does write these structures — `thread.c` sets
+`gAudioCtx.curTask`/`curAbiCmdBuf` each frame and `load.c` zeroes
+`rspTask[0/1].task.t.data_size` in a setup path); an emulated disk/cart load
 delivering zeros (DD-specific); an emulator-side RAM clear.
 
 ## 9. Frozen-state recapture via run-as (2026-09-14, root-free)
@@ -297,16 +327,17 @@ Method (read-only; no emulator change, no root):
   `gCurAudioTask` `480016932200`. The pointer word read back `0x806EEAA0`,
   validating the base on-device before the windows were read.
 
-Verified from the recaptures (local copies under `.fzxwork/p07-final/`,
-never published; `rspmem.bin` 8192 B sha256 `c64edefa…`, `rdram-window.bin`
-sha256 `7e1fbcdd…`):
+Verified from the recaptures (three coherent snapshots — 12:01, 12:02 and
+14:27 local; local copies under `.fzxwork/p07-final/`, never published). The
+14:27 pair is sha256 `07a77a17…` (rspmem 8192 B) / `7e1fbcdd…`
+(rdram-window), byte-identical to the corresponding 12:01/12:02 files:
 
 | Observation | Evidence |
 |---|---|
 | Frozen IMEM is the aspMain image, bit-exact | FNV (multiply-then-xor over 1024 words, the P05 observer's function) of the IMEM half = `0x3aaaf0f5f121410e`, identical to the FNV of the RDRAM aspMain image at guest 0x768E60 and to the observer's in-process `imem_before_hash`/`imem_after_hash` (4 records each at 08:02:51). Head words `340a0fc0 8d420018 8d43001c 40803800`; the observer's four sample offsets (0x000/0x3fc/0xf60/0xffc) return exactly its recorded samples `[340a0fc0,4bfba08f,8c260004,00010001]`. |
 | Window layout | The 8 KiB read at mem_base + 0x04000000 is `[DMEM][IMEM]`: CPU-side DMEM = 0x04000000, IMEM = 0x04001000 (in-process DD trace: `m=0x04001000` decodes to `dest={bank=IMEM …}`). The 11:39 capture's second half was DMEM; IMEM was its missing 4 KiB. |
-| RDRAM is static while frozen | Guest-aligned diff of the 8 MiB window (guest 0..0x7FF000) between 11:39 and 12:02: 0 differing bytes. The zeroed heap, the zero buffer at 0x411910, `gAudioCtx` and both task slots are unchanged; the zero run is still exactly guest [0x3DA9EF, 0x6ECA10). |
-| The process is still looping | utime advances ~100 ticks/s (one full host core) through 16:06; IMEM never changes across captures. |
+| RDRAM contents are equal at every sample time | Guest-aligned diff of the 8 MiB window (guest 0..0x7FF000): 0 differing bytes 11:39 ↔ 12:02, and the 12:02 and 14:27 windows are byte-identical (sha256 `7e1fbcdd…`, a 2 h 25 min baseline). This establishes equal *sampled* contents; a write-and-restore between samples is not excluded. The zeroed heap, the zero buffer at 0x411910, `gAudioCtx` and both task slots are unchanged at every sample; the zero run is still exactly guest [0x3DA9EF, 0x6ECA10). |
+| The process is still executing | utime advances ~100 ticks/s (one full host core) through 18:27, and DMEM differs between samples 62 ms apart. The IMEM half is equal in all three samples that contain it (12:01, 12:02, 14:27). This does not establish that the same loop ran throughout the interval, nor identify the DMEM writer. |
 | DMEM is continuously rewritten | 30 samples (10 at ~13 s, 20 at ~62 ms) plus the two coherent snapshots: DMEM[0:752] equals RDRAM[src:src+752] in 10 of the 32 states (nine matches end exactly at 752, one at 754) — the snapshots (guest 0x5EB98 at 11:39, 0x44C00 at 12:02) and eight samples (0x28C70, 0x82B08, 0xB6A38, 0xE8970, 0xFA928 in the 62 ms series; 0x92AC8, 0xACA60, 0x1068F8 in the 13 s series). 752 = 0x2F0 is the length constant the §8 call-site decode found (`addi at,zero,0x2f0`). Four samples show shorter partial matches (712/696/160/48 bytes) consistent with catching a write in flight. Two states are full 4 KiB copies of sparse regions (0x8EAD8 with 19 non-zero words; 0x85AF8 with 20), 14 samples caught DMEM fully zeroed (FNV `0x51d88627df287325`) and two are dominated by a low-entropy repeating pattern whose match address is not reliable. Between consecutive samples that both hold a block, 3.0–3.7 KB of DMEM differ in 300–700 fragments, so a full DMEM rewrite is faster than the sampling interval. |
 
 Descriptor cross-check: slot 0 (guest 0x6EEAA0) matches the P05 task-word
@@ -326,7 +357,9 @@ Not established by this evidence (do not over-read):
   window. No producer of the heap zeroing is identified.
 - The scattered `src` addresses are not explained by snapshots; they show
   what the loop emits, not which instruction emits it.
-- The heap zeroing is historic, not ongoing: RDRAM does not change while
-  frozen, so the zeroing cannot be caught in the current process. P08 must
-  reproduce the freeze — and can now do so root-free, with this method used
-  alongside (or instead of) an instrumented build.
+- The heap zeroing is not being observed live: RDRAM contents are equal at
+  every sample taken (11:39, 12:02, 14:27 — up to 2 h 45 min apart), which
+  is strong evidence but not proof that nothing writes it now, since a
+  write-and-restore between samples would evade sampling. P08 must
+  reproduce the freeze to catch the event — and can now do so root-free,
+  with this method used alongside (or instead of) an instrumented build.

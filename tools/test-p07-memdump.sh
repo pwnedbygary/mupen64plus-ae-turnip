@@ -67,15 +67,30 @@ grep -q 'a64()' "$helper" || note "missing awk hex-arithmetic helper"
 grep -q 'read_window "0x\$BASE" \$RDRAM_WINDOW_BYTES' "$helper" || note "RDRAM window read missing"
 grep -q 'a64 "\$BASE_MAP_START" round' "$helper" || note "missing 64 KiB mem_base rounding"
 printf '%s\n' "$code" | grep -q '0x5000000' && note "compressed-mode offset used in code"
+# Device runs write to /sdcard/Download unless the host-only test seam sets
+# DEST_DIR; the behavioral suite exercises that seam.
+grep -qF 'DIR=${DEST_DIR:-/sdcard/Download}/p07-memdump-' "$helper" \
+    || note "output directory lost its DEST_DIR override or /sdcard/Download default"
 
 # 6. Ordering invariants: the canary read must precede any test of its
-#    result, and the coherent-snapshot stop must be restored on exit.
+#    result; the pre-stop state must be read before kill -STOP; the process
+#    must be resumed only when this run stopped it; and a task-pointer change
+#    across the reads must degrade the capture rather than pass silently.
 c=$(printf '%s\n' "$code" | grep -n 'of="\$DIR/canary-sample.bin"' | head -1 | cut -d: -f1)
 t=$(printf '%s\n' "$code" | grep -n 'if \[ "\$canary_out" != "4" \]' | head -1 | cut -d: -f1)
 if [ -z "$c" ] || [ -z "$t" ] || [ "$c" -ge "$t" ]; then
     note "canary dd read does not precede its failure test"
 fi
-printf '%s\n' "$code" | grep -q "trap 'kill -CONT" || note "no SIGCONT restore trap"
+sb=$(printf '%s\n' "$code" | grep -n 'stopped_before=' | head -1 | cut -d: -f1)
+ks=$(printf '%s\n' "$code" | grep -n 'kill -STOP' | head -1 | cut -d: -f1)
+if [ -z "$sb" ] || [ -z "$ks" ] || [ "$sb" -ge "$ks" ]; then
+    note "pre-stop state must be read before kill -STOP (resume consent)"
+fi
+grep -qF 'we_stopped=1' "$helper" || note "missing resume-consent flag"
+grep -qF 'if [ "$we_stopped" = 1 ]; then kill -CONT $PID' "$helper" \
+    || note "no conditional SIGCONT (must not resume a process it did not stop)"
+grep -qF 'status_reasons="$status_reasons curtask_changed_during_capture"' "$helper" \
+    || note "task pointer is sampled but never compared"
 
 # 7. Anchor addresses/sizes that the evidence doc depends on.
 grep -q '0x771D68' "$helper" || note "missing gCurAudioTask pointer address"
@@ -105,7 +120,34 @@ else
     note "could not extract the a64 helper for execution"
 fi
 
-# 9. If mksh is available locally, parse both files with it (the device shell).
+# 9. Completion gate: "complete (verified)" may be printed only when the
+#    fail-closed reason list is empty, and each degradation class must feed
+#    that list (the earlier helper could print "complete" after a short or
+#    errored read, an unconfirmed stop, or an implausible anchor).
+for need in \
+    'status_reasons=""' \
+    'status_reasons="$status_reasons process_not_stopped"' \
+    'status_reasons="$status_reasons curtask_anchor_implausible"' \
+    'status_reasons="$status_reasons curtask_changed_during_capture"' \
+    'status_reasons="$status_reasons read_' \
+    'status_reasons="$status_reasons hashes_missing"' \
+    'status=incomplete reasons:' \
+    'status=verified' \
+    'complete (verified)'; do
+    grep -qF "$need" "$helper" || note "completion gate missing: $need"
+done
+grep -q '\[ "$rc" -eq 0 \]' "$helper" \
+    || note "read_ok does not require rc=0 (errored reads could pass)"
+inc_line="$(grep -n 'status=incomplete' "$helper" | cut -d: -f1)"
+ok_line="$(grep -n 'complete (verified)' "$helper" | cut -d: -f1)"
+if [ -z "$inc_line" ] || [ -z "$ok_line" ] || [ "$inc_line" -ge "$ok_line" ]; then
+    note "INCOMPLETE branch must precede the success message"
+fi
+# The anchor check must not use shell arithmetic on the pointer word.
+grep -q 'case "$curtask_before_hex" in' "$helper" \
+    || note "anchor check must classify the hex form (mksh arithmetic is 32-bit)"
+
+# 10. If mksh is available locally, parse both files with it (the device shell).
 if command -v mksh >/dev/null 2>&1; then
     mksh -n "$helper" || note "helper fails mksh -n"
     mksh -n "$launcher" || note "launcher fails mksh -n"
