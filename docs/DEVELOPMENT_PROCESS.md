@@ -130,6 +130,11 @@ diagnostics (P05). It is a workflow requirement, not an installed Git hook.
 
 ## 7. Applying this elsewhere
 
+For this N64DD investigation, also apply
+[Evidence discipline prompt](N64DD_EVIDENCE_REVIEW_PROMPT.md). It adds mandatory
+claim classification, capture-provenance checks, competing hypotheses and
+causal-review checks. Package PASS is not proof of the overall repair.
+
 Copy this file into the other repository (or its equivalent docs location),
 adjust the repo-specific content — the suite names and build commands in
 section 4 and the handoff/bookkeeping paths in step 4 and section 6 — and

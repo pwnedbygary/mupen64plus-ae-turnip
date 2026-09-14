@@ -50,6 +50,10 @@ is not a proven fix; consult the boot-order reference audit before changing it.
 
 ## Diagnostic and review discipline
 
+Read and apply [Evidence discipline prompt](N64DD_EVIDENCE_REVIEW_PROMPT.md)
+for capture work, analysis, verification and handoffs. Its claim ledger and
+inference boundaries are required; successful tests do not waive them.
+
 Use the work-package guide's copy-pastable diagnostic and reviewer prompts.
 Separate direct observations, derived calculations, pinned reference comparisons,
 hypotheses and unknowns. Sampled PCs are not exact writers; static paths do not
