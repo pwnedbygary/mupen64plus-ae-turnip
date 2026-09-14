@@ -274,3 +274,59 @@ DMA and RSP DMA, and catch the event that zeroes the heap and its timing
 relative to the task submission. The competing mechanisms to separate:
 game-side heap clear without a completed rebuild; an emulated disk/cart load
 delivering zeros (DD-specific); an emulator-side RAM clear.
+
+## 9. Frozen-state recapture via run-as (2026-09-14, root-free)
+
+External review asked for the 8192 RSP bytes at
+`validated_mem_base + 0x04000000`, because the 11:39 window started 0x1000
+low and contained DMEM only. The emulation process was still alive and
+still spinning, so the window was recaptured without a device-side root
+run: the debug package is debuggable and `run-as <package>` executes as the
+app uid, which may read its own `/proc/<pid>/mem`.
+
+Method (read-only; no emulator change, no root):
+- `adb shell run-as <pkg> kill -STOP 11604` (same-uid signal for
+  coherence), `dd if=/proc/11604/mem iflag=skip_bytes,count_bytes
+  skip=<decimal> count=8192` through `adb exec-out`, then `kill -CONT`.
+- Base: `/proc/<pid>/maps` is readable through `run-as` and shows the
+  emulation buffer mapping at `0x6fc2c5f000`, with a `---p` region
+  immediately below it (provenance not established); the buffer's
+  64 KiB-aligned base is `0x6fc2c60000` (= mapping start + 0x1000),
+  matching the derivation the root script now performs.
+  Addresses used: mem_base `480009125888`, DMEM `480076234752`,
+  `gCurAudioTask` `480016932200`. The pointer word read back `0x806EEAA0`,
+  validating the base on-device before the windows were read.
+
+Verified from the recaptures (local copies under `.fzxwork/p07-final/`,
+never published; `rspmem.bin` 8192 B sha256 `c64edefa…`, `rdram-window.bin`
+sha256 `7e1fbcdd…`):
+
+| Observation | Evidence |
+|---|---|
+| Frozen IMEM is the aspMain image, bit-exact | FNV (multiply-then-xor over 1024 words, the P05 observer's function) of the IMEM half = `0x3aaaf0f5f121410e`, identical to the FNV of the RDRAM aspMain image at guest 0x768E60 and to the observer's in-process `imem_before_hash`/`imem_after_hash` (4 records each at 08:02:51). Head words `340a0fc0 8d420018 8d43001c 40803800`; the observer's four sample offsets (0x000/0x3fc/0xf60/0xffc) return exactly its recorded samples `[340a0fc0,4bfba08f,8c260004,00010001]`. |
+| Window layout | The 8 KiB read at mem_base + 0x04000000 is `[DMEM][IMEM]`: CPU-side DMEM = 0x04000000, IMEM = 0x04001000 (in-process DD trace: `m=0x04001000` decodes to `dest={bank=IMEM …}`). The 11:39 capture's second half was DMEM; IMEM was its missing 4 KiB. |
+| RDRAM is static while frozen | Guest-aligned diff of the 8 MiB window (guest 0..0x7FF000) between 11:39 and 12:02: 0 differing bytes. The zeroed heap, the zero buffer at 0x411910, `gAudioCtx` and both task slots are unchanged; the zero run is still exactly guest [0x3DA9EF, 0x6ECA10). |
+| The process is still looping | utime advances ~100 ticks/s (one full host core) through 16:06; IMEM never changes across captures. |
+| DMEM is continuously rewritten | 30 samples (10 at ~13 s, 20 at ~62 ms) plus the two coherent snapshots: DMEM[0:752] equals RDRAM[src:src+752] in 10 of the 32 states (nine matches end exactly at 752, one at 754) — the snapshots (guest 0x5EB98 at 11:39, 0x44C00 at 12:02) and eight samples (0x28C70, 0x82B08, 0xB6A38, 0xE8970, 0xFA928 in the 62 ms series; 0x92AC8, 0xACA60, 0x1068F8 in the 13 s series). 752 = 0x2F0 is the length constant the §8 call-site decode found (`addi at,zero,0x2f0`). Four samples show shorter partial matches (712/696/160/48 bytes) consistent with catching a write in flight. Two states are full 4 KiB copies of sparse regions (0x8EAD8 with 19 non-zero words; 0x85AF8 with 20), 14 samples caught DMEM fully zeroed (FNV `0x51d88627df287325`) and two are dominated by a low-entropy repeating pattern whose match address is not reliable. Between consecutive samples that both hold a block, 3.0–3.7 KB of DMEM differ in 300–700 fragments, so a full DMEM rewrite is faster than the sampling interval. |
+
+Descriptor cross-check: slot 0 (guest 0x6EEAA0) matches the P05 task-word
+record on every word except 4, 6 and 12, which carry the KSEG0 bit in
+RDRAM (`0x80768e60`, `0x80794e90`, `0x80411910`); its words 12-13 are the
+record's `00411910`/`000001a0` pair on that basis — the zeroed buffer §8's
+table lists at guest 0x411910. Slot 1 (guest 0x6EEAF0) matches the same way
+except that its words 12-13 are a different pair, `804132d0`/`000001c0` —
+the buffer §8's table records at guest 0x4132d0. Words 6-7
+(0x794e90/0x2df) are a buffer §8's table does not list.
+
+Not established by this evidence (do not over-read):
+- The writer of the DMEM traffic is not identified by these snapshots. The
+  in-process P06 records (the DMA-helper loop with zero operands at the
+  freeze onset) are the evidence that the RSP is executing; DMEM could in
+  principle also be written by the emulated CPU through the 0x04000000
+  window. No producer of the heap zeroing is identified.
+- The scattered `src` addresses are not explained by snapshots; they show
+  what the loop emits, not which instruction emits it.
+- The heap zeroing is historic, not ongoing: RDRAM does not change while
+  frozen, so the zeroing cannot be caught in the current process. P08 must
+  reproduce the freeze — and can now do so root-free, with this method used
+  alongside (or instead of) an instrumented build.

@@ -3296,3 +3296,73 @@ Next eligible package and required inputs: P08 (conditional, now justified)
   proven-needed writer family, then a native capture. No emulator behavior
   change; the DMA correction and DDSTART9 stay untouched.
 ```
+
+## P07-R: frozen IMEM verified bit-exact; the stuck loop's DMEM traffic characterized — 2026-09-14
+
+```markdown
+Package: P07-R — conditional recapture requested by external review at
+  6b1b91968 (the 11:39 window held DMEM only; IMEM was the missing 4 KiB).
+  Completed root-free, without a device run.
+Baseline / Reviewed snapshot: 6b1b91968 (HEAD before this package; the doc
+  delta ef8e0b783 was separately reviewed PASS and committed on top).
+Verified observations (recomputed host-side from local capture copies under
+  .fzxwork/p07-final/; raw files never published):
+  - /proc/<pid>/mem and /proc/<pid>/maps are readable WITHOUT root:
+    run-as <debug pkg> executes as the app uid and may read its own
+    process memory. Base derived per run from maps (mapping 0x6fc2c5f000
+    with a ---p guard below; buffer base 0x6fc2c60000 = start + 0x1000).
+    Every read was content-checked: gCurAudioTask word = 0x806EEAA0.
+  - Frozen IMEM is the aspMain image bit-exact: FNV (multiply-then-xor,
+    1024 words — the P05 observer's own function) = 0x3aaaf0f5f121410e,
+    equal to the FNV of the RDRAM image at guest 0x768E60 and to the
+    observer's in-process IMEM hashes; its four sample offsets return
+    exactly the recorded samples [340a0fc0,4bfba08f,8c260004,00010001].
+    First direct frozen-state evidence the DD correction keeps IMEM intact.
+  - Window layout: mem_base + 0x04000000 reads [DMEM][IMEM] (CPU-side
+    DMEM 0x04000000, IMEM 0x04001000 per the in-process DD trace).
+  - RDRAM byte-identical across captures 22 min apart (guest-aligned 8 MiB
+    diff: 0 bytes): the zeroed heap, the zero buffer at 0x411910, gAudioCtx
+    and both task slots unchanged; the zero run is still guest
+    [0x3DA9EF, 0x6ECA10). The heap zeroing is historic, not ongoing.
+  - The loop is active: utime ~100 ticks/s (full host core) through 16:06;
+    IMEM never changes; DMEM rewritten faster than a 62 ms interval
+    (3.0-3.7 KB per interval in 300-700 fragments between samples that
+    both hold a block). DMEM[0:752] equals RDRAM[src:src+752] in 10 of the
+    32 sampled states (nine matches end exactly at 752, one at 754) — both
+    snapshots (0x5EB98 at 11:39, 0x44C00 at 12:02) and eight samples
+    (0x28C70, 0x82B08, 0xB6A38, 0xE8970, 0xFA928, 0x92AC8, 0xACA60,
+    0x1068F8) — with 752 = 0x2F0 matching the §8 call-site constant; four
+    samples show shorter partial matches consistent with a write in
+    flight, two are full 4 KiB copies of sparse regions (0x8EAD8, 19
+    non-zero words; 0x85AF8, 20), and 14 samples caught DMEM fully zeroed.
+  - Descriptor cross-check: slot 0 matches the P05 task-word record on
+    every word except 4, 6 and 12 (KSEG0-bit forms 0x80768e60, 0x80794e90,
+    0x80411910); its words 12-13 are the record's 0x00411910/0x1a0 pair on
+    that basis. Slot 1 matches the same way except that its words 12-13 are
+    a different pair, 0x804132d0/0x1c0 — the buffer §8's table records at
+    guest 0x4132d0, which the 16-word record does not contain.
+Derived results and inputs: the freeze is a live, continuously running
+  loop that keeps reading RDRAM and rewriting DMEM while IMEM and RDRAM
+  stay untouched; the consumed zero command list remains the divergence
+  boundary. P08 can use the root-free method instead of (or alongside) an
+  instrumented build.
+Remaining hypotheses: unchanged from §8 (producer-side zeroing: game heap
+  clear / DD load delivering zeros / emulator-side clear). Open from this
+  evidence: DMEM writer attribution (RSP vs emulated CPU through the
+  0x04000000 window) and the scattered src pattern.
+Changed files: docs/P07_COMMAND_EVIDENCE.md (§9 frozen-state recapture),
+  docs/HANDOFF_NEW.md (this record), docs/P07_CHECKPOINT.md (new).
+Checks actually run and why: FNV recomputation against the recorded
+  observer hashes (validates the hash function and independently settles
+  the file-offset convention); content anchors on every device read;
+  exact-length checks on every dd; guest-aligned 8 MiB diff; CPU-tick
+  sampling; zero-run and task-slot recomputation.
+Independent reviewer and verdict: (pending — filled in commit message)
+Commit, if approved: (pending)
+Remaining blockers: none.
+Next eligible package and required inputs: P08 (conditional, now
+  justified): bounded writer observation with generation tracking; one
+  native run to reproduce the freeze, with the root-free sampler used
+  alongside. No emulator behavior change; DMA correction and DDSTART9
+  stay untouched.
+```
