@@ -3006,3 +3006,66 @@ Limitations: debuggerd unwound only two frames for the spinning thread in
   guest command index are not yet identified (P07 scope); single session,
   one route.
 ```
+
+## P07 command evidence: the zero-operand call site identified; frozen-memory dump prepared — 2026-09-14
+
+```markdown
+Package: P07 — Identify the consumed audio command and its validity (analysis;
+  no emulator change; one prepared observation, no build required)
+Baseline / Reviewed snapshot: dd-eos-watchdog-checkpoint @ 2450922a2; new
+  docs/P07_COMMAND_EVIDENCE.md; new tools/p07-frozen-memdump.sh (pushed to
+  the device as /sdcard/Download/p07-memdump.sh); evidence from the P06
+  run's logcat (.fzxwork/p06-capture/, local-only).
+Verified observations: the audio microcode was reconstructed from the run's
+  106 jit_compile_input records (716/1024 IMEM words; generation-filtered
+  because records span multiple ucode generations — 347 writes differed
+  from the previously stored value, 154 addresses carried more than one
+  distinct value). Two call sites decode (docs/P07_COMMAND_EVIDENCE.md §1):
+  the 0xf54 block (addi at,s7,0; jal 0xad4 with the delay-slot size
+  decrement; per-DMA counter at s7+4) and the 0x0c4 block (size from k1,
+  fixed at=0x2f0, jal 0xad4, return 0xec). The P05 GPR snapshots confirm
+  both: record 8 ra=0xf60 with k0=0/t9=0; records 9-11 ra=0xec with k1=0
+  and t9=0, identical payload hashes (no source advance); record 8 is a
+  one-shot first occurrence. Both sites issue the DMA with zero size and
+  zero source through DIFFERENT size registers.
+Derived results and inputs: the zero-operand DMA is issued by the audio
+  microcode's chunked DMA block, and the microcode repeatedly re-executes it
+  with zero size/source inputs. Whether the zeros come from the consumed
+  command bytes, from DMEM state derived from the command, or from an
+  upstream mis-load/decode is NOT yet established. Evidence table with
+  EXACT/DERIVED/CANDIDATE/UNKNOWN labels is in docs/P07_COMMAND_EVIDENCE.md.
+  Helper-region compile history (0xa6c/0xad4 have records only at
+  08:02:36 in this capture, which begins at 08:02:35) is recorded as an
+  interpretation (byte-identical reloads ⇒ no change detected), to be
+  resolved by the dump. The audio descriptor address was initially
+  mis-stated as RDRAM 0x7504f0 — that is rspbootTextStart in the running
+  image; the correct chain is the gCurAudioTask pointer 0x80771D68 (phys
+  0x771D68) to the active OSTask, with gAudioCtx.rspTask[0/1] at phys
+  0x6EEAA0/0x6EEAF0 (jp/ek decompilation symbols).
+Remaining hypotheses: (1) the command (or its derived state) genuinely
+  carries zero size/source — producer/buffer boundary; (2) an upstream
+  mis-load/decode zeroed the helper inputs before the call. The frozen
+  memory dump discriminates: buffer bytes + DMEM state + executing IMEM.
+Changed files: docs/P07_COMMAND_EVIDENCE.md (new), tools/
+  p07-frozen-memdump.sh (new), docs/HANDOFF_NEW.md (this record).
+Checks actually run and why: programmatic decode of the reconstructed block
+  (and of the captured regions); generation/timestamp analysis of the
+  compile records; consistency checks against the DDSTART11 static analysis
+  and the P05 register captures; host binutils MIPS support confirmed but
+  decoding done in-repo for auditability.
+Independent reviewer and verdict: (pending — filled in commit message per
+  protocol)
+Commit, if approved: (pending)
+Remaining blockers: none; the next observation is a user-run root script.
+Next eligible package and required inputs: run tools/p07-frozen-memdump.sh
+  via the device's root facility while the game is frozen (pid 11604 is
+  still alive and frozen), pull /sdcard/Download/p07-memdump/, and analyze:
+  (a) verify the active descriptor (via gCurAudioTask) against the P05
+  task words; (b) identify
+  the consumed command in the 0x411910 buffer and whether its fields are
+  zero; (c) read DMEM (the s7+4 counter; the command copy) and IMEM (the
+  executing microcode) to test hypotheses 1 vs 2; (d) compare the RDRAM
+  ucode image against the reconstructed compile inputs. That analysis is
+  the completion of the command identification (P07 conclusion) and decides
+  whether P08 (targeted producer/reuse observation) is needed at all.
+```
