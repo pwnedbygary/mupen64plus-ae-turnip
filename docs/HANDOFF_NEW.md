@@ -2919,3 +2919,90 @@ Next: the interactive native route — the user launches the DD game on the
   GPR operands); root stacks only if it freezes. Then classify by the
   validation §5 first-run decision table.
 ```
+
+## P06 native decision: correction verified working; freeze traced to the command loop — 2026-09-14
+
+```markdown
+Package: P06 — first native decision test (COMPLETE; decision classified per
+  validation §5: "IMEM stable, RSP still spins" -> P07)
+Baseline / Reviewed snapshot: installed candidate 3.0.336 (beta) 675fe521
+  (APK a6d88fa3…, cert 311f4e35…); run evidence: logcat capture window
+  08:02:35-08:14 (frozen run), final file 17,587,397 bytes, sha256
+  72c70668604c9396d2da382d14cb5977d08d7598de68fcfc553c3a81ae89f534; root
+  capture capture.zkzg4y with BOTH debuggerd samples (native-stacks
+  124,782 bytes, samples at 08:08:57 and 08:09:42, final_state=complete,
+  finished_at=08:09:43), both maps and both accounting sweeps pulled to
+  .fzxwork/p06-capture/ (local-only, never published). Live CPU-delta
+  readings archived at .fzxwork/p06-capture/cpu-deltas.txt.
+Verified observations (direct, this run):
+  1. Policy and engine confirmed: "DD runtime policy set: 1" then "Starting
+     R4300 emulator: Dynamic Recompiler" — the corrected policy was armed
+     before the first RSP task.
+  2. Correced DMEM-start transfer verified natively: the suspect request
+     (raw 0xfb0 / 0 / 0xffffffff — identical operands to DDSTART11, same
+     audio task generation 1512, same audio command buffer (task data_ptr)
+     0x00411910 size 0x1a0)
+     executed with actual_imem_writes=0, imem_before_hash == imem_after_hash
+     == 0x3aaaf0f5f121410e (the same entering IMEM state DDSTART11
+     recorded), dirty_after=0, final registers 0xfb0 / 0x1fe808 — exactly
+     the P01 ledger predictions. No IMEM corruption; no JIT invalidation
+     from this transfer.
+  3. The suspect request recurs: four trigger snapshots (records 8-11:
+     0xfb0/0/0xffffffff then 0x2f0/0/0xffffffff x3) followed by the designed
+     "DDSTART11 RSP trigger_budget exhaustion: limit=4". P05 preserved the
+     evidence exactly as intended (the request remains observable after the
+     fix removed its IMEM consequence).
+  4. Exact operands from the P05 GPR capture at the MTC0 launch:
+     t9=0x00000000, k0=0x00000000, with s7=0x00000fb0 (destination),
+     v1=0xffffffff (size after the delay-slot decrement) and
+     gp=0x00411918 (audio command buffer + 8). The zero fields are measured
+     register values, not reconstruction.
+  5. Frozen state: emulation thread 11638 (":EmulationProcess" pid 11604)
+     spin state R in both debuggerd samples; the capture's own accounting
+     shows its utime advance 35160 -> 39629 ticks between the two samples
+     (~45 s apart) = ~99% of one core sustained; live readings (archived in
+     cpu-deltas.txt) independently measured the process at ~103% and the
+     thread at ~101% of a core. All other threads idle or in condition
+     waits (video pool) — no graphics-driver block on the emulation thread.
+  6. Native stack correlation, BOTH samples: thread 11638 in
+     libmupen64plus-rsp-parallel.so at RSP_MTC0+1788 (sample 1) and
+     RSP_MTC0+1536 (sample 2), with the SAME return address
+     0x6f7e25e148 — inside JIT allocation record 2
+     [0x6f7e25e000,0x6f7e25f000) imem_start_pc=0xad4. That is the DMA
+     helper at IMEM 0xad4 identified by the DDSTART11 static reconstruction
+     ("the block at 0xf54 selects at=s7, calls the DMA helper at 0xad4").
+     The differing PCs inside the DMA function with an unchanged microcode
+     call site across ~45 s demonstrate repeated execution of the helper —
+     the microcode loops at this call, programming the zero-operand request
+     each iteration.
+Derived results: the freeze is the RSP microcode looping on this command,
+  not the IMEM overwrite. Under legacy policy the same loop additionally
+  destroyed IMEM (the DDSTART11 corruption at the same entry 1512); under
+  the corrected policy the loop is memory-safe but never terminates, the
+  audio task never returns, and the guest stalls at the same transition.
+  The correction is necessary and demonstrated working; the remaining
+  defect is upstream of the transfer: the command whose operands are zero.
+  This does NOT revive the historical yielded-graphics explanations; the
+  evidence points at the DMA-helper call loop.
+Decision: proceed to P07 (identify the consumed audio command and its
+  validity) — an observation/analysis package, no emulation change. No
+  audio correction is selected; the overall repair remains open.
+Remaining hypotheses (P07 boundary chain): why k0/t9 are zero at the helper
+  — legal zero encoding for this command vs corrupted/reused/stale command
+  bytes vs wrong fetch/decode — resolved by walking
+  DMA launch operands <- decoded RSP command <- fetched command bytes <-
+  task command buffer <- producer/reuse and stopping at the first
+  demonstrated divergence.
+Changed files: docs/HANDOFF_NEW.md (this record) in the follow-up commit;
+  all captures remain local-only.
+Checks actually run and why: continuous logcat capture (final file hashed
+  after capture stop and a stability check); root capture with two
+  debuggerd samples (both rc=0), two maps sweeps and two thread accounting
+  sweeps; cross-sample thread accounting delta; live CPU deltas measured
+  twice (archived); JIT allocation correlation for the return address;
+  thread-state inspection.
+Limitations: debuggerd unwound only two frames for the spinning thread in
+  both samples (JIT frame boundary); the exact microcode instruction and
+  guest command index are not yet identified (P07 scope); single session,
+  one route.
+```
