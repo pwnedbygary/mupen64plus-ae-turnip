@@ -3104,3 +3104,32 @@ p07-memdump.sh` sha256 `422e607b…`, identical to the repository copy). The
 frozen emulation process (pid 11604) remained alive throughout. Re-run
 pending; the analysis plan in `docs/P07_COMMAND_EVIDENCE.md` §6 is
 unchanged.
+
+## P07 second device run: probe found no descriptor; diagnostics added — 2026-09-14
+
+The re-run (10:43) confirmed the mksh fix — no `bad number` error — but the
+probe aborted with "active audio descriptor not found". The base revision
+logged no per-candidate progress and printed the same abort for both a
+zero-matching-region and a zero-match outcome, so that run alone cannot
+distinguish them. The process is provably still in the same frozen state
+(pid 11604, utime 975,422 ticks at write time ≈ 2.6 CPU-hours of continuous
+spin since the 08:09 baseline; same process, same loop, still ~100% of one
+core), and the device's `od -An -tu4`/`-tx1` and
+`dd iflag=skip_bytes,count_bytes` primitives were verified interactively
+during this iteration against known bytes, so the failure is in the probe's
+context or acceptance criteria rather than in the utilities.
+
+The helper now records full diagnostics and accepts both known audio-task
+slots: `uid` and a `/proc/<pid>/stat` canary read (evaluated before the
+probe, so a failed run can distinguish "cannot read process memory" from
+"addresses wrong") in the metadata; a bounded `probe-log.txt` with one
+line per candidate including unreadable ones (offset, pointer, masked phys,
+type, data_ptr, data_size); region/candidate counts in the metadata;
+acceptance of either `rspTask[0]` data_ptr 0x80411910 or `rspTask[1]`
+0x804132D0 (masked physical form, values confirmed against the archived
+r36a full-RAM dump); and a command-buffer dump derived from the accepted
+descriptor's own data_ptr (with the fixed slot-0 buffer kept alongside for
+comparison) so a slot-1 state cannot silently yield the wrong buffer.
+Re-pushed to the device. The next run's `probe-log.txt` and `canary_hex`
+will identify the cause directly. No memory has been dumped yet; the
+frozen process remains untouched.
