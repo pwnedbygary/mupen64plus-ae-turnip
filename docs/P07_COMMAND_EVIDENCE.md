@@ -149,58 +149,41 @@ in place. No settings, SELinux, app data or saves are touched; the helper
 only reads `/proc/<pid>/mem` at the fixed addresses below and writes under
 a per-run `/sdcard/Download/p07-memdump-<timestamp>/` directory.
 
-### 6.2 Regions read
+### 6.2 Windows read
 
-The helper reads bounded, fixed regions of the frozen emulation process as
-root:
+The device script computes no host address with shell arithmetic: mksh's
+arithmetic is 32-bit and `$((0x6fc2c5f000))` evaluates to -1027215360 on
+this device (the failure that motivated the windowed design — every probed
+address wrapped). It passes raw map hex strings to `dd` (which parses
+64-bit skip values) and uses an awk helper for its hex additions and size subtraction
+(double arithmetic is exact below 2^53). Discovery is OFFLINE on the
+host from the dumped windows:
 
-- the active audio task pointer `gCurAudioTask` at RDRAM `0x771D68`
-  (physical; 4 B), then the OSTask it points to (64 B) — to be verified
-  against the P05 task words. Note the stored `data_ptr` is the *virtual*
-  form (0x80411910; the P05 capture's 0x00411910 is the physical form
-  `osSpTaskLoad` derives in its converted copy), so the script compares the
-  masked physical form against either slot's buffer (`0x411910` for
-  rspTask[0], `0x4132d0` for rspTask[1]) and a plausible `data_size`
-  (1..4096; the frozen P06 state is 0x1a0, archived dumps of other states
-  show 0x1c0/0x240).
-- the audio task slots `gAudioCtx.rspTask[2]` at RDRAM `0x6EEAA0` and
-  `0x6EEAF0` (0x50 B each);
-- the command buffer at the active descriptor's own `data_ptr` (physical
-  form of either 0x80411910 or 0x804132d0), dumped at exactly the
-  descriptor's validated `data_size` — not a fixed length or slot;
-- the RSP memory at `mem_base+0x04000000` (DMEM + IMEM, 8 KiB). The app
-  uses the full 512 MiB `mem_base` allocation, and `mem_base_u32()` in full
+- `rdram-window.bin` — `[mem_base, mem_base + 8 MiB)`: covers every RDRAM
+  structure of interest (gCurAudioTask at 0x771D68, the rspTask slots at
+  0x6EEAA0/0x6EEAF0, both command buffers 0x411910/0x4132d0, the aspMain
+  image at 0x768e60).
+- `rspmem.bin` — `[mem_base + 0x04000000, +8 KiB)`: DMEM + IMEM. The app
+  uses the full 512 MiB `mem_base` allocation and `mem_base_u32()` in full
   mode is identity (`mem = mem_base + guest address`; `MEM_BASE_MODE == 0`),
-  so guest `MM_RSP_MEM` 0x04000000 maps directly. `MB_RSP_MEM = 0x5000000`
-  is the *compressed*-mode offset (`RDRAM_16MB_SIZE + CART_ROM_MAX_SIZE`)
-  and does not apply unless the small fallback allocation was selected; the
-  helper reads 0x04000000 and the host test rejects a compressed-mode read
-  address;
-- the audio microcode image at RDRAM `0x768e60` (4 KiB, `aspMainTextStart`
-  0x80768E60 per the decompilation symbol map).
+  so guest `MM_RSP_MEM` 0x04000000 maps directly; `MB_RSP_MEM = 0x5000000`
+  is the *compressed*-mode offset and does not apply (the host test rejects
+  a compressed-mode address in code).
 
-Each run writes to a fresh timestamped directory; every region file's
-length is validated against its expected size and recorded; the process and
-its task pointers are sampled before and after the reads (identity
-before/after); and the process is briefly stopped (`SIGSTOP`, restored by an
-`EXIT` trap) for the duration of the reads, because a spinning RSP loop
-keeps rewriting DMEM/IMEM — a frozen display does not imply a static memory
-image. The memory-read canary performs a real `/proc/<pid>/mem` read at a
-mapped address and preserves `dd`'s exit status, byte count and stderr
-(reading `/proc/<pid>/stat` would not prove `/proc/<pid>/mem` access). The
-command buffer is dumped at exactly the validated descriptor `data_size`
-(1..4096), not a fixed length.
-
-`mem_base` is located by probing the app's one 512 MiB anonymous mapping:
-for each 4 KiB-aligned candidate within the mapping's first 64 KiB
-(64 KiB `posix_memalign` alignment bounds the interior offset), the script
-reads the `gCurAudioTask` pointer and accepts the candidate whose target
-descriptor shows `type = 2`, a `data_ptr` masking to either slot's physical
-command buffer (0x411910 or 0x4132d0), and a `data_size` in 1..4096; it
-fails closed if none matches, and the bounded `probe-log.txt` records one
-line per candidate (including `ptr=unreadable`) plus region/candidate
-counts. Every other read is a fixed address; nothing is written to the
-process; outputs and SHA-256s land in the per-run directory.
+Each run writes to a fresh timestamped directory; both windows' exact
+lengths are validated and `dd`'s exit status recorded; the process is
+briefly stopped (`SIGSTOP`, restored by an `EXIT` trap) for coherent reads —
+a spinning RSP loop keeps rewriting DMEM/IMEM, and a frozen display does
+not imply a static memory image — with the active-task pointer word sampled
+before and after the stop as a race check, and `stopped_state` recorded
+(with an explicit warning if the stop did not take effect). The
+memory-read canary performs a real `/proc/<pid>/mem` read at the first
+mapping's start keeping `dd`'s exit status, byte count and stderr (reading
+`/proc/<pid>/stat` would not prove `/proc/<pid>/mem` access). mem_base is
+located as the first qualifying `[anon:scudo:secondary]` read-write mapping
+of at least 500 MB (sizes computed and compared in awk, because the device
+`[` wraps decimal operands at 2^31); no candidate probing happens on the
+device.
 
 (The audio task's own RDRAM address was previously mis-stated as `0x7504f0`;
 that address is `rspbootTextStart` 0x807504F0 in the running image, while

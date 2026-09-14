@@ -3187,3 +3187,45 @@ Next: re-run the launcher; pull /sdcard/Download/p07-memdump-<timestamp>/;
   verify probe-log/canary/identity fields; then analyze the command buffer,
   DMEM (counter at s7+4), IMEM vs the aspMain image.
 ```
+
+## P07 fourth run: root cause of the probe failure found — 32-bit mksh arithmetic — 2026-09-14
+
+```markdown
+Package: P07 (fourth iteration) — windowed dump after the probe root cause
+Verified observations: the 11:30 run's diagnostics identified the failure
+  exactly. uid=0 and the canary succeeded (4 bytes read at 0x12c00000), so
+  memory access was fine; the probe-log shows all 16 candidates as
+  ptr=unreadable at WRAPPED addresses (0xffffffffc2c5f000...). Root cause:
+  mksh arithmetic is 32-bit on this device — `$((0x6fc2c5f000))` evaluates
+  to -1027215360 (verified directly on the device) — so the mem_base host
+  address and every candidate were wrong and dd read unmapped addresses.
+Derived results and inputs: the helper is redesigned to compute no host
+  address with shell arithmetic: raw map hex strings are passed to dd
+  (which parses 64-bit skip values — verified), its hex additions and size
+  subtraction use an awk digit-parse helper (doubles are exact below 2^53 —
+  verified on the device's awk: 0x6fc2c5f000 + 0x04000000 = 480076230656), and discovery
+  moved OFFLINE to the host: the device now dumps two windows —
+  [mem_base, +8 MiB) RDRAM and [mem_base + 0x04000000, +8 KiB) DMEM+IMEM —
+  and the host validates the descriptor chain, picks the active slot, and
+  extracts the command buffer from the RDRAM window itself. The host test
+  gained a self-tested 32-bit-arithmetic invariant (no `0x` literal at all
+  inside `$(( ))` in code, with five synthetic re-introduction probes and a
+  decimal control) and window-design anchors in place of the probe-loop
+  checks.
+Remaining hypotheses: descriptor validation now happens on the host from
+  the window, so the descriptor/slot question will be settled from the
+  dumped data rather than by the device script; the
+  command-bytes-vs-upstream-zeroing question remains open pending the dump.
+Changed files: tools/p07-frozen-memdump.sh, tools/test-p07-memdump.sh,
+  docs/P07_COMMAND_EVIDENCE.md §6.2, docs/HANDOFF_NEW.md (this record).
+Checks actually run and why: device verification of the mksh wrap, dd big
+  hex/decimal skips, and the awk helper; mksh -n on the pushed copy; host
+  test suite (exit 0); device/repo hash match (6552f383...).
+Independent reviewer and verdict: (pending — filled in commit message)
+Commit, if approved: (pending)
+Remaining blockers: none — awaiting the next device run.
+Next: run the launcher, pull /sdcard/Download/p07-memdump-<timestamp>/,
+  then analyze offline: gCurAudioTask -> descriptor (type/data_ptr size,
+  both slots), command buffer bytes, DMEM state (the s7+4 counter), IMEM vs
+  the aspMain image, and the identity/read_ok/stopped fields.
+```

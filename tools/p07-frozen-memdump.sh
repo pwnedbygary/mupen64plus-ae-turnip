@@ -1,36 +1,32 @@
 #!/system/bin/sh
-# P07: bounded memory dump for the audio-command investigation.
+# P07: windowed memory dump for the audio-command investigation.
 #
-# Root, read-only, against the emulation process. The process is briefly
-# stopped (SIGSTOP/SIGCONT, restored by an EXIT trap) so the snapshot is
-# coherent: a spinning RSP loop keeps rewriting DMEM/IMEM, and a frozen
-# display does not mean a static memory image.
+# Root, read-only. mksh arithmetic is 32-BIT on this device:
+# `$((0x6fc2c5f000))` evaluates to -1027215360, so no host address is ever
+# computed with shell arithmetic. Hex-string addition uses an awk helper
+# (decimal doubles are exact below 2^53) and dd receives raw 64-bit hex or
+# decimal skip values. Descriptor validation and command-buffer extraction
+# happen OFFLINE on the host, from the dumped windows.
 #
-# Host addresses: the app uses the FULL 512 MiB mem_base allocation, and
-# mem_base_u32() in full mode is identity (mem = mem_base + guest address;
-# MEM_BASE_MODE == 0). The compressed-mode offsets (MB_RSP_MEM = 0x5000000)
-# do NOT apply unless the small fallback allocation was selected.
+# Host layout (full 512 MiB mem_base allocation; mem_base_u32() in full mode
+# is identity: mem = mem_base + guest address, MEM_BASE_MODE == 0):
+#   RDRAM        = mem_base + 0x00000000
+#   RSP memory   = mem_base + 0x04000000 (guest MM_RSP_MEM; DMEM +0, IMEM +0x1000)
+#   compressed-mode offsets (MB_RSP_MEM = 0x5000000) do NOT apply here.
 #
-#   guest MM_RDRAM_DRAM 0x00000000 -> mem_base + 0x00000000 (RDRAM)
-#   guest MM_RSP_MEM    0x04000000 -> mem_base + 0x04000000 (DMEM; IMEM +0x1000)
+# Dumped windows (all offsets of interest are inside them):
+#   [mem_base, mem_base + 8 MiB)  RDRAM: gCurAudioTask 0x771D68, rspTask
+#       slots 0x6EEAA0/0x6EEAF0, both command buffers 0x411910/0x4132d0,
+#       aspMain image 0x768e60
+#   [mem_base + 0x04000000, +8 KiB) DMEM + IMEM
 #
-# RDRAM physical = guest & 0x7fffff. Reads (each length-validated):
-#   0x771D68   gCurAudioTask pointer (0x80771D68)    4 B
-#   <pointer>  active AudioTask/OSTask: type at +0, data_ptr/data_size at
-#              +0x30/+0x34; stored data_ptr is the VIRTUAL form (0x80411910
-#              / 0x804132D0 for the two rspTask slots), so the probe
-#              compares the masked physical form (0x411910 / 0x4132d0)
-#   0x6EEAA0   gAudioCtx.rspTask[0] (0x806EEAA0)     0x50 B
-#   0x6EEAF0   gAudioCtx.rspTask[1] (0x806EEAF0)     0x50 B
-#   <data_ptr> audio command buffer, exactly the validated data_size
-#   mem_base + 0x04000000   DMEM + IMEM              8 KiB
-#   mem_base + 0x768e60     aspMain image in RDRAM   4 KiB
+# The process is briefly stopped (SIGSTOP, restored by an EXIT trap) so the
+# snapshot is coherent — a spinning RSP loop keeps rewriting DMEM/IMEM, and
+# a frozen display does not imply a static memory image. The active-task
+# pointer word is sampled before and after the stop as a race check.
 #
-# Writes go only under a per-run capture directory
-# /sdcard/Download/p07-memdump-<timestamp>/ containing run-metadata.txt,
-# probe-log.txt (one line per mem_base candidate, including unreadable
-# ones), the region files with exact expected lengths checked, and
-# hashes.txt. Process/task identity is sampled before and after the reads.
+# Writes go only under a per-run
+# /sdcard/Download/p07-memdump-<timestamp>/ directory.
 
 PKG=org.mupen64plusae.turnip.pwnedbygary.debug:EmulationProcess
 PID=$(pidof "$PKG")
@@ -39,30 +35,48 @@ if [ -z "$PID" ]; then
     exit 1
 fi
 
+MM_RSP_MEM_HEX=4000000
+RDRAM_WINDOW_BYTES=8388608
+RSP_WINDOW_BYTES=8192
+CURTASK_OFF_HEX=771D68
+
+# awk hex helper: parse hex-digit strings exactly (doubles are exact below
+# 2^53) and print decimal. Usage: a64 <hexstring> +|- <hexstring>
+a64() {
+    awk -v a="$1" -v op="$2" -v b="$3" '
+        function h2d(s,   v,i,d,ch){ v=0
+            for (i=1; i<=length(s); i++) {
+                ch=tolower(substr(s,i,1))
+                d=index("0123456789abcdef",ch)-1
+                if (d<0) return -1
+                v=v*16+d
+            }
+            return v }
+        BEGIN { x=h2d(a); y=h2d(b)
+            printf "%.0f", (op=="-") ? x-y : x+y }'
+}
+
 DIR=/sdcard/Download/p07-memdump-$(date '+%Y%m%d-%H%M%S')
 if [ -e "$DIR" ]; then
     DIR="$DIR-$$"
 fi
 mkdir -p "$DIR"
-: > "$DIR/probe-log.txt"
 {
     echo "pid=$PID"
     echo "uid=$(id -u 2>/dev/null)"
     echo "started_at=$(date '+%Y-%m-%dT%H:%M:%S%z')"
 } > "$DIR/run-metadata.txt"
 
-# Memory-read canary: an actual /proc/<pid>/mem read at the start of the
-# process's first mapping, keeping dd's exit status, byte count and stderr.
-# (Reading /proc/<pid>/stat proves nothing about /proc/<pid>/mem access, and
-# address 0 is usually unmapped, so the canary uses a real mapping.)
+# Memory-read canary: a real /proc/<pid>/mem read at the first mapping's
+# start, with dd's exit status, byte count and stderr preserved. (Reading
+# /proc/<pid>/stat proves nothing about /proc/<pid>/mem access.)
 canary_addr=$(grep -m1 . /proc/$PID/maps 2>/dev/null | awk '{print $1}' | cut -d- -f1)
 if [ -z "$canary_addr" ]; then
-    echo "p07-memdump: cannot read /proc/$PID/maps; aborting" >> "$DIR/run-metadata.txt"
-    echo "p07-memdump: cannot read /proc/$PID/maps; see $DIR"
+    echo "p07-memdump: cannot read /proc/$PID/maps; aborting"
     exit 1
 fi
 dd if=/proc/$PID/mem iflag=skip_bytes,count_bytes \
-   skip=$((0x$canary_addr)) count=4 of="$DIR/canary-sample.bin" \
+   skip=0x$canary_addr count=4 of="$DIR/canary-sample.bin" \
    2>"$DIR/canary-stderr.txt"
 canary_rc=$?
 canary_out=$(stat -c %s "$DIR/canary-sample.bin" 2>/dev/null)
@@ -77,128 +91,80 @@ if [ "$canary_out" != "4" ]; then
     exit 1
 fi
 
-# Read 4 bytes at host address $1 as a little-endian 32-bit decimal value.
-peek_u32() {
-    dd if=/proc/$PID/mem iflag=skip_bytes,count_bytes skip=$1 count=4 \
-        2>/dev/null | od -An -tu4 2>/dev/null | tr -d ' \n'
-}
-
-# Locate mem_base and the active descriptor.
-BASE=""; DESC_PTR_PHYS=""; CMDBUF_PHYS=""; CMDBUF_SIZE=0
-REGIONS=0; CANDIDATES=0
+# Locate mem_base: the first qualifying anonymous read-write mapping of at
+# least 500 MB (the 512 MiB posix_memalign allocation). Sizes are computed
+# and compared in awk because the endpoints exceed 32 bits.
+BASE=""
 for region in $(grep 'rw-p' /proc/$PID/maps 2>/dev/null \
                     | grep '\[anon:scudo:secondary\]' | awk '{print $1}'); do
-    start=$((0x${region%-*}))
-    end=$((0x${region#*-}))
-    [ $((end - start)) -lt 500000000 ] && continue
-    REGIONS=$((REGIONS + 1))
-    off=0
-    # mksh's [ does not parse hex in integer comparisons: decimal 0xf000.
-    while [ $off -le 61440 ]; do
-        CANDIDATES=$((CANDIDATES + 1))
-        cand=$((start + off))
-        val=$(peek_u32 $((cand + 0x771D68)))
-        if [ -n "$val" ]; then
-            case "$val" in *[!0-9]*) val="";; esac
-        fi
-        if [ -z "$val" ]; then
-            echo "offset=0x$(printf '%x' $off) cand=0x$(printf '%x' $cand) ptr=unreadable" \
-                >> "$DIR/probe-log.txt"
-            off=$((off + 0x1000))
-            continue
-        fi
-        phys=$((val & 0x7fffff))
-        d0=$(peek_u32 $((cand + phys)))
-        dp=$(peek_u32 $((cand + phys + 0x30)))
-        ds=$(peek_u32 $((cand + phys + 0x34)))
-        echo "offset=0x$(printf '%x' $off) cand=0x$(printf '%x' $cand) ptr=$val phys=0x$(printf '%x' $phys) type=$d0 dptr=$dp dsize=$ds" \
-            >> "$DIR/probe-log.txt"
-        valid=1
-        [ -z "$d0" ] && valid=0
-        [ -z "$dp" ] && valid=0
-        [ -z "$ds" ] && valid=0
-        case "$d0$dp$ds" in *[!0-9]*) valid=0;; esac
-        if [ "$valid" = "1" ] && [ "$d0" = "2" ] \
-           && { [ $((dp & 0x7fffff)) -eq $((0x411910)) ] \
-                || [ $((dp & 0x7fffff)) -eq $((0x4132d0)) ]; } \
-           && [ "$ds" -gt 0 ] && [ "$ds" -le 4096 ]; then
-            BASE=$cand
-            DESC_PTR_PHYS=$phys
-            CMDBUF_PHYS=$((dp & 0x7fffff))
-            CMDBUF_SIZE=$ds
-            break
-        fi
-        off=$((off + 0x1000))
-    done
-    [ -n "$BASE" ] && break
+    s=${region%-*}
+    e=${region#*-}
+    size=$(a64 "$e" - "$s")
+    [ -z "$size" ] && continue
+    # Compare in awk: device `[` wraps decimal operands >= 2^31.
+    big=$(awk -v s="$size" 'BEGIN{print (s >= 500000000) ? 1 : 0}')
+    [ "$big" = "1" ] || continue
+    BASE=$s
+    BASE_SIZE=$size
+    break
 done
 
-echo "probe_regions=$REGIONS probe_candidates=$CANDIDATES" >> "$DIR/run-metadata.txt"
-
 if [ -z "$BASE" ]; then
-    echo "p07-memdump: active audio descriptor not found ($CANDIDATES candidates in $REGIONS region(s)); see $DIR/probe-log.txt"
+    echo "p07-memdump: mem_base mapping not found; see $DIR/run-metadata.txt"
     exit 1
 fi
+RSP_PHYS=$(a64 "$BASE" + "$MM_RSP_MEM_HEX")
+CURTASK_PHYS=$(a64 "$BASE" + "$CURTASK_OFF_HEX")
 {
-    echo "mem_base=0x$(printf '%x' $BASE)"
-    echo "active_descriptor_phys=0x$(printf '%x' $DESC_PTR_PHYS)"
-    echo "cmdbuf_phys=0x$(printf '%x' $CMDBUF_PHYS)"
-    echo "cmdbuf_size=$CMDBUF_SIZE"
+    echo "mem_base=0x$BASE"
+    echo "mem_base_size=$BASE_SIZE"
+    echo "rsp_mem_phys=$RSP_PHYS"
+    echo "curtask_phys=$CURTASK_PHYS"
 } >> "$DIR/run-metadata.txt"
 
 # Coherent snapshot: stop the process for the reads, restore on any exit.
 kill -STOP $PID 2>/dev/null
 trap 'kill -CONT $PID 2>/dev/null' EXIT
 sleep 1
-state=$(sed 's/.*) //' /proc/$PID/stat 2>/dev/null | awk '{print $1}')
-echo "stopped_state=$state" >> "$DIR/run-metadata.txt"
+stopped=$(sed 's/.*) //' /proc/$PID/stat 2>/dev/null | awk '{print $1}')
+echo "stopped_state=$stopped" >> "$DIR/run-metadata.txt"
+if [ "$stopped" != "T" ]; then
+    echo "snapshot_warning=process not confirmed stopped; memory may be racy" \
+        >> "$DIR/run-metadata.txt"
+fi
 
-# Identity snapshot before/after: process plus task pointers.
-identity() {
-    echo "curtask=0x$(printf '%x' $(peek_u32 $((BASE + 0x771D68))))"
-    echo "task0_dptr=0x$(printf '%x' $(peek_u32 $((BASE + 0x6EEAA0 + 0x30))))"
-    echo "task1_dptr=0x$(printf '%x' $(peek_u32 $((BASE + 0x6EEAF0 + 0x30))))"
+peek_u32() {
+    dd if=/proc/$PID/mem iflag=skip_bytes,count_bytes skip=$1 count=4 \
+        2>/dev/null | od -An -tu4 2>/dev/null | tr -d ' \n'
 }
+echo "curtask_before=$(peek_u32 $CURTASK_PHYS)" >> "$DIR/run-metadata.txt"
 
-# Read region: $1 host-relative address, $2 bytes, $3 filename; validates the
-# exact output length and records the outcome.
-read_region() {
+read_window() {
     dd if=/proc/$PID/mem iflag=skip_bytes,count_bytes \
-       skip=$((BASE + $1)) count=$2 of="$DIR/$3" 2>/dev/null
+       skip=$1 count=$2 of="$DIR/$3" 2>/dev/null
     rc=$?
     got=$(stat -c %s "$DIR/$3" 2>/dev/null)
-    want=$(( $2 ))
-    if [ -n "$got" ] && [ "$got" -eq "$want" ]; then
+    if [ -n "$got" ] && [ "$got" -eq "$2" ]; then
         echo "read_ok $3 $got rc=$rc" >> "$DIR/run-metadata.txt"
     else
-        echo "read_SHORT $3 expected=$want got=${got:-0} rc=$rc" >> "$DIR/run-metadata.txt"
+        echo "read_SHORT $3 expected=$2 got=${got:-0} rc=$rc" >> "$DIR/run-metadata.txt"
     fi
 }
 
-{
-    echo "identity_before:"
-    identity
-} >> "$DIR/run-metadata.txt"
+read_window "0x$BASE" $RDRAM_WINDOW_BYTES rdram-window.bin
+read_window "$RSP_PHYS" $RSP_WINDOW_BYTES rspmem.bin
 
-read_region 0x771D68        4              curtask-pointer.bin
-read_region $DESC_PTR_PHYS  64             active-descriptor.bin
-read_region 0x6EEAA0        0x50           rspTask0.bin
-read_region 0x6EEAF0        0x50           rspTask1.bin
-read_region $CMDBUF_PHYS    $CMDBUF_SIZE   cmdbuf.bin
-read_region 0x4000000       8192           rspmem.bin
-read_region 0x768e60        4096           ucode-rdram.bin
+echo "curtask_after=$(peek_u32 $CURTASK_PHYS)" >> "$DIR/run-metadata.txt"
 
-{
-    echo "identity_after:"
-    identity
-} >> "$DIR/run-metadata.txt"
-
-if [ ! -s "$DIR/active-descriptor.bin" ] || [ ! -s "$DIR/rspmem.bin" ]; then
+if [ ! -s "$DIR/rdram-window.bin" ] || [ ! -s "$DIR/rspmem.bin" ]; then
     echo "p07-memdump: dd produced no data; see $DIR/run-metadata.txt"
     exit 1
 fi
 
 sha256sum "$DIR"/*.bin 2>/dev/null > "$DIR/hashes.txt"
+if [ ! -s "$DIR/hashes.txt" ]; then
+    echo "hash_warning=sha256sum produced no output" >> "$DIR/run-metadata.txt"
+fi
 {
     echo "finished_at=$(date '+%Y-%m-%dT%H:%M:%S%z')"
     ls -la "$DIR"
