@@ -3264,6 +3264,18 @@ Derived results and inputs: the zero size/source operands, the 0xffffffff
   consuming a zero-filled command list; the microcode loop then never
   terminates. The divergence boundary is the producer/loader side. The DMA
   correction remains necessary and is why this no longer corrupts IMEM.
+Offset validation: the aspMain image's first word (340a0fc0) matches word 0
+  of the P06 observer's IMEM sample (word 0 of the image at both locations),
+  independently confirming the +0x1000 interpretation; in unshifted file
+  coordinates the look-up is 0x768e60 (no match) and the image sits at
+  0x769e60. The offset is derived per run and never hard-coded: this capture
+  predates the rounding (compensated in host analysis); the current script
+  rounds the mapping start to 64 KiB at capture time, and descriptor/chain
+  validation stays offline over the dumped windows (on-device only a
+  curtask pointer race-check sample). Scope: the snapshot shows the
+  frozen-state contents; the P05 GPR captures independently prove the
+  operands were zero at CONSUMPTION, but never-written vs written-then-zeroed
+  is not distinguished here.
 Remaining hypotheses: (1) game-side heap clear at the race transition
   without a completed rebuild; (2) an emulated disk/cart load delivering
   zeros (DD-specific); (3) an emulator-side RAM clear. P08 discriminates by

@@ -232,6 +232,30 @@ therefore had content earlier in the session; the zeroing happened between
 boot and the freeze, and the bounded PI-DMA trace budget was exhausted at
 boot, so this capture does not identify the zeroing event.
 
+Offset validation (content check against an independent observation): the
+aspMain image at RDRAM 0x768e60 begins `340a0fc0 8d420018 8d43001c 40803800`,
+and `340a0fc0` is word 0 of the IMEM sample recorded by the P06 run's
+observer (`imem_before_samples=[340a0fc0,…]`) — word 0 of the image at both
+locations, which confirms the *shifted* interpretation of this window: the
+unshifted look-up is file offset 0x768e60, whose words do not match, while
+the image actually sits at file offset 0x769e60. A second content check: the
+word at file offset 0x772D68 is `0x806EEAA0` = `gCurAudioTask` (guest
+0x771D68). The interior offset is derived per run and never hard-coded; this
+capture predates the rounding — its raw mapping start was unaligned and the
++0x1000 was compensated here in host analysis — while the current script
+rounds each mapping start up to the 64 KiB alignment at capture time.
+Descriptor and pointer-chain validation remains an offline host-side step
+over the dumped windows; on-device the script only samples the active-task
+pointer word as a race check.
+
+Scope of this snapshot (do not over-read it): the capture shows the buffer
+contents at the *frozen* state, and the P05 GPR captures independently show
+the operands were already zero at *consumption* time
+(`t9=0`/`k0=0` at the MTC0 launch). What this snapshot alone cannot
+distinguish is whether the buffer was never written for this generation or
+was written and then zeroed before consumption — no producer or clearing
+operation is identified from this snapshot.
+
 Conclusion: the consumed audio command is a genuine zero word. The
 microcode's zero size/source extraction, the `0xffffffff` length register
 and the repeated DMA-helper calls are consequences of consuming a
