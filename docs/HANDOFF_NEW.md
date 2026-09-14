@@ -3133,3 +3133,57 @@ comparison) so a slot-1 state cannot silently yield the wrong buffer.
 Re-pushed to the device. The next run's `probe-log.txt` and `canary_hex`
 will identify the cause directly. No memory has been dumped yet; the
 frozen process remains untouched.
+
+## P07 third iteration: address corrected (mem_base_u32 identity), coherent-snapshot capture — 2026-09-14
+
+```markdown
+Package: P07 (third iteration) — corrections from external review guidance
+  (Claude), each verified against the source before adoption
+Verified observations:
+  1. The RSP-memory host offset was WRONG: mem_base_u32() in full mode is
+     identity (mem = mem_base + guest address; MEM_BASE_MODE == 0), so
+     guest MM_RSP_MEM 0x04000000 maps to mem_base + 0x04000000. The
+     previously used 0x5000000 is the COMPRESSED-mode MB_RSP_MEM offset.
+     The app runs the full 512 MiB allocation (the archived maps of pid
+     11604 show a 0x20007000-byte — ~512 MiB — scudo secondary mapping,
+     .fzxwork/p06-capture/zkzg4y/capture.zkzg4y/sample-1-maps.txt; and the
+     log shows "Using full mem base"), so the identity value applies. The helper
+     now reads 0x04000000 and the host test's anchor was corrected (it
+     previously locked the wrong offset) and now rejects a compressed-mode
+     read address.
+  2. Leading hypothesis for run 2's descriptor-discovery failure (not proof
+     — that run wrote no probe log): the then-current probe accepted only
+     slot 0's 0x80411910, and the archived r36a full-RAM dump (a different
+     freeze instance) shows gCurAudioTask pointing at rspTask[1]
+     (data_ptr 0x804132D0), which that filter would reject. The diagnostic
+     build accepts both slots; the next run's probe log will confirm which
+     slot is live.
+  3. A frozen display does not mean static memory: the emulation thread has
+     been spinning ~100% of a core for hours, so DMEM/IMEM are being
+     rewritten continuously. The helper now briefly stops the process
+     (SIGSTOP, restored by an EXIT trap) for coherent reads, samples
+     process/task identity before and after, writes to a per-run
+     timestamped directory, and validates every output length exactly.
+  4. The memory-read canary now performs a real /proc/<pid>/mem read at a
+     mapped address (the first mapping's start) and preserves dd's exit
+     status, byte count and stderr — /proc/<pid>/stat readability is not
+     evidence of /proc/<pid>/mem access. The command buffer is dumped at
+     exactly the validated descriptor data_size, not a fixed 0x1a0.
+     (Implementation flaw caught during this work: a canary reading address
+     0 would fail even as root because address 0 is unmapped.)
+Remaining hypotheses: unchanged (command bytes vs upstream zeroing); the
+  next run's probe-log will show which slot is active and the dump will
+  provide the command buffer, DMEM, IMEM and aspMain image.
+Changed files: tools/p07-frozen-memdump.sh, tools/test-p07-memdump.sh,
+  docs/P07_COMMAND_EVIDENCE.md §6, docs/HANDOFF_NEW.md (this record).
+Checks actually run and why: source verification of mem_base_u32/
+  MEM_BASE_MODE/MM_RSP_MEM/MB_RSP_MEM before accepting the address claim;
+  host test suite (updated anchors, new ordering/trap/read-address
+  invariants); sh -n locally and mksh -n on the device; device hash match.
+Independent reviewer and verdict: (pending — filled in commit message)
+Commit, if approved: (pending)
+Remaining blockers: none — awaiting the next device run.
+Next: re-run the launcher; pull /sdcard/Download/p07-memdump-<timestamp>/;
+  verify probe-log/canary/identity fields; then analyze the command buffer,
+  DMEM (counter at s7+4), IMEM vs the aspMain image.
+```

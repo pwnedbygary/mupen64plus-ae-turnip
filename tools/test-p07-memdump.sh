@@ -47,6 +47,17 @@ else
         || note "probe loop (bound=$bound step=$step) does not yield $expected_n candidates"
 fi
 
+# 4c. Ordering invariants: the canary read must precede any test of its
+#     result, and the coherent-snapshot stop must be restored on exit.
+code="$(grep -vE '^[[:space:]]*#' "$helper")"
+c=$(printf '%s\n' "$code" | grep -n 'of="\$DIR/canary-sample.bin"' | head -1 | cut -d: -f1)
+t=$(printf '%s\n' "$code" | grep -n 'if \[ "\$canary_out" != "4" \]' | head -1 | cut -d: -f1)
+if [ -z "$c" ] || [ -z "$t" ] || [ "$c" -ge "$t" ]; then
+    note "canary dd read does not precede its failure test"
+fi
+printf '%s\n' "$code" | grep -q "trap 'kill -CONT" || note "no SIGCONT restore trap"
+printf '%s\n' "$code" | grep -q 'read_region 0x4000000' || note "RSP memory read not at 0x4000000"
+
 # 4b. If mksh is available locally, parse both files with it (the device shell).
 if command -v mksh >/dev/null 2>&1; then
     mksh -n "$helper" || note "helper fails mksh -n"
@@ -56,7 +67,10 @@ fi
 # 5. Anchor addresses/sizes that the evidence doc depends on.
 grep -q '0x771D68' "$helper" || note "missing gCurAudioTask pointer address"
 grep -q '0x411910' "$helper" || note "missing command-buffer address"
-grep -q '0x5000000' "$helper" || note "missing MB_RSP_MEM offset"
+grep -q '0x4000000' "$helper" || note "missing full-mode MM_RSP_MEM identity offset"
+if grep -qE 'read_region +0x5000000' "$helper"; then
+    note "compressed-mode MB_RSP_MEM offset used as a read address; full mode uses identity"
+fi
 grep -q '0x768e60' "$helper" || note "missing aspMain image address"
 
 if [ "$failures" -ne 0 ]; then

@@ -1,31 +1,36 @@
 #!/system/bin/sh
-# P07: bounded frozen-memory dump for the audio-command investigation.
+# P07: bounded memory dump for the audio-command investigation.
 #
-# Root, read-only, against a FROZEN emulation process. Fixed regions plus
-# the active-descriptor pointer; mem_base is located by probing the app's one
-# 512 MiB anonymous mapping (64 KiB posix_memalign alignment bounds the
-# interior offset below 64 KiB) and validating the descriptor it resolves to.
+# Root, read-only, against the emulation process. The process is briefly
+# stopped (SIGSTOP/SIGCONT, restored by an EXIT trap) so the snapshot is
+# coherent: a spinning RSP loop keeps rewriting DMEM/IMEM, and a frozen
+# display does not mean a static memory image.
 #
-# Addresses (jp/ek decompilation symbols; RDRAM physical = guest & 0x7fffff,
-# MB_RDRAM_DRAM = 0, MB_RSP_MEM = RDRAM_16MB_SIZE + CART_ROM_MAX_SIZE =
-# 0x1000000 + 0x4000000 per mupen64plus-core memory.c):
+# Host addresses: the app uses the FULL 512 MiB mem_base allocation, and
+# mem_base_u32() in full mode is identity (mem = mem_base + guest address;
+# MEM_BASE_MODE == 0). The compressed-mode offsets (MB_RSP_MEM = 0x5000000)
+# do NOT apply unless the small fallback allocation was selected.
 #
+#   guest MM_RDRAM_DRAM 0x00000000 -> mem_base + 0x00000000 (RDRAM)
+#   guest MM_RSP_MEM    0x04000000 -> mem_base + 0x04000000 (DMEM; IMEM +0x1000)
+#
+# RDRAM physical = guest & 0x7fffff. Reads (each length-validated):
 #   0x771D68   gCurAudioTask pointer (0x80771D68)    4 B
-#   <pointer>  active AudioTask/OSTask: type, data_ptr/data_size at +0x30/
-#              +0x34; the stored data_ptr is the VIRTUAL form (0x80411910 /
-#              0x804132D0 for the two rspTask slots), so the probe compares
-#              the masked physical form (0x411910 / 0x4132d0)
+#   <pointer>  active AudioTask/OSTask: type at +0, data_ptr/data_size at
+#              +0x30/+0x34; stored data_ptr is the VIRTUAL form (0x80411910
+#              / 0x804132D0 for the two rspTask slots), so the probe
+#              compares the masked physical form (0x411910 / 0x4132d0)
 #   0x6EEAA0   gAudioCtx.rspTask[0] (0x806EEAA0)     0x50 B
 #   0x6EEAF0   gAudioCtx.rspTask[1] (0x806EEAF0)     0x50 B
-#   <data_ptr> audio command buffer (derived from the active descriptor)
-#   mem_base + 0x5000000   DMEM + IMEM               8 KiB
-#   mem_base + 0x768e60    aspMain image in RDRAM    4 KiB
+#   <data_ptr> audio command buffer, exactly the validated data_size
+#   mem_base + 0x04000000   DMEM + IMEM              8 KiB
+#   mem_base + 0x768e60     aspMain image in RDRAM   4 KiB
 #
-# Nothing is written to the process; outputs and SHA-256s land in
-# /sdcard/Download/p07-memdump/. run-metadata.txt records uid, a canary
-# read of /proc/<pid>/stat, the resolved mem_base and descriptor, and
-# probe-log.txt records one line per mem_base candidate (including
-# unreadable ones) so a failed probe is diagnosable from the pull alone.
+# Writes go only under a per-run capture directory
+# /sdcard/Download/p07-memdump-<timestamp>/ containing run-metadata.txt,
+# probe-log.txt (one line per mem_base candidate, including unreadable
+# ones), the region files with exact expected lengths checked, and
+# hashes.txt. Process/task identity is sampled before and after the reads.
 
 PKG=org.mupen64plusae.turnip.pwnedbygary.debug:EmulationProcess
 PID=$(pidof "$PKG")
@@ -34,22 +39,42 @@ if [ -z "$PID" ]; then
     exit 1
 fi
 
-DIR=/sdcard/Download/p07-memdump
+DIR=/sdcard/Download/p07-memdump-$(date '+%Y%m%d-%H%M%S')
+if [ -e "$DIR" ]; then
+    DIR="$DIR-$$"
+fi
 mkdir -p "$DIR"
+: > "$DIR/probe-log.txt"
 {
     echo "pid=$PID"
     echo "uid=$(id -u 2>/dev/null)"
     echo "started_at=$(date '+%Y-%m-%dT%H:%M:%S%z')"
 } > "$DIR/run-metadata.txt"
-: > "$DIR/probe-log.txt"
 
-# Canary: distinguishes 'cannot read process memory' (e.g. not root) from
-# 'addresses wrong'. /proc/<pid>/stat is a plain text read of 8 bytes.
-canary=$(dd if=/proc/$PID/stat iflag=skip_bytes,count_bytes skip=0 count=8 \
-            2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
-echo "canary_hex=$canary" >> "$DIR/run-metadata.txt"
-if [ -z "$canary" ]; then
-    echo "p07-memdump: cannot read /proc/$PID/stat; memory reads will fail too"
+# Memory-read canary: an actual /proc/<pid>/mem read at the start of the
+# process's first mapping, keeping dd's exit status, byte count and stderr.
+# (Reading /proc/<pid>/stat proves nothing about /proc/<pid>/mem access, and
+# address 0 is usually unmapped, so the canary uses a real mapping.)
+canary_addr=$(grep -m1 . /proc/$PID/maps 2>/dev/null | awk '{print $1}' | cut -d- -f1)
+if [ -z "$canary_addr" ]; then
+    echo "p07-memdump: cannot read /proc/$PID/maps; aborting" >> "$DIR/run-metadata.txt"
+    echo "p07-memdump: cannot read /proc/$PID/maps; see $DIR"
+    exit 1
+fi
+dd if=/proc/$PID/mem iflag=skip_bytes,count_bytes \
+   skip=$((0x$canary_addr)) count=4 of="$DIR/canary-sample.bin" \
+   2>"$DIR/canary-stderr.txt"
+canary_rc=$?
+canary_out=$(stat -c %s "$DIR/canary-sample.bin" 2>/dev/null)
+{
+    echo "canary_addr=0x$canary_addr"
+    echo "canary_bytes=$canary_out"
+    echo "canary_rc=$canary_rc"
+    echo "canary_stderr=$(head -c 200 "$DIR/canary-stderr.txt" | tr '\n' ' ')"
+} >> "$DIR/run-metadata.txt"
+if [ "$canary_out" != "4" ]; then
+    echo "p07-memdump: /proc/$PID/mem read failed (rc=$canary_rc, ${canary_out:-0} bytes); see $DIR"
+    exit 1
 fi
 
 # Read 4 bytes at host address $1 as a little-endian 32-bit decimal value.
@@ -59,7 +84,7 @@ peek_u32() {
 }
 
 # Locate mem_base and the active descriptor.
-BASE=""; DESC_PTR_PHYS=""; CMDBUF_PHYS=""
+BASE=""; DESC_PTR_PHYS=""; CMDBUF_PHYS=""; CMDBUF_SIZE=0
 REGIONS=0; CANDIDATES=0
 for region in $(grep 'rw-p' /proc/$PID/maps 2>/dev/null \
                     | grep '\[anon:scudo:secondary\]' | awk '{print $1}'); do
@@ -100,6 +125,7 @@ for region in $(grep 'rw-p' /proc/$PID/maps 2>/dev/null \
             BASE=$cand
             DESC_PTR_PHYS=$phys
             CMDBUF_PHYS=$((dp & 0x7fffff))
+            CMDBUF_SIZE=$ds
             break
         fi
         off=$((off + 0x1000))
@@ -110,35 +136,65 @@ done
 echo "probe_regions=$REGIONS probe_candidates=$CANDIDATES" >> "$DIR/run-metadata.txt"
 
 if [ -z "$BASE" ]; then
-    if [ -z "$canary" ]; then
-        echo "p07-memdump: cannot read process memory (canary failed; running as uid $(id -u 2>/dev/null)?); see $DIR/probe-log.txt"
-    else
-        echo "p07-memdump: active audio descriptor not found ($CANDIDATES candidates in $REGIONS region(s)); see $DIR/probe-log.txt"
-    fi
+    echo "p07-memdump: active audio descriptor not found ($CANDIDATES candidates in $REGIONS region(s)); see $DIR/probe-log.txt"
     exit 1
 fi
 {
     echo "mem_base=0x$(printf '%x' $BASE)"
     echo "active_descriptor_phys=0x$(printf '%x' $DESC_PTR_PHYS)"
     echo "cmdbuf_phys=0x$(printf '%x' $CMDBUF_PHYS)"
+    echo "cmdbuf_size=$CMDBUF_SIZE"
 } >> "$DIR/run-metadata.txt"
 
+# Coherent snapshot: stop the process for the reads, restore on any exit.
+kill -STOP $PID 2>/dev/null
+trap 'kill -CONT $PID 2>/dev/null' EXIT
+sleep 1
+state=$(sed 's/.*) //' /proc/$PID/stat 2>/dev/null | awk '{print $1}')
+echo "stopped_state=$state" >> "$DIR/run-metadata.txt"
+
+# Identity snapshot before/after: process plus task pointers.
+identity() {
+    echo "curtask=0x$(printf '%x' $(peek_u32 $((BASE + 0x771D68))))"
+    echo "task0_dptr=0x$(printf '%x' $(peek_u32 $((BASE + 0x6EEAA0 + 0x30))))"
+    echo "task1_dptr=0x$(printf '%x' $(peek_u32 $((BASE + 0x6EEAF0 + 0x30))))"
+}
+
+# Read region: $1 host-relative address, $2 bytes, $3 filename; validates the
+# exact output length and records the outcome.
 read_region() {
     dd if=/proc/$PID/mem iflag=skip_bytes,count_bytes \
        skip=$((BASE + $1)) count=$2 of="$DIR/$3" 2>/dev/null
+    rc=$?
+    got=$(stat -c %s "$DIR/$3" 2>/dev/null)
+    want=$(( $2 ))
+    if [ -n "$got" ] && [ "$got" -eq "$want" ]; then
+        echo "read_ok $3 $got rc=$rc" >> "$DIR/run-metadata.txt"
+    else
+        echo "read_SHORT $3 expected=$want got=${got:-0} rc=$rc" >> "$DIR/run-metadata.txt"
+    fi
 }
 
-read_region 0x771D68        4    curtask-pointer.bin
-read_region $DESC_PTR_PHYS  64   active-descriptor.bin
-read_region 0x6EEAA0        0x50 rspTask0.bin
-read_region 0x6EEAF0        0x50 rspTask1.bin
-read_region $CMDBUF_PHYS    0x1a0 cmdbuf.bin
-read_region 0x411910        0x1a0 cmdbuf-slot0.bin
-read_region 0x5000000       8192 rspmem.bin
-read_region 0x768e60        4096 ucode-rdram.bin
+{
+    echo "identity_before:"
+    identity
+} >> "$DIR/run-metadata.txt"
+
+read_region 0x771D68        4              curtask-pointer.bin
+read_region $DESC_PTR_PHYS  64             active-descriptor.bin
+read_region 0x6EEAA0        0x50           rspTask0.bin
+read_region 0x6EEAF0        0x50           rspTask1.bin
+read_region $CMDBUF_PHYS    $CMDBUF_SIZE   cmdbuf.bin
+read_region 0x4000000       8192           rspmem.bin
+read_region 0x768e60        4096           ucode-rdram.bin
+
+{
+    echo "identity_after:"
+    identity
+} >> "$DIR/run-metadata.txt"
 
 if [ ! -s "$DIR/active-descriptor.bin" ] || [ ! -s "$DIR/rspmem.bin" ]; then
-    echo "p07-memdump: dd produced no data; kernel may forbid /proc/$PID/mem"
+    echo "p07-memdump: dd produced no data; see $DIR/run-metadata.txt"
     exit 1
 fi
 
