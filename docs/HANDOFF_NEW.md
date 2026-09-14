@@ -3057,9 +3057,14 @@ Independent reviewer and verdict: (pending — filled in commit message per
   protocol)
 Commit, if approved: (pending)
 Remaining blockers: none; the next observation is a user-run root script.
-Next eligible package and required inputs: run tools/p07-frozen-memdump.sh
-  via the device's root facility while the game is frozen (pid 11604 is
-  still alive and frozen), pull /sdcard/Download/p07-memdump/, and analyze:
+Next eligible package and required inputs: run the P07 dump via the
+  device's root facility while the game is frozen (pid 11604 was still
+  alive at publish) — the vendor runner treats each file line as a separate
+  command, so select the one-line launcher (tools/launch-p07-memdump.sh,
+  installed as /sdcard/Download/p07-run-as-root.sh), which starts
+  /system/bin/sh once with /sdcard/Download/p07-memdump.sh as its script;
+  output appends to /sdcard/Download/p07-launch.log. Then pull
+  /sdcard/Download/p07-memdump/ and analyze:
   (a) verify the active descriptor (via gCurAudioTask) against the P05
   task words; (b) identify
   the consumed command in the 0x411910 buffer and whether its fields are

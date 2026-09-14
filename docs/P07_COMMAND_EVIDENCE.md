@@ -126,9 +126,33 @@ and the RDRAM microcode image.
 
 ## 6. Next observation (prepared, no build required)
 
-`tools/p07-frozen-memdump.sh` (pushed to the device as
-`/sdcard/Download/p07-memdump.sh`) reads bounded, fixed regions of the
-frozen emulation process as root:
+### 6.1 Files and device installation
+
+| Item | Path |
+|---|---|
+| Source helper | `tools/p07-frozen-memdump.sh` |
+| Device installation path | `/sdcard/Download/p07-memdump.sh` |
+| One-line menu launcher | `tools/launch-p07-memdump.sh` |
+| Launcher device path | `/sdcard/Download/p07-run-as-root.sh` |
+| Appended startup output | `/sdcard/Download/p07-launch.log` |
+| Diagnostic directory | `/sdcard/Download/p07-memdump` |
+
+Both files are already pushed. Select the **one-line launcher**
+(`p07-run-as-root.sh`) in the vendor **Handheld Settings → Advanced → Run
+script as Root** menu, not the multiline helper: that runner treats every
+line of a selected file as a separate command, so the launcher exists to
+start `/system/bin/sh` once with the complete helper as its script argument
+(same convention as the DDSTART9 stack-capture helper). The helper exits
+with a clear message when no frozen `:EmulationProcess` is present, so it is
+safe to invoke before reproducing the freeze; re-run it while the freeze is
+in place. No settings, SELinux, app data or saves are touched; the helper
+only reads `/proc/<pid>/mem` at the fixed addresses below and writes under
+`/sdcard/Download/p07-memdump/`.
+
+### 6.2 Regions read
+
+The helper reads bounded, fixed regions of the frozen emulation process as
+root:
 
 - the active audio task pointer `gCurAudioTask` at RDRAM `0x771D68`
   (physical; 4 B), then the OSTask it points to (64 B) — to be verified
