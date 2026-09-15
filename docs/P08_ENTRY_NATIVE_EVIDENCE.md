@@ -317,3 +317,47 @@ callee-entry forms. ARM64 syntax verification remains the NDK
 26.1.10909125 check. This is a specialized address diagnostic, not a
 runtime fix or a claim that the compared MIO0/header branch is understood;
 device evidence is still required.
+
+### DDSTART15 native-crash regression triage
+
+The private `p08-capture-20260915-175156` archive was extracted at
+`/tmp/p08-loading-crash/p08-capture-20260915-175156-run-j5y5gu90`. Its
+`logcat-threadtime.txt` reports SIGSEGV `SEGV_MAPERR` at fault address
+`0x00000000f43d0500`, with `x19=0x00000000f43d04e8`, `x21=0x0000001bd13ac000`,
+and core PC offset `0x000000000007c50c`. The matching unstripped
+`mupen64plus-core/build/intermediates/cxx/Debug/53u1r1q1/obj/local/arm64-v8a/libmupen64plus-core.so`
+has Build ID
+`04a0e025ddb0eeb7673ee8a2102957b15b804684`.
+
+NDK 26.1.10909125 LLVM symbolization maps PC `0x7c50c` to
+`dd_dynarec_capture_probe+0x48`, where the instruction is
+`ldr w8, [x19, #0x18]` (`b9401a68`). Offset `0x18` is
+`dd_cmd_watch_probe_snapshot.kind`; the fault is therefore the first
+snapshot-field dereference, not a bad hot-state field offset. The generated
+probe stores fields through full host addresses, then the final
+`emit_movimm(base, ARG1_REG)` passed the diagnostic snapshot address through
+the ARM64 emitter's `u_int` parameter. On this 64-bit process that truncated
+the callback argument to `0xf43d04e8`; adding `0x18` produces the logged
+`0xf43d0500`. `x21` is consistent with the separate generated-code mapping,
+not the corrupted snapshot pointer.
+
+The layout audit is consistent with that conclusion. With `NEW_DYNAREC=4`,
+the current C layout puts `branch_target` at `0x4e0`, the probe slot at
+`0x4e8`, and `probe.kind` at `0x500`; the current generated
+`asm_defines_gas.h` independently reports `pc=0x540`, `fake_pc=0x548`,
+`rs=0x608`, `mini_ht=0x628`, and `memory_map=0x828`, which include the
+probe slot's size before those later members. `mupen64plus-core.mk` generates
+that header by compiling `asm_defines.c` with the selected ARM64 target and
+`NEW_DYNAREC=4`, then extracting the object markers with `gen_asm_defines.awk`.
+The new probe stores use C `offsetof` directly, so neither a stale generated
+header nor an ABI-specific hot-state offset explains the fault.
+
+The minimal repair replaces both probe callback pointer materializations with
+`emit_loadlp((uintptr_t)base, ARG1_REG)`, preserving all 64 bits via the
+existing literal-pool mechanism. No guest branch, hot-state layout, memory
+handler, or diagnostic gate changes. The production ARM64 fixture now
+requires an `LDR`-literal for the callback pointer and checks that the
+materialized literal equals the complete `&hot_state.dd_cmd_watch_probe`
+pointer; the pre-fix 32-bit immediate sequence fails this discriminating
+fixture. This is source/build evidence only: no repeat crash run, device
+validation, APK, commit, or push is claimed here.

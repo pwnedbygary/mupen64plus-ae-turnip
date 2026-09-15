@@ -3427,7 +3427,13 @@ static void emit_dd_cmd_watch_call_probe(
       + offsetof(struct dd_cmd_watch_probe_snapshot, ra), ARG1_REG);
   emit_dd_cmd_watch_probe_u64(i_regs, 29, base
       + offsetof(struct dd_cmd_watch_probe_snapshot, sp), ARG1_REG);
-  emit_movimm(base, ARG1_REG);
+  /*
+   * `base` is a host pointer.  emit_movimm() accepts only a 32-bit
+   * immediate, so using it here truncates the pointer before the C helper
+   * dereferences the snapshot.  Load the full AArch64 pointer through the
+   * literal pool instead.
+   */
+  emit_loadlp((uintptr_t)base, ARG1_REG);
 #ifndef DD_CMD_WATCH_CODEGEN_TEST
   emit_call((intptr_t)dd_dynarec_capture_probe);
 #endif
@@ -3492,7 +3498,8 @@ static void emit_dd_cmd_watch_entry_probe(
       + offsetof(struct dd_cmd_watch_probe_snapshot, ra), ARG1_REG);
   emit_dd_cmd_watch_probe_u64(i_regs, 29, base
       + offsetof(struct dd_cmd_watch_probe_snapshot, sp), ARG1_REG);
-  emit_movimm(base, ARG1_REG);
+  /* Keep the diagnostic hot-state snapshot pointer 64-bit on ARM64. */
+  emit_loadlp((uintptr_t)base, ARG1_REG);
 #ifndef DD_CMD_WATCH_CODEGEN_TEST
   emit_call((intptr_t)dd_dynarec_capture_probe);
 #endif

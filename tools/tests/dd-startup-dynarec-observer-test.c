@@ -341,7 +341,9 @@ static void test_compiled_call_probe_machine_words(void)
     struct regstat probe_regs;
     uint32_t code[512];
     unsigned int count;
+    unsigned int code_words_before_literal;
     size_t probe_base;
+    uintptr_t snapshot_pointer;
     uint32_t call_pc_store;
     uint32_t delay_store;
     uint32_t flags_store;
@@ -431,11 +433,27 @@ static void test_compiled_call_probe_machine_words(void)
     assert(code_has_word(code, count, t1_store, UINT32_C(0xffffffff)));
     assert(code_has_word(code, count, ra_store, UINT32_C(0xffffffff)));
     assert(code_has_word(code, count, sp_store, UINT32_C(0xffffffff)));
+    /*
+     * The snapshot pointer is a host address, not a guest word.  It must be
+     * materialized with an LDR-literal and retained in the literal pool; a
+     * 32-bit MOV-immediate would reproduce the Android crash on high ASLR
+     * addresses when dd_dynarec_capture_probe() reads snapshot->kind.
+     */
+    assert(code_has_word(code, count, UINT32_C(0x58000000),
+        UINT32_C(0xff00001f)));
+    code_words_before_literal = count;
     /* x18 is the final odd caller-save mapping, so restore ends in ldr. */
-    assert(code_has_word(code, count, UINT32_C(0xa9400000),
-        UINT32_C(0xffc00000)));
-    assert(code_has_word(code, count, UINT32_C(0xf9400000),
-        UINT32_C(0xffc00000)));
+    assert(code_has_word(code, code_words_before_literal,
+        UINT32_C(0xa9400000), UINT32_C(0xffc00000)));
+    assert(code_has_word(code, code_words_before_literal,
+        UINT32_C(0xf9400000), UINT32_C(0xffc00000)));
+    literal_pool(0);
+    count = (unsigned int)(((u_char *)out - (u_char *)code)
+        / sizeof(code[0]));
+    assert(count >= 2);
+    memcpy(&snapshot_pointer, &code[count - 2], sizeof(snapshot_pointer));
+    assert(snapshot_pointer == (uintptr_t)
+        &g_dev.r4300.new_dynarec_hot_state.dd_cmd_watch_probe);
 
     /* A source-word or target mismatch suppresses the probe entirely. */
     out = (u_char *)code;
@@ -455,6 +473,15 @@ static void test_compiled_call_probe_machine_words(void)
     count = (unsigned int)(((u_char *)out - (u_char *)code)
         / sizeof(code[0]));
     assert(count > 18);
+    assert(code_has_word(code, count, UINT32_C(0x58000000),
+        UINT32_C(0xff00001f)));
+    literal_pool(0);
+    count = (unsigned int)(((u_char *)out - (u_char *)code)
+        / sizeof(code[0]));
+    assert(count >= 2);
+    memcpy(&snapshot_pointer, &code[count - 2], sizeof(snapshot_pointer));
+    assert(snapshot_pointer == (uintptr_t)
+        &g_dev.r4300.new_dynarec_hot_state.dd_cmd_watch_probe);
     assert(code_has_word(code, count,
         UINT32_C(0x52800000) | DD_CMD_WATCH_PROBE_ENTRY << 5 | ARG1_REG,
         UINT32_C(0xffffffff)));
