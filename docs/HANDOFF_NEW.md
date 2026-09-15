@@ -3706,7 +3706,10 @@ Verified observations (host, this round):
     bytes actually read, computed independently in the fixture from the
     RDRAM pattern it installed (2 payload words reported).
   - The per-generation budget bounds fetch records to
-    DMA_FETCH_RECORD_BUDGET (4): the fifth watched fetch is counted as a
+    DMA_FETCH_RECORD_BUDGET (4) — P08c later shows this cap IS the observed
+    per-generation record count, so the trace cannot report the microcode's
+    full read count per generation (see the P08c section). The fifth watched
+    fetch is counted as a
     duplicate, the exhaustion line is emitted exactly once, and detaching
     the callback emits `fetch_summary records=4 duplicates=1
     trigger_observations=…`. A new task generation resets the per-generation
@@ -3786,4 +3789,165 @@ Next eligible package and required inputs: the native fetch-provenance run
   consumer behaved as if zero, supports the consumer-side ones. Also still
   carried from P08a: the one-line wrap-guard boundary assertion for
   tools/tests/dd-watch-test.c (L1).
+```
+
+## P08c: native fetch provenance — the failing generation's fetch read zeros — 2026-09-14
+
+```markdown
+Package: P08c — analyze the first native run of the P08b instrumentation and
+  record what the microcode actually fetched, with the run identity, the
+  raw-capture hash, and the instrument's coverage. Documentation-only; no
+  code or emulator behavior change (the instrumentation landed at 6a8322b11).
+Baseline / exact reviewed snapshot: 6a8322b11 (P08b), clean tree.
+Run identity: source commit 6a8322b11; APK sha256
+  c2df5d80a2cff659492d9f20046051cc748c7d2a1ff49a50a4113d7ed8d9d23d (and the
+  reviewer verified that hash against the on-disk build output);
+  versionName `3.0.336 (beta) 6a8322b1`; package
+  org.mupen64plusae.turnip.pwnedbygary.debug, signing cert 311f4e35…;
+  device serial 49016109. Launched through adb (not by hand):
+  SplashActivity -> GalleryActivity -> F-ZERO X (J) tile -> context menu ->
+  **Start** (fresh boot; NOT Resume). DD came from the stored per-game prefs
+  (support64dd=true, idlPath64dd = N64DD IPLROM [Japan].n64, diskPath64dd =
+  F-Zero X Expansion Kit/F-Zero X.ndd), profile "Parallel", dynarec.
+Capture: `.fzxwork/p08b-capture/logcat-p08b-run1.txt`, 3,498,164 bytes,
+  sha256 614088cb0a28b89d5c43b2938f2b938f67c1603fe6de9cc48e11de0279da4c98
+  (local-only, never published).
+Instrument coverage and its caps (these bound every count below):
+  - Fetch records are capped at DMA_FETCH_RECORD_BUDGET = 4 per generation
+    (reset at each arming): 480 of the 481 generations are followed by
+    `fetch_budget exhaustion: limit=4`, which is emitted only when a FIFTH
+    in-buffer fetch is refused. In-buffer fetches per generation are
+    therefore >= 5 for the 480 capped generations and unmeasured beyond 4
+    there — the "four reads" pattern is the recording cap, not the
+    microcode's read count. The final generation 1512 spent one of its four
+    permits and made exactly one in-buffer read (the decisive one).
+  - Trigger snapshots are capped at 4 for the whole session; the capture ends
+    with `trigger_budget exhaustion: limit=4`, so a further stuck-loop
+    trigger-shaped read occurred and was suppressed by design.
+  - The watch sees only reads that intersect the armed window; a fetch
+    outside it, or in a generation that never armed, is invisible — and an
+    unarmed generation is indistinguishable from a fetch-free one.
+  - The capture is truncated at its start: the first DD line is record=1605,
+    so >= 1604 earlier records are absent, and generation 568 is missing one
+    of its permitted reads (it shows three, at offsets 0x40/0x80/0xC0, with
+    its exhaustion line). That is NOT "arming after the first read": with a
+    cap of four, a refusal needs four permits spent and only three records are
+    present, so one permitted record was emitted before the capture's
+    retained prefix.
+Observed fetch structure (1920 `fetch_watched=1` records, 21:46:35.137 ->
+  21:46:43.285):
+  - 481 generations, 568 -> 1512, each generation's RECORDED reads lying in
+    one command buffer (cap-bounded), with strict alternation between
+    consecutive generations (480 alternating
+    pairs, 0 same-slot pairs): 960 fetches inside 0x411910..0x411AB0 (slot 0,
+    the P07 buffer) and 960 inside 0x4132D0..0x413490 (slot 1).
+  - Every record: raw_dma_cache=0x000002F0 (the P07 section-8 call-site
+    constant), raw_read_length=0x3F (64-byte row, one row, skip 0), 16
+    payload words. The window ends are exactly data_ptr + size from the task
+    words, where size is the value the audio task carries for THAT generation:
+    it is constant within a generation and varies between them (0x1a0 in 1456
+    records over 365 generations, 0x1c0 in 464 records over 116 — NOT a slot
+    property: 0x1a0 splits 732 slot 0 / 724 slot 1, 0x1c0 splits 228 / 236).
+    The failing generation used 0x1a0.
+  - As recorded (cap-limited): 479 generations show the four permitted reads
+    at offsets 0x00/0x40/0x80/0xC0; generation 568 shows three; generation
+    1512 shows one.
+  - Generation-number gaps: 464 gaps of 2 and 16 of 1. The last 17
+    generations are consecutive (1496, 1497, ... 1512) after a ~210 ms gap
+    before 1497. A gap of 1 means two consecutive audio entries with no
+    counted RSP entry between; the mechanism is UNKNOWN on this evidence
+    (no graphics dispatch, or the early HALT/BROKE return that precedes the
+    entry counter). It is recorded as an unexplained precursor, not folded
+    into the alternating pattern.
+The failing generation (the decisive record):
+  - Generation 1512 made a SINGLE recorded fetch: raw_dma_dram = 0x00411910
+    (= task_words[12], the descriptor's own data_ptr), buffer offset 0, cache
+    0x2F0, 64 bytes — and its payload hash is 0x88201fb960ff6465, which the
+    round-1 review and this analysis each recomputed from the capture as the
+    word-wise FNV-1 of sixteen zero words
+    (payload_last all zero; word-wise FNV-1 over the 16 payload words,
+    cp0.cpp:42-46). It is the ONLY all-zero payload among the 1920 records
+    (1876 distinct hashes overall, 1875 among the 1919 non-zero records).
+  - What follows, in order: four trigger=1 snapshots (21:46:43.287-.294) with
+    the suspect shape (raw_dma_dram=0 and raw_read_length=0xffffffff), cache
+    0xfb0 then 0x2F0 x3 — matching the P07 trigger record — and
+    actual_imem_writes=0 with imem_before_hash=0x3aaaf0f5f121410e unchanged
+    (= P07-R's frozen aspMain IMEM FNV), so THIS RUN DID NOT REPRODUCE the
+    DDSTART11 3052-word IMEM overwrite; then `trigger_budget exhaustion`, with
+    four DDSTART10 JIT commit records interleaved (JIT budget 2048 far from
+    exhausted). The machine kept executing, and the TRIGGER cap — not
+    quiescence — explains the silence on that channel: the capture continues
+    about 38 s (to 21:47:21) with no other recordable read. Derivable bound
+    for the writer watch: slot 0's offset-0 chunk held non-zero data at
+    generation 1510 (43.264) and zeros at 43.285, so the zeroing write
+    happened within about 21 ms.
+Live sample of the frozen process (root-free run-as + /proc/<pid>/mem, the
+  P07-R method; base derived for THIS run, not reused):
+  - Base from the 512 MiB [anon:scudo:secondary] mapping
+    0x6fc546f000-0x6fe547e000 rounded up to 64 KiB = 0x6fc5470000; anchor:
+    the word at base+0x771D68 reads 0x806EEAA0 (gCurAudioTask) — the same
+    anchor P07-R validated.
+  - Both command-buffer windows are ALL ZERO at sample time:
+    [0x411900, 0x412900) and [0x4132C0, 0x4142C0).
+  - Freeze context, stated as supplied-only with its method: black display
+    (no screenshot retained for this run) and the emulation process at ~104
+    ticks/s measured from the process utime delta 6278 -> 6590 over ~3 s (no
+    sample timestamp and no archived artifact, unlike P07-R's cpu-deltas.txt
+    — a gap to close next run).
+Interpretation, with classes kept separate:
+  - OBSERVED: the failing generation's fetch used the task's own data_ptr at
+    offset 0 and received sixteen zero words; the task was type 2 and the
+    watch armed, so its descriptor carried a non-zero size; both buffers are
+    zero at sample time.
+  - EXCLUDED (scoped to what the instrument can see): no RECORDED fetch
+    address deviated from the task's own data_ptr — on all 1920 records
+    raw_dma_dram == task_words[12] + fetch_buffer_offset with task type 2;
+    a fetch elsewhere is invisible by construction, as the coverage list
+    says. NOT excluded: reuse of a stale or out-of-phase buffer (a descriptor
+    alternating out of phase would produce exactly this record, and both
+    windows being zero at sample time cannot arbitrate), and the decode half
+    of the consumer hypothesis is neither retired nor supported here — the
+    P08b record keeps it live.
+  - UNKNOWN (the limitation an earlier draft of this section overreached on):
+    the zeros were in RDRAM when the microcode read them; WHICH operation put
+    them there is unidentified — a game-side build that was skipped or
+    cleared, or an emulator-side clear. "Producer-side" as a bare label is
+    withdrawn in favour of that statement.
+Remaining hypotheses: the zeroing operation and its timing relative to the
+  submission (bounded to ~21 ms by the payloads above); the two consumer
+  variants kept live above (stale/out-of-phase buffer reuse; the decode
+  half); whether the step-1 tail is a precursor.
+Limits (do not over-read): one session, one freeze, one capture; the fetch
+  and trigger caps above; capture truncation; arm-time generation semantics;
+  the sample is one instant, not a time series; the tick and display
+  measurements have no retained artifact; 1876 distinct payload hashes mean
+  "real command data" is an interpretation of samples, not an identity; no
+  writer is identified; no hardware-behavior claim is made (the five-point
+  checklist applies to the correction package).
+Changed files: docs/HANDOFF_NEW.md, docs/P08_CHECKPOINT.md.
+Checks actually run and why: the analysis is recomputed from the capture by
+  two independent parties (the reviewer and the implementer) — counts,
+  per-generation structure, the FNV of sixteen zero words, the ordering of
+  the zero fetch against the triggers and the JIT commits; the APK hash was
+  checked against the on-disk artifact; the live sample validates its own
+  base before any window is read; the earlier "zero of 1920" claim was an
+  analysis-side prefix artifact and its correction is reproducible.
+Independent reviewer, verdict and finding dispositions: first review NEEDS
+  CHANGES — F1 the four-reads-per-generation claim was the instrument's cap,
+  not the microcode's behaviour; F2 "no further records" was budget
+  suppression, not quiescence; F3 the step-by-two claim failed for the last
+  17 generations; F4 the limits omitted the coverage caps and truncation; F5
+  the exclusion of stale-buffer reuse overreached; F6 "producer-side"
+  conflicted with the record's own UNKNOWN; F7 the tick/display measurements
+  lack provenance; F8 "real command data" is an interpretation. All are
+  resolved in this revision (see the commit message for the delta verdict).
+Commit, if approved: (pending)
+Remaining blockers: none.
+Next eligible package and required inputs: P08c-writer — arm the core-side
+  dd_watch range over both command buffers with generation tracking (hook:
+  rsp_core.c SP_STATUS -> do_SP_Task), record CPU stores (dynarec slow-path
+  writers; verify the exact set) and core DMA, archive a cpu-delta artifact
+  and a screenshot with each run, and take one native run to catch the
+  zeroing operation and its timing relative to the submission. The frozen
+  process (pid 2336) remains available for further sampling meanwhile.
 ```

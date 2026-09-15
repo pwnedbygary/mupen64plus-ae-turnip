@@ -135,7 +135,9 @@ Verified observations: the watch arms only for an audio task under the
   fixture); out-of-buffer reads, read-only skip gaps and the freeze-shaped
   read (whose rows top out near 0x1fe7c8, short of the P07 buffer at
   0x411910) produce no fetch record; the per-generation budget bounds fetch
-  records to 4 with the fifth counted as a duplicate, one exhaustion line,
+  records to 4 — the cap is what P08c observed per generation, so the
+  microcode's full read count is not measurable this way — with the fifth
+  counted as a duplicate, one exhaustion line,
   and a summary `records=4 duplicates=1 trigger_observations=…` at any callback
   change; a new generation re-exposes its own fetches, a graphics task does
   not arm, and a trigger-shaped watched read keeps its trigger snapshot while
@@ -177,3 +179,75 @@ Next eligible package and required inputs: the native fetch-provenance run
   fetch records against the P07 evidence — the generation, address, offset
   and payload it reports decide between the competing hypotheses. Carried
   from P08a: the wrap-guard boundary assertion for the dd-watch suite (L1).
+
+## P08c checkpoint (native fetch provenance — the failing generation read zeros)
+
+Package: P08c — analyze the first native run of the P08b instrumentation and
+  record what the microcode fetched, with run identity, capture hash and the
+  instrument's coverage. Documentation-only; no code or behavior change.
+Baseline / Reviewed snapshot: 6a8322b11 (P08b), clean tree.
+Run identity: commit 6a8322b11; APK sha256
+  c2df5d80a2cff659492d9f20046051cc748c7d2a1ff49a50a4113d7ed8d9d23d (verified
+  against the on-disk build output); `3.0.336 (beta) 6a8322b1`, cert
+  311f4e35…, serial 49016109; DD from the stored per-game prefs; profile
+  "Parallel"; launched through adb (Gallery -> F-ZERO X (J) -> Start, fresh
+  boot). Capture local-only:
+  `.fzxwork/p08b-capture/logcat-p08b-run1.txt`, 3,498,164 bytes, sha256
+  614088cb0a28b89d5c43b2938f2b938f67c1603fe6de9cc48e11de0279da4c98.
+Instrument coverage (bounds every count): fetch records capped at 4 per
+  generation (480 of the 481 hit the cap — in-buffer fetches are >= 5 for
+  those and unmeasured beyond 4; the final generation spent one of its four
+  permits and made exactly one read); trigger snapshots capped at
+  4 per session (exhausted at the end); the capture is truncated at its
+  start (first DD line record=1605; generation 568 is short one permitted
+  read — one record was emitted before the retained prefix, not an arming
+  race); and the watch sees only reads intersecting the armed window, so a
+  fetch elsewhere is invisible and an unarmed generation looks fetch-free.
+Verified observations: 1920 fetch records over 481 generations (568→1512),
+  each generation's RECORDED reads lying in one buffer (cap-bounded) with
+  strict alternation (480 alternating pairs, 0 repeats; 960/960 across the
+  two buffers; the window ends are data_ptr + size, size being the value the
+  audio task carries for that generation — constant within a generation,
+  either 0x1a0 or 0x1c0, and not a slot property); every record cache 0x2F0 and 64-byte
+  single-row reads with 16 payload words; generation gaps 464×2 and 16×1,
+  the last 17 generations consecutive after a ~210 ms gap (mechanism UNKNOWN,
+  recorded as an unexplained precursor); the live sample (root-free, base
+  0x6fc5470000 validated by the gCurAudioTask anchor 0x806EEAA0 at
+  +0x771D68) shows both command-buffer windows all zero.
+Derived results and inputs: exactly one of the 1920 payloads is all-zero (the
+  word-wise FNV-1 of sixteen zero words over the 16 payload words,
+  0x88201fb960ff6465, reproduced independently) and it is the last fetch —
+  generation 1512, the descriptor's own data_ptr at offset 0 — followed by
+  four suspect-shape trigger snapshots
+  (actual_imem_writes=0, IMEM hash unchanged, so this run did NOT reproduce
+  the DDSTART11 overwrite), a trigger-budget exhaustion line, and interleaved
+  DDSTART10 JIT commits. The zeros were in RDRAM when the microcode read
+  them; which operation put them there is UNIDENTIFIED (game-side skipped or
+  cleared build, or emulator-side clear), and the payloads bound the write to
+  about 21 ms (slot 0 offset 0 was non-zero at generation 1510, 43.264, and
+  zero at 43.285). Excluded (scoped to recorded fetches): a divergent fetch
+  address; NOT excluded: stale/out-of-phase buffer reuse and the decode half
+  of the consumer hypothesis, both kept live below.
+Remaining hypotheses: the zeroing operation and its timing (bounded to
+  ~21 ms); stale/out-of-phase buffer reuse; the decode half of the consumer
+  hypothesis; whether the step-1 tail is a precursor.
+Changed files: `docs/HANDOFF_NEW.md`, `docs/P08_CHECKPOINT.md`.
+Checks actually run and why: the analysis was recomputed by two independent
+  parties from the raw capture (counts, structure, the FNV, the ordering
+  against triggers and JIT commits); the APK hash was checked against the
+  on-disk artifact; the live sample validates its own base. No host suite is
+  affected (no code changed).
+Checks not run and why: no device change and no new instrumentation, so no
+  build was needed; the five-point hardware checklist applies to the
+  correction package; the tick/display measurements have no retained
+  artifact (supplied-only) — to be closed by archiving cpu-deltas and a
+  screenshot with the next run.
+Independent reviewer and verdict: first review NEEDS CHANGES (F1-F8, see the
+  handoff section); all resolved in this revision; delta verdict in the
+  commit message.
+Commit, if approved: (this file's commit).
+Remaining blockers: none.
+Next eligible package and required inputs: P08c-writer — arm the core-side
+  dd_watch range on both command buffers with generation tracking, record CPU
+  stores and core DMA, archive cpu-delta and screenshot artifacts per run,
+  and take one native run to catch the zeroing operation and its timing.
