@@ -3647,3 +3647,143 @@ Next eligible package and required inputs: P08b — the fetch-provenance
   hypotheses. Requires the per-game DD activation gate on every new
   observation and one native run (user-driven device step).
 ```
+
+## P08b: fetch provenance — the command-buffer watch and DMEM-destined fetches — 2026-09-14
+
+```markdown
+Package: P08b — the fetch-provenance trace the evidence prompt requires
+  first: at the audio task's submission and at the microcode's command
+  fetch, record the address fetched, the bytes returned and a buffer
+  generation, so a consumer-side fetch/decode error or reuse of a stale
+  buffer can be separated from producer-side zeroing. Diagnostics only: no
+  correction, timing, ordering, register or generated-code change.
+Baseline / exact reviewed snapshot: 0565fe00d (P08a), clean tree.
+Scope (recorded before editing; see the P08b scope note): in scope are
+  mupen64plus-rsp-parallel/upstream/rsp_diag.{hpp,cpp}, rsp/cp0.cpp,
+  parallel.cpp, the new host fixture and its runner, and these documents.
+  Out of scope: the core-side dd_watch module (that is the later writer
+  watch), the DMA correction, DDSTART9, any timing or workaround change.
+  Stop conditions: if payload capture for DMEM-destined reads could not be
+  added without altering the transfer, or if a native run showed the task
+  words did not match the corrected field map, stop and report rather than
+  assume.
+5-point hardware-evidence checklist (answered, not waived):
+  (1) exact hardware behavior changed — NONE: the transfer, its registers,
+      its timing and the emulated machine state are untouched; the change
+      computes a hash and copies sample words into the observation record
+      only when the watch is armed and the read intersects it.
+  (2) source URL/revision — not applicable to a diagnostic; the watched
+      range comes from the P07 evidence (data_ptr 0x80411910/0x1a0) and the
+      address normalization from the P01 ledger's model.
+  (3) evidence class — the record contract is a diagnostics contract, not a
+      hardware-behavior claim.
+  (4) disagreements/uncertainty — the task-word field map is the P07-C
+      corrected map; a native run is what validates it end to end.
+  (5) regression test and native observation — the host fixture below, plus
+      one native run with the trace enabled (the next step).
+Verified observations (host, this round):
+  - The watch arms only for an audio task (type 2) under the per-game DD
+    policy and with a registered callback; with the policy off it does not
+    arm and no read is ever recorded as a fetch — the DD-disabled guarantee
+    is enforced at the arming function, not by convention at the call site.
+  - The classification is ROW-EXACT, not a linear span. A read transfers
+    `rows` spans of `row_length` bytes advanced by `row_length + skip`
+    between rows (no trailing skip), and a record exists only when one of
+    those spans really reads a byte inside the buffer: it reports
+    `fetch_buffer_offset` = the buffer-relative offset of the FIRST byte the
+    transfer reads inside the range, and `fetch_first_row` = the index of
+    the row that reaches it. The review's two counterexamples are now
+    regression cases: rows=3/skip=16/start=base-24 (whose second row reaches
+    the buffer at offset 0 — a linear span missed it) and
+    rows=2/skip=16/start=base-8 (which never reads offset 0, and reports
+    offset 16 rather than claiming a coverage it did not have). A skip gap
+    is not counted as coverage; contiguous multi-row reads are covered once;
+    an in-buffer start reports its real offset.
+  - A DMEM-destined read inside the buffer — the shape the IMEM-only
+    eligibility excluded — is recorded with schema=3, fetch_watched=1, the
+    entry generation captured at that task entry,
+    fetch_buffer_offset=0 fetch_first_row=0 and the payload hash of the
+    bytes actually read, computed independently in the fixture from the
+    RDRAM pattern it installed (2 payload words reported).
+  - The per-generation budget bounds fetch records to
+    DMA_FETCH_RECORD_BUDGET (4): the fifth watched fetch is counted as a
+    duplicate, the exhaustion line is emitted exactly once, and detaching
+    the callback emits `fetch_summary records=4 duplicates=1
+    trigger_observations=…`. A new task generation resets the per-generation
+    budget and exposes its own fetches; a graphics task does not arm the
+    audio watch; arming is also refused without a registered callback and
+    for a zero-length command buffer.
+  - A watched read that also matches the P05 suspect shape keeps its richer
+    trigger snapshot and is counted separately as `trigger_observations`
+    (counted at observation time, before the trigger budget is consulted, so
+    the summary never under-reports that the buffer was read). Note the geometry:
+    the freeze-shaped read (rows=256, row bytes 0x1000, skip 0xff8, dram 0)
+    tops out near 0x1fe7c8 and therefore does NOT reach the P07 buffer at
+    0x411910 — the fixture pins that, and pins the case where a range the
+    rows do reach is read at row 64, offset 0.
+  - No regressions: the P02 DMA transfer suite (legacy and corrected
+    policies), the P03 policy receiver suite, the P05 core IMEM DMA suite
+    and the P08a watch suite all pass with these changes.
+  - Limits recorded rather than implied: `fetch_generation` is the ARM
+    generation (a watch armed at audio entry N stays armed through later
+    non-audio entries that cannot re-arm, so a record stamped N may have
+    been read while another task type ran); the summary is emitted on any
+    callback change when counters are nonzero, and is lost if the process
+    ends without one; an unarmed generation and a fetch-free generation look
+    identical in the log, so missing fetch records are not proof that nothing
+    was fetched (evidence-prompt section 4); and the arming call site in
+    parallel.cpp has no host coverage — the fixtures call the arming function
+    directly.
+  - The real build compiles all three changed translation units: CMake
+    objects for rsp/cp0.cpp, rsp_diag.cpp and parallel.cpp were rebuilt for
+    all four ABIs after the edits (revised build: objects 20:33:16-20:33:17
+    vs sources 20:31:08-20:31:39, shared library 20:33:18, APK 20:33:19; an
+    earlier build at 20:21:46 covered the first revision of this package)
+    and the debug APK was rebuilt from them.
+Derived results and inputs: the plugin can now answer, for each audio task
+  generation, what the microcode fetched: the buffer it read, the
+  buffer-relative offset of the first byte it read inside that buffer, the
+  index of the row that reached it (the record's own aligned_length /
+  transfer_count / skip fields give the geometry), and the bytes returned
+  (hash plus first/last words), all tagged with the arm generation — together
+  with the already-captured launch operands and the suspect-request
+  trigger. That is the discriminating trace the evidence prompt asks for;
+  the writer watch (core-side dd_watch) remains the parallel track.
+Remaining hypotheses: unchanged — producer-side zeroing (game heap clear /
+  DD load delivering zeros / emulator-side clear), consumer-side
+  fetch/decode error, stale-buffer reuse.
+Changed files: mupen64plus-rsp-parallel/upstream/rsp_diag.hpp,
+  mupen64plus-rsp-parallel/upstream/rsp_diag.cpp,
+  mupen64plus-rsp-parallel/upstream/rsp/cp0.cpp,
+  mupen64plus-rsp-parallel/upstream/parallel.cpp,
+  tools/tests/rsp-dd-fetch-provenance-test.cpp (new),
+  tools/test-dd-fetch-provenance.sh (new), docs/HANDOFF_NEW.md,
+  docs/P08_CHECKPOINT.md.
+Checks actually run and results: tools/test-dd-fetch-provenance.sh — pass
+  (host default c++); the four neighbouring suites listed above — pass;
+  syntax checks of the three changed units with the host clang++ and the
+  suite's flags; full debug APK build — BUILD SUCCESSFUL with the three
+  objects rebuilt for all four ABIs (verified by timestamps, not by the
+  build status alone).
+Checks not run and why: no device run — this round is the instrumentation;
+  the native run that produces the evidence is the next step. Overhead is
+  NOT claimed as unmeasurable-to-zero: capture happens only when the
+  per-game DD policy is enabled, the watch is armed and a read intersects
+  the buffer (a range test otherwise), and the native run's sampler tick and
+  DMEM-traffic comparison is the available comparative measurement.
+Independent reviewer, verdict and finding dispositions: (pending — filled
+  in the commit message)
+Commit, if approved: (pending)
+Remaining blockers: none.
+Next eligible package and required inputs: the native fetch-provenance run
+  — install the built APK with the existing signing identity, reproduce the
+  freeze with DD enabled, pull the logcat, and analyze the fetch records
+  (address, fetch_buffer_offset, fetch_first_row, geometry fields, payload
+  hash, arm generation) against the P07
+  evidence: a fetch that reads the zeroed buffer with a matching generation
+  but zero bytes returned supports the producer-side hypothesis; a fetch of
+  a different address, or a generation mismatch, or nonzero bytes where the
+  consumer behaved as if zero, supports the consumer-side ones. Also still
+  carried from P08a: the one-line wrap-guard boundary assertion for
+  tools/tests/dd-watch-test.c (L1).
+```

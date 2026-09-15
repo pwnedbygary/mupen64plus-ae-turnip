@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dd_policy.hpp"
+
 namespace RSP
 {
 namespace Diagnostics
@@ -44,6 +46,31 @@ std::atomic<bool> g_dma_exhausted(false);
 std::atomic<unsigned> g_trigger_remaining(0);
 std::atomic<unsigned> g_trigger_duplicates(0);
 std::atomic<bool> g_trigger_exhausted(false);
+
+/*
+ * P08b command-buffer watch and fetch budget.  The watch holds the audio
+ * task's data_ptr/data_size captured at entry (see watch_arm_from_task) and
+ * the entry generation that armed it.  The budget is per generation: arming
+ * resets it, so each task generation exposes its first fetches; duplicates
+ * beyond it are counted and reported once, and the session summary reports
+ * both.  Watched fetches bypass identity dedup for the same reason trigger
+ * snapshots do — a recurring fetch must stay observable as a count.
+ */
+std::atomic<unsigned> g_fetch_remaining(0);
+std::atomic<unsigned> g_fetch_records(0);
+std::atomic<unsigned> g_fetch_duplicates(0);
+/* Watched trigger-shaped READ OBSERVATIONS: a suspect-shape read that also
+ * intersects the watch keeps its richer trigger snapshot and is counted here
+ * so the fetch summary never hides the fact that the buffer was read.  The
+ * counter is incremented at observation time, before the trigger budget is
+ * consulted, so it can exceed the number of emitted records by design — it
+ * is a coverage note, not an emitted-record count. */
+std::atomic<unsigned> g_fetch_trigger_observations(0);
+std::atomic<bool> g_fetch_exhausted(false);
+std::atomic<bool> g_watch_armed(false);
+std::atomic<uint32_t> g_watch_base(0);
+std::atomic<uint32_t> g_watch_length(0);
+std::atomic<uint64_t> g_watch_generation(0);
 
 std::atomic<unsigned> g_entry_remaining(0);
 std::atomic<unsigned> g_entry_seen(0);
@@ -161,6 +188,12 @@ void emit_dd11_exhaustion(std::atomic<bool> &already_emitted,
 		emit(message);
 	}
 }
+
+/* P08b: KSEG0/KSEG1 mirrors of physical RDRAM, as the task words store them. */
+uint32_t watch_normalize(uint32_t address)
+{
+	return address & 0x1FFFFFFFu;
+}
 } // namespace
 
 void set_callback(DebugCallback callback, void *context)
@@ -188,6 +221,27 @@ void set_callback(DebugCallback callback, void *context)
 			emit(summary);
 		}
 	}
+	{
+		/* Session summary for the P08b fetch budget, emitted the same way. */
+		const unsigned fetches =
+		    g_fetch_records.load(std::memory_order_relaxed);
+		const unsigned fetch_duplicates =
+		    g_fetch_duplicates.load(std::memory_order_relaxed);
+		const unsigned fetch_trigger_observations =
+		    g_fetch_trigger_observations.load(std::memory_order_relaxed);
+		if (fetches != 0 || fetch_duplicates != 0
+		    || fetch_trigger_observations != 0)
+		{
+			char summary[192];
+			snprintf(summary, sizeof(summary),
+			         "DDSTART11 RSP fetch_summary records=%u "
+			         "duplicates=%u trigger_observations=%u limit=%u",
+			         fetches, fetch_duplicates,
+			         g_fetch_trigger_observations.load(std::memory_order_relaxed),
+			         DMA_FETCH_RECORD_BUDGET);
+			emit(summary);
+		}
+	}
 	g_callback.store(callback, std::memory_order_release);
 	g_context.store(context, std::memory_order_release);
 	g_enabled.store(callback != nullptr, std::memory_order_release);
@@ -211,6 +265,12 @@ void set_callback(DebugCallback callback, void *context)
 	g_entry_exhausted.store(false, std::memory_order_relaxed);
 	g_entry_count.store(0, std::memory_order_relaxed);
 	g_return_count.store(0, std::memory_order_relaxed);
+	g_fetch_remaining.store(0, std::memory_order_relaxed);
+	g_fetch_records.store(0, std::memory_order_relaxed);
+	g_fetch_duplicates.store(0, std::memory_order_relaxed);
+	g_fetch_trigger_observations.store(0, std::memory_order_relaxed);
+	g_fetch_exhausted.store(false, std::memory_order_relaxed);
+	watch_clear();
 	g_seen_rsp_identity_count = 0;
 	g_task_snapshot_valid = false;
 	memset(g_task_snapshot, 0, sizeof(g_task_snapshot));
@@ -382,6 +442,94 @@ uint64_t entry_generation()
 	return g_entry_count.load(std::memory_order_relaxed);
 }
 
+/*
+ * P08b watch API.  Arming requires the explicit per-game DD policy AND a
+ * registered diagnostics callback: without the callback no fetch record can
+ * be emitted, and without the policy this observation is not authorized.
+ * Both are checked here so a recording site cannot bypass either gate.
+ */
+bool watch_arm_from_task(const uint32_t *task_words)
+{
+	if (task_words == nullptr || !enabled() || !DdRuntimePolicyEnabled())
+	{
+		return false;
+	}
+	if (task_words[0] != 2) /* OSTask type 2 = audio */
+	{
+		return false;
+	}
+	/* Corrected P07-C field map: words 12-13 = data_ptr / data_size. */
+	const uint32_t base = watch_normalize(task_words[12]);
+	const uint32_t length = task_words[13];
+	if (length == 0 || (uint64_t)base + (uint64_t)length > 0x100000000ull)
+	{
+		return false;
+	}
+
+	g_watch_base.store(base, std::memory_order_relaxed);
+	g_watch_length.store(length, std::memory_order_relaxed);
+	g_watch_generation.store(entry_generation(), std::memory_order_relaxed);
+	g_watch_armed.store(true, std::memory_order_relaxed);
+	/* Per-generation fetch budget: a new task generation re-exposes its
+	 * first fetches; duplicates stay cumulative for the session summary. */
+	g_fetch_remaining.store(DMA_FETCH_RECORD_BUDGET, std::memory_order_relaxed);
+	g_fetch_exhausted.store(false, std::memory_order_relaxed);
+	return true;
+}
+
+void watch_clear()
+{
+	g_watch_armed.store(false, std::memory_order_relaxed);
+	g_watch_length.store(0, std::memory_order_relaxed);
+	g_watch_generation.store(0, std::memory_order_relaxed);
+}
+
+bool watch_armed()
+{
+	return g_watch_armed.load(std::memory_order_relaxed);
+}
+
+bool watch_probe(uint32_t start, uint32_t row_length, uint32_t rows,
+                 uint32_t skip, uint32_t *buffer_offset,
+                 uint32_t *first_row)
+{
+	if (!g_watch_armed.load(std::memory_order_relaxed) || rows == 0
+	    || row_length == 0)
+	{
+		return false;
+	}
+	const uint32_t base = g_watch_base.load(std::memory_order_relaxed);
+	const uint32_t watch_length = g_watch_length.load(std::memory_order_relaxed);
+	const uint32_t stride = row_length + skip; /* skip advances between rows */
+
+	/*
+	 * Exact row-by-row classification (see the header): the transfer reads
+	 * [row_start, row_start + row_length) for row i at start + i * stride.
+	 * Unsigned arithmetic throughout; rows <= 256 keeps this bounded.
+	 */
+	for (uint32_t i = 0; i < rows; ++i)
+	{
+		const uint32_t row_start = start + i * stride;
+		/* The row's first byte is inside the range, or the range's first
+		 * byte falls inside the row (the wrap-safe forms below). */
+		const bool starts_inside = (uint32_t) (row_start - base) < watch_length;
+		const bool covers_base = (uint32_t) (base - row_start) < row_length;
+		if (!starts_inside && !covers_base)
+			continue;
+		if (buffer_offset != nullptr)
+			*buffer_offset = starts_inside ? (row_start - base) : 0;
+		if (first_row != nullptr)
+			*first_row = i;
+		return true;
+	}
+	return false;
+}
+
+uint64_t watch_generation()
+{
+	return g_watch_generation.load(std::memory_order_relaxed);
+}
+
 void trace_rsp_dma_read(const DmaReadObservation &observation)
 {
 	char message[4096];
@@ -401,6 +549,8 @@ void trace_rsp_dma_read(const DmaReadObservation &observation)
 	 */
 	if (observation.trigger_reason != DMA_TRIGGER_NONE)
 	{
+		if (observation.fetch_watched != 0)
+			g_fetch_trigger_observations.fetch_add(1, std::memory_order_relaxed);
 		if (!reserve(g_trigger_remaining))
 		{
 			g_trigger_duplicates.fetch_add(1, std::memory_order_relaxed);
@@ -408,6 +558,23 @@ void trace_rsp_dma_read(const DmaReadObservation &observation)
 			                     DMA_TRIGGER_SNAPSHOT_BUDGET);
 			return;
 		}
+	}
+	else if (observation.fetch_watched != 0)
+	{
+		/*
+		 * A watched fetch bypasses identity dedup for the same reason a
+		 * trigger snapshot does: a stuck microcode re-reads the same
+		 * buffer, and recurrences must stay visible as a count rather
+		 * than being silently swallowed.
+		 */
+		if (!reserve(g_fetch_remaining))
+		{
+			g_fetch_duplicates.fetch_add(1, std::memory_order_relaxed);
+			emit_dd11_exhaustion(g_fetch_exhausted, "fetch_budget",
+			                     DMA_FETCH_RECORD_BUDGET);
+			return;
+		}
+		g_fetch_records.fetch_add(1, std::memory_order_relaxed);
 	}
 	else
 	{
@@ -467,7 +634,9 @@ void trace_rsp_dma_read(const DmaReadObservation &observation)
 	    "schema=%u policy=%u trigger=%u capture_eligible=%u "
 	    "probe_skipped=%u probe_skip_reason=%u actual_imem_writes=%u "
 	    "skip_effective=%u dirty_after=0x%08x final_cache=0x%08x "
-	    "final_dram=0x%08x entry_generation=%llu sp_pc=0x%04x "
+	    "final_dram=0x%08x entry_generation=%llu fetch_watched=%u "
+	    "fetch_generation=%llu fetch_buffer_offset=%u fetch_first_row=%u "
+	    "sp_pc=0x%04x "
 	    "t9=0x%08x k0=0x%08x gprs=[",
 	    record, sequence,
 	    (unsigned long long)g_entry_count.load(std::memory_order_relaxed),
@@ -499,8 +668,12 @@ void trace_rsp_dma_read(const DmaReadObservation &observation)
 	    observation.dirty_blocks_after,
 	    observation.final_dma_cache,
 	    observation.final_dma_dram,
-	    (unsigned long long)observation.entry_generation,
-	    observation.sp_pc,
+		    (unsigned long long)observation.entry_generation,
+	    observation.fetch_watched,
+	    (unsigned long long)observation.fetch_generation,
+	    observation.fetch_buffer_offset,
+	    observation.fetch_first_row,
+		    observation.sp_pc,
 	    observation.gpr_snapshot[25],
 	    observation.gpr_snapshot[26]);
 	for (unsigned i = 0;

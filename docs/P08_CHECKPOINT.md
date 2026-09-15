@@ -111,3 +111,69 @@ Next eligible package and required inputs: P08b — the fetch-provenance
   model; the writer-family watch follows only if that trace does not
   separate the competing hypotheses. Requires per-game DD activation gating
   on every new observation and one native run (user-driven device step).
+
+## P08b checkpoint (fetch provenance: the command-buffer watch)
+
+Package: P08b — record what the microcode actually fetched: the command
+  buffer it read, the offset of the first byte it read inside that buffer,
+  the row that reached it, the bytes returned and the
+  task generation, in the plugin where the RSP's reads are visible.
+  Diagnostics only: no correction, register, timing, ordering or
+  generated-code change, and no transfer bytes altered.
+Baseline / Reviewed snapshot: 0565fe00d (P08a), clean tree.
+Verified observations: the watch arms only for an audio task under the
+  per-game DD policy with a registered callback (policy off, no callback or
+  a zero-length buffer ⇒ never armed, never recorded); classification is
+  ROW-EXACT — a read is recorded only when one of its row spans really reads
+  a byte inside the buffer, and the record carries
+  `fetch_buffer_offset` (the first byte read inside the range) and
+  `fetch_first_row`, so the review's two counterexamples (a skipped-over
+  head falsely reported as covered, and an intersecting row a linear span
+  missed) are now regression cases; a DMEM-destined in-buffer read is
+  recorded with schema=3, `fetch_watched=1`, the entry generation and the
+  payload hash of the bytes actually read (computed independently in the
+  fixture); out-of-buffer reads, read-only skip gaps and the freeze-shaped
+  read (whose rows top out near 0x1fe7c8, short of the P07 buffer at
+  0x411910) produce no fetch record; the per-generation budget bounds fetch
+  records to 4 with the fifth counted as a duplicate, one exhaustion line,
+  and a summary `records=4 duplicates=1 trigger_observations=…` at any callback
+  change; a new generation re-exposes its own fetches, a graphics task does
+  not arm, and a trigger-shaped watched read keeps its trigger snapshot while
+  being counted. Limits recorded: `fetch_generation` is the ARM generation;
+  an unarmed generation is indistinguishable from a fetch-free one in the
+  log; and the arming call site has no host coverage. The P02 (legacy and
+  corrected), P03, P05 and P08a host suites all pass with these changes, and
+  the real build recompiled the three changed units for all four ABIs.
+Derived results and inputs: the plugin can now answer, per audio task
+  generation, what the microcode fetched (which buffer, the first byte it
+  read inside that buffer, which row reached it, the payload bytes and the
+  arm generation), completing the discriminating trace alongside the
+  captured launch operands and the suspect-request trigger. The five-point
+  hardware-evidence checklist is answered (not waived): no hardware
+  behavior changes; the diagnostic asserts no hardware semantics beyond the
+  P07-derived range and the P01 address model.
+Remaining hypotheses: producer-side zeroing (game heap clear / DD load
+  delivering zeros / emulator-side clear), consumer-side fetch/decode
+  error, stale-buffer reuse.
+Changed files: `mupen64plus-rsp-parallel/upstream/rsp_diag.hpp`,
+  `rsp_diag.cpp`, `rsp/cp0.cpp`, `parallel.cpp`,
+  `tools/tests/rsp-dd-fetch-provenance-test.cpp` (new),
+  `tools/test-dd-fetch-provenance.sh` (new), `docs/HANDOFF_NEW.md`,
+  `docs/P08_CHECKPOINT.md`.
+Checks actually run and why: the new fetch-provenance fixture (pass), the
+  four neighbouring host suites (no regressions), syntax checks of the
+  changed units, and the full debug APK build (successful, the three
+  objects rebuilt for all four ABIs by timestamp).
+Checks not run and why: no device run — the instrumentation is this round;
+  the native run that produces the evidence is the next step, and overhead
+  is explicitly not claimed as zero (capture only when DD-enabled, armed
+  and intersecting; the native sampler provides the comparative measure).
+Independent reviewer and verdict: see the P08b commit message.
+Commit, if approved: (this file's commit).
+Remaining blockers: none.
+Next eligible package and required inputs: the native fetch-provenance run
+  (user-driven): install the built APK with the existing signing identity,
+  reproduce the freeze with DD enabled, pull the logcat and analyze the
+  fetch records against the P07 evidence — the generation, address, offset
+  and payload it reports decide between the competing hypotheses. Carried
+  from P08a: the wrap-guard boundary assertion for the dd-watch suite (L1).

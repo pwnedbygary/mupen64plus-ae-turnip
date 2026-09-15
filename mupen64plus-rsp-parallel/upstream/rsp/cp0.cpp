@@ -256,9 +256,38 @@ extern "C"
 		    && RSP::Diagnostics::imem_dma_eligible(
 		           cache13 & 0x1FF8, row_length, rows);
 
-		if (diagnostics_eligible)
+		/*
+		 * P08b fetch provenance: does any row of this transfer really read
+		 * a byte inside the command buffer armed at audio task entry?  The
+		 * probe walks the actual row spans (rows advance by row_length +
+		 * skip, no trailing skip), so a skip gap is neither counted as
+		 * covered nor allowed to hide an intersecting row — the freeze
+		 * shape itself is multi-row with a large skip.  A watched read
+		 * captures its payload even when the destination is DMEM, which
+		 * IMEM-only eligibility would otherwise exclude; the capture itself
+		 * is the same dma_payload_word path used for eligible reads.
+		 */
+		uint32_t fetch_offset = 0;
+		uint32_t fetch_row = 0;
+		const uint32_t fetch_start = source; /* already 8-byte aligned */
+		const bool fetch_watched =
+		    RSP::Diagnostics::watch_probe(fetch_start, row_length, rows, skip,
+		                                  &fetch_offset, &fetch_row);
+		if (fetch_watched)
+		{
+			observation.fetch_watched = 1;
+			observation.fetch_generation =
+			    RSP::Diagnostics::watch_generation();
+			observation.fetch_buffer_offset = fetch_offset;
+			observation.fetch_first_row = fetch_row;
+		}
+
+		if (diagnostics_eligible || fetch_watched)
 		{
 			observation.payload_hash = DMA_FNV_OFFSET;
+		}
+		if (diagnostics_eligible)
+		{
 			observation.imem_before_hash = dma_hash_imem(rsp->imem);
 			dma_imem_samples(rsp->imem, observation.imem_before_samples);
 		}
@@ -271,7 +300,7 @@ extern "C"
 				const uint32_t word_lo = rsp->rdram[source_addr >> 2];
 				const uint32_t source_addr_hi = (source + 4) & 0x7FFFFC;
 				const uint32_t word_hi = rsp->rdram[source_addr_hi >> 2];
-				if (diagnostics_eligible)
+				if (diagnostics_eligible || fetch_watched)
 				{
 					dma_payload_word(observation, source_addr, word_lo);
 					dma_payload_word(observation, source_addr_hi, word_hi);
@@ -327,7 +356,7 @@ extern "C"
 		observation.actual_imem_write_count =
 		    observation.imem_write_word_count;
 
-		if (diagnostics_eligible
+		if (diagnostics_eligible || fetch_watched
 		    || observation.trigger_reason == RSP::Diagnostics::DMA_TRIGGER_SUSPECT_REQUEST)
 		{
 			if (diagnostics_eligible)

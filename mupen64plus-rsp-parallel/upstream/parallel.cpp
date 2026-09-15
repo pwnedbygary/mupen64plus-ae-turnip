@@ -140,6 +140,14 @@ extern "C"
 			    hash_rsp_task(RSP::rsp.DMEM),
 			    RSP::cpu.diagnostic_imem_hash(), task_type, sp_pc,
 			    reinterpret_cast<const uint32_t *>(RSP::rsp.DMEM + 0xfc0));
+			/*
+			 * P08b: arm the command-buffer watch for an audio task when the
+			 * per-game DD policy is enabled, so fetches of that buffer are
+			 * captured with the generation this entry established.  The
+			 * function re-checks task type, callback and policy.
+			 */
+			RSP::Diagnostics::watch_arm_from_task(
+			    reinterpret_cast<const uint32_t *>(RSP::rsp.DMEM + 0xfc0));
 		}
 
 #ifdef INTENSE_DEBUG
