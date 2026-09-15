@@ -340,3 +340,58 @@ Next eligible package and required inputs: the native evidence step —
   the freeze with DD enabled, pull the logcat, compare the DDSTART12 entry
   hashes against the P08b fetch records per generation, and archive a
   cpu-delta and a screenshot with the run.
+
+## P08c-writer (part 3): guest SP launch boundary
+
+Package: P08c-writer 3/3 — a smaller, safe diagnostic selected before any
+  generated ARM64 store instrumentation.  Observation only; no correction.
+  The production observer is at the hardware-facing `write_rsp_regs` /
+  `update_sp_status` seam, after an asserted HALT is cleared by the guest
+  write and immediately before the unchanged `do_SP_Task` call.
+
+Verified observations: for an audio task (`task_words[0] == 2`) with the
+  per-game DD policy and startup diagnostics callback both enabled, DDSTART13
+  emits a stable per-RSP-lifecycle sequence, `status_before`/`status_after`,
+  the complete 16-word task descriptor, and the command-buffer data pointer,
+   size, word-wise FNV hash and non-zero-word count.  DMA-busy and DMA-full
+   status are retained as `busy`, `dma_busy` and `dma_full` fields rather than
+   being silently excluded; the host fixture confirms the pre-existing task
+   execution still occurs for both.  Non-audio task types do not consume
+   sequence or budget.  Invalid/null/out-of-range command-buffer backing
+   emits the full descriptor with `buffer_valid=0` and does not read outside
+   RDRAM.
+
+ Budget/lifecycle: the launch class has an independent 2048-record
+   per-RSP-lifecycle budget, separate from the legacy 256-message logger and
+   all existing trace classes.  After records 1..2048, qualifying launch
+   2049 emits exactly one `launch_exhausted` marker and later qualifying
+   launches are suppressed; the sequence/budget/marker latch reset at
+   `init_rsp` and `poweron_rsp`.  The host fixture retains 900 records,
+   exercises 2048+1+1, and confirms reset after actual exhaustion starts at
+   sequence 1.  The record intentionally carries no exact PC: this callback
+   boundary has no trustworthy guest PC, so no misleading attribution is
+   fabricated.  DD-off execution pays only the launch gate; no descriptor
+   snapshot, RDRAM walk, or callback is performed.
+
+ Changed files: `mupen64plus-core/upstream/src/device/rcp/rsp/rsp_core.c`,
+  `tools/tests/dd-core-imem-dma-test.c`, `docs/P08_CHECKPOINT.md`,
+  `docs/HANDOFF_NEW.md`.
+ Checks actually run and why: `bash tools/test-dd-core-imem-dma.sh` (the
+   production `write_rsp_regs` path, audio/non-audio/DMA_BUSY/DMA_FULL/null-
+   backing/disabled/policy gates, full descriptor/hash/non-zero fields, no
+   message truncation, unchanged execution, 900 records, exact exhaustion
+   marker and lifecycle reset); NDK 26.1.10909125 ARM64
+  `aarch64-linux-android23-clang -fsyntax-only` with the core
+  `COMMON_CFLAGS`/`LOCAL_CFLAGS` and source/asm-defines includes.  No APK
+  build, device, workflow, native run, commit or push was performed.
+
+ Coverage limits: this places the emptiness relative to the guest SP launch
+  boundary but does not identify the writer.  ARM64 dynarec inline CPU stores,
+  other ABIs, core PI/DMA writers, Parallel-RSP internal DMA, RSP memory
+  writes, unaligned/partial stores and exact generation ownership remain
+  explicit holes.  DDSTART9, WritableROM, and logging-independent DMA policy
+  behavior were not changed.
+
+ Independent reviewer and verdict: pending.
+ Remaining blocker: a native DD-enabled run is still required to compare the
+  DDSTART13 launch state with the existing DDSTART12/fetch generations.

@@ -49,7 +49,14 @@ enum
 {
     DD_IMEM_DMA_RECORD_LIMIT = 256,
     DD_IMEM_DMA_DEDUP_LIMIT = 512,
-    DD_IMEM_DMA_SAMPLE_BYTES = 16
+    DD_IMEM_DMA_SAMPLE_BYTES = 16,
+    /*
+     * DDSTART13 is a per-RSP-lifecycle launch stream, separate from the
+     * legacy 256-message DebugMessage budget and from all other trace
+     * classes.  A normal native run has fewer than 900 audio entries; leave
+     * room for a complete run without making the diagnostic unbounded.
+     */
+    DD_SP_LAUNCH_RECORD_LIMIT = 2048
 };
 
 struct dd_imem_dma_identity
@@ -111,6 +118,9 @@ static unsigned int dd_imem_dma_record_count;
 static int dd_imem_dma_session_active;
 static int dd_imem_dma_record_exhausted;
 static int dd_imem_dma_dedup_exhausted;
+static unsigned int dd_sp_launch_sequence;
+static unsigned int dd_sp_launch_remaining;
+static int dd_sp_launch_exhausted;
 
 static uint64_t dd_imem_dma_hash_init(void)
 {
@@ -317,6 +327,159 @@ void dd_cmd_entry_hash_observe(struct rsp_core* sp)
         "hash=0x%016llx nonzero_words=%u words=%u",
         data_ptr, data_size, (unsigned long long) hash, nonzero_words, words);
     dd_imem_dma_emit_message(message);
+}
+
+/*
+ * P08c-writer (part 3): observe the guest's actual SP launch boundary.
+ *
+ * This is deliberately at the hardware-facing write_rsp_regs ->
+ * update_sp_status seam, after the status write has cleared HALT and before
+ * do_SP_Task runs.  It is not a CPU-store observer and it has no exact guest
+ * PC: the callback API does not carry one, and inventing a PC here would make
+ * the evidence misleading.  The record is limited to audio tasks under the
+ * explicit DD policy.  DMA-busy/full status is retained in the record so it
+ * is not mistaken for a clean launch; the pre-existing status implementation
+ * continues to execute its normal path unchanged.
+ *
+ * The task descriptor is copied into the message in full.  For a valid,
+ * aligned RDRAM range, the command buffer is hashed with the same word-wise
+ * FNV-1 scheme as DDSTART12 and its non-zero word count is emitted.  Invalid
+ * backing/range/shape data still emits the full descriptor with
+ * buffer_valid=0, rather than silently reading outside RDRAM.
+ */
+static void dd_sp_launch_reset_observer(void)
+{
+    dd_sp_launch_sequence = 0;
+    dd_sp_launch_remaining = DD_SP_LAUNCH_RECORD_LIMIT;
+    dd_sp_launch_exhausted = 0;
+}
+
+static void dd_sp_launch_observe(struct rsp_core *sp,
+                                 uint32_t status_before,
+                                 uint32_t status_after)
+{
+    const uint32_t *task_words;
+    struct rdram *rdram = NULL;
+    ptr_DdStartupDiagnosticsCallback callback;
+    void *context = NULL;
+    uint32_t data_ptr = 0;
+    uint32_t data_size = 0;
+    uint32_t buffer_words = 0;
+    uint32_t nonzero_words = 0;
+    uint64_t buffer_hash = 0;
+    uint32_t descriptor[16];
+    unsigned int sequence;
+    unsigned int i;
+    int buffer_valid = 0;
+    unsigned int dma_busy;
+    unsigned int dma_full;
+    /*
+     * Sixteen labeled descriptor words plus the buffer summary are larger
+     * than the legacy DebugMessage payload in the worst case.  Keep this
+     * below the callback fixtures' 1024-byte capture and format it in one
+     * bounded stack buffer so the final words/summary cannot be truncated.
+     */
+    char message[1024];
+
+    /*
+     * Keep this gate ahead of all descriptor/RDRAM work.  In particular,
+     * DD-off sessions do not pay for a task snapshot or hash.
+     */
+    if (!DdStartupDiagnosticsEnabled() || !DdRuntimePolicyGet())
+        return;
+
+    callback = DdStartupDiagnosticsGetCallback(&context);
+    if (callback == NULL)
+        return;
+
+    if (sp == NULL || sp->mem == NULL)
+        return;
+
+    task_words = sp->mem + (0xfc0 / 4);
+    for (i = 0; i < 16; ++i)
+        descriptor[i] = task_words[i];
+
+    /*
+     * The task type check is intentionally after the gate but before any
+     * RDRAM walk: non-audio SP launches are outside this DD command-buffer
+     * diagnostic and must not consume its per-session sequence/budget.
+     */
+    if (descriptor[0] != 2u)
+        return;
+
+    /*
+     * Preserve the first 2048 records, then report one explicit exhaustion
+     * marker on the next qualifying launch.  Non-audio launches do not
+     * consume the budget or trigger the marker.
+     */
+    if (dd_sp_launch_remaining == 0)
+    {
+        if (!dd_sp_launch_exhausted)
+        {
+            (void) snprintf(message, sizeof(message),
+                "DDSTART13 RSP launch_exhausted sequence=%u records=%u limit=%u",
+                dd_sp_launch_sequence + 1, dd_sp_launch_sequence,
+                DD_SP_LAUNCH_RECORD_LIMIT);
+            dd_sp_launch_exhausted = 1;
+            (*callback)(context, M64MSG_INFO, message);
+        }
+        return;
+    }
+
+    if (sp->mi != NULL && sp->mi->r4300 != NULL
+            && sp->mi->r4300->rdram != NULL)
+    {
+        rdram = sp->mi->r4300->rdram;
+        data_ptr = descriptor[12] & 0x1FFFFFFFu;
+        data_size = descriptor[13];
+        if (rdram->dram != NULL && (data_ptr & 3u) == 0
+                && data_size != 0 && (data_size & 3u) == 0
+                && (uint64_t)data_ptr + (uint64_t)data_size
+                    <= (uint64_t)rdram->dram_size)
+        {
+            const uint32_t *buffer = rdram->dram + (data_ptr >> 2);
+
+            buffer_words = data_size / 4;
+            buffer_hash = UINT64_C(14695981039346656037);
+            for (i = 0; i < buffer_words; ++i)
+            {
+                if (buffer[i] != 0)
+                    ++nonzero_words;
+                buffer_hash = (buffer_hash * UINT64_C(1099511628211))
+                    ^ buffer[i];
+            }
+            buffer_valid = 1;
+        }
+    }
+
+    sequence = ++dd_sp_launch_sequence;
+    --dd_sp_launch_remaining;
+    dma_busy = ((status_before | status_after) & SP_STATUS_DMA_BUSY) != 0;
+    dma_full = ((status_before | status_after) & SP_STATUS_DMA_FULL) != 0;
+    (void) snprintf(message, sizeof(message),
+        "DDSTART13 RSP launch sequence=%u type=%u "
+        "status_before=0x%08" PRIx32 " status_after=0x%08" PRIx32
+        " busy=%u dma_busy=%u dma_full=%u clear_halt=1 descriptor={"
+        "w0=0x%08" PRIx32 " w1=0x%08" PRIx32
+        " w2=0x%08" PRIx32 " w3=0x%08" PRIx32
+        " w4=0x%08" PRIx32 " w5=0x%08" PRIx32
+        " w6=0x%08" PRIx32 " w7=0x%08" PRIx32
+        " w8=0x%08" PRIx32 " w9=0x%08" PRIx32
+        " w10=0x%08" PRIx32 " w11=0x%08" PRIx32
+        " w12=0x%08" PRIx32 " w13=0x%08" PRIx32
+        " w14=0x%08" PRIx32 " w15=0x%08" PRIx32 "}"
+        " buffer={valid=%d data_ptr=0x%08" PRIx32
+        " data_size=0x%08" PRIx32 " hash=0x%016" PRIx64
+        " nonzero_words=%u words=%u}",
+        sequence, descriptor[0], status_before, status_after,
+        dma_busy || dma_full, dma_busy, dma_full,
+        descriptor[0], descriptor[1], descriptor[2], descriptor[3],
+        descriptor[4], descriptor[5], descriptor[6], descriptor[7],
+        descriptor[8], descriptor[9], descriptor[10], descriptor[11],
+        descriptor[12], descriptor[13], descriptor[14], descriptor[15],
+        buffer_valid, data_ptr, data_size, buffer_hash, nonzero_words,
+        buffer_words);
+    (*callback)(context, M64MSG_INFO, message);
 }
 
 static void dd_imem_dma_emit_exhaustion(const char *reason,
@@ -690,6 +853,8 @@ static void fifo_pop(struct rsp_core* sp)
 
 static void update_sp_status(struct rsp_core* sp, uint32_t w)
 {
+    const uint32_t status_before = sp->regs[SP_STATUS_REG];
+
     /* clear / set halt */
     if (w & 0x1) sp->regs[SP_STATUS_REG] &= ~SP_STATUS_HALT;
     if (w & 0x2) sp->regs[SP_STATUS_REG] |= SP_STATUS_HALT;
@@ -753,7 +918,26 @@ static void update_sp_status(struct rsp_core* sp, uint32_t w)
         return;
 
     if (!(sp->regs[SP_STATUS_REG] & (SP_STATUS_HALT | SP_STATUS_BROKE)))
+    {
+        const uint32_t status_after = sp->regs[SP_STATUS_REG];
+
+        /*
+         * This is the one production path where the guest has just cleared
+         * an asserted HALT and the core is about to execute the task.  The
+         * observer records DMA busy/full bits as they actually appear in the
+         * status instead of changing or filtering the existing execution
+         * decision.  It remains strictly before the unchanged do_SP_Task
+         * call.
+         */
+        if ((w & SP_STATUS_HALT) != 0
+                && (status_before & SP_STATUS_HALT) != 0
+                && DdStartupDiagnosticsEnabled()
+                && DdRuntimePolicyGet())
+        {
+            dd_sp_launch_observe(sp, status_before, status_after);
+        }
         do_SP_Task(sp);
+    }
 }
 
 void init_rsp(struct rsp_core* sp,
@@ -762,6 +946,7 @@ void init_rsp(struct rsp_core* sp,
               struct rdp_core* dp,
               struct ri_controller* ri)
 {
+    dd_sp_launch_reset_observer();
     if (DdStartupDiagnosticsEnabled())
         dd_imem_dma_reset_observer();
     sp->mem = sp_mem;
@@ -772,6 +957,7 @@ void init_rsp(struct rsp_core* sp,
 
 void poweron_rsp(struct rsp_core* sp)
 {
+    dd_sp_launch_reset_observer();
     if (DdStartupDiagnosticsEnabled())
         dd_imem_dma_reset_observer();
     memset(sp->mem, 0, SP_MEM_SIZE);

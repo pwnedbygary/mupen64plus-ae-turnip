@@ -19,9 +19,13 @@ static int diagnostics_enabled;
 static unsigned int ddstart11_count;
 static unsigned int exhaustion_count;
 static unsigned int ddstart12_count;
+static unsigned int ddstart13_count;
+static unsigned int ddstart13_exhaustion_count;
 static unsigned int rsp_cycles_calls;
 static unsigned int debug_message_count;
 static char last_message[1024];
+static char last_launch_message[1024];
+static char last_launch_exhaustion_message[1024];
 static uint32_t test_spmem[SP_MEM_SIZE / sizeof(uint32_t)];
 static uint32_t test_dram_words[0x2000 / sizeof(uint32_t)];
 static struct rdram test_rdram;
@@ -57,6 +61,16 @@ static void capture_dd_message(void *context, int level, const char *message)
         ++exhaustion_count;
     if (strstr(last_message, "DDSTART12 RSP cmd_entry") != NULL)
         ++ddstart12_count;
+    if (strstr(last_message, "DDSTART13 RSP launch sequence=") != NULL) {
+        ++ddstart13_count;
+        snprintf(last_launch_message, sizeof(last_launch_message), "%s",
+                 last_message);
+    }
+    if (strstr(last_message, "DDSTART13 RSP launch_exhausted") != NULL) {
+        ++ddstart13_exhaustion_count;
+        snprintf(last_launch_exhaustion_message,
+                 sizeof(last_launch_exhaustion_message), "%s", last_message);
+    }
 }
 
 ptr_DdStartupDiagnosticsCallback DdStartupDiagnosticsGetCallback(void **context)
@@ -358,6 +372,201 @@ int main(void)
         do_SP_Task(&sp);
         assert(ddstart12_count == entries_before + 1);
         assert(rsp_cycles_calls == cycles_before + 2);
+    }
+
+    /*
+     * P08c-writer (part 3): exercise the actual guest SP_STATUS write seam.
+     * DDSTART13 is emitted only after an asserted HALT is cleared and before
+     * do_SP_Task executes.  It carries the complete 16-word descriptor and
+     * the same command-buffer hash/non-zero count as DDSTART12.  Its stream
+     * is independent of the legacy DebugMessage budget and must retain more
+     * than the 880 entries expected in the native run.
+     */
+    {
+        unsigned int launch_before;
+        unsigned int cycles_before;
+        unsigned int exhaustion_before;
+        unsigned int k;
+        uint64_t expected = UINT64_C(14695981039346656037);
+
+        poweron_rsp(&sp);
+        diagnostics_enabled = 1;
+        policy_enabled = 1;
+        test_spmem[0xfc0 / 4 + 0] = 2u;
+        test_spmem[0xfc0 / 4 + 12] = 0x80001000u;
+        test_spmem[0xfc0 / 4 + 13] = 0x40u;
+        for (k = 0; k < 16; ++k) {
+            test_dram_words[0x1000 / 4 + k] = 0x21210000u + k;
+            expected = (expected * UINT64_C(1099511628211))
+                ^ (0x21210000u + k);
+        }
+
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+        last_launch_message[0] = '\0';
+        launch_before = ddstart13_count;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before + 1);
+        assert(strstr(last_launch_message, "sequence=1 type=2") != NULL);
+        assert(strstr(last_launch_message,
+                      "status_before=0x00000001 status_after=0x00000000") != NULL);
+        assert(strstr(last_launch_message,
+                      "descriptor={w0=0x00000002") != NULL);
+        assert(strstr(last_launch_message, "w12=0x80001000") != NULL);
+        assert(strstr(last_launch_message, "w13=0x00000040") != NULL);
+        assert(strstr(last_launch_message, "w15=0x00000000}") != NULL);
+        {
+            char wanted[160];
+            snprintf(wanted, sizeof(wanted),
+                     "valid=1 data_ptr=0x00001000 data_size=0x00000040 "
+                     "hash=0x%016llx nonzero_words=16 words=16",
+                     (unsigned long long)expected);
+            assert(strstr(last_launch_message, wanted) != NULL);
+        }
+        assert(strlen(last_launch_message) < sizeof(last_launch_message) - 1);
+
+        /* An invalid command range still records the full descriptor but
+         * never hashes outside the RDRAM backing. */
+        launch_before = ddstart13_count;
+        test_spmem[0xfc0 / 4 + 12] = 0x80001ff0u;
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before + 1);
+        assert(strstr(last_launch_message, "sequence=2 type=2") != NULL);
+        assert(strstr(last_launch_message,
+                      "w12=0x80001ff0") != NULL);
+        assert(strstr(last_launch_message,
+                      "buffer={valid=0 data_ptr=0x00001ff0") != NULL);
+        test_spmem[0xfc0 / 4 + 12] = 0x80001000u;
+
+        /* A non-audio launch is outside DDSTART13's command-buffer scope. */
+        launch_before = ddstart13_count;
+        test_spmem[0xfc0 / 4 + 0] = 1u;
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before);
+
+        /*
+         * DMA busy/full remains a qualifying HALT-clear execution boundary.
+         * The status flags are recorded rather than filtered, and execution
+         * is asserted unchanged through the RSP-cycle stub.
+         */
+        test_spmem[0xfc0 / 4 + 0] = 2u;
+        launch_before = ddstart13_count;
+        cycles_before = rsp_cycles_calls;
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT | SP_STATUS_DMA_BUSY;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before + 1);
+        assert(rsp_cycles_calls == cycles_before + 1);
+        assert(strstr(last_launch_message, "sequence=3 type=2") != NULL);
+        assert(strstr(last_launch_message,
+                      "busy=1 dma_busy=1 dma_full=0") != NULL);
+
+        launch_before = ddstart13_count;
+        cycles_before = rsp_cycles_calls;
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT | SP_STATUS_DMA_FULL;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before + 1);
+        assert(rsp_cycles_calls == cycles_before + 1);
+        assert(strstr(last_launch_message,
+                      "sequence=4 type=2") != NULL);
+        assert(strstr(last_launch_message,
+                      "busy=1 dma_busy=0 dma_full=1") != NULL);
+
+        /* A null RDRAM backing remains a production-path launch record with
+         * a fail-closed buffer field, and it must still execute the task. */
+        {
+            struct rdram *saved_rdram = test_r4300.rdram;
+
+            null_rdram.dram_size = sizeof(test_dram_words);
+            test_r4300.rdram = &null_rdram;
+            launch_before = ddstart13_count;
+            cycles_before = rsp_cycles_calls;
+            sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+            write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+            assert(ddstart13_count == launch_before + 1);
+            assert(rsp_cycles_calls == cycles_before + 1);
+            assert(strstr(last_launch_message,
+                          "sequence=5 type=2") != NULL);
+            assert(strstr(last_launch_message,
+                          "buffer={valid=0 data_ptr=0x00001000") != NULL);
+            test_r4300.rdram = saved_rdram;
+        }
+
+        /* Both gates suppress the record. */
+        launch_before = ddstart13_count;
+        diagnostics_enabled = 0;
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before);
+        diagnostics_enabled = 1;
+        policy_enabled = 0;
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before);
+        policy_enabled = 1;
+
+        /* A fresh RSP lifecycle starts a fresh, stable bounded sequence. */
+        poweron_rsp(&sp);
+        launch_before = ddstart13_count;
+        test_spmem[0xfc0 / 4 + 0] = 2u;
+        for (k = 0; k < 900; ++k) {
+            sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+            write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        }
+        assert(ddstart13_count == launch_before + 900);
+        assert(strstr(last_launch_message, "sequence=900 type=2") != NULL);
+
+        /* Reset must restart the sequence rather than retaining old records. */
+        poweron_rsp(&sp);
+        test_spmem[0xfc0 / 4 + 0] = 2u;
+        test_spmem[0xfc0 / 4 + 12] = 0x80001000u;
+        test_spmem[0xfc0 / 4 + 13] = 0x40u;
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before + 901);
+        assert(strstr(last_launch_message, "sequence=1 type=2") != NULL);
+
+        /*
+         * The bounded launch class emits all 2048 records, then exactly one
+         * exhaustion marker for the next qualifying launch.  Later launches
+         * are suppressed until the next lifecycle reset.
+         */
+        poweron_rsp(&sp);
+        test_spmem[0xfc0 / 4 + 0] = 2u;
+        test_spmem[0xfc0 / 4 + 12] = 0x80001000u;
+        test_spmem[0xfc0 / 4 + 13] = 0x40u;
+        launch_before = ddstart13_count;
+        exhaustion_before = ddstart13_exhaustion_count;
+        for (k = 0; k < 2048; ++k) {
+            sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+            write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        }
+        assert(ddstart13_count == launch_before + 2048);
+        assert(ddstart13_exhaustion_count == exhaustion_before);
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before + 2048);
+        assert(ddstart13_exhaustion_count == exhaustion_before + 1);
+        assert(strstr(last_launch_exhaustion_message,
+                      "DDSTART13 RSP launch_exhausted sequence=2049 "
+                      "records=2048 limit=2048") != NULL);
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before + 2048);
+        assert(ddstart13_exhaustion_count == exhaustion_before + 1);
+
+        /* Reset after actual exhaustion clears both the marker latch and the
+         * sequence, without changing execution. */
+        poweron_rsp(&sp);
+        test_spmem[0xfc0 / 4 + 0] = 2u;
+        test_spmem[0xfc0 / 4 + 12] = 0x80001000u;
+        test_spmem[0xfc0 / 4 + 13] = 0x40u;
+        launch_before = ddstart13_count;
+        sp.regs[SP_STATUS_REG] = SP_STATUS_HALT;
+        write_rsp_regs(&sp, 0x10, SP_STATUS_HALT, UINT32_MAX);
+        assert(ddstart13_count == launch_before + 1);
+        assert(ddstart13_exhaustion_count == exhaustion_before + 1);
+        assert(strstr(last_launch_message, "sequence=1 type=2") != NULL);
     }
 
     return 0;
