@@ -157,4 +157,40 @@ int dd_watch_get(unsigned index, struct dd_watch_event *out);
 uint32_t dd_watch_range_base(void);
 uint32_t dd_watch_range_length(void);
 
+/*
+ * P08c writer watch: the two production adapters the emulation call sites use.
+ *
+ * arm_from_task_words() is called at RSP task entry with the 16 task words
+ * the core has already copied into the RSP's DMEM (0xfc0).  It arms the watch
+ * over the task's own command buffer — words 12/13 = data_ptr/data_size per
+ * the corrected P07-C field map — but ONLY when the per-game DD policy is on
+ * and the task is an audio task (type 2), reusing dd_watch_arm()'s own gate.
+ * It returns 1 when a range was armed.  A task that is not audio, carries a
+ * zero size, or arrives while the policy is off DISARMS the watch, so a
+ * later store cannot be attributed to a buffer the current task does not own.
+ * THAT GUARANTEE IS CONDITIONAL ON CALL-SITE PLACEMENT: call this at EVERY
+ * RSP task entry, before any task-type branch (rsp_core.c's do_SP_Task
+ * branches on mem[0xfc0/4] before doing RSP work).  Called inside the audio
+ * branch only, a graphics task's stores into the reused region would be
+ * attributed to the previous audio buffer — the disarm is what prevents it.
+ *
+ * record_store() is the store observer.  It is called from a CPU store path
+ * and returns 0 immediately when no range is armed or the address is outside
+ * it, so the common case costs one armed check and one range test and never
+ * touches the ring.  When the address IS watched it fills a record from the
+ * arguments (writer family, width, value, before, pc) and stores it, stamping
+ * the module's generation.  `before` is passed by the caller because only the
+ * store path knows the previous bytes; pass the value read back before the
+ * store, or the value itself when the path cannot.
+ *
+ * COVERAGE LIMIT, stated here and required in the package record: the
+ * dynarec's FAST path is inlined into generated code, so this observer sees
+ * slow-path/interpreted stores only.  A zeroing performed by a fast-path
+ * store is invisible to it; the native run's null result is not evidence that
+ * no store occurred.
+ */
+int dd_watch_arm_from_task_words(const uint32_t *task_words);
+int dd_watch_record_store(uint32_t addr, uint32_t width, uint32_t value,
+                          uint32_t before, uint32_t pc, uint8_t writer);
+
 #endif /* DD_WATCH_H */

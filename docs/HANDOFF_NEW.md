@@ -3951,3 +3951,100 @@ Next eligible package and required inputs: P08c-writer — arm the core-side
   zeroing operation and its timing relative to the submission. The frozen
   process (pid 2336) remains available for further sampling meanwhile.
 ```
+
+## P08c-writer (part 1): the core-side writer adapter — 2026-09-14
+
+```markdown
+Package: P08c-writer, subdivision 1 of 2 — the core-side production adapters
+  the emulation call sites will use: arm the watched range from the task
+  words captured at RSP task entry, and record a CPU store into that range.
+  No call site is wired yet (subdivision 2 does that, in rsp_core.c at
+  do_SP_Task and in a dynarec store path), so runtime behavior is unchanged
+  by construction; the new code is compiled into the core but never called
+  by the emulator.
+Baseline / exact reviewed snapshot: 3a858306c (P08c), clean tree.
+Verified observations (host, this round):
+  - dd_watch_arm_from_task_words() arms the watch from the task words the
+    core copies into DMEM (words 12/13 = data_ptr/data_size per the
+    corrected P07-C field map) and reuses dd_watch_arm()'s own gate: with the
+    per-game DD policy off it does not arm, and a task that is not audio
+    (type != 2) DISARMS the watch, so a later store cannot be attributed to a
+    buffer the current task does not own — CONDITIONAL on calling the adapter
+    at every task entry before the type branch (see the header). A zero-size audio task does not
+    arm. These are asserted in the host suite against the real policy state
+    (api/callbacks.c), not a stub.
+  - dd_watch_record_store() returns 0 without touching the ring when no range
+    is armed or the address is outside it (the hot-path order: armed check,
+    then range test), and otherwise stores a record carrying the caller's
+    address, width, value, before-bytes and pc with the MODULE-stamped
+    generation. The suite asserts the fields, the module stamping, and that
+    an out-of-range or post-disarm store neither records nor grows the ring
+    (evidence is preserved on disarm).
+Coverage limit recorded, not glossed: the dynarec FAST path is inlined into
+  generated code, so this observer can only see slow-path/interpreted
+  stores. A zeroing performed by a fast-path store is invisible to it, and a
+  null native result is therefore NOT evidence that no store occurred. The
+  header states this where a call-site author will read it.
+Derived results and inputs: subdivision 2 can now be a two-line change at
+  each call site (arm at task entry; record in the store path), and the
+  analysis in subdivision 3 compares the ring's last covering store against
+  the fetch that read zeros, with the ~21 ms bound from P08c narrowing the
+  window.
+Remaining hypotheses: unchanged (the zeroing operation and its timing; the
+  two consumer variants kept live in P08c).
+Changed files: mupen64plus-core/upstream/src/device/dd/dd_watch.h,
+  dd_watch.c, tools/tests/dd-watch-test.c, docs/HANDOFF_NEW.md,
+  docs/P08_CHECKPOINT.md.
+Checks actually run and results: tools/test-dd-watch.sh — pass, including the
+  new adapter cases; the suite compiles the real module with the real policy
+  state. Compilation in the real configuration (DEVELOPMENT_PROCESS section
+  4): NDK 26.1.10909125 clang with the actual COMMON_CFLAGS/LOCAL_CFLAGS for
+  aarch64-linux-android23 — clean (4656-byte object, the no-LTO variant the
+    debug build uses; the reviewer also confirmed the -flto variant is clean
+    at 9180 B); the reviewer also ran
+  clang 22.1.8 -fsyntax-only with -DNEW_DYNAREC=4 on both changed units —
+  clean. The APK build is deferred to subdivision 2 with the call sites: with
+  the adapters uncalled there is nothing for it to observe (the reviewer
+  agreed the deferral is correct for observation, and these compile checks
+  close the section-4 requirement).
+Checks not run and why: no device run (the adapter is uncalled); no APK
+  build (deferred to the subdivision that wires it, where the build is
+  evidence of something observable).
+Independent reviewer, verdict and finding dispositions: P08c-writer 1/2 was
+  reviewed PASS with six LOW findings, all now closed or recorded: (F1) the
+  disarm guarantee is conditional on calling the adapter at EVERY task entry,
+  before the type branch — now stated in the header and restated in the 2/2
+  plan below; (F2/F3/F4) three test
+  gaps — a failed arm from an ARMED state (NULL block and zero-size task) and
+  the adapter's counter-neutrality are now asserted, and the assertions
+  confirmed by re-running the reviewer's mutation classes; (F5) the P08a L1
+  boundary case is now pinned (a range ending exactly at 2^32 is accepted, one
+  byte more is refused) in the suite, and the P08c carries are restated below;
+  (F6) the section-4 compile checks are recorded above.
+Commit, if approved: (pending)
+Remaining blockers: none.
+Next eligible package and required inputs: P08c-writer subdivision 2 — wire
+  the two call sites and take the native run. CALL-SITE PLACEMENT: arm at
+  EVERY RSP task entry BEFORE the task-type branch (rsp_core.c's do_SP_Task
+  branches on mem[0xfc0/4]), or the disarm guarantee does not hold and a
+  graphics task's stores into the reused region would be misattributed. DESIGN RE-SCOPE from the review,
+  recorded before implementation because it changes what the run can show:
+  the reviewer derived from the dynarec's own code generation (assem_arm64.c's
+  fast-path store emission with RAM_OFFSET, and the C helpers reachable only
+  through STORE*_STUB calls from generated code) that a guest store to RDRAM
+  through a KSEG0/KSEG1 address — exactly how the game writes
+  0x80411910-style addresses — takes the INLINED fast path. A C slow-path
+  observer is therefore expected to see NOTHING, and a null ring is the
+  LIKELY outcome, not a surprise: it would only prove that no SLOW-path store
+  covered the buffer. Subdivision 2 must therefore either instrument the fast
+  path with the work-packages' exact-site and register-preservation
+  requirements, or choose a different observation strategy for the zeroing
+  (for example the core's DMA paths, or a periodic buffer hash at task entry);
+  the choice is to be made from this recorded expectation, not after a null
+  result. Also archive a cpu-delta and a screenshot with that run (the P07-R
+  precedent, which the P08c record noted as missing).
+Remaining hypotheses (carried): the zeroing operation and its timing (bounded
+  to ~21 ms); stale/out-of-phase buffer reuse; the decode half of the consumer
+  hypothesis; whether the P08c step-1 generation tail is a precursor; and
+  P08a L1's fix is now in the suite rather than outstanding.
+```

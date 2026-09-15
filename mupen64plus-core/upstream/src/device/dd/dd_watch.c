@@ -139,3 +139,48 @@ uint32_t dd_watch_range_length(void)
 {
 	return watch.length;
 }
+
+/*
+ * P08c writer watch: production adapters.  See dd_watch.h for the contract
+ * and for the fast-path coverage limit.
+ */
+int dd_watch_arm_from_task_words(const uint32_t *task_words)
+{
+	if (task_words == NULL || task_words[0] != 2u)
+	{
+		/* Not an audio task: nothing to watch, and any previously armed
+		 * range belongs to a task that is no longer current. */
+		dd_watch_disarm();
+		return 0;
+	}
+
+	/* Corrected P07-C field map: words 12-13 = data_ptr / data_size.
+	 * dd_watch_arm() applies the per-game DD policy gate itself and
+	 * normalizes the base. */
+	if (dd_watch_arm(task_words[12], task_words[13]))
+		return 1;
+
+	dd_watch_disarm();
+	return 0;
+}
+
+int dd_watch_record_store(uint32_t addr, uint32_t width, uint32_t value,
+                          uint32_t before, uint32_t pc, uint8_t writer)
+{
+	struct dd_watch_event event;
+
+	/* Hot-path order: armed first, then the range, so an untargeted store
+	 * costs a load and a compare and never builds a record. */
+	if (!dd_watch_armed() || !dd_watch_in_range(addr))
+		return 0;
+
+	event.generation = 0; /* stamped by dd_watch_record() */
+	event.phys = addr;
+	event.value = value;
+	event.before = before;
+	event.pc = pc;
+	event.sequence = 0;
+	event.width = (uint8_t) width;
+	event.writer = writer;
+	return dd_watch_record(&event);
+}

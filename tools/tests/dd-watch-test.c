@@ -39,6 +39,19 @@ static struct dd_watch_event make_event(uint32_t phys, uint32_t value)
 	return event;
 }
 
+/* The 16 task words the core copies into DMEM at 0xfc0; words 12-13 are
+ * data_ptr / data_size per the corrected P07-C field map. */
+static uint32_t task_words[16];
+
+static void make_audio_task(uint32_t *words, uint32_t data_ptr,
+                            uint32_t data_size)
+{
+	memset(words, 0, 16 * sizeof(uint32_t));
+	words[0] = 2u; /* OSTask type 2 = audio */
+	words[12] = data_ptr;
+	words[13] = data_size;
+}
+
 int main(void)
 {
 	struct dd_watch_event event;
@@ -213,6 +226,88 @@ int main(void)
 	dd_watch_disarm();
 	assert(dd_watch_arm(RANGE_BASE, RANGE_LENGTH) == 0);
 	assert(dd_watch_armed() == 0);
+
+	/* The P08c writer-watch adapters: arming from the task words the core
+	 * copies into DMEM, and recording a CPU store into the range. */
+	assert(SetDdRuntimePolicy(1) == M64ERR_SUCCESS);
+	make_audio_task(task_words, 0x80411910u, 0x1a0u);
+	dd_watch_disarm();
+	assert(dd_watch_arm_from_task_words(task_words) == 1);
+	assert(dd_watch_armed() == 1);
+	assert(dd_watch_range_base() == 0x411910u);
+	assert(dd_watch_range_length() == 0x1a0u);
+
+	dd_watch_set_generation(4242u);
+	assert(dd_watch_record_store(0x411950u, 4u, 0xDEADBEEFu, 0x11223344u,
+	                             0x80012345u, 1u)
+	       == DD_WATCH_STORED);
+	assert(dd_watch_count() == 1u);
+	{
+		struct dd_watch_event stored;
+		assert(dd_watch_get(0u, &stored) == 1);
+		assert(stored.phys == 0x411950u);
+		assert(stored.value == 0xDEADBEEFu);
+		assert(stored.before == 0x11223344u);
+		assert(stored.pc == 0x80012345u);
+		assert(stored.width == 4u);
+		assert(stored.writer == 1u);
+		assert(stored.generation == 4242u);
+	}
+
+	/* An out-of-range store is not recorded and does not touch the ring. */
+	assert(dd_watch_record_store(0x411000u, 4u, 1u, 1u, 1u, 1u) == 0);
+	assert(dd_watch_count() == 1u);
+
+	/* A graphics task disarms, so its stores cannot be attributed to the
+	 * audio buffer. */
+	task_words[0] = 1u;
+	assert(dd_watch_arm_from_task_words(task_words) == 0);
+	assert(dd_watch_armed() == 0);
+	assert(dd_watch_record_store(0x411950u, 4u, 1u, 1u, 1u, 1u) == 0);
+	assert(dd_watch_count() == 1u); /* evidence preserved on disarm */
+
+	/* Failures from an ARMED state must disarm, not leave a stale range:
+	 * a NULL word block and a zero-size task are both refused that way.
+	 * (The previous case left graphics words in place.) */
+	make_audio_task(task_words, 0x80411910u, 0x1a0u);
+	assert(dd_watch_arm_from_task_words(task_words) == 1);
+	assert(dd_watch_armed() == 1);
+	assert(dd_watch_arm_from_task_words(NULL) == 0);
+	assert(dd_watch_armed() == 0);
+	assert(dd_watch_arm_from_task_words(task_words) == 1);
+	make_audio_task(task_words, 0x80411910u, 0u);
+	assert(dd_watch_arm_from_task_words(task_words) == 0);
+	assert(dd_watch_armed() == 0);
+
+	/* The adapter's early return must not touch the counters either. */
+	make_audio_task(task_words, 0x80411910u, 0x1a0u);
+	assert(dd_watch_arm_from_task_words(task_words) == 1);
+	{
+		const unsigned rejected_before = dd_watch_rejected();
+		const unsigned total_before = dd_watch_total();
+		assert(dd_watch_record_store(0x500000u, 4u, 1u, 1u, 1u, 1u) == 0);
+		assert(dd_watch_rejected() == rejected_before);
+		assert(dd_watch_total() == total_before);
+	}
+
+	/* A zero-size audio task cannot arm, and the policy still governs. */
+	make_audio_task(task_words, 0x80411910u, 0u);
+	assert(dd_watch_arm_from_task_words(task_words) == 0);
+	assert(dd_watch_armed() == 0);
+	assert(SetDdRuntimePolicy(0) == M64ERR_SUCCESS);
+	make_audio_task(task_words, 0x80411910u, 0x1a0u);
+	assert(dd_watch_arm_from_task_words(task_words) == 0);
+	assert(dd_watch_armed() == 0);
+	/* P08a L1: the wrap guard's exact boundary.  A range whose normalized
+	 * end is exactly 2^32 is accepted; one byte more is refused. */
+	assert(SetDdRuntimePolicy(1) == M64ERR_SUCCESS);
+	assert(dd_watch_arm(0x1FFFFFF0u, 0xE0000010u) == 1);
+	assert(dd_watch_range_base() == 0x1FFFFFF0u);
+	assert(dd_watch_range_length() == 0xE0000010u);
+	assert(dd_watch_arm(0x1FFFFFF0u, 0xE0000011u) == 0);
+	assert(dd_watch_range_length() == 0xE0000010u); /* left intact */
+	dd_watch_disarm();
+	assert(SetDdRuntimePolicy(0) == M64ERR_SUCCESS);
 
 	/* Clearing the policy is the documented end of the session. */
 	assert(DdRuntimePolicyGet() == 0);

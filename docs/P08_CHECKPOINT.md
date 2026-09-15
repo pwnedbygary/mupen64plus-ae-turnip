@@ -251,3 +251,52 @@ Next eligible package and required inputs: P08c-writer — arm the core-side
   dd_watch range on both command buffers with generation tracking, record CPU
   stores and core DMA, archive cpu-delta and screenshot artifacts per run,
   and take one native run to catch the zeroing operation and its timing.
+## P08c-writer checkpoint (part 1: the core-side writer adapter)
+
+Package: P08c-writer 1/2 — the production adapters for the writer watch:
+  arm from the task words captured at RSP entry, and record a CPU store into
+  the armed range. No call site wired yet, so emulator behavior is unchanged
+  by construction.
+Baseline / Reviewed snapshot: 3a858306c (P08c), clean tree.
+Verified observations: arming reuses the module's own policy gate and the
+  corrected P07-C task-word map; a non-audio task disarms, so stores cannot be
+  misattributed — conditional on the adapter running at every task entry
+  before the type branch (see the header); a zero-size audio task does not
+  arm; recording returns 0
+  without touching the ring when unarmed or out of range and otherwise
+  carries address/width/value/before/pc with the module-stamped generation.
+  All asserted against the real policy state in tools/test-dd-watch.sh.
+Recorded coverage limit: the dynarec fast path is inlined into generated
+  code, so only slow-path/interpreted stores are observable; a null native
+  result is not evidence that no store occurred.
+Changed files: `dd_watch.h`, `dd_watch.c`, `tools/tests/dd-watch-test.c`,
+  `docs/HANDOFF_NEW.md`, `docs/P08_CHECKPOINT.md`.
+Checks actually run and why: the host suite (pass) — the adapter's contract
+  through the real policy state. No APK build or device run: the adapters are
+  uncalled, so neither could observe anything about the emulator.
+Independent reviewer and verdict: PASS with six LOW findings, all closed:
+  the call-site condition for the disarm guarantee is now in the header; the
+  three test gaps (failed arm from an armed state, NULL block, adapter
+  counter-neutrality) and the P08a L1 boundary case are asserted in the
+  suite; the section-4 compile checks are recorded (NDK real flags, arm64,
+  clean; 4656-byte object, the no-LTO variant the debug build uses).
+  Derived results and inputs: subdivision 2 is a two-line change at each call
+  site, and its analysis compares the ring's last covering store against the
+  zero fetch, with the ~21 ms window from P08c. Remaining hypotheses (carried
+  from P08c): the zeroing operation and its timing; stale/out-of-phase buffer
+  reuse; the decode half of the consumer hypothesis; the step-1 generation
+  tail as a possible precursor; P08a L1 is fixed in the suite. Verdict in the
+  commit message.
+Commit, if approved: (this file's commit).
+Remaining blockers: none.
+Next eligible package and required inputs: P08c-writer 2/2 — wire the call
+  sites, rebuild, native run (archive cpu-delta and screenshot). CALL-SITE
+  PLACEMENT: arm at every RSP task entry BEFORE the task-type branch, or the
+  disarm guarantee does not hold. RE-SCOPE recorded before implementation:
+  the reviewer derived from the dynarec's code generation that guest stores
+  to RDRAM through KSEG0/KSEG1 addresses take the inlined fast path,
+  so a C slow-path observer is expected to see nothing and a null ring is the
+  likely outcome — it would only exclude slow-path stores. Subdivision 2 must
+  either instrument the fast path (with the exact-site and register-
+  preservation requirements) or choose another observation strategy, decided
+  from this recorded expectation, not after a null result.
