@@ -4,6 +4,7 @@
 #include "device/device.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,8 +32,8 @@ static inline BOOL VirtualFree(void *address, size_t size, int type)
 
 /*
  * Include the production observer and its helpers.  The test links with
- * --gc-sections, retaining only the four callbacks and their direct reader
- * dependencies; it does not reproduce any observer or decoder logic.
+ * --gc-sections, retaining only the observer callbacks and their direct
+ * reader dependencies; it does not reproduce any observer or decoder logic.
  */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wempty-body"
@@ -63,6 +64,16 @@ void dd_cmd_watch_capture_context(uint32_t address, uint32_t store_pc,
     (void)a0;
     (void)a1;
     (void)a3;
+}
+
+void dd_cmd_watch_capture_probe(
+    const struct dd_cmd_watch_probe_snapshot *snapshot,
+    int source_header_valid,
+    uint32_t source_header_value)
+{
+    (void)snapshot;
+    (void)source_header_valid;
+    (void)source_header_value;
 }
 
 #define DRAM_BYTES UINT32_C(0x01000000)
@@ -325,6 +336,130 @@ static void test_context_codegen_machine_words(void)
         == UINT32_C(0xa9400000));
 }
 
+static void test_compiled_call_probe_machine_words(void)
+{
+    struct regstat probe_regs;
+    uint32_t code[512];
+    unsigned int count;
+    size_t probe_base;
+    uint32_t call_pc_store;
+    uint32_t delay_store;
+    uint32_t flags_store;
+    uint32_t a0_store;
+    uint32_t t8_store;
+    uint32_t t1_store;
+    uint32_t ra_store;
+    uint32_t sp_store;
+
+    memset(&probe_regs, 0, sizeof(probe_regs));
+    memset(probe_regs.regmap, -1, sizeof(probe_regs.regmap));
+    /*
+     * These are real allocator mappings, not ABI argument placeholders:
+     * a0/a1/t8/t1/ra/sp each have live low/high halves in distinct hosts.
+     */
+    probe_regs.regmap[8] = 4;
+    probe_regs.regmap[14] = 4 | 64;
+    probe_regs.regmap[9] = 5;
+    probe_regs.regmap[15] = 5 | 64;
+    probe_regs.regmap[10] = 24;
+    probe_regs.regmap[16] = 24 | 64;
+    probe_regs.regmap[11] = 9;
+    probe_regs.regmap[17] = 9 | 64;
+    probe_regs.regmap[12] = 31;
+    probe_regs.regmap[18] = 31 | 64;
+    probe_regs.regmap[13] = 29;
+    probe_regs.regmap[19] = 29 | 64;
+
+    memset(code, 0, sizeof(code));
+    out = (u_char *)code;
+    emit_dd_cmd_watch_call_probe(&probe_regs,
+        DD_CMD_WATCH_TARGET_CALL_PC,
+        DD_CMD_WATCH_TARGET_CALL_OPCODE,
+        DD_CMD_WATCH_TARGET_DELAY_OPCODE,
+        DD_CMD_WATCH_TARGET_ENTRY_PC,
+        UINT32_C(0x1234));
+    count = (unsigned int)(((u_char *)out - (u_char *)code)
+        / sizeof(code[0]));
+    assert(count > 24);
+    probe_base = offsetof(struct new_dynarec_hot_state, dd_cmd_watch_probe);
+    call_pc_store = UINT32_C(0xb9000000)
+        | (u_int)((((probe_base
+            + offsetof(struct dd_cmd_watch_probe_snapshot, call_pc))
+            >> 2) << 10))
+        | (u_int)(FP << 5) | ARG1_REG;
+    delay_store = UINT32_C(0xb9000000)
+        | (u_int)((((probe_base
+            + offsetof(struct dd_cmd_watch_probe_snapshot, delay_opcode))
+            >> 2) << 10))
+        | (u_int)(FP << 5) | ARG1_REG;
+    flags_store = UINT32_C(0xb9000000)
+        | (u_int)((((probe_base
+            + offsetof(struct dd_cmd_watch_probe_snapshot, flags))
+            >> 2) << 10))
+        | (u_int)(FP << 5) | ARG1_REG;
+    a0_store = UINT32_C(0xf9000000)
+        | (u_int)((((probe_base
+            + offsetof(struct dd_cmd_watch_probe_snapshot, a0))
+            >> 3) << 10))
+        | (u_int)(FP << 5) | ARG1_REG;
+    t8_store = UINT32_C(0xf9000000)
+        | (u_int)((((probe_base
+            + offsetof(struct dd_cmd_watch_probe_snapshot, t8))
+            >> 3) << 10))
+        | (u_int)(FP << 5) | ARG1_REG;
+    t1_store = UINT32_C(0xf9000000)
+        | (u_int)((((probe_base
+            + offsetof(struct dd_cmd_watch_probe_snapshot, t1))
+            >> 3) << 10))
+        | (u_int)(FP << 5) | ARG1_REG;
+    ra_store = UINT32_C(0xf9000000)
+        | (u_int)((((probe_base
+            + offsetof(struct dd_cmd_watch_probe_snapshot, ra))
+            >> 3) << 10))
+        | (u_int)(FP << 5) | ARG1_REG;
+    sp_store = UINT32_C(0xf9000000)
+        | (u_int)((((probe_base
+            + offsetof(struct dd_cmd_watch_probe_snapshot, sp))
+            >> 3) << 10))
+        | (u_int)(FP << 5) | ARG1_REG;
+    assert((code[0] & UINT32_C(0xffc00000)) == UINT32_C(0xa9000000));
+    assert(code_has_word(code, count, call_pc_store, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, delay_store, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, flags_store, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, a0_store, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, t8_store, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, t1_store, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, ra_store, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, sp_store, UINT32_C(0xffffffff)));
+    /* x18 is the final odd caller-save mapping, so restore ends in ldr. */
+    assert(code_has_word(code, count, UINT32_C(0xa9400000),
+        UINT32_C(0xffc00000)));
+    assert(code_has_word(code, count, UINT32_C(0xf9400000),
+        UINT32_C(0xffc00000)));
+
+    /* A source-word or target mismatch suppresses the probe entirely. */
+    out = (u_char *)code;
+    emit_dd_cmd_watch_call_probe(&probe_regs,
+        DD_CMD_WATCH_TARGET_CALL_PC,
+        DD_CMD_WATCH_TARGET_CALL_OPCODE ^ 1,
+        DD_CMD_WATCH_TARGET_DELAY_OPCODE,
+        DD_CMD_WATCH_TARGET_ENTRY_PC,
+        UINT32_C(0x1234));
+    assert(out == (u_char *)code);
+
+    memset(code, 0, sizeof(code));
+    out = (u_char *)code;
+    emit_dd_cmd_watch_entry_probe(&probe_regs,
+        DD_CMD_WATCH_TARGET_ENTRY_PC, UINT32_C(0x0c00a128),
+        UINT32_C(0x1235));
+    count = (unsigned int)(((u_char *)out - (u_char *)code)
+        / sizeof(code[0]));
+    assert(count > 18);
+    assert(code_has_word(code, count,
+        UINT32_C(0x52800000) | DD_CMD_WATCH_PROBE_ENTRY << 5 | ARG1_REG,
+        UINT32_C(0xffffffff)));
+}
+
 static void test_link_delay_slot_ra_fail_closed(void)
 {
     memset(itype, 0, sizeof(itype));
@@ -355,6 +490,21 @@ static void test_pagespan_context_route_gate(void)
     dd_dynarec_pagespan_compile = 1;
     assert(!dd_dynarec_watch_route_allowed());
     dd_dynarec_pagespan_compile = 0;
+}
+
+static void test_entry_probe_internal_gap(void)
+{
+    assert(dd_dynarec_watch_entry_source_eligible(0,
+        DD_CMD_WATCH_TARGET_ENTRY_PC));
+    /*
+     * A matching callee address inside an existing block is deliberately
+     * not treated as an entry.  The post-delay callsite probe is the primary
+     * executed-path observation; widening block generation is out of scope.
+     */
+    assert(!dd_dynarec_watch_entry_source_eligible(1,
+        DD_CMD_WATCH_TARGET_ENTRY_PC));
+    assert(!dd_dynarec_watch_entry_source_eligible(0,
+        DD_CMD_WATCH_TARGET_ENTRY_PC + 4));
 }
 
 static void reset_observer_budgets(void)
@@ -602,8 +752,10 @@ int main(void)
     test_external_store_regs_writeback();
     test_context_codegen_uses_live_mappings();
     test_context_codegen_machine_words();
+    test_compiled_call_probe_machine_words();
     test_link_delay_slot_ra_fail_closed();
     test_pagespan_context_route_gate();
+    test_entry_probe_internal_gap();
     test_disabled_gate();
     test_fault_observer();
     test_unavailable_fault_instruction();

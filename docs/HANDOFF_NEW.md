@@ -4282,3 +4282,59 @@ NDK 26.1.10909125 ARM64 syntax checking is required for the production route
 and writer stub. TLB-routed stores, unaligned/partial stores, storelr
 fragments, DMA and page-span delay-slot entry blocks remain explicit gaps. No
 APK, workflow run, device capture, commit or push is part of this package.
+
+## P08e: executed load/clear decision observation — pending review
+
+This package adds the smallest specialized diagnostic for the unresolved
+caller decision, on top of the P08d live writer context. It is explicitly
+gated by the existing per-game DD policy and startup diagnostics callback,
+uses an independent eight-record bound, and is observation-only. It does not
+change the caller branch, JAL target, guest memory handlers, register
+writeback, clear behavior, timing, or TLB paths.
+
+### Exact compiled call and callee entry
+
+The ARM64 emitter recognizes only compiled `jal 0x80747240` at
+`0x800aea0c` (`0x0c1d1c90`) with the compiled delay word
+`or a1,s0,zero` (`0x02002825`). The call probe is emitted after the delay
+slot and after JAL link materialization, so it reports
+`phase=after-delay` and labels `a1` as
+`a1_provenance=compiled-delay-or-a1-s0`; it never claims pre-delay `a1` is
+the clear argument. It records compiled call PC/opcode/delay/target and
+compile generation rather than rereading current RDRAM for code provenance.
+
+The call probe requires coherent live allocator values for `a0`, `a1`, `t8`,
+`t1`, `ra`, and `sp`. Existing mapped-value/spill extraction is reused:
+selected mappings are materialized through the diagnostic hot-state slot,
+reloaded for the observer, and an explicitly unmaterialized or
+dirty-but-unmapped half rejects the probe. The wrapper validates `t8` as
+aligned unmapped KSEG0/KSEG1 and reads
+one source-header word through the bounded direct-RDRAM reader. The emitted
+record includes the validated header address/value and live `comparator_t1`.
+
+Separately, a probe is emitted at the compiled block entry
+`0x80747240`, recording its compiled first instruction word and requiring
+the retained link value `ra & 0xffffffff == 0x800aea14`. It requires
+coherent entry `a0/a1/ra/sp` and is the only record labeled
+`original_arguments=callee-entry`. The call-site metadata is carried into
+this record as fixed compiled provenance. A matching target address found
+internally in an already compiled block is an explicit fail-closed entry
+coverage gap; the post-delay callsite probe is the primary executed-path
+observation and block generation is not broadened. Page-span blocks and
+link-delay uncertainty fail closed; no branch is redirected or spoofed.
+
+### Tests and limits
+
+`dd_cmd_watch_test.c` now checks exact host call/entry records, source-word
+rejection, after-delay labeling, expected-return-RA rejection, validated-KSEG
+and invalid-header behavior, the bounded budget/reset contract, and the
+production entry-word fixture (`0x0c00a128` from the corrected P07 RDRAM
+window). The dynarec fixture explicitly checks snapshot stores relative to
+the hot-state snapshot base and save/restore words.
+`dd-startup-dynarec-observer-test.c` invokes the actual production ARM64
+probe emitters and checks generated hot-state field-store words plus
+exact-word suppression. ARM64 syntax checking uses NDK
+26.1.10909125. TLB, page-span, unaligned and DMA paths remain uncovered by
+design; a missing live t8/t1 or failed source-header bounds check produces no
+executed-call claim. This package has no APK/build/device result, commit or
+push; independent review remains pending.

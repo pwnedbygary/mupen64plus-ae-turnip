@@ -14,6 +14,76 @@
 #define DD_CMD_WATCH_RECENT_CAPACITY 32u
 #define DD_CMD_WATCH_TRACE_BUDGET 128u
 #define DD_CMD_WATCH_CONTEXT_BUDGET 16u
+#define DD_CMD_WATCH_PROBE_BUDGET 8u
+
+/*
+ * P08e targets one compiled ARM64 caller/callee pair.  These constants are
+ * evidence filters, not a guest branch selector.  A probe is emitted only
+ * for the exact compiled JAL and its delay word, and the recorder checks them
+ * again before accepting a record.
+ */
+#define DD_CMD_WATCH_TARGET_CALL_PC UINT32_C(0x800aea0c)
+#define DD_CMD_WATCH_TARGET_CALL_OPCODE UINT32_C(0x0c1d1c90)
+#define DD_CMD_WATCH_TARGET_DELAY_OPCODE UINT32_C(0x02002825)
+#define DD_CMD_WATCH_TARGET_ENTRY_PC UINT32_C(0x80747240)
+#define DD_CMD_WATCH_TARGET_RETURN_PC UINT32_C(0x800aea14)
+
+enum dd_cmd_watch_probe_kind
+{
+    DD_CMD_WATCH_PROBE_CALL = 1u,
+    DD_CMD_WATCH_PROBE_ENTRY = 2u
+};
+
+enum dd_cmd_watch_probe_flags
+{
+    DD_CMD_WATCH_PROBE_AFTER_DELAY = 1u << 0,
+    DD_CMD_WATCH_PROBE_VALID_A0 = 1u << 1,
+    DD_CMD_WATCH_PROBE_VALID_A1 = 1u << 2,
+    DD_CMD_WATCH_PROBE_VALID_T8 = 1u << 3,
+    DD_CMD_WATCH_PROBE_VALID_T1 = 1u << 4,
+    DD_CMD_WATCH_PROBE_VALID_RA = 1u << 5,
+    DD_CMD_WATCH_PROBE_VALID_SP = 1u << 6
+};
+
+#define DD_CMD_WATCH_PROBE_CALL_VALID \
+    (DD_CMD_WATCH_PROBE_VALID_A0 \
+     | DD_CMD_WATCH_PROBE_VALID_A1 \
+     | DD_CMD_WATCH_PROBE_VALID_T8 \
+     | DD_CMD_WATCH_PROBE_VALID_T1 \
+     | DD_CMD_WATCH_PROBE_VALID_RA \
+     | DD_CMD_WATCH_PROBE_VALID_SP)
+
+#define DD_CMD_WATCH_PROBE_ENTRY_VALID \
+    (DD_CMD_WATCH_PROBE_VALID_A0 \
+     | DD_CMD_WATCH_PROBE_VALID_A1 \
+     | DD_CMD_WATCH_PROBE_VALID_RA \
+     | DD_CMD_WATCH_PROBE_VALID_SP)
+
+/*
+ * This is written only to the diagnostic hot-state slot immediately before
+ * the observational C call.  It is deliberately a compiled-code record:
+ * the recorder never reconstructs its opcode/target fields from current
+ * RDRAM.
+ */
+struct dd_cmd_watch_probe_snapshot
+{
+    uint32_t call_pc;
+    uint32_t call_opcode;
+    uint32_t delay_opcode;
+    uint32_t target;
+    uint32_t entry_pc;
+    uint32_t entry_opcode;
+    uint32_t kind;
+    uint32_t flags;
+    uint32_t generation;
+    uint32_t reserved;
+    uint64_t a0;
+    uint64_t a1;
+    uint64_t t8;
+    uint64_t t1;
+    uint64_t ra;
+    uint64_t sp;
+};
 
 /*
  * The route stub passes the delay-slot bit and a validity mask in one
@@ -115,6 +185,17 @@ void dd_cmd_watch_capture_context(uint32_t address,
                                   uint64_t a0,
                                   uint64_t a1,
                                   uint64_t a3);
+
+/*
+ * Consume a materialized compiled-call/entry snapshot.  For a call probe,
+ * `source_header_valid` and `source_header_value` are produced by a wrapper
+ * that has first checked t8 through dd_fault_guest_read_u32().  Invalid or
+ * non-KSEG source addresses are rejected; no guest memory handler is used.
+ */
+void dd_cmd_watch_capture_probe(
+    const struct dd_cmd_watch_probe_snapshot *snapshot,
+    int source_header_valid,
+    uint32_t source_header_value);
 
 /*
  * Append one successful aligned write.  The caller supplies values read

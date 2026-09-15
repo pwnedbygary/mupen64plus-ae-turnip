@@ -62,6 +62,37 @@ void recomp_dbg_cleanup(void);
 void recomp_dbg_block(int addr);
 #endif
 
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+#ifndef DD_CMD_WATCH_CODEGEN_TEST
+/*
+ * The generated probe passes a pointer to a diagnostic-only hot-state slot.
+ * Keep the direct RDRAM read here, beside the existing validated guest
+ * readers, rather than teaching the recorder to interpret host state.  The
+ * callback/gate check precedes the read so an old compiled block cannot read
+ * memory after diagnostics or the per-game DD policy is disabled.
+ */
+static void dd_dynarec_capture_probe(
+    struct dd_cmd_watch_probe_snapshot *snapshot)
+{
+  void *context = NULL;
+  uint32_t source_header_value = 0;
+  int source_header_valid = 0;
+
+  if (snapshot == NULL
+      || !DdStartupDiagnosticsEnabled()
+      || !DdRuntimePolicyGet()
+      || DdStartupDiagnosticsGetCallback(&context) == NULL)
+    return;
+  if (snapshot->kind == DD_CMD_WATCH_PROBE_CALL)
+    source_header_valid = dd_fault_guest_read_u32(
+        g_dev.rdram.dram, g_dev.rdram.dram_size,
+        (uint32_t)snapshot->t8, &source_header_value);
+  dd_cmd_watch_capture_probe(snapshot, source_header_valid,
+      source_header_value);
+}
+#endif
+#endif
+
 #if NEW_DYNAREC == NEW_DYNAREC_X86
 #include "x86/assem_x86.h"
 #elif  NEW_DYNAREC == NEW_DYNAREC_X64
@@ -86,6 +117,18 @@ static void emit_dd_cmd_watch_context(int i,
                                       u_int reglist,
                                       int delay_slot,
                                       int link_delay_slot);
+static void emit_dd_cmd_watch_call_probe(
+    struct regstat *i_regs,
+    uint32_t call_pc,
+    uint32_t call_opcode,
+    uint32_t delay_opcode,
+    uint32_t target,
+    uint32_t generation);
+static void emit_dd_cmd_watch_entry_probe(
+    struct regstat *i_regs,
+    uint32_t entry_pc,
+    uint32_t entry_opcode,
+    uint32_t generation);
 #endif
 
 /* debug */
@@ -5502,6 +5545,19 @@ static int dd_dynarec_watch_route_allowed(void)
       && DdStartupDiagnosticsEnabled()
       && DdRuntimePolicyGet();
 }
+
+/*
+ * The entry observation is intentionally narrower than the callsite probe:
+ * only a block entry can establish the selected callee's first instruction.
+ * A matching target found at an internal instruction is a documented
+ * fail-closed coverage gap, not a reason to broaden block generation.
+ */
+static int dd_dynarec_watch_entry_source_eligible(int i,
+                                                  uint32_t block_start)
+{
+  return i == 0
+      && block_start == DD_CMD_WATCH_TARGET_ENTRY_PC;
+}
 #endif
 
 static void do_writestub(int n)
@@ -7688,6 +7744,21 @@ static void ujump_assemble(int i,struct regstat *i_regs)
       }
     }
   }
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  /*
+   * The delay slot has already executed in the generated sequence above,
+   * and the JAL link has now been materialized.  Capturing here avoids the
+   * invalid pre-delay interpretation of a1 for the targeted `or a1,s0,zero`
+   * slot.  The eventual jump/linker path is left untouched.
+   */
+  if(start + i * 4 == DD_CMD_WATCH_TARGET_CALL_PC
+      && ba[i] == DD_CMD_WATCH_TARGET_ENTRY_PC
+      && rt1[i] == 31
+      && dd_dynarec_watch_route_allowed())
+    emit_dd_cmd_watch_call_probe(&branch_regs[i],
+        start + i * 4, source[i], source[i + 1], ba[i],
+        dd_dynarec_compile_generation);
+#endif
   int cc,adj;
   cc=get_reg(branch_regs[i].regmap,CCREG);
   assert(cc==HOST_CCREG);
@@ -12156,6 +12227,18 @@ int new_recompile_block(int addr)
       load_regs(regs[i].regmap_entry,regs[i].regmap,regs[i].was32,rs1[i],rs2[i]);
       address_generation(i,&regs[i],regs[i].regmap_entry);
       load_consts(regmap_pre[i],regs[i].regmap,regs[i].was32,i);
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+      /*
+       * This is an entry observation, not a callee redirect.  It is emitted
+       * only for a non-page-span block whose compiled start is the selected
+       * zero-fill routine; the recorder still requires the link value from
+       * the independent compiled-call probe.
+       */
+      if(dd_dynarec_watch_entry_source_eligible(i, start)
+          && dd_dynarec_watch_route_allowed())
+        emit_dd_cmd_watch_entry_probe(&regs[i], start, source[i],
+            dd_dynarec_compile_generation);
+#endif
       if(itype[i]==RJUMP||itype[i]==UJUMP||itype[i]==CJUMP||itype[i]==SJUMP||itype[i]==FJUMP)
       {
         // Load the delay slot registers if necessary

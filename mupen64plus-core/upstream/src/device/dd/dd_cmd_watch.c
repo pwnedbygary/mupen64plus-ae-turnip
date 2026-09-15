@@ -48,6 +48,7 @@ struct dd_cmd_watch_slot
 static struct dd_cmd_watch_slot slots[DD_CMD_WATCH_BUFFER_COUNT];
 static unsigned int trace_remaining = DD_CMD_WATCH_TRACE_BUDGET;
 static unsigned int context_remaining = DD_CMD_WATCH_CONTEXT_BUDGET;
+static unsigned int probe_remaining = DD_CMD_WATCH_PROBE_BUDGET;
 static int route_pending;
 static struct dd_cmd_watch_context_record pending_context;
 static unsigned int coverage =
@@ -141,6 +142,7 @@ static void dd_cmd_watch_close(void)
         dd_cmd_watch_clear_slot(&slots[i]);
     trace_remaining = DD_CMD_WATCH_TRACE_BUDGET;
     context_remaining = DD_CMD_WATCH_CONTEXT_BUDGET;
+    probe_remaining = DD_CMD_WATCH_PROBE_BUDGET;
     route_pending = 0;
     memset(&pending_context, 0, sizeof(pending_context));
     dd_cmd_watch_clear_routes();
@@ -230,6 +232,35 @@ static void dd_cmd_watch_emit(const char *message)
         return;
     --trace_remaining;
     (*callback)(context, M64MSG_INFO, message);
+}
+
+static void dd_cmd_watch_emit_probe(const char *message)
+{
+    void *context = NULL;
+    ptr_DdStartupDiagnosticsCallback callback;
+
+    if (probe_remaining == 0 || message == NULL)
+        return;
+    callback = DdStartupDiagnosticsGetCallback(&context);
+    if (callback == NULL || !DdRuntimePolicyGet())
+        return;
+    --probe_remaining;
+    (*callback)(context, M64MSG_INFO, message);
+}
+
+static int dd_cmd_watch_probe_kseg_address(uint64_t address)
+{
+    uint32_t guest = (uint32_t)address;
+    uint32_t segment = guest & UINT32_C(0xe0000000);
+
+    /*
+     * The dynarec wrapper performs the actual bounded RDRAM read.  Keep this
+     * duplicate address check in the recorder so a host fixture cannot turn
+     * an arbitrary value into a claimed source header.
+     */
+    return (guest & UINT32_C(3)) == 0
+        && (segment == DD_CMD_WATCH_KSEG0
+            || segment == DD_CMD_WATCH_KSEG1);
 }
 
 static int dd_cmd_watch_context_safe_for_range(
@@ -364,6 +395,7 @@ void dd_cmd_watch_reset(void)
         dd_cmd_watch_clear_slot(&slots[i]);
     trace_remaining = DD_CMD_WATCH_TRACE_BUDGET;
     context_remaining = DD_CMD_WATCH_CONTEXT_BUDGET;
+    probe_remaining = DD_CMD_WATCH_PROBE_BUDGET;
     route_pending = 0;
     memset(&pending_context, 0, sizeof(pending_context));
     dd_cmd_watch_clear_routes();
@@ -527,6 +559,96 @@ void dd_cmd_watch_capture_context(uint32_t address,
     pending_context.a0 = a0;
     pending_context.a1 = a1;
     pending_context.a3 = a3;
+}
+
+void dd_cmd_watch_capture_probe(
+    const struct dd_cmd_watch_probe_snapshot *snapshot,
+    int source_header_valid,
+    uint32_t source_header_value)
+{
+    char message[1024];
+    uint32_t flags;
+
+    if (snapshot == NULL || !dd_cmd_watch_diagnostics_open())
+        return;
+
+    flags = snapshot->flags;
+    if (snapshot->kind == DD_CMD_WATCH_PROBE_CALL)
+    {
+        /*
+         * This is the post-delay observation.  In particular, a1 is not
+         * labeled as the pre-delay value: the compiled delay word is checked
+         * as `or a1,s0,zero` and the emitter places this call after the link
+         * value has also been materialized.
+         */
+        if (snapshot->call_pc != DD_CMD_WATCH_TARGET_CALL_PC
+                || snapshot->call_opcode != DD_CMD_WATCH_TARGET_CALL_OPCODE
+                || snapshot->delay_opcode != DD_CMD_WATCH_TARGET_DELAY_OPCODE
+                || snapshot->target != DD_CMD_WATCH_TARGET_ENTRY_PC
+                || (flags & (DD_CMD_WATCH_PROBE_CALL_VALID
+                    | DD_CMD_WATCH_PROBE_AFTER_DELAY))
+                    != (DD_CMD_WATCH_PROBE_CALL_VALID
+                        | DD_CMD_WATCH_PROBE_AFTER_DELAY)
+                || !source_header_valid
+                || (uint32_t)snapshot->ra != DD_CMD_WATCH_TARGET_RETURN_PC
+                || !dd_cmd_watch_probe_kseg_address(snapshot->t8))
+            return;
+
+        (void)snprintf(message, sizeof(message),
+            "DDSTART15 load_clear_call source=ARM64_COMPILED_JAL"
+            " call_pc=0x%08" PRIx32
+            " call_opcode=0x%08" PRIx32
+            " delay_opcode=0x%08" PRIx32
+            " target=0x%08" PRIx32
+            " phase=after-delay"
+            " generation=%" PRIu32
+            " a0=0x%016" PRIx64 " a1=0x%016" PRIx64
+            " source_header_address=0x%08" PRIx32
+            " source_header_value=0x%08" PRIx32
+            " comparator_t1=0x%016" PRIx64
+            " ra=0x%016" PRIx64 " sp=0x%016" PRIx64
+            " a1_provenance=compiled-delay-or-a1-s0"
+            " header_provenance=validated-kseg-t8"
+            " compiled_provenance=source-word-target-not-rdram",
+            snapshot->call_pc, snapshot->call_opcode,
+            snapshot->delay_opcode, snapshot->target, snapshot->generation,
+            snapshot->a0, snapshot->a1, (uint32_t)snapshot->t8,
+            source_header_value, snapshot->t1, snapshot->ra, snapshot->sp);
+        dd_cmd_watch_emit_probe(message);
+        return;
+    }
+
+    if (snapshot->kind != DD_CMD_WATCH_PROBE_ENTRY
+            || snapshot->entry_pc != DD_CMD_WATCH_TARGET_ENTRY_PC
+            || snapshot->call_pc != DD_CMD_WATCH_TARGET_CALL_PC
+            || snapshot->call_opcode != DD_CMD_WATCH_TARGET_CALL_OPCODE
+            || snapshot->delay_opcode != DD_CMD_WATCH_TARGET_DELAY_OPCODE
+            || snapshot->target != DD_CMD_WATCH_TARGET_ENTRY_PC
+            || (flags & DD_CMD_WATCH_PROBE_ENTRY_VALID)
+                != DD_CMD_WATCH_PROBE_ENTRY_VALID
+            || (uint32_t)snapshot->ra != DD_CMD_WATCH_TARGET_RETURN_PC)
+        return;
+
+    (void)snprintf(message, sizeof(message),
+        "DDSTART15 load_clear_entry source=ARM64_COMPILED_ENTRY"
+        " entry_pc=0x%08" PRIx32
+        " entry_opcode=0x%08" PRIx32
+        " expected_return_ra=0x%08" PRIx32
+        " generation=%" PRIu32
+        " a0=0x%016" PRIx64 " a1=0x%016" PRIx64
+        " ra=0x%016" PRIx64 " sp=0x%016" PRIx64
+        " call_pc=0x%08" PRIx32
+        " call_opcode=0x%08" PRIx32
+        " delay_opcode=0x%08" PRIx32
+        " target=0x%08" PRIx32
+        " original_arguments=callee-entry"
+        " compiled_provenance=entry-word-call-site-target-not-rdram",
+        snapshot->entry_pc, snapshot->entry_opcode,
+        DD_CMD_WATCH_TARGET_RETURN_PC, snapshot->generation,
+        snapshot->a0, snapshot->a1, snapshot->ra, snapshot->sp,
+        snapshot->call_pc, snapshot->call_opcode,
+        snapshot->delay_opcode, snapshot->target);
+    dd_cmd_watch_emit_probe(message);
 }
 
 int dd_cmd_watch_in_range(uint32_t address, uint32_t width)

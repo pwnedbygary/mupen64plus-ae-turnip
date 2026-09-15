@@ -17,6 +17,7 @@ echo "DD startup dynarec observer tests passed"
 echo "DD startup fault-layout ABI tests passed"
 "${CXX:-c++}" -std=c++14 -Wall -Wextra -Werror -I mupen64plus-rsp-parallel/upstream \
     tools/tests/rsp-dd-provenance-test.cpp \
-    mupen64plus-rsp-parallel/upstream/rsp_diag.cpp -o "$rsp_diag_binary"
+    mupen64plus-rsp-parallel/upstream/rsp_diag.cpp \
+    mupen64plus-rsp-parallel/upstream/dd_policy.cpp -o "$rsp_diag_binary"
 "$rsp_diag_binary"
 echo "DD startup RSP provenance tests passed"

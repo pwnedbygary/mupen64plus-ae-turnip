@@ -23,6 +23,8 @@ static int callback_saw_context_first;
 static int callback_saw_context_latest;
 static int callback_saw_resize_latest;
 static int callback_saw_context_provenance;
+static int callback_saw_compiled_call;
+static int callback_saw_compiled_entry;
 
 static void test_callback(void *context, int level, const char *message);
 
@@ -76,6 +78,20 @@ static void test_callback(void *context, int level, const char *message)
             != NULL
             && strstr(message, "entry_arguments=not-inferred") != NULL)
         callback_saw_context_provenance = 1;
+    if (strstr(message, "DDSTART15 load_clear_call") != NULL
+            && strstr(message, "call_pc=0x800aea0c") != NULL
+            && strstr(message, "call_opcode=0x0c1d1c90") != NULL
+            && strstr(message, "delay_opcode=0x02002825") != NULL
+            && strstr(message, "phase=after-delay") != NULL
+            && strstr(message, "source_header_value=0x4d494f30") != NULL
+            && strstr(message, "a1_provenance=compiled-delay-or-a1-s0") != NULL)
+        callback_saw_compiled_call = 1;
+    if (strstr(message, "DDSTART15 load_clear_entry") != NULL
+            && strstr(message, "entry_pc=0x80747240") != NULL
+            && strstr(message, "entry_opcode=0x0c00a128") != NULL
+            && strstr(message, "ra=0xffffffff800aea14") != NULL
+            && strstr(message, "original_arguments=callee-entry") != NULL)
+        callback_saw_compiled_entry = 1;
 }
 
 static void task_words(uint32_t *words, uint32_t base, uint32_t size)
@@ -98,6 +114,7 @@ static void capture_context(uint32_t store_pc, uint32_t flags,
 int main(void)
 {
     uint32_t words[16];
+    struct dd_cmd_watch_probe_snapshot probe;
     unsigned int i;
 
     diagnostics_enabled = 1;
@@ -211,5 +228,106 @@ int main(void)
     task_words(words, UINT32_C(0x00411910), UINT32_C(0x1a4));
     dd_cmd_watch_task_entry(words, 52, 1, 0);
     assert(callback_saw_resize_latest);
+
+    /*
+     * P08e host records require the exact compiled JAL/delay provenance,
+     * coherent post-delay values, and a validated KSEG source header.  The
+     * recorder must reject a source-word mutation rather than turning a
+     * current-memory guess into an executed-call claim.
+     */
+    callback_saw_compiled_call = 0;
+    callback_saw_compiled_entry = 0;
+    dd_cmd_watch_reset();
+    memset(&probe, 0, sizeof(probe));
+    probe.call_pc = DD_CMD_WATCH_TARGET_CALL_PC;
+    probe.call_opcode = DD_CMD_WATCH_TARGET_CALL_OPCODE;
+    probe.delay_opcode = DD_CMD_WATCH_TARGET_DELAY_OPCODE;
+    probe.target = DD_CMD_WATCH_TARGET_ENTRY_PC;
+    probe.kind = DD_CMD_WATCH_PROBE_CALL;
+    probe.flags = DD_CMD_WATCH_PROBE_AFTER_DELAY
+        | DD_CMD_WATCH_PROBE_CALL_VALID;
+    probe.generation = 71;
+    probe.a0 = UINT64_C(0x0000000080411920);
+    probe.a1 = UINT64_C(0x0000000080411ac0);
+    probe.t8 = UINT64_C(0xffffffff80002000);
+    probe.t1 = UINT64_C(0x000000004d494f30);
+    probe.ra = UINT64_C(0xffffffff800aea14);
+    probe.sp = UINT64_C(0xffffffff80796c10);
+    dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+    assert(callback_saw_compiled_call);
+
+    {
+        unsigned int lines_before = callback_lines;
+        probe.delay_opcode ^= 1;
+        dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+        assert(callback_lines == lines_before);
+        probe.delay_opcode = DD_CMD_WATCH_TARGET_DELAY_OPCODE;
+    }
+
+    {
+        unsigned int lines_before = callback_lines;
+        probe.ra ^= 1;
+        dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+        assert(callback_lines == lines_before);
+        probe.ra = UINT64_C(0xffffffff800aea14);
+    }
+
+    {
+        unsigned int lines_before = callback_lines;
+        dd_cmd_watch_capture_probe(&probe, 0, 0);
+        assert(callback_lines == lines_before);
+    }
+
+    {
+        unsigned int lines_before = callback_lines;
+        probe.t8 = UINT64_C(0x0000000012345000);
+        dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+        assert(callback_lines == lines_before);
+        probe.t8 = UINT64_C(0xffffffff80002000);
+    }
+
+    {
+        unsigned int lines_before = callback_lines;
+        diagnostics_enabled = 0;
+        dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+        assert(callback_lines == lines_before);
+        diagnostics_enabled = 1;
+    }
+
+    {
+        unsigned int lines_before;
+        unsigned int n;
+
+        dd_cmd_watch_reset();
+        lines_before = callback_lines;
+        for (n = 0; n < DD_CMD_WATCH_PROBE_BUDGET + 1; ++n)
+            dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+        assert(callback_lines == lines_before + DD_CMD_WATCH_PROBE_BUDGET);
+
+        /* Reset starts a fresh bounded session; it does not latch exhaustion. */
+        dd_cmd_watch_reset();
+        lines_before = callback_lines;
+        dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+        assert(callback_lines == lines_before + 1);
+    }
+
+    memset(&probe, 0, sizeof(probe));
+    probe.call_pc = DD_CMD_WATCH_TARGET_CALL_PC;
+    probe.call_opcode = DD_CMD_WATCH_TARGET_CALL_OPCODE;
+    probe.delay_opcode = DD_CMD_WATCH_TARGET_DELAY_OPCODE;
+    probe.target = DD_CMD_WATCH_TARGET_ENTRY_PC;
+    probe.entry_pc = DD_CMD_WATCH_TARGET_ENTRY_PC;
+    /* First word from the corrected P07 production RDRAM window. */
+    probe.entry_opcode = UINT32_C(0x0c00a128);
+    probe.kind = DD_CMD_WATCH_PROBE_ENTRY;
+    probe.flags = DD_CMD_WATCH_PROBE_ENTRY_VALID;
+    probe.generation = 72;
+    probe.a0 = UINT64_C(0x0000000080411920);
+    probe.a1 = UINT64_C(0x0000000080411ac0);
+    probe.ra = UINT64_C(0xffffffff800aea14);
+    probe.sp = UINT64_C(0xffffffff80796c10);
+    dd_cmd_watch_capture_probe(&probe, 0, 0);
+    assert(callback_saw_compiled_entry);
+
     return 0;
 }

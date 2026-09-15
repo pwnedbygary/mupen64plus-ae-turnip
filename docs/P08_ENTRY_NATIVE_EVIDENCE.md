@@ -149,6 +149,38 @@ and later reuse must be established before suppressing or modifying it.
 
 ### Static zero-fill routine cross-check
 
+### Native caller-context follow-up
+
+The private `p08-capture-20260915-153756.zip` completed and all 66 manifest
+payloads validated. First/latest successful zeroing contexts agree on
+sign-extended guest RA `0x800aea14`, SP `0x80796c10` and loop A3
+`0x8058b540`. First: store PC `0x80747288`, address `0x80411910`,
+A0 `0x80411920`. Latest: PC `0x80747284`, address `0x80411aac`,
+A0 `0x80411ac0`. These address differences match the earlier static
+store offsets -16 and -20. A1 is zero in both contexts.
+
+A1 zero is compatible with an active bulk clear: the static routine
+subtracts the rounded 32-byte bulk length from A1 before entering the
+bulk loop. At these stores it is a remainder, not the original length.
+Do not reject coherent store context on that basis or infer zero-length
+entry arguments.
+
+RA minus eight yields candidate link site `0x800aea0c`. Both corrected
+older windows contain `jal 0x80747240` there, with `or a1,s0,zero`
+in the delay slot. The preceding static code loads A0 from `[sp+0x3c]`
+at `0x800ae9f0`, compares a loaded word against `0x4d494f30` (MIO0),
+and branches to the clear call on mismatch. On the other path it calls
+`0x8072e3b0`. Earlier A0 assignments before an intervening call are not
+the clear call's immediate argument setup.
+
+This is consistent with the live retained return address and a resource
+loading/clearing branch, but it does not prove the fresh caller opcodes,
+header value, branch decision, original clear base/length, or the purpose
+of that branch. The fresh trace still has no executed call-site record.
+Next evidence should capture the call/entry arguments and compared header
+from the current execution, preserving the distinction from archived
+static instruction bytes.
+
 The earlier P07 archive contains full 8 MiB windows. In its `1202` and
 `1427` windows, guest `0x80747278..0x80747298` contains eight
 `sw zero,offset(a0)` instructions with offsets -32 through -4, with the
@@ -238,3 +270,50 @@ nonzero-to-zero qualification, same-base resizing, mapped-value precedence,
 32-bit extension, link-delay-slot `ra` fail-closed behavior, generated ARM64
 argument words and exact PC provenance, plus page-span route suppression
 without a context stub.
+
+### Executed load/clear decision probe
+
+The next diagnostic is implemented as a separate, bounded `DDSTART15` probe
+for the explicit per-game DD diagnostics path. It does not change the caller
+branch, the JAL target, guest register writeback, memory handlers, or the
+clear routine. ARM64 dynarec emission recognizes only the compiled
+instruction words `jal 0x80747240` at `0x800aea0c` (`0x0c1d1c90`) followed by
+`or a1,s0,zero` (`0x02002825`). The generated call is placed after the
+architectural delay-slot sequence and after the JAL link has been
+materialized. Consequently its `a1` is labeled
+`a1_provenance=compiled-delay-or-a1-s0`; no pre-delay `a1` is presented as
+the clear argument.
+
+The call record carries the exact compiled call PC, opcode, delay opcode,
+target and compile generation. It requires coherent live allocator values
+for `a0`, `a1`, `t8`, `t1`, `ra` and `sp`. Selected mappings are spilled to
+the diagnostic hot-state slot only when needed, then reloaded before the
+observational C call; an explicitly unmaterialized or dirty-but-unmapped
+half rejects the probe.
+The wrapper validates `t8` as an aligned unmapped KSEG0/KSEG1 address and
+reads exactly one word through the existing bounded direct-RDRAM reader.
+The record therefore reports both `source_header_address` and the
+validated `source_header_value`, plus the live `comparator_t1`. A missing
+mapping, non-KSEG address, failed bounds check, disabled callback, disabled
+DD policy, or source-word mismatch emits no executed-call claim.
+
+An independent entry probe is emitted only for a non-page-span compiled block
+starting at `0x80747240`. It records that block's compiled first word and
+requires `ra & 0xffffffff == 0x800aea14`, in addition to coherent entry
+`a0/a1/ra/sp`. Its call-site opcode/delay/target fields are fixed compiled
+provenance, so a current-RDRAM snapshot cannot manufacture a match. The
+entry record is the only output labeled `original_arguments=callee-entry`;
+the call record remains an after-delay observation. A matching
+`0x80747240` address found internally in an already compiled block is an
+explicit fail-closed entry-coverage gap; the post-delay callsite probe is the
+primary executed-path observation and block generation is not broadened.
+Page-span blocks and link-delay-slot uncertainty fail closed.
+
+The probe has an independent eight-record session budget and remains bounded
+by the existing diagnostics and runtime DD policy gates. Host coverage adds
+production emitter machine-word fixtures for exact-word rejection and
+hot-state field stores, plus recorder records for the validated call and
+callee-entry forms. ARM64 syntax verification remains the NDK
+26.1.10909125 check. This is a specialized address diagnostic, not a
+runtime fix or a claim that the compared MIO0/header branch is understood;
+device evidence is still required.

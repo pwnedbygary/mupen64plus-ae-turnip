@@ -3104,6 +3104,10 @@ static int emit_dd_cmd_watch_context_reg_valid(
   low = get_reg((signed char *)i_regs->regmap, reg);
   high = get_reg((signed char *)i_regs->regmap, reg | 64);
   is32 = (int)((i_regs->is32 >> reg) & 1);
+  if (low < 0 && ((i_regs->dirty >> reg) & 1))
+    return 0;
+  if (!is32 && high < 0 && ((i_regs->dirty >> reg) & 1))
+    return 0;
   if (low < 0 && ((i_regs->u >> reg) & 1))
     return 0;
   if (!is32 && high < 0 && ((i_regs->uu >> reg) & 1))
@@ -3282,6 +3286,217 @@ static void emit_dd_cmd_watch_context(int i,
 #ifndef DD_CMD_WATCH_CODEGEN_TEST
   emit_call((intptr_t)dd_cmd_watch_capture_context);
 #endif
+}
+
+static int emit_dd_cmd_watch_probe_reg_valid(
+    const struct regstat *i_regs, int reg)
+{
+  /*
+   * Reuse the allocator's unneeded-half contract, but do not accept a
+   * missing mapped value whose hot-state copy is explicitly unmaterialized.
+   * The latter is the stale-dirty/snapshot case this probe must reject.
+   */
+  return emit_dd_cmd_watch_context_reg_valid(i_regs, reg);
+}
+
+static void emit_dd_cmd_watch_probe_value(
+    const struct regstat *i_regs, int reg, int target)
+{
+  int is32;
+
+  if (reg == 0)
+  {
+    emit_zeroreg64(target);
+    return;
+  }
+  is32 = (int)((i_regs->is32 >> reg) & 1);
+  /*
+   * The selected values were spilled before this routine is called.  Always
+   * reload from the canonical hot state rather than trusting a host mapping
+   * that may be overwritten while the snapshot fields are populated.
+   */
+  emit_loadreg(reg, target);
+  if (is32)
+  {
+    emit_sarimm(target, 31, HOST_TEMPREG);
+    emit_orrshlimm64(HOST_TEMPREG, 32, target);
+  }
+  else
+  {
+    emit_loadreg(reg | 64, HOST_TEMPREG);
+    emit_orrshlimm64(HOST_TEMPREG, 32, target);
+  }
+}
+
+static void emit_dd_cmd_watch_probe_u32(intptr_t address,
+                                        uint32_t value,
+                                        int target)
+{
+  emit_movimm((u_int)value, target);
+  emit_writeword(target, address);
+}
+
+static void emit_dd_cmd_watch_probe_u64(
+    const struct regstat *i_regs,
+    int reg,
+    intptr_t address,
+    int target)
+{
+  emit_dd_cmd_watch_probe_value(i_regs, reg, target);
+  emit_writedword(target, address);
+}
+
+static u_int emit_dd_cmd_watch_probe_reglist(
+    const struct regstat *i_regs)
+{
+  u_int reglist = 0;
+  unsigned int hr;
+
+  for (hr = 0; hr < HOST_REGS; ++hr)
+    if (i_regs->regmap[hr] >= 0)
+      reglist |= 1u << hr;
+  return reglist;
+}
+
+static void emit_dd_cmd_watch_call_probe(
+    struct regstat *i_regs,
+    uint32_t call_pc,
+    uint32_t call_opcode,
+    uint32_t delay_opcode,
+    uint32_t target,
+    uint32_t generation)
+{
+  const intptr_t base =
+      (intptr_t)&g_dev.r4300.new_dynarec_hot_state.dd_cmd_watch_probe;
+  u_int reglist;
+  uint32_t flags;
+  static const int context_regs[] = { 4, 5, 24, 9, 31, 29 };
+  unsigned int i;
+
+  if (call_pc != DD_CMD_WATCH_TARGET_CALL_PC
+      || call_opcode != DD_CMD_WATCH_TARGET_CALL_OPCODE
+      || delay_opcode != DD_CMD_WATCH_TARGET_DELAY_OPCODE
+      || target != DD_CMD_WATCH_TARGET_ENTRY_PC)
+    return;
+  for (i = 0; i < sizeof(context_regs) / sizeof(context_regs[0]); ++i)
+    if (!emit_dd_cmd_watch_probe_reg_valid(i_regs, context_regs[i]))
+      return;
+
+  reglist = emit_dd_cmd_watch_probe_reglist(i_regs);
+  save_regs(reglist);
+  for (i = 0; i < sizeof(context_regs) / sizeof(context_regs[0]); ++i)
+    emit_dd_cmd_watch_context_spill(i_regs, context_regs[i]);
+
+  flags = DD_CMD_WATCH_PROBE_AFTER_DELAY | DD_CMD_WATCH_PROBE_CALL_VALID;
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, call_pc),
+      call_pc, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, call_opcode),
+      call_opcode, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, delay_opcode),
+      delay_opcode, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, target),
+      target, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, entry_pc),
+      0, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, entry_opcode),
+      0, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, kind),
+      DD_CMD_WATCH_PROBE_CALL, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, flags),
+      flags, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, generation),
+      generation, ARG1_REG);
+  emit_dd_cmd_watch_probe_u64(i_regs, 4, base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, a0), ARG1_REG);
+  emit_dd_cmd_watch_probe_u64(i_regs, 5, base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, a1), ARG1_REG);
+  emit_dd_cmd_watch_probe_u64(i_regs, 24, base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, t8), ARG1_REG);
+  emit_dd_cmd_watch_probe_u64(i_regs, 9, base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, t1), ARG1_REG);
+  emit_dd_cmd_watch_probe_u64(i_regs, 31, base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, ra), ARG1_REG);
+  emit_dd_cmd_watch_probe_u64(i_regs, 29, base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, sp), ARG1_REG);
+  emit_movimm(base, ARG1_REG);
+#ifndef DD_CMD_WATCH_CODEGEN_TEST
+  emit_call((intptr_t)dd_dynarec_capture_probe);
+#endif
+  restore_regs(reglist);
+}
+
+static void emit_dd_cmd_watch_entry_probe(
+    struct regstat *i_regs,
+    uint32_t entry_pc,
+    uint32_t entry_opcode,
+    uint32_t generation)
+{
+  const intptr_t base =
+      (intptr_t)&g_dev.r4300.new_dynarec_hot_state.dd_cmd_watch_probe;
+  u_int reglist;
+  unsigned int i;
+  static const int context_regs[] = { 4, 5, 31, 29 };
+
+  if (entry_pc != DD_CMD_WATCH_TARGET_ENTRY_PC)
+    return;
+  for (i = 0; i < sizeof(context_regs) / sizeof(context_regs[0]); ++i)
+    if (!emit_dd_cmd_watch_probe_reg_valid(i_regs, context_regs[i]))
+      return;
+
+  reglist = emit_dd_cmd_watch_probe_reglist(i_regs);
+  save_regs(reglist);
+  for (i = 0; i < sizeof(context_regs) / sizeof(context_regs[0]); ++i)
+    emit_dd_cmd_watch_context_spill(i_regs, context_regs[i]);
+
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, call_pc),
+      DD_CMD_WATCH_TARGET_CALL_PC, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, call_opcode),
+      DD_CMD_WATCH_TARGET_CALL_OPCODE, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, delay_opcode),
+      DD_CMD_WATCH_TARGET_DELAY_OPCODE, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, target),
+      DD_CMD_WATCH_TARGET_ENTRY_PC, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, entry_pc),
+      entry_pc, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, entry_opcode),
+      entry_opcode, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, kind),
+      DD_CMD_WATCH_PROBE_ENTRY, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, flags),
+      DD_CMD_WATCH_PROBE_ENTRY_VALID, ARG1_REG);
+  emit_dd_cmd_watch_probe_u32(base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, generation),
+      generation, ARG1_REG);
+  emit_dd_cmd_watch_probe_u64(i_regs, 4, base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, a0), ARG1_REG);
+  emit_dd_cmd_watch_probe_u64(i_regs, 5, base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, a1), ARG1_REG);
+  emit_dd_cmd_watch_probe_u64(i_regs, 31, base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, ra), ARG1_REG);
+  emit_dd_cmd_watch_probe_u64(i_regs, 29, base
+      + offsetof(struct dd_cmd_watch_probe_snapshot, sp), ARG1_REG);
+  emit_movimm(base, ARG1_REG);
+#ifndef DD_CMD_WATCH_CODEGEN_TEST
+  emit_call((intptr_t)dd_dynarec_capture_probe);
+#endif
+  restore_regs(reglist);
 }
 
 static intptr_t emit_dd_cmd_watch_route_branch_imm(uint32_t address,

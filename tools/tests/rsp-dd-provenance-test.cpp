@@ -1,4 +1,5 @@
 #include "rsp_diag.hpp"
+#include "dd_policy.hpp"
 
 #include <assert.h>
 #include <stdint.h>
@@ -15,7 +16,7 @@ static unsigned entry_count;
 static unsigned exhaustion_count;
 static unsigned bad_messages;
 static int last_level;
-static char last_message[1024];
+static char last_message[4096];
 
 static void capture(void *, int level, const char *message)
 {
@@ -216,6 +217,7 @@ static void test_dma_observation()
 	observation.payload_samples_truncated = true;
 
 	reset_capture();
+RSP::DdRuntimePolicySet(1);
 	RSP::Diagnostics::set_callback(capture, nullptr);
 	assert(RSP::Diagnostics::trace_rsp_entry(
 	    1, 2, 3, 0x40, task_words));
@@ -250,6 +252,7 @@ static void test_dma_observation()
 	assert(dma_lines == 512);
 	assert(exhaustion_count == 1);
 	assert(strstr(last_message, "DDSTART11 RSP dma_read exhaustion") != nullptr);
+RSP::DdRuntimePolicySet(0);
 }
 
 static void test_dma_eligibility()

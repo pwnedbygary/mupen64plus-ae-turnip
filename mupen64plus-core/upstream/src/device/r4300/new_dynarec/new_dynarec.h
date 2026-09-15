@@ -22,6 +22,7 @@
 #ifndef M64P_DEVICE_R4300_NEW_DYNAREC_H
 #define M64P_DEVICE_R4300_NEW_DYNAREC_H
 
+#include "device/dd/dd_cmd_watch.h"
 #include "device/r4300/recomp_types.h" /* for precomp_instr */
 
 #include <stddef.h>
@@ -71,6 +72,7 @@ struct new_dynarec_hot_state
     double* cp1_regs_double[32];
     uint32_t rounding_modes[4];
     int branch_target;
+    struct dd_cmd_watch_probe_snapshot dd_cmd_watch_probe;
     struct precomp_instr* pc;
     struct precomp_instr fake_pc;
     int64_t rs;
