@@ -247,6 +247,78 @@ static void dd_imem_dma_emit_message(const char *message)
         (*callback)(context, M64MSG_INFO, message);
 }
 
+/*
+ * P08c-writer (2/2): the command-buffer state AT SUBMISSION.
+ *
+ * The fetch trace bounds the zeroing to a ~21 ms window between two
+ * consecutive audio entries, and the remaining question is binary: was the
+ * buffer already empty when the guest submitted this task, or was it valid
+ * and then emptied before the microcode fetched it?  This observer answers
+ * exactly that and nothing more: for an audio task under the per-game DD
+ * policy it hashes the command buffer named by the task words (12/13 =
+ * data_ptr/data_size, the corrected P07-C field map) and emits one line per
+ * entry, with the count of non-zero words so "all zero" is directly
+ * readable rather than inferred from a hash constant.
+ *
+ * It observes no stores and changes nothing: no register, no memory, no
+ * scheduling.  Gated on the DD diagnostics callback (the same channel the
+ * DDSTART11 observer uses) AND the per-game DD policy, so a DD-disabled
+ * session emits nothing.
+ *
+ * Coverage limit: this reports the buffer's state when the task is
+ * submitted.  It cannot see the writes that produced that state — the
+ * dynarec's fast path is inlined into generated code — so a store-level
+ * attribution still needs the fast-path instrumentation the work-packages
+ * guide describes.  What it does give is the branch: which side of the
+ * submission the emptiness appears on.
+ */
+void dd_cmd_entry_hash_observe(struct rsp_core* sp)
+{
+    const uint32_t *task_words;
+    struct rdram *rdram;
+    uint32_t data_ptr;
+    uint32_t data_size;
+    uint32_t words;
+    uint32_t i;
+    uint32_t nonzero_words = 0;
+    uint64_t hash = 0xcbf29ce484222325ull; /* FNV-1, word-wise */
+    char message[192];
+
+    if (!DdStartupDiagnosticsEnabled() || !DdRuntimePolicyGet())
+        return;
+    if (sp == NULL || sp->mi == NULL || sp->mi->r4300 == NULL
+        || sp->mi->r4300->rdram == NULL || sp->mi->r4300->rdram->dram == NULL)
+        return; /* fail closed, as dd_imem_dma_source_is_valid does */
+
+    rdram = sp->mi->r4300->rdram;
+    task_words = sp->mem + (0xfc0 / 4);
+    data_ptr = task_words[12] & 0x1FFFFFFFu; /* KSEG0/KSEG1 -> physical */
+    /* A misaligned data_ptr hashes the words CONTAINING it: the read range is
+     * [data_ptr & ~3, (data_ptr & ~3) + data_size), while the emitted field
+     * echoes the value the task carried.  RSP DMA DRAM addresses are 8-byte
+     * aligned in practice, so this is documentation, not a defect. */
+    data_size = task_words[13];
+    if (data_size == 0 || (data_size & 3u) != 0)
+        return;
+    if ((uint64_t) data_ptr + (uint64_t) data_size > (uint64_t) rdram->dram_size)
+        return; /* outside RDRAM: nothing the guest could have written */
+
+    words = data_size / 4;
+    for (i = 0; i < words; ++i)
+    {
+        const uint32_t word = rdram->dram[(data_ptr >> 2) + i];
+        if (word != 0)
+            ++nonzero_words;
+        hash = (hash * 0x100000001b3ull) ^ word;
+    }
+
+    (void) snprintf(message, sizeof(message),
+        "DDSTART12 RSP cmd_entry data_ptr=0x%08x data_size=0x%08x "
+        "hash=0x%016llx nonzero_words=%u words=%u",
+        data_ptr, data_size, (unsigned long long) hash, nonzero_words, words);
+    dd_imem_dma_emit_message(message);
+}
+
 static void dd_imem_dma_emit_exhaustion(const char *reason,
                                         unsigned int sequence,
                                         unsigned int count,
@@ -828,6 +900,8 @@ void do_SP_Task(struct rsp_core* sp)
     }
     else if (sp->mem[0xfc0/4] == 2)
     {
+        /* P08c-writer 2/2: record the command buffer's state at submission. */
+        dd_cmd_entry_hash_observe(sp);
         //audio.processAList();
         sp->regs2[SP_PC_REG] &= 0xfff;
 #if defined(PROFILE)

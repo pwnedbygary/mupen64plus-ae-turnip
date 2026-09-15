@@ -300,3 +300,43 @@ Next eligible package and required inputs: P08c-writer 2/2 — wire the call
   either instrument the fast path (with the exact-site and register-
   preservation requirements) or choose another observation strategy, decided
   from this recorded expectation, not after a null result.
+## P08c-writer checkpoint (part 2: the submission-time command-buffer hash)
+
+Package: P08c-writer 2/2 — the observation that separates the two branches
+  P08c left open (buffer empty at submission vs emptied before the fetch),
+  chosen from the pre-registered decision rule.  Observation only.
+Baseline / Reviewed snapshot: 56b063803 (P08c-writer 1/2), clean tree.
+Verified observations: at RSP task entry for an audio task under the DD
+  policy, the observer emits one DDSTART12 line carrying the command
+  buffer's word-wise FNV and its non-zero word count, taken from the task
+  words (data_ptr/data_size, corrected P07-C map, KSEG0/KSEG1 normalized);
+  the fixture asserts the hash and count against a pattern it installs,
+  the all-zero case, both gates (policy and diagnostics callback), that
+  degenerate inputs (zero size, out-of-RDRAM size, NULL backing store with a
+  NON-ZERO size so the guard, not the bounds check, is what protects it) emit
+  nothing rather than reading past the backing store, and — driving
+  do_SP_Task itself — that the observation fires for an audio task and not
+  for a type-3 task (the hoist-above-the-dispatch mutation builds and fails
+  the suite).  Compiles clean in the real configuration for both touched
+  units (arch wrapper, actual CFLAGS; sizes deliberately not recorded — the
+  figure proved flag-sensitive).
+Decision rule (pre-registered before any observation; the if/then wording is
+  newly written here): zero entry hash at the failing generation ⇒
+  the buffer was empty at submission (build path is the subject); non-zero
+  entry hash with the fetch reading zeros ⇒ the clearing happened between
+  submission and the fetch (the RSP/plugin write paths are the subject).
+Changed files: `mupen64plus-core/upstream/src/device/rcp/rsp/rsp_core.c`,
+  `rsp_core.h`, `tools/tests/dd-core-imem-dma-test.c`,
+  `docs/HANDOFF_NEW.md`, `docs/P08_CHECKPOINT.md`.
+Checks actually run and why: the core host suite (pass, extended fixture),
+  the five-suite host sweep (pass), and the real-configuration compiles of
+  both touched units.  No APK build or device run: the observer must be in a
+  built APK and a reproduced freeze before it can say anything.
+Independent reviewer and verdict: see the commit message.
+Commit, if approved: (this file's commit).
+Remaining blockers: none.
+Next eligible package and required inputs: the native evidence step —
+  rebuild the APK at the committed revision, install as an update, reproduce
+  the freeze with DD enabled, pull the logcat, compare the DDSTART12 entry
+  hashes against the P08b fetch records per generation, and archive a
+  cpu-delta and a screenshot with the run.

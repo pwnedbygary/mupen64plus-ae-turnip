@@ -4048,3 +4048,100 @@ Remaining hypotheses (carried): the zeroing operation and its timing (bounded
   hypothesis; whether the P08c step-1 generation tail is a precursor; and
   P08a L1's fix is now in the suite rather than outstanding.
 ```
+
+## P08c-writer (part 2): the submission-time command-buffer hash — 2026-09-14
+
+```markdown
+Package: P08c-writer, subdivision 2 of 2 — the observation that separates the
+  two branches the P08c evidence left open: was the command buffer ALREADY
+  empty when the guest submitted the failing task, or was it valid and
+  emptied between submission and the microcode's fetch?  Chosen from the
+  decision rule recorded before implementation (the fast-path derivation
+  makes a store observer uninformative on its own; the submission state is
+  the smallest discriminating fact).
+Baseline / exact reviewed snapshot: 56b063803 (P08c-writer 1/2), clean tree.
+What it does: in the core, at RSP task entry for an audio task under the
+  per-game DD policy, `dd_cmd_entry_hash_observe()` hashes the command buffer
+  named by the task words (12/13 = data_ptr/data_size, the corrected P07-C
+  map, base normalized from KSEG0/KSEG1) and emits one DDSTART12 line with
+  the word-wise FNV and the count of non-zero words — so "all zero" is read
+  directly rather than inferred from a hash constant.  Called from
+  do_SP_Task's audio branch before the RSP runs.  Observation only: no
+  register, memory or scheduling is touched, and the line is emitted through
+  the same DD diagnostics callback the DDSTART11 observer uses.
+Verified observations (host, this round):
+  - The emission carries the buffer's true state: with a known non-zero
+    pattern installed the line reports the independently computed FNV and
+    nonzero_words=16; after zeroing it reports nonzero_words=0 and the
+    zero-hash, both asserted in the core fixture.
+  - Both gates are required and both are exercised: with the DD policy off,
+    and with the diagnostics callback detached, nothing is emitted.
+  - Degenerate inputs emit nothing rather than reading past the backing
+    store: a zero-size buffer, a buffer whose data_ptr+size exceeds the
+    RDRAM backing, and a non-audio task word block (the observer's contract
+    is the audio branch and the words it names).
+  - The fixture wires the exact access chain the observer walks
+    (sp->mi->r4300->rdram->dram) and pins the KSEG0 normalization
+    (0x80001000 -> physical 0x1000).  A NULL backing store fails closed
+    (matching the sibling dd_imem_dma_source_is_valid), and the case is
+    DISCRIMINATING: it sets the null object's dram_size non-zero, so the
+    bounds check cannot return ahead of the guard — removing the guard makes
+    the mutant build and then die of the NULL dereference (verified), and a
+    reviewer caught the earlier version of this case passing either way.
+  - CALL-SITE COVERAGE (a review finding, now closed): the fixture drives
+    do_SP_Task itself for an audio task (exactly one entry line, and the RSP
+    is then called) and for a type-3 task (no entry line).  The
+    discriminating mutation — hoisting the observation above the type
+    dispatch so a non-audio task would emit — was applied to a /tmp copy,
+    confirmed to BUILD, and confirmed to fail the suite; the unmutated
+    control passes with the same flags.  (An earlier attempt at that check
+    reported CAUGHT from a mutant that had merely failed to compile; the
+    mutant's build is now asserted before its result is believed.)
+  - Misaligned data_ptr semantics documented in the function comment: the
+    read range is [data_ptr & ~3, +data_size) while the emitted field echoes
+    the value the task carried.
+Decision rule (pre-registered before any observation, and the if/then form
+  newly written here — the P08c record carries the submission-relative
+  hypothesis and the strategy gate, not this wording): if the entry hash at
+  the FAILING generation is zero, the buffer was empty at submission and the
+  guest's build path is the subject (the fast-path instrumentation the
+  work-packages guide describes then becomes the tool for the writes).  If
+  it is non-zero while the fetch reads zeros, the clearing happened between
+  submission and the fetch, and the RSP/plugin write paths become the
+  subject.  Either outcome is decisive for the branch.
+Remaining hypotheses: unchanged; the two consumer variants stay live (a
+  decode-side error would not be excluded by either branch).
+Changed files: mupen64plus-core/upstream/src/device/rcp/rsp/rsp_core.c,
+  rsp_core.h, tools/tests/dd-core-imem-dma-test.c, docs/HANDOFF_NEW.md,
+  docs/P08_CHECKPOINT.md.
+Checks actually run and results: the core host suite (extended fixture) —
+  pass, including the four new assertion groups; the five-suite host sweep
+  (core-imem-dma, watch, policy, dma-transfer, fetch-provenance) — pass, so
+  no regression in the observation contracts; compile in the real
+  configuration (DEVELOPMENT_PROCESS section 4) with the NDK 26.1.10909125
+  arch wrapper for aarch64-linux-android23 and the actual
+  COMMON_CFLAGS/LOCAL_CFLAGS — clean for both touched units (sizes are NOT
+  recorded: the figure proved flag-sensitive across invocations, and the
+  substantive claim is the clean compile).  Recorded environment note: invoking the NDK
+  `clang` directly with `--target=` but without the sysroot resolves
+  rsp_core.c's <stdio.h> to the HOST glibc and fails on `__float128`; the
+  arch wrapper (aarch64-linux-android23-clang) is the correct form, and that
+  is what the pass above used.
+Checks not run and why: the APK build and the device run belong to the
+  evidence step that follows — the observer must be in a built APK and a
+  reproduced freeze before it can say anything about the machine.
+Limits: the observer reports the submission-time state only; it cannot see
+  the writes that produced it, and the slow-path store ring is expected to
+  stay empty (fast-path derivation), so a null ring plus a zero entry hash
+  is the informative combination, not the null ring alone.  One line per
+  audio entry is intentional and bounded by entries; the run is short.
+Independent reviewer, verdict and finding dispositions: (pending)
+Commit, if approved: (pending)
+Remaining blockers: none.
+Next eligible package and required inputs: the native evidence step — rebuild
+  the APK at the committed revision, install as an update, reproduce the
+  freeze with DD enabled, pull the logcat, and compare the DDSTART12 entry
+  hashes against the P08b fetch records for the same generations to place the
+  emptiness on one side of the submission; archive a cpu-delta and a
+  screenshot with the run (the P08c carry).
+```
