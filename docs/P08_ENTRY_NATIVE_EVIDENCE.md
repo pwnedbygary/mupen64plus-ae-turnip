@@ -121,6 +121,56 @@ not establish either cause.
 
 ## Bounded writer probe implementation
 
+### Positive writer capture and transition context
+
+The private `p08-capture-20260915-144814.zip` completed; all 66 manifest
+payloads validated. DDSTART14 retains 32 consecutive successful word stores
+to KSEG0 `0x80411a30..0x80411aac`, covering the final 128 bytes of the
+416-byte buffer. All after-values are zero; 31 before-values are nonzero.
+The record PCs are `0x80747278/7c/80/84/88/8c/90/98`; `0x80747298` is
+consistently a delay-slot store. These are routed-store observations, not
+sampled execution PCs.
+
+The records carry launch-owner sequence 878, not RSP generation 878.
+Launch 878 has 101/104 nonzero words; launch 880, core entry and RSP fetch
+generation 1512 reproduce the zero buffer. Log timestamps on writer lines
+are flush times, not individual write times. The 32-entry ring reports
+592 overwritten older events and lifetime replacement counters; it does
+not provide the complete clearing history or prove which operation cleared
+the first 288 bytes.
+
+The user reports menu music and garbled menus, followed by a dissolve,
+audio cutoff and black screen when the automatic gameplay demonstration
+starts. Manually selecting a ship and starting a race appears to reach a
+similar black screen. The base cartridge works on this emulator. These are
+user observations, not independently verified equivalence of both failure
+paths. Scene-transition clearing may be legitimate: caller, range, ownership
+and later reuse must be established before suppressing or modifying it.
+
+### Static zero-fill routine cross-check
+
+The earlier P07 archive contains full 8 MiB windows. In its `1202` and
+`1427` windows, guest `0x80747278..0x80747298` contains eight
+`sw zero,offset(a0)` instructions with offsets -32 through -4, with the
+last in the delay slot of `bne a0,a3,0x80747274`. At `0x80747274`,
+`addiu a0,a0,32` advances the pointer. Thus this is a **32-byte**, not
+36-byte, static zero-fill loop consistent with the observed writer PCs.
+The surrounding code handles alignment and smaller remainders.
+
+Do not infer overlay evolution from the `113959` window's different words
+at the same file offset. That window places the known ucode marker at
+`0x769e60`, rather than `0x768e60`. Its routine bytes at file offset
+`0x748240` exactly match the corrected window at `0x747240`: the observed
+difference is a 0x1000 coordinate displacement.
+
+A scan of the corrected older window finds 28 aligned words encoding JAL
+to candidate routine entry `0x80747240`. These are static call candidates,
+not proof that any one executed in the current transition. Archived
+instruction bytes are not the fresh run's translated instruction stream.
+Next evidence must identify the actual caller and clear arguments using
+coherent guest register state, not stale core register arrays while live
+values remain in dynarec host registers.
+
 The follow-up probe is implemented in the separate `dd_cmd_watch` module. It
 keeps recent events independently for the two most recently identified
 command-buffer ranges, accepts only their unmapped KSEG0/KSEG1 writer
@@ -141,8 +191,50 @@ include the effective KSEG writer address, width, values, writer PC,
 delay-slot bit, and `ROUTED_ALIGNED` source.
 
 The first pass intentionally reports coverage gaps for TLB-routed stores,
-unaligned SWL/SWR/SDL/SDR and storelr fragments, and DMA writers. These paths
-are not routed or inferred from aligned events. Host contract coverage is in
+unaligned SWL/SWR/SDL/SDR and storelr fragments, DMA writers, and page-span
+delay-slot entry blocks. These paths are not routed or inferred from aligned
+events. Host contract coverage is in
 `mupen64plus-core/upstream/tools/tests/dd_cmd_watch_test.c`; it exercises
 rolling overwrite,
 non-audio gaps, policy-off fail-closed behavior, and zero-only flushing.
+
+### ARM64 live store context
+
+The routed ARM64 write stub now captures the live dynarec values before it
+calls the existing `write_*_new` helper. When the selected allocator mappings
+do not overlap the ABI argument registers, it extracts them directly from
+host registers; otherwise it spills only the selected mappings (`ra`/r31,
+`sp`/r29, `a0`/r4, `a1`/r5 and `a3`/r7) to the hot state before materializing
+the two halves of each value reported valid. Mapped values therefore win over
+a stale architectural array; known 32-bit values receive their sign-extended
+upper half, and an allocator-marked unmaterialized half is marked invalid
+rather than guessed. A JAL/JALR (or branch-and-link) delay-slot store also
+marks `ra` invalid because link materialization may be delayed; this changes
+only observer validity, not guest link execution. The known-zero loop BNE
+delay-slot case is unaffected.
+The C recorder receives the exact store instruction PC and delay-slot bit
+from the stub, not a corrected or sampled execution PC.
+
+Context is attached only after a successful nonzero-to-zero write. Each
+watched slot retains the first qualifying context and the latest qualifying
+context independently of its 32-event ring. A same-base buffer-size change
+may carry the latest record when its address and width remain inside the new
+range; the record keeps its original generation and range metadata. Context
+output is separately capped at 16 lines and labels `store_a0`, `store_a1` and
+`store_a3` as store-time values. `entry_arguments=not-inferred` is
+intentional: the diagnostic never treats the loop-mutated `a0`/`a1` as entry
+arguments and never reads `g_dev.r4300.regs` to reconstruct them.
+
+The live-context route remains limited to aligned, unmapped KSEG stores in
+ordinary compile blocks. TLB-routed, unaligned/SWL/SWR/SDL/SDR,
+storelr-fragment, DMA, and page-span delay-slot entry blocks remain explicit
+coverage gaps. Page-span compilation carries its architectural delay-slot
+marker in the low bit of the compile address, while `pagespan_ds()` assembles
+through `regs[0]` with `is_delayslot` clear; routing is therefore disabled for
+that compile rather than fabricating context. This is an unknown-branch
+context gap, separate from the known-zero loop BNE delay-slot case. The host
+contract and allocator/codegen fixtures cover first/latest retention,
+nonzero-to-zero qualification, same-base resizing, mapped-value precedence,
+32-bit extension, link-delay-slot `ra` fail-closed behavior, generated ARM64
+argument words and exact PC provenance, plus page-span route suppression
+without a context stub.

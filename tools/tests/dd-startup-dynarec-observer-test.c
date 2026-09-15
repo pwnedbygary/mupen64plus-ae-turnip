@@ -41,8 +41,29 @@ static inline BOOL VirtualFree(void *address, size_t size, int type)
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wunused-variable"
+#define DD_CMD_WATCH_CODEGEN_TEST 1
 #include "device/r4300/new_dynarec/new_dynarec.c"
 #pragma GCC diagnostic pop
+
+/*
+ * The codegen fixture does not link the bounded writer module.  Its
+ * DD_CMD_WATCH_CODEGEN_TEST build mode suppresses only the final call word;
+ * this ABI sink documents the production target, while dd_cmd_watch_test.c
+ * exercises the production recorder itself.
+ */
+void dd_cmd_watch_capture_context(uint32_t address, uint32_t store_pc,
+                                  uint32_t flags, uint64_t ra, uint64_t sp,
+                                  uint64_t a0, uint64_t a1, uint64_t a3)
+{
+    (void)address;
+    (void)store_pc;
+    (void)flags;
+    (void)ra;
+    (void)sp;
+    (void)a0;
+    (void)a1;
+    (void)a3;
+}
 
 #define DRAM_BYTES UINT32_C(0x01000000)
 #define MAX_MESSAGES 128
@@ -152,6 +173,188 @@ static void test_external_store_regs_writeback(void)
         | (u_int)(((fp_regs + 8) >> 2) << 10)
         | (u_int)(FP << 5);
     assert(emitted == expected);
+}
+
+static void test_context_codegen_uses_live_mappings(void)
+{
+    struct regstat context_regs;
+
+    memset(&context_regs, 0, sizeof(context_regs));
+    memset(context_regs.regmap, -1, sizeof(context_regs.regmap));
+    context_regs.regmap[8] = 31; /* live ra low */
+    context_regs.regmap[13] = 31 | 64; /* live ra high */
+    context_regs.regmap[9] = 29; /* live sp low */
+    context_regs.regmap[14] = 29 | 64; /* live sp high */
+    context_regs.regmap[10] = 4; /* live a0 */
+    context_regs.regmap[11] = 5; /* live a1 */
+    context_regs.regmap[12] = 7; /* live a3 */
+    context_regs.is32 = (UINT64_C(1) << 4)
+        | (UINT64_C(1) << 5) | (UINT64_C(1) << 7);
+    assert(emit_dd_cmd_watch_context_reg_valid(&context_regs, 31));
+    assert(emit_dd_cmd_watch_context_reg_valid(&context_regs, 29));
+    assert(emit_dd_cmd_watch_context_reg_valid(&context_regs, 4));
+    assert(emit_dd_cmd_watch_context_reg_valid(&context_regs, 5));
+    assert(emit_dd_cmd_watch_context_reg_valid(&context_regs, 7));
+    assert(emit_dd_cmd_watch_context_direct_safe(&context_regs));
+    context_regs.regmap[8] = -1;
+    context_regs.regmap[3] = 31;
+    assert(!emit_dd_cmd_watch_context_direct_safe(&context_regs));
+    context_regs.regmap[3] = -1;
+    context_regs.regmap[8] = 31;
+
+    /* An unmaterialized, explicitly unneeded value must not be fabricated. */
+    context_regs.regmap[11] = -1;
+    context_regs.u |= UINT64_C(1) << 5;
+    assert(!emit_dd_cmd_watch_context_reg_valid(&context_regs, 5));
+    context_regs.regmap[11] = 5;
+    context_regs.u &= ~(UINT64_C(1) << 5);
+}
+
+static int code_has_word(const uint32_t *code, unsigned int count,
+                         uint32_t value, uint32_t mask)
+{
+    unsigned int i;
+
+    for (i = 0; i < count; ++i)
+        if ((code[i] & mask) == (value & mask))
+            return 1;
+    return 0;
+}
+
+static void test_context_codegen_machine_words(void)
+{
+    struct regstat context_regs;
+    uint32_t code[256];
+    unsigned int count;
+    uint32_t mov_ra;
+    uint32_t orr_ra;
+    uint32_t mov_a0;
+    uint32_t asr_a0;
+    uint32_t orr_a0;
+    uint32_t mov_const_a1;
+    uint32_t flags;
+    u_int protected_regs;
+
+    memset(&context_regs, 0, sizeof(context_regs));
+    memset(context_regs.regmap, -1, sizeof(context_regs.regmap));
+    context_regs.regmap[8] = 31;
+    context_regs.regmap[13] = 31 | 64;
+    context_regs.regmap[9] = 29;
+    context_regs.regmap[14] = 29 | 64;
+    context_regs.regmap[10] = 4;
+    context_regs.regmap[15] = 5;
+    context_regs.regmap[16] = 5 | 64;
+    context_regs.regmap[12] = 7;
+    context_regs.is32 = UINT64_C(1) << 4;
+    context_regs.isconst = UINT64_C(1) << 15;
+    context_regs.constmap[15] = UINT64_C(0x12345678);
+    context_regs.uu = UINT64_C(1) << 7;
+
+    /*
+     * This calls the production context emitter with its call instruction
+     * disabled by DD_CMD_WATCH_CODEGEN_TEST.  The words are still the exact
+     * argument/materialization sequence emitted before the production call.
+     */
+    memset(code, 0, sizeof(code));
+    start = UINT32_C(0x80747278);
+    out = (u_char *)code;
+    emit_dd_cmd_watch_context(3, &context_regs, 14, 0, 1, 0);
+    count = (unsigned int)(((u_char *)out - (u_char *)code) / sizeof(code[0]));
+
+    mov_ra = UINT32_C(0x2a000000) | (8u << 16) | (31u << 5) | 3u;
+    orr_ra = UINT32_C(0xaa000000) | (13u << 16) | (32u << 10)
+        | (3u << 5) | 3u;
+    mov_a0 = UINT32_C(0x2a000000) | (10u << 16) | (31u << 5) | 5u;
+    asr_a0 = UINT32_C(0x13000000) | (31u << 16) | (31u << 10)
+        | (5u << 5) | 30u;
+    orr_a0 = UINT32_C(0xaa000000) | (30u << 16) | (32u << 10)
+        | (5u << 5) | 5u;
+    mov_const_a1 = UINT32_C(0x2a000000) | (15u << 16)
+        | (31u << 5) | 6u;
+    flags = DD_CMD_WATCH_CONTEXT_DELAY_SLOT
+        | DD_CMD_WATCH_CONTEXT_VALID_RA
+        | DD_CMD_WATCH_CONTEXT_VALID_SP
+        | DD_CMD_WATCH_CONTEXT_VALID_A0
+        | DD_CMD_WATCH_CONTEXT_VALID_A1;
+
+    assert(code_has_word(code, count, mov_ra, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, orr_ra, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, mov_a0, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, asr_a0, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, orr_a0, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count, mov_const_a1, UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count,
+        UINT32_C(0x52800000) | (flags << 5) | 2u,
+        UINT32_C(0xffffffff)));
+    assert(emit_dd_cmd_watch_context_reg_valid(&context_regs, 7) == 0);
+
+    /* A link delay slot never reports ra as valid, even when mapped. */
+    memset(code, 0, sizeof(code));
+    out = (u_char *)code;
+    emit_dd_cmd_watch_context(3, &context_regs, 14, 0, 1, 1);
+    count = (unsigned int)(((u_char *)out - (u_char *)code) / sizeof(code[0]));
+    flags &= ~DD_CMD_WATCH_CONTEXT_VALID_RA;
+    assert(code_has_word(code, count,
+        UINT32_C(0x52800000) | (flags << 5) | 2u,
+        UINT32_C(0xffffffff)));
+
+    /*
+     * An overlapping allocator mapping must use the production spill path.
+     * Save/restore words bracket the call setup, and the selected value is
+     * loaded from the hot state only after the spill.
+     */
+    context_regs.regmap[8] = -1;
+    context_regs.regmap[3] = 31;
+    protected_regs = (1u << 3) | (1u << 8) | (1u << 10)
+        | (1u << 12) | (1u << 13) | (1u << 14) | (1u << 15)
+        | (1u << 16);
+    memset(code, 0, sizeof(code));
+    out = (u_char *)code;
+    save_regs(protected_regs);
+    emit_dd_cmd_watch_context(3, &context_regs, 14, protected_regs, 1, 0);
+    restore_regs(protected_regs);
+    count = (unsigned int)(((u_char *)out - (u_char *)code) / sizeof(code[0]));
+    assert(count > 4);
+    assert((code[0] & UINT32_C(0xffc00000)) == UINT32_C(0xa9000000));
+    assert(code_has_word(code, count,
+        UINT32_C(0xb9000000)
+            | (u_int)(((fp_regs + (31u << 3)) >> 2) << 10)
+            | (u_int)(FP << 5) | 3u,
+        UINT32_C(0xffffffff)));
+    assert((code[count - 1] & UINT32_C(0xffc00000))
+        == UINT32_C(0xa9400000));
+}
+
+static void test_link_delay_slot_ra_fail_closed(void)
+{
+    memset(itype, 0, sizeof(itype));
+    memset(rt1, 0, sizeof(rt1));
+
+    itype[1] = UJUMP; /* JAL */
+    rt1[1] = 31;
+    assert(dd_dynarec_watch_link_delay_slot(2, 1));
+    itype[1] = RJUMP; /* JALR r31 */
+    assert(dd_dynarec_watch_link_delay_slot(2, 1));
+    itype[1] = SJUMP; /* branch-and-link */
+    assert(dd_dynarec_watch_link_delay_slot(2, 1));
+
+    /* A known-zero loop BNE delay slot is not a link delay slot. */
+    itype[1] = CJUMP;
+    rt1[1] = 0;
+    assert(!dd_dynarec_watch_link_delay_slot(2, 1));
+    assert(!dd_dynarec_watch_link_delay_slot(2, 0));
+}
+
+static void test_pagespan_context_route_gate(void)
+{
+    /*
+     * The production gate sees the architectural page-span marker before
+     * start normalizes it away.  No route stub (and therefore no fabricated
+     * delay-slot context) may be emitted for this compile.
+     */
+    dd_dynarec_pagespan_compile = 1;
+    assert(!dd_dynarec_watch_route_allowed());
+    dd_dynarec_pagespan_compile = 0;
 }
 
 static void reset_observer_budgets(void)
@@ -397,6 +600,10 @@ int main(void)
 
     test_nonlink_continuation_gate();
     test_external_store_regs_writeback();
+    test_context_codegen_uses_live_mappings();
+    test_context_codegen_machine_words();
+    test_link_delay_slot_ra_fail_closed();
+    test_pagespan_context_route_gate();
     test_disabled_gate();
     test_fault_observer();
     test_unavailable_fault_instruction();

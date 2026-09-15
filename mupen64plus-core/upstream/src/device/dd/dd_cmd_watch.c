@@ -25,11 +25,31 @@ struct dd_cmd_watch_slot
     unsigned int replaced;
     unsigned int replacements;
     struct dd_cmd_watch_event recent[DD_CMD_WATCH_RECENT_CAPACITY];
+    struct dd_cmd_watch_context_record
+    {
+        int valid;
+        uint32_t buffer_base;
+        uint32_t buffer_size;
+        uint32_t generation;
+        uint32_t address;
+        uint32_t store_pc;
+        uint32_t flags;
+        uint8_t width;
+        uint64_t before;
+        uint64_t after;
+        uint64_t ra;
+        uint64_t sp;
+        uint64_t a0;
+        uint64_t a1;
+        uint64_t a3;
+    } first_context, latest_context;
 };
 
 static struct dd_cmd_watch_slot slots[DD_CMD_WATCH_BUFFER_COUNT];
 static unsigned int trace_remaining = DD_CMD_WATCH_TRACE_BUDGET;
+static unsigned int context_remaining = DD_CMD_WATCH_CONTEXT_BUDGET;
 static int route_pending;
+static struct dd_cmd_watch_context_record pending_context;
 static unsigned int coverage =
     DD_CMD_WATCH_COVERAGE_CPU_FAST_ALIGNED
     | DD_CMD_WATCH_COVERAGE_CPU_SLOW_ALIGNED
@@ -104,6 +124,8 @@ static void dd_cmd_watch_clear_slot(struct dd_cmd_watch_slot *slot)
     slot->replaced = 0;
     slot->replacements = 0;
     memset(slot->recent, 0, sizeof(slot->recent));
+    memset(&slot->first_context, 0, sizeof(slot->first_context));
+    memset(&slot->latest_context, 0, sizeof(slot->latest_context));
 }
 
 static void dd_cmd_watch_clear_routes(void)
@@ -118,7 +140,9 @@ static void dd_cmd_watch_close(void)
     for (i = 0; i < DD_CMD_WATCH_BUFFER_COUNT; ++i)
         dd_cmd_watch_clear_slot(&slots[i]);
     trace_remaining = DD_CMD_WATCH_TRACE_BUDGET;
+    context_remaining = DD_CMD_WATCH_CONTEXT_BUDGET;
     route_pending = 0;
+    memset(&pending_context, 0, sizeof(pending_context));
     dd_cmd_watch_clear_routes();
 }
 
@@ -208,6 +232,69 @@ static void dd_cmd_watch_emit(const char *message)
     (*callback)(context, M64MSG_INFO, message);
 }
 
+static int dd_cmd_watch_context_safe_for_range(
+    const struct dd_cmd_watch_context_record *context,
+    uint32_t base, uint32_t length)
+{
+    uint32_t physical;
+
+    if (!context->valid || length == 0
+            || !dd_cmd_watch_guest_physical(context->address, &physical))
+        return 0;
+    return dd_cmd_watch_overlap(physical, context->width, base, length);
+}
+
+static int dd_cmd_watch_context_equal(
+    const struct dd_cmd_watch_context_record *left,
+    const struct dd_cmd_watch_context_record *right)
+{
+    return left->valid == right->valid
+        && left->buffer_base == right->buffer_base
+        && left->buffer_size == right->buffer_size
+        && left->generation == right->generation
+        && left->address == right->address
+        && left->store_pc == right->store_pc
+        && left->flags == right->flags
+        && left->width == right->width
+        && left->before == right->before
+        && left->after == right->after
+        && left->ra == right->ra
+        && left->sp == right->sp
+        && left->a0 == right->a0
+        && left->a1 == right->a1
+        && left->a3 == right->a3;
+}
+
+static void dd_cmd_watch_emit_context(
+    const struct dd_cmd_watch_context_record *context,
+    const char *kind)
+{
+    char message[1024];
+
+    if (!context->valid || context_remaining == 0
+            || (context->flags & DD_CMD_WATCH_CONTEXT_VALID_ALL)
+                != DD_CMD_WATCH_CONTEXT_VALID_ALL)
+        return;
+    (void)snprintf(message, sizeof(message),
+        "DDSTART14 CPU store_context source=ROUTED_ALIGNED"
+        " context=%s buffer=0x%08" PRIx32 " size=0x%08" PRIx32
+        " generation=%" PRIu32 " address=0x%08" PRIx32
+        " width=%u before=0x%016" PRIx64 " after=0x%016" PRIx64
+        " store_pc=0x%08" PRIx32 " delay_slot=%u"
+        " ra=0x%016" PRIx64 " sp=0x%016" PRIx64
+        " store_a0=0x%016" PRIx64 " store_a1=0x%016" PRIx64
+        " store_a3=0x%016" PRIx64
+        " context_provenance=generated-arm64-route-live-mapped-or-state"
+        " entry_arguments=not-inferred",
+        kind, context->buffer_base, context->buffer_size,
+        context->generation, context->address, context->width,
+        context->before, context->after, context->store_pc,
+        (context->flags & DD_CMD_WATCH_CONTEXT_DELAY_SLOT) != 0,
+        context->ra, context->sp, context->a0, context->a1, context->a3);
+    dd_cmd_watch_emit(message);
+    --context_remaining;
+}
+
 static void dd_cmd_watch_flush_slot(struct dd_cmd_watch_slot *slot)
 {
     unsigned int i;
@@ -219,6 +306,13 @@ static void dd_cmd_watch_flush_slot(struct dd_cmd_watch_slot *slot)
         return;
     if (!dd_cmd_watch_diagnostics_open())
         return;
+
+    dd_cmd_watch_emit_context(&slot->first_context, "first");
+    if (slot->latest_context.valid
+            && (!slot->first_context.valid
+                || !dd_cmd_watch_context_equal(&slot->latest_context,
+                    &slot->first_context)))
+        dd_cmd_watch_emit_context(&slot->latest_context, "latest");
 
     for (i = 0; i < slot->count; ++i)
     {
@@ -258,6 +352,8 @@ static void dd_cmd_watch_flush_slot(struct dd_cmd_watch_slot *slot)
     slot->dropped = 0;
     slot->replaced = 0;
     slot->replacements = 0;
+    memset(&slot->first_context, 0, sizeof(slot->first_context));
+    memset(&slot->latest_context, 0, sizeof(slot->latest_context));
 }
 
 void dd_cmd_watch_reset(void)
@@ -267,6 +363,9 @@ void dd_cmd_watch_reset(void)
     for (i = 0; i < DD_CMD_WATCH_BUFFER_COUNT; ++i)
         dd_cmd_watch_clear_slot(&slots[i]);
     trace_remaining = DD_CMD_WATCH_TRACE_BUDGET;
+    context_remaining = DD_CMD_WATCH_CONTEXT_BUDGET;
+    route_pending = 0;
+    memset(&pending_context, 0, sizeof(pending_context));
     dd_cmd_watch_clear_routes();
 }
 
@@ -279,6 +378,8 @@ void dd_cmd_watch_task_entry(const uint32_t *task_words,
     uint32_t length;
     int slot_index;
     struct dd_cmd_watch_slot *slot;
+    struct dd_cmd_watch_context_record carried_context;
+    int carry_context = 0;
 
     if (!dd_cmd_watch_diagnostics_open())
     {
@@ -295,17 +396,45 @@ void dd_cmd_watch_task_entry(const uint32_t *task_words,
 
     slot_index = dd_cmd_watch_find_slot(base, length);
     if (slot_index < 0)
+    {
+        unsigned int i;
+
+        for (i = 0; i < DD_CMD_WATCH_BUFFER_COUNT; ++i)
+        {
+            if (slots[i].armed && slots[i].base == base)
+            {
+                slot_index = (int)i;
+                break;
+            }
+        }
+    }
+    if (slot_index < 0)
         slot_index = dd_cmd_watch_choose_slot();
     slot = &slots[slot_index];
 
     if (slot->armed && (slot->base != base || slot->length != length))
     {
+        /*
+         * A resized instance with the same physical base may safely carry
+         * the last qualifying context into the new bounded slot.  Keep its
+         * original generation and range metadata in the carried record; it
+         * is evidence from the old size, not an inferred new entry context.
+         */
+        if (slot->base == base
+                && dd_cmd_watch_context_safe_for_range(
+                    &slot->latest_context, base, length))
+        {
+            carried_context = slot->latest_context;
+            carry_context = 1;
+        }
         /* A replacement is itself a bounded-coverage boundary. */
         slot->replaced += slot->count + slot->dropped;
         ++slot->replacements;
         slot->head = 0;
         slot->count = 0;
         slot->dropped = 0;
+        memset(&slot->first_context, 0, sizeof(slot->first_context));
+        memset(&slot->latest_context, 0, sizeof(slot->latest_context));
     }
     if (nonzero_words == 0)
         dd_cmd_watch_flush_slot(slot);
@@ -314,6 +443,8 @@ void dd_cmd_watch_task_entry(const uint32_t *task_words,
     slot->base = base;
     slot->length = length;
     slot->generation = generation;
+    if (carry_context)
+        slot->latest_context = carried_context;
     dd_cmd_watch_build_routes();
 }
 
@@ -352,6 +483,52 @@ int dd_cmd_watch_route_consume(void)
     return pending;
 }
 
+void dd_cmd_watch_capture_context(uint32_t address,
+                                  uint32_t store_pc,
+                                  uint32_t flags,
+                                  uint64_t ra,
+                                  uint64_t sp,
+                                  uint64_t a0,
+                                  uint64_t a1,
+                                  uint64_t a3)
+{
+    unsigned int i;
+    uint32_t normalized;
+
+    memset(&pending_context, 0, sizeof(pending_context));
+    if (!dd_cmd_watch_diagnostics_open())
+    {
+        dd_cmd_watch_close();
+        return;
+    }
+    if (!dd_cmd_watch_guest_physical(address, &normalized))
+        return;
+    for (i = 0; i < DD_CMD_WATCH_BUFFER_COUNT; ++i)
+    {
+        if (slots[i].armed
+                /*
+                 * The generated route is an eight-byte conservative
+                 * superset.  The exact width/range check remains in the
+                 * successful record path below.
+                 */
+                && dd_cmd_watch_overlap(normalized, 8,
+                    slots[i].base, slots[i].length))
+            break;
+    }
+    if (i == DD_CMD_WATCH_BUFFER_COUNT)
+        return;
+
+    pending_context.valid = 1;
+    pending_context.address = address;
+    pending_context.store_pc = store_pc;
+    pending_context.flags = flags;
+    pending_context.ra = ra;
+    pending_context.sp = sp;
+    pending_context.a0 = a0;
+    pending_context.a1 = a1;
+    pending_context.a3 = a3;
+}
+
 int dd_cmd_watch_in_range(uint32_t address, uint32_t width)
 {
     unsigned int i;
@@ -385,6 +562,14 @@ void dd_cmd_watch_record_aligned(uint32_t address,
     uint32_t normalized;
     struct dd_cmd_watch_slot *slot = NULL;
     struct dd_cmd_watch_event event;
+    struct dd_cmd_watch_context_record context = pending_context;
+
+    /*
+     * A generated route is single-threaded with its writer call.  Consume
+     * the pending context before any early return so an unsuccessful or
+     * out-of-range write cannot annotate a later store.
+     */
+    memset(&pending_context, 0, sizeof(pending_context));
 
     if (!dd_cmd_watch_diagnostics_open())
     {
@@ -420,6 +605,22 @@ void dd_cmd_watch_record_aligned(uint32_t address,
     event.sequence = slot->next_sequence++;
     event.width = (uint8_t)width;
     event.delay_slot = (uint8_t)(pcaddr & 1);
+
+    if (context.valid && context.address == address
+            && before != 0 && after == 0
+            && (context.flags & DD_CMD_WATCH_CONTEXT_VALID_ALL)
+                == DD_CMD_WATCH_CONTEXT_VALID_ALL)
+    {
+        context.buffer_base = slot->base;
+        context.buffer_size = slot->length;
+        context.generation = slot->generation;
+        context.width = (uint8_t)width;
+        context.before = before;
+        context.after = after;
+        if (!slot->first_context.valid)
+            slot->first_context = context;
+        slot->latest_context = context;
+    }
 
     if (slot->count < DD_CMD_WATCH_RECENT_CAPACITY)
     {

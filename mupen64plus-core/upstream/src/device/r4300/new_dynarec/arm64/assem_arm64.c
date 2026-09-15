@@ -3092,10 +3092,205 @@ static intptr_t emit_dd_cmd_watch_route_branch(int addr,
   }
 }
 
+static int emit_dd_cmd_watch_context_reg_valid(
+    const struct regstat *i_regs, int reg)
+{
+  int low;
+  int high;
+  int is32;
+
+  if (reg == 0)
+    return 1;
+  low = get_reg((signed char *)i_regs->regmap, reg);
+  high = get_reg((signed char *)i_regs->regmap, reg | 64);
+  is32 = (int)((i_regs->is32 >> reg) & 1);
+  if (low < 0 && ((i_regs->u >> reg) & 1))
+    return 0;
+  if (!is32 && high < 0 && ((i_regs->uu >> reg) & 1))
+    return 0;
+  return 1;
+}
+
+/*
+ * Spill only the selected live values before loading all five ABI argument
+ * slots from the hot state.  Loading from the hot state after the spills avoids
+ * argument-register/source-register overlap (for example, a live sp in x3
+ * while ra is being placed in x3).  Mapped values are always newer than the
+ * architectural fallback state; an unmaterialized upper half is accepted
+ * only for an allocator-proven 32-bit value or a non-unneeded hot-state
+ * value.
+ */
+static void emit_dd_cmd_watch_context_spill(
+    const struct regstat *i_regs, int reg)
+{
+  int low;
+  int high;
+  int is32;
+
+  if (reg == 0)
+    return;
+  low = get_reg((signed char *)i_regs->regmap, reg);
+  high = get_reg((signed char *)i_regs->regmap, reg | 64);
+  is32 = (int)((i_regs->is32 >> reg) & 1);
+  if (low >= 0)
+  {
+    emit_storereg(reg, low);
+    if (is32)
+    {
+      emit_sarimm(low, 31, HOST_TEMPREG);
+      emit_storereg(reg | 64, HOST_TEMPREG);
+    }
+  }
+  if (!is32 && high >= 0)
+    emit_storereg(reg | 64, high);
+}
+
+static void emit_dd_cmd_watch_context_value(
+    const struct regstat *i_regs, int reg, int target)
+{
+  int is32;
+
+  if (reg == 0)
+  {
+    emit_zeroreg64(target);
+    return;
+  }
+  is32 = (int)((i_regs->is32 >> reg) & 1);
+  emit_loadreg(reg, target);
+  if (is32)
+  {
+    emit_sarimm(target, 31, HOST_TEMPREG);
+  }
+  else
+    emit_loadreg(reg | 64, HOST_TEMPREG);
+  emit_orrshlimm64(HOST_TEMPREG, 32, target);
+}
+
+static void emit_dd_cmd_watch_context_direct_value(
+    const struct regstat *i_regs, int reg, int target)
+{
+  int low;
+  int high;
+  int is32;
+
+  if (reg == 0)
+  {
+    emit_zeroreg64(target);
+    return;
+  }
+  low = get_reg((signed char *)i_regs->regmap, reg);
+  high = get_reg((signed char *)i_regs->regmap, reg | 64);
+  is32 = (int)((i_regs->is32 >> reg) & 1);
+  if (low >= 0)
+    emit_mov(low, target);
+  else
+    emit_loadreg(reg, target);
+  if (is32)
+  {
+    emit_sarimm(target, 31, HOST_TEMPREG);
+    emit_orrshlimm64(HOST_TEMPREG, 32, target);
+  }
+  else if (high >= 0)
+    emit_orrshlimm64(high, 32, target);
+  else
+  {
+    emit_loadreg(reg | 64, HOST_TEMPREG);
+    emit_orrshlimm64(HOST_TEMPREG, 32, target);
+  }
+}
+
+static int emit_dd_cmd_watch_context_direct_safe(
+    const struct regstat *i_regs)
+{
+  static const int context_regs[] = { 31, 29, 4, 5, 7 };
+  unsigned int i;
+
+  for (i = 0; i < sizeof(context_regs) / sizeof(context_regs[0]); ++i)
+  {
+    int low = get_reg((signed char *)i_regs->regmap, context_regs[i]);
+    int high = get_reg((signed char *)i_regs->regmap,
+        context_regs[i] | 64);
+    if ((low >= ARG1_REG && low <= ARG4_REG + 4)
+            || (high >= ARG1_REG && high <= ARG4_REG + 4))
+      return 0;
+  }
+  return 1;
+}
+
+/*
+ * Materialize a store-time context immediately before the normal C writer
+ * call.  This is reached only from the matching aligned route stub, after
+ * the route predicate has restored the live allocator set.  A store in a
+ * JAL/JALR (or branch-and-link) delay slot deliberately fails closed for ra:
+ * the link value may not have reached its allocator mapping yet.
+ */
+static void emit_dd_cmd_watch_context(int i,
+                                      struct regstat *i_regs,
+                                      int addr,
+                                      u_int reglist,
+                                      int delay_slot,
+                                      int link_delay_slot)
+{
+  uint32_t valid = 0;
+  uint32_t flags;
+  int direct;
+
+  (void)reglist;
+  if (!link_delay_slot
+          && emit_dd_cmd_watch_context_reg_valid(i_regs, 31))
+    valid |= DD_CMD_WATCH_CONTEXT_VALID_RA;
+  if (emit_dd_cmd_watch_context_reg_valid(i_regs, 29))
+    valid |= DD_CMD_WATCH_CONTEXT_VALID_SP;
+  if (emit_dd_cmd_watch_context_reg_valid(i_regs, 4))
+    valid |= DD_CMD_WATCH_CONTEXT_VALID_A0;
+  if (emit_dd_cmd_watch_context_reg_valid(i_regs, 5))
+    valid |= DD_CMD_WATCH_CONTEXT_VALID_A1;
+  if (emit_dd_cmd_watch_context_reg_valid(i_regs, 7))
+    valid |= DD_CMD_WATCH_CONTEXT_VALID_A3;
+  flags = (delay_slot ? DD_CMD_WATCH_CONTEXT_DELAY_SLOT : 0)
+      | (valid);
+
+  direct = emit_dd_cmd_watch_context_direct_safe(i_regs);
+  if (!direct)
+  {
+    emit_dd_cmd_watch_context_spill(i_regs, 31);
+    emit_dd_cmd_watch_context_spill(i_regs, 29);
+    emit_dd_cmd_watch_context_spill(i_regs, 4);
+    emit_dd_cmd_watch_context_spill(i_regs, 5);
+    emit_dd_cmd_watch_context_spill(i_regs, 7);
+  }
+
+  emit_mov(addr, ARG1_REG);
+  emit_movimm((u_int)(start + (i * 4)), ARG2_REG);
+  emit_movimm(flags, ARG3_REG);
+  if (direct)
+  {
+    emit_dd_cmd_watch_context_direct_value(i_regs, 31, ARG4_REG);
+    emit_dd_cmd_watch_context_direct_value(i_regs, 29, ARG4_REG + 1);
+    emit_dd_cmd_watch_context_direct_value(i_regs, 4, ARG4_REG + 2);
+    emit_dd_cmd_watch_context_direct_value(i_regs, 5, ARG4_REG + 3);
+    emit_dd_cmd_watch_context_direct_value(i_regs, 7, ARG4_REG + 4);
+  }
+  else
+  {
+    emit_dd_cmd_watch_context_value(i_regs, 31, ARG4_REG);
+    emit_dd_cmd_watch_context_value(i_regs, 29, ARG4_REG + 1);
+    emit_dd_cmd_watch_context_value(i_regs, 4, ARG4_REG + 2);
+    emit_dd_cmd_watch_context_value(i_regs, 5, ARG4_REG + 3);
+    emit_dd_cmd_watch_context_value(i_regs, 7, ARG4_REG + 4);
+  }
+#ifndef DD_CMD_WATCH_CODEGEN_TEST
+  emit_call((intptr_t)dd_cmd_watch_capture_context);
+#endif
+}
+
 static intptr_t emit_dd_cmd_watch_route_branch_imm(uint32_t address,
                                                    uint32_t width,
-                                                   u_int reglist)
+                                                   u_int reglist,
+                                                   int addr)
 {
+  if (addr >= 0 && addr < 32)
+    reglist |= 1u << addr;
   save_regs(reglist);
   emit_movimm(address,ARG1_REG);
   emit_movimm(width,ARG2_REG);

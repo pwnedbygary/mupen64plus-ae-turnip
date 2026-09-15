@@ -4233,3 +4233,52 @@ Next eligible package and required inputs: native evidence collection first;
   separately reviewed ARM64 inline-store package be proposed with explicit
   ABI/DMA/lifecycle coverage.
 ```
+
+## P08d: ARM64 live dynarec writer context — pending review
+
+This package adds the next minimal diagnostic on top of the native
+`dd_cmd_watch` writer probe. It remains observation-only: no store correction,
+TLB translation, DMA attribution, or inferred caller argument rewriting is
+performed.
+
+The aligned unmapped-KSEG route now marks its established write stub with a
+context bit. Before the existing `write_byte_new`, `write_hword_new`,
+`write_word_new` or `write_dword_new` call, the ARM64 stub materializes
+coherent `ra`/r31, `sp`/r29, `a0`/r4, `a1`/r5 and `a3`/r7 values when their
+validity bits permit. It extracts directly from live host mappings when they
+do not overlap the ABI argument registers, otherwise spilling only the
+selected mappings before materialization. It sign-extends allocator-proven
+32-bit values and rejects an unmaterialized unneeded half rather than
+fabricating a value from stale state. A JAL/JALR (or branch-and-link)
+delay-slot store fails closed for `ra` validity without changing guest link
+execution; the known-zero loop BNE delay-slot case is unaffected. The
+recorder receives the exact store PC and delay-slot provenance from the stub.
+The output names the register values `store_a0`, `store_a1` and `store_a3`,
+and explicitly says `entry_arguments=not-inferred`.
+
+Page-span delay-slot entry blocks are an explicit context-coverage gap. Their
+architectural delay-slot marker is carried in compile-address bit 0, while
+`pagespan_ds()` assembles through `regs[0]` with `is_delayslot` clear; both
+immediate and dynamic watch-route gates therefore reject the page-span
+compile rather than fabricating delay-slot context. This is an
+unknown-branch-context gap, separate from the known-zero loop BNE delay-slot
+case.
+
+The recorder keeps one first and one latest qualifying context per watched
+slot, only for successful nonzero-to-zero writes. Its 16-line context budget
+is independent of the 32-event recent ring. A same-base size change carries
+the latest context only when its address/width remains safely inside the new
+range, while preserving the original generation and range metadata. Existing
+policy, diagnostics, KSEG, alignment, no-TLB and successful-write gates remain
+unchanged.
+
+Host coverage is in `dd_cmd_watch_test.c` for qualification, first/latest
+retention, provenance, and same-base resizing; the dynarec observer fixture
+invokes the production context emitter in a machine-word harness covering
+ABI-overlap spills/restoration, live mappings, 32-bit sign extension,
+constants, unavailable values, link-delay-slot `ra` fail-closed behavior, and
+page-span route suppression without a watch stub.
+NDK 26.1.10909125 ARM64 syntax checking is required for the production route
+and writer stub. TLB-routed stores, unaligned/partial stores, storelr
+fragments, DMA and page-span delay-slot entry blocks remain explicit gaps. No
+APK, workflow run, device capture, commit or push is part of this package.

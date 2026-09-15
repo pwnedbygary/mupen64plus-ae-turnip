@@ -76,9 +76,16 @@ void recomp_dbg_block(int addr);
 #endif
 
 #if NEW_DYNAREC == NEW_DYNAREC_ARM64
+struct regstat;
 static intptr_t emit_dd_cmd_watch_route_branch(int addr,
                                                uint32_t width,
                                                u_int reglist);
+static void emit_dd_cmd_watch_context(int i,
+                                      struct regstat *i_regs,
+                                      int addr,
+                                      u_int reglist,
+                                      int delay_slot,
+                                      int link_delay_slot);
 #endif
 
 /* debug */
@@ -261,6 +268,14 @@ unsigned int using_tlb;
 unsigned int stop_after_jal;
 
 static u_int start;
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+/*
+ * new_recompile_block() receives bit 0 as the page-span delay-slot marker,
+ * but normalizes it out of `start`.  Keep the marker only as a compile-time
+ * route gate; it must never be used as guest execution state.
+ */
+static int dd_dynarec_pagespan_compile;
+#endif
 static u_int *source;
 static u_int pagelimit;
 static char insn[MAXBLOCK][10];
@@ -5470,12 +5485,35 @@ static void inline_readstub(int type, int i, u_int addr_const, char addr, struct
   }
 }
 
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+static int dd_dynarec_watch_link_delay_slot(int i, int delay_slot)
+{
+  /* CJUMP (including the known-zero loop BNE case) does not link. */
+  if (!delay_slot || i <= 0 || rt1[i - 1] != 31)
+    return 0;
+  return itype[i - 1] == UJUMP
+      || itype[i - 1] == RJUMP
+      || itype[i - 1] == SJUMP;
+}
+
+static int dd_dynarec_watch_route_allowed(void)
+{
+  return !dd_dynarec_pagespan_compile
+      && DdStartupDiagnosticsEnabled()
+      && DdRuntimePolicyGet();
+}
+#endif
+
 static void do_writestub(int n)
 {
   assem_debug("do_writestub %x",start+stubs[n][3]*4);
   literal_pool(256);
   set_jump_target(stubs[n][1],(intptr_t)out);
   int type=stubs[n][0];
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  int watch_context=(type&DD_CMD_WATCH_CONTEXT_STUB)!=0;
+  type&=~DD_CMD_WATCH_CONTEXT_STUB;
+#endif
   int i=stubs[n][3];
   int addr=stubs[n][4];
   struct regstat *i_regs=(struct regstat *)stubs[n][5];
@@ -5536,8 +5574,15 @@ static void do_writestub(int n)
     emit_storereg(CCREG,cc);
   }
 
-  save_regs(reglist);
   int ds=i_regs!=&regs[i];
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  int link_ds=dd_dynarec_watch_link_delay_slot(i,ds);
+#endif
+  save_regs(reglist);
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  if(watch_context)
+    emit_dd_cmd_watch_context(i,i_regs,addr,reglist,ds,link_ds);
+#endif
 
 #if NEW_DYNAREC == NEW_DYNAREC_X86
   emit_pushimm(CLOCK_DIVIDER*(stubs[n][6]+1));
@@ -6770,6 +6815,9 @@ static void store_assemble(int i,struct regstat *i_regs)
   int offset,type=0,memtarget=0,c=0;
   intptr_t jaddr=0;
   intptr_t dd_watch_jaddr=0;
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  int dd_watch_type=0;
+#endif
   u_int hr,reglist=0;
   int agr=AGEN1+(i&1);
   th=get_reg(i_regs->regmap,rs2[i]|64);
@@ -6808,7 +6856,12 @@ static void store_assemble(int i,struct regstat *i_regs)
    * protects AGEN's effective-address scratch when it is not a guest-live
    * register.
    */
-  if(!using_tlb && DdStartupDiagnosticsEnabled() && DdRuntimePolicyGet()) {
+  /*
+   * Page-span entry blocks carry their architectural delay-slot marker in
+   * addr bit 0.  pagespan_ds() then assembles the slot through regs[0] with
+   * is_delayslot cleared, so neither route form may invent context here.
+   */
+  if(!using_tlb && dd_dynarec_watch_route_allowed()) {
     uint32_t dd_watch_width =
         opcode[i]==0x28 ? 1u :
         opcode[i]==0x29 ? 2u :
@@ -6819,10 +6872,11 @@ static void store_assemble(int i,struct regstat *i_regs)
     if(c&&!memtarget)
       dd_watch_jaddr=emit_dd_cmd_watch_route_branch_imm(
           (uint32_t)(constmap[i][max(0,s)]+offset),
-          dd_watch_width,dd_watch_reglist);
+          dd_watch_width,dd_watch_reglist,addr);
     else
       dd_watch_jaddr=emit_dd_cmd_watch_route_branch(addr,dd_watch_width,
           dd_watch_reglist);
+    dd_watch_type = type | DD_CMD_WATCH_CONTEXT_STUB;
   }
 #endif
 
@@ -6925,7 +6979,8 @@ static void store_assemble(int i,struct regstat *i_regs)
   }
 #if NEW_DYNAREC == NEW_DYNAREC_ARM64
   if(dd_watch_jaddr)
-    add_stub(type,dd_watch_jaddr,(intptr_t)out,i,real_addr,(intptr_t)i_regs,ccadj[i],reglist);
+    add_stub(dd_watch_type,dd_watch_jaddr,(intptr_t)out,i,real_addr,
+        (intptr_t)i_regs,ccadj[i],reglist);
 #endif
 #else
   inline_writestub(type,i,c?(constmap[i][max(0,s)]+offset):0,real_addr,i_regs,rs2[i],ccadj[i],reglist);
@@ -9322,6 +9377,9 @@ int new_recompile_block(int addr)
   DebugMessage(M64MSG_VERBOSE, "notcompiledCount=%i", notcompiledCount );
 #endif
   start = (u_int)addr&~3;
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  dd_dynarec_pagespan_compile = ((u_int)addr & 1) != 0;
+#endif
   //assert(((u_int)addr&1)==0);
   if ((int)addr >= 0xa4000000 && (int)addr < 0xa4001000) {
     source = (u_int *)((uintptr_t)g_dev.sp.mem+start-0xa4000000);
@@ -12224,7 +12282,11 @@ int new_recompile_block(int addr)
   // Stubs
   for(i=0;i<stubcount;i++)
   {
-    switch(stubs[i][0])
+    int stub_type=stubs[i][0];
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+    stub_type&=~DD_CMD_WATCH_CONTEXT_STUB;
+#endif
+    switch(stub_type)
     {
       case LOADB_STUB:
       case LOADH_STUB:
