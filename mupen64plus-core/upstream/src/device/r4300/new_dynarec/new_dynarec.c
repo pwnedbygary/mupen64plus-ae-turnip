@@ -47,6 +47,7 @@
 #include "device/r4300/interrupt.h"
 #include "device/r4300/tlb.h"
 #include "device/r4300/dd_fault_layout.h"
+#include "device/dd/dd_cmd_watch.h"
 #include "device/r4300/fpu.h"
 #include "device/rcp/mi/mi_controller.h"
 #include "device/rcp/rsp/rsp_core.h"
@@ -72,6 +73,12 @@ void recomp_dbg_block(int addr);
 #include "arm64/assem_arm64.h"
 #else
 #error Unsupported dynarec architecture
+#endif
+
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+static intptr_t emit_dd_cmd_watch_route_branch(int addr,
+                                               uint32_t width,
+                                               u_int reglist);
 #endif
 
 /* debug */
@@ -2118,6 +2125,73 @@ static unsigned int hshift(uint32_t address)
     return ((address & 2) ^ 2) << 3;
 }
 
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+/*
+ * The command-buffer adapter observes only the already-routed aligned slow
+ * helpers.  Reads use a validated KSEG0 alias and therefore cannot invoke a
+ * device handler or alter the architectural write path.
+ */
+static int dd_dynarec_cmd_watch_read(uint32_t address,
+                                     uint32_t width,
+                                     uint64_t *value)
+{
+    uint32_t physical = address & UINT32_C(0x1fffffff);
+    uint32_t guest;
+    uint32_t word;
+    unsigned int shift;
+
+    if (value == NULL)
+        return 0;
+    if (width == 8)
+    {
+        guest = (physical & ~UINT32_C(7)) | UINT32_C(0x80000000);
+        return dd_fault_guest_read_u64(g_dev.rdram.dram,
+            g_dev.rdram.dram_size, guest, value);
+    }
+    if (width != 1 && width != 2 && width != 4)
+        return 0;
+
+    guest = (physical & ~UINT32_C(3)) | UINT32_C(0x80000000);
+    if (!dd_fault_guest_read_u32(g_dev.rdram.dram,
+            g_dev.rdram.dram_size, guest, &word))
+        return 0;
+    if (width == 1)
+        shift = bshift(physical);
+    else if (width == 2)
+        shift = hshift(physical);
+    else
+        shift = 0;
+    if (width == 4)
+        *value = word;
+    else
+        *value = (word >> shift) & ((UINT32_C(1) << (width * 8)) - 1);
+    return 1;
+}
+
+static int dd_dynarec_cmd_watch_prepare(uint32_t address,
+                                        uint32_t width,
+                                        uint64_t *before)
+{
+    if (!dd_cmd_watch_in_range(address, width))
+        return 0;
+    return dd_dynarec_cmd_watch_read(address, width, before);
+}
+
+static void dd_dynarec_cmd_watch_commit(uint32_t address,
+                                        uint32_t width,
+                                        uint64_t before,
+                                        uint32_t pcaddr,
+                                        int write_succeeded)
+{
+    uint64_t after;
+
+    if (!write_succeeded
+            || !dd_dynarec_cmd_watch_read(address, width, &after))
+        return;
+    dd_cmd_watch_record_aligned(address, width, before, after, pcaddr);
+}
+#endif
+
 static void read_byte_new(int pcaddr, int count)
 {
   uint32_t value;
@@ -2171,6 +2245,13 @@ static void write_byte_new(int pcaddr, int count)
   state->pcaddr = pcaddr&~1;
   r4300->delay_slot = pcaddr & 1;
   unsigned int shift = bshift(state->address);
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  int cmd_watch_store=0;
+  uint64_t cmd_watch_before=0;
+  if(dd_cmd_watch_route_consume())
+    cmd_watch_store=dd_dynarec_cmd_watch_prepare(state->address,1,
+        &cmd_watch_before);
+#endif
   state->wword <<= shift;
 #if NEW_DYNAREC == NEW_DYNAREC_ARM64
   /*
@@ -2183,7 +2264,13 @@ static void write_byte_new(int pcaddr, int count)
   if(DdStartupDiagnosticsEnabled())
     trace_byte_store=dd_dynarec_prepare_byte_store(state->address,&beforeword);
 #endif
-  r4300_write_aligned_word(r4300, state->address, state->wword, UINT32_C(0xff) << shift);
+  int write_succeeded = r4300_write_aligned_word(r4300, state->address,
+      state->wword, UINT32_C(0xff) << shift);
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  if(cmd_watch_store)
+    dd_dynarec_cmd_watch_commit(state->address,1,cmd_watch_before,pcaddr,
+        write_succeeded);
+#endif
 #if NEW_DYNAREC == NEW_DYNAREC_ARM64
   if(trace_byte_store)
     dd_dynarec_trace_byte_store(pcaddr,state->address,state->wword,shift,beforeword);
@@ -2197,8 +2284,21 @@ static void write_hword_new(int pcaddr, int count)
   state->pcaddr = pcaddr&~1;
   r4300->delay_slot = pcaddr & 1;
   unsigned int shift = hshift(state->address);
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  int cmd_watch_store=0;
+  uint64_t cmd_watch_before=0;
+  if(dd_cmd_watch_route_consume())
+    cmd_watch_store=dd_dynarec_cmd_watch_prepare(state->address,2,
+        &cmd_watch_before);
+#endif
   state->wword <<= shift;
-  r4300_write_aligned_word(r4300, state->address, state->wword, UINT32_C(0xffff) << shift);
+  int write_succeeded = r4300_write_aligned_word(r4300, state->address,
+      state->wword, UINT32_C(0xffff) << shift);
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  if(cmd_watch_store)
+    dd_dynarec_cmd_watch_commit(state->address,2,cmd_watch_before,pcaddr,
+        write_succeeded);
+#endif
   UPDATE_COUNT_OUT
 }
 
@@ -2207,7 +2307,20 @@ static void write_word_new(int pcaddr, int count)
   UPDATE_COUNT_IN
   state->pcaddr = pcaddr&~1;
   r4300->delay_slot = pcaddr & 1;
-  r4300_write_aligned_word(r4300, state->address, state->wword, UINT32_C(0xffffffff));
+  int cmd_watch_store=0;
+  uint64_t cmd_watch_before=0;
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  if(dd_cmd_watch_route_consume())
+    cmd_watch_store=dd_dynarec_cmd_watch_prepare(state->address,4,
+        &cmd_watch_before);
+#endif
+  int write_succeeded = r4300_write_aligned_word(r4300, state->address,
+      state->wword, UINT32_C(0xffffffff));
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  if(cmd_watch_store)
+    dd_dynarec_cmd_watch_commit(state->address,4,cmd_watch_before,pcaddr,
+        write_succeeded);
+#endif
   UPDATE_COUNT_OUT
 }
 
@@ -2217,7 +2330,20 @@ static void write_dword_new(int pcaddr, int count)
   state->pcaddr = pcaddr&~1;
   r4300->delay_slot = pcaddr & 1;
   /* NOTE: in dynarec, we only need an all-one mask */
-  r4300_write_aligned_dword(r4300, state->address, state->wdword, ~UINT64_C(0));
+  int cmd_watch_store=0;
+  uint64_t cmd_watch_before=0;
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  if(dd_cmd_watch_route_consume())
+    cmd_watch_store=dd_dynarec_cmd_watch_prepare(state->address,8,
+        &cmd_watch_before);
+#endif
+  int write_succeeded = r4300_write_aligned_dword(r4300, state->address,
+      state->wdword, ~UINT64_C(0));
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  if(cmd_watch_store)
+    dd_dynarec_cmd_watch_commit(state->address,8,cmd_watch_before,pcaddr,
+        write_succeeded);
+#endif
   UPDATE_COUNT_OUT
 }
 
@@ -6643,6 +6769,7 @@ static void store_assemble(int i,struct regstat *i_regs)
   signed char s,th,tl,real_addr,addr,temp,map=-1,cache=-1;
   int offset,type=0,memtarget=0,c=0;
   intptr_t jaddr=0;
+  intptr_t dd_watch_jaddr=0;
   u_int hr,reglist=0;
   int agr=AGEN1+(i&1);
   th=get_reg(i_regs->regmap,rs2[i]|64);
@@ -6672,6 +6799,32 @@ static void store_assemble(int i,struct regstat *i_regs)
     case 0x2B: type=STOREW_STUB; break;
     case 0x3F: type=STORED_STUB; break;
   }
+
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  /*
+   * Route only the unmapped/no-TLB path.  This branch is deliberately before
+   * do_tlb_w and the normal fallback branch, so the TLB mapping register is
+   * never live across the C predicate.  The augmented register list also
+   * protects AGEN's effective-address scratch when it is not a guest-live
+   * register.
+   */
+  if(!using_tlb && DdStartupDiagnosticsEnabled() && DdRuntimePolicyGet()) {
+    uint32_t dd_watch_width =
+        opcode[i]==0x28 ? 1u :
+        opcode[i]==0x29 ? 2u :
+        opcode[i]==0x2B ? 4u : 8u;
+    u_int dd_watch_reglist=reglist;
+    if(addr >= 0 && addr < 32)
+      dd_watch_reglist |= 1u << addr;
+    if(c&&!memtarget)
+      dd_watch_jaddr=emit_dd_cmd_watch_route_branch_imm(
+          (uint32_t)(constmap[i][max(0,s)]+offset),
+          dd_watch_width,dd_watch_reglist);
+    else
+      dd_watch_jaddr=emit_dd_cmd_watch_route_branch(addr,dd_watch_width,
+          dd_watch_reglist);
+  }
+#endif
 
 #ifndef INTERPRET_STORE
   if(!using_tlb) {
@@ -6770,6 +6923,10 @@ static void store_assemble(int i,struct regstat *i_regs)
   } else if(c&&!memtarget) {
     inline_writestub(type,i,constmap[i][max(0,s)]+offset,real_addr,i_regs,rs2[i],ccadj[i],reglist);
   }
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+  if(dd_watch_jaddr)
+    add_stub(type,dd_watch_jaddr,(intptr_t)out,i,real_addr,(intptr_t)i_regs,ccadj[i],reglist);
+#endif
 #else
   inline_writestub(type,i,c?(constmap[i][max(0,s)]+offset):0,real_addr,i_regs,rs2[i],ccadj[i],reglist);
 #endif

@@ -3063,6 +3063,54 @@ static void restore_regs(u_int reglist)
   }
 }
 
+#if NEW_DYNAREC == NEW_DYNAREC_ARM64
+/*
+ * Route a selected aligned store through the existing C write stub.  The
+ * predicate is a normal C ABI call, but it is kept outside the native store:
+ * all caller-save registers are protected, the result is moved to x30 after
+ * the call, and the original live register set is restored before the branch.
+ * The caller emits this before any TLB/map register is established, so x30
+ * is HOST_TEMPREG scratch rather than a live mapping operand.
+ */
+static intptr_t emit_dd_cmd_watch_route_branch(int addr,
+                                               uint32_t width,
+                                               u_int reglist)
+{
+  if (addr >= 0 && addr < 32)
+    reglist |= 1u << addr;
+  save_regs(reglist);
+  emit_mov(addr,ARG1_REG);
+  emit_movimm(width,ARG2_REG);
+  emit_call((intptr_t)dd_cmd_watch_route_should_slow);
+  emit_mov(ARG1_REG,HOST_TEMPREG);
+  restore_regs(reglist);
+  emit_test(HOST_TEMPREG,HOST_TEMPREG);
+  {
+    intptr_t branch=(intptr_t)out;
+    emit_jne(0);
+    return branch;
+  }
+}
+
+static intptr_t emit_dd_cmd_watch_route_branch_imm(uint32_t address,
+                                                   uint32_t width,
+                                                   u_int reglist)
+{
+  save_regs(reglist);
+  emit_movimm(address,ARG1_REG);
+  emit_movimm(width,ARG2_REG);
+  emit_call((intptr_t)dd_cmd_watch_route_should_slow);
+  emit_mov(ARG1_REG,HOST_TEMPREG);
+  restore_regs(reglist);
+  emit_test(HOST_TEMPREG,HOST_TEMPREG);
+  {
+    intptr_t branch=(intptr_t)out;
+    emit_jne(0);
+    return branch;
+  }
+}
+#endif
+
 /* Stubs/epilogue */
 
 static void literal_pool(int n)

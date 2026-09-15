@@ -94,3 +94,55 @@ reuse is demonstrated.
 
 This completes the narrow entry-state measurement, not the native DD repair,
 menu/audio acceptance, or DD-disabled/writable-cart persistence regressions.
+
+## Follow-up: SP launch observation
+
+The private `p08-capture-20260915-132331.zip` completed successfully with
+memory capture intentionally disabled. All 66 manifest-listed payloads
+validated. There are 880 DDSTART13 launch observations and 880 DDSTART12
+core entry observations.
+
+At log line 8697 (13:23:58.169, PID/TID 20977/21012), launch sequence 880
+records a valid 416-byte buffer at `0x00411910`, zero nonzero words out of
+104, and hash `0x8d0350be04626145`. HALT/BROKE clear from status `0x43`
+to `0x40`; neither DMA_BUSY nor DMA_FULL is set.
+
+Line 8698 observes the same zero buffer at core entry. Line 8699 fetches
+64 bytes from offset zero with matching entry/fetch generation 1512 and
+zero-payload hash `0x88201fb960ff6465`. Launch sequence numbers count only
+the qualifying audio launch observations, not all RSP generations: 880
+must not be equated numerically with generation 1512.
+
+This places the zero-buffer state at the observed guest SP launch write,
+before the core entry observer. It still identifies neither the responsible
+writer nor improper reuse. Tracing must retain history between launches and
+cover CPU stores emitted inline by dynarec; another launch hash alone will
+not establish either cause.
+
+## Bounded writer probe implementation
+
+The follow-up probe is implemented in the separate `dd_cmd_watch` module. It
+keeps recent events independently for the two most recently identified
+command-buffer ranges, accepts only their unmapped KSEG0/KSEG1 writer
+aliases, and updates those ranges only at valid audio-task launch boundaries.
+It does not reinterpret a TLB virtual label (or physical label) as a matching
+writer. Non-audio launches therefore do not disarm an active range. A zero
+command-buffer launch flushes the preceding range's bounded records and
+summary before its generation is updated, including a no-event summary.
+
+ARM64 dynarec blocks compiled while startup diagnostics and DD policy are
+enabled emit a dynamic route predicate for aligned SB/SH/SW/SD stores. The
+predicate checks
+the current DD policy and range state on every execution; disabling policy
+therefore fails closed even for previously compiled blocks. A matching store
+uses the established write stub, while the slow aligned helper snapshots
+validated before/after RDRAM values only after a successful write. Events
+include the effective KSEG writer address, width, values, writer PC,
+delay-slot bit, and `ROUTED_ALIGNED` source.
+
+The first pass intentionally reports coverage gaps for TLB-routed stores,
+unaligned SWL/SWR/SDL/SDR and storelr fragments, and DMA writers. These paths
+are not routed or inferred from aligned events. Host contract coverage is in
+`mupen64plus-core/upstream/tools/tests/dd_cmd_watch_test.c`; it exercises
+rolling overwrite,
+non-audio gaps, policy-off fail-closed behavior, and zero-only flushing.

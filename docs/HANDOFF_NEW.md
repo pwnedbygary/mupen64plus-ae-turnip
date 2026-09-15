@@ -1,3 +1,36 @@
+# 2026-09-15 — bounded aligned CPU writer diagnostic
+
+The latest private capture reproduced the zero buffer at SP launch 880,
+core entry, and RSP fetch generation 1512. See
+`P08_ENTRY_NATIVE_EVIDENCE.md` for the sanitized correlation. No writer is
+yet established.
+
+The new DDSTART14 probe retains recent writes independently for two command
+buffers across audio/non-audio intervals. ARM64 no-TLB aligned KSEG stores
+are selectively routed through existing write stubs, preserving their
+PC/delay-slot, cycle, and exception conventions. Successful routed writes
+record old/new values and exact compiled guest PC. Zero launches flush
+bounded evidence plus a summary, including empty-history cases. Session
+reset clears state. Other ABIs, TLB/physical-low aliases, unaligned stores,
+and DMA writers remain uncovered; absence of records is not absence of writes.
+
+Independent review rejected the initial live-TLB-register hook. The reviewed
+replacement runs only before no-TLB mapping and saves live address scratch.
+Compile-time policy and diagnostics gates coexist with runtime rechecking.
+No emulator correction has been made.
+
+Verification: strict host writer contract and existing core-IMEM, watch,
+policy, DMA-transfer and fetch-provenance suites passed; ARM64 translation
+unit syntax checks passed. Exact generated-code execution is still
+unverified on the handheld. Before relying on writer evidence, confirm
+routed KSEG0 and KSEG1/immediate behavior and a DD-disabled cartridge smoke
+run. Host tests are not a substitute for these checks.
+
+Next capture: updated diagnostic APK, manual F-ZERO X (J) Start, 60-second
+log, no optional memory capture. Inspect DDSTART14 coverage/drop/summary
+fields and correlate positive events with DDSTART13/12/11. Do not patch a
+guest routine or declare a producer defect from an empty ring.
+
 # N64DD investigation from the v336 release baseline
 
 ## Local-agent execution and review prompts

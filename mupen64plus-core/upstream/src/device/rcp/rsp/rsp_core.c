@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "device/memory/memory.h"
+#include "device/dd/dd_cmd_watch.h"
 #include "device/r4300/r4300_core.h"
 #include "device/rcp/mi/mi_controller.h"
 #include "device/rcp/rdp/rdp_core.h"
@@ -454,6 +455,7 @@ static void dd_sp_launch_observe(struct rsp_core *sp,
 
     sequence = ++dd_sp_launch_sequence;
     --dd_sp_launch_remaining;
+    dd_cmd_watch_task_entry(descriptor, sequence, buffer_valid, nonzero_words);
     dma_busy = ((status_before | status_after) & SP_STATUS_DMA_BUSY) != 0;
     dma_full = ((status_before | status_after) & SP_STATUS_DMA_FULL) != 0;
     (void) snprintf(message, sizeof(message),
@@ -947,6 +949,7 @@ void init_rsp(struct rsp_core* sp,
               struct ri_controller* ri)
 {
     dd_sp_launch_reset_observer();
+    dd_cmd_watch_reset();
     if (DdStartupDiagnosticsEnabled())
         dd_imem_dma_reset_observer();
     sp->mem = sp_mem;
@@ -958,6 +961,7 @@ void init_rsp(struct rsp_core* sp,
 void poweron_rsp(struct rsp_core* sp)
 {
     dd_sp_launch_reset_observer();
+    dd_cmd_watch_reset();
     if (DdStartupDiagnosticsEnabled())
         dd_imem_dma_reset_observer();
     memset(sp->mem, 0, SP_MEM_SIZE);

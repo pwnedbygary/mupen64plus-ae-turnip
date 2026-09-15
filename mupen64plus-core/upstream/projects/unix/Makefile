@@ -544,6 +544,7 @@ SOURCE = \
     $(SRCDIR)/device/controllers/paks/rumblepak.c \
     $(SRCDIR)/device/controllers/paks/transferpak.c \
     $(SRCDIR)/device/dd/dd_controller.c \
+    $(SRCDIR)/device/dd/dd_cmd_watch.c \
     $(SRCDIR)/device/dd/disk.c \
     $(SRCDIR)/device/device.c \
     $(SRCDIR)/device/gb/gb_cart.c \
