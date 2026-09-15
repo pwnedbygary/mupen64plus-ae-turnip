@@ -49,8 +49,8 @@ static inline BOOL VirtualFree(void *address, size_t size, int type)
 /*
  * The codegen fixture does not link the bounded writer module.  Its
  * DD_CMD_WATCH_CODEGEN_TEST build mode suppresses only the final call word;
- * this ABI sink documents the production target, while dd_cmd_watch_test.c
- * exercises the production recorder itself.
+ * these ABI sinks document the production targets, while
+ * dd_cmd_watch_test.c exercises the production recorder itself.
  */
 void dd_cmd_watch_capture_context(uint32_t address, uint32_t store_pc,
                                   uint32_t flags, uint64_t ra, uint64_t sp,
@@ -74,6 +74,32 @@ void dd_cmd_watch_capture_probe(
     (void)snapshot;
     (void)source_header_valid;
     (void)source_header_value;
+}
+
+void dd_cmd_watch_note_compile_rejection(
+    uint32_t kind, uint32_t reason, uint32_t valid_mask)
+{
+    (void)kind;
+    (void)reason;
+    (void)valid_mask;
+}
+
+void dd_cmd_watch_capture_probe_samples(
+    const struct dd_cmd_watch_probe_snapshot *snapshot,
+    int source_header_valid,
+    uint32_t source_header_value,
+    const uint32_t *header_sample,
+    uint32_t header_sample_valid_mask,
+    const uint32_t *stack_sample,
+    uint32_t stack_sample_valid_mask)
+{
+    (void)snapshot;
+    (void)source_header_valid;
+    (void)source_header_value;
+    (void)header_sample;
+    (void)header_sample_valid_mask;
+    (void)stack_sample;
+    (void)stack_sample_valid_mask;
 }
 
 #define DRAM_BYTES UINT32_C(0x01000000)
@@ -507,6 +533,96 @@ static void test_link_delay_slot_ra_fail_closed(void)
     assert(!dd_dynarec_watch_link_delay_slot(2, 0));
 }
 
+static void test_probe_constants_and_partial_words(void)
+{
+    struct regstat probe_regs;
+    uint32_t code[64];
+    unsigned int count;
+    static const int probe_regs_guest[] = { 4, 5, 24, 9, 31, 29 };
+    unsigned int i;
+
+    memset(&probe_regs, 0, sizeof(probe_regs));
+    memset(probe_regs.regmap, -1, sizeof(probe_regs.regmap));
+    probe_regs.regmap[8] = 4;
+    probe_regs.regmap[14] = 4 | 64;
+    probe_regs.regmap[9] = 5;
+    probe_regs.regmap[15] = 5 | 64;
+    probe_regs.regmap[10] = 24;
+    probe_regs.regmap[16] = 24 | 64;
+    probe_regs.regmap[11] = 9;
+    probe_regs.regmap[17] = 9 | 64;
+    probe_regs.regmap[12] = 31;
+    probe_regs.regmap[18] = 31 | 64;
+    probe_regs.regmap[13] = 29;
+    probe_regs.regmap[19] = 29 | 64;
+
+    /* Full-width constants use both allocator halves, not hot-state loads. */
+    probe_regs.isconst = (UINT64_C(1) << 8) | (UINT64_C(1) << 14);
+    probe_regs.constmap[8] = UINT64_C(0x00001234);
+    probe_regs.constmap[14] = UINT64_C(0x00005678);
+    memset(code, 0, sizeof(code));
+    out = (u_char *)code;
+    emit_dd_cmd_watch_probe_value(&probe_regs, 4, ARG1_REG);
+    count = (unsigned int)(((u_char *)out - (u_char *)code)
+        / sizeof(code[0]));
+    assert(emit_dd_cmd_watch_probe_reg_valid(&probe_regs, 4));
+    assert(code_has_word(code, count,
+        UINT32_C(0x52800000) | (UINT32_C(0x1234) << 5) | ARG1_REG,
+        UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count,
+        UINT32_C(0x52800000) | (UINT32_C(0x5678) << 5) | HOST_TEMPREG,
+        UINT32_C(0xffffffff)));
+
+    /* A proven signed 32-bit constant is explicitly sign-extended. */
+    probe_regs.is32 = UINT64_C(1) << 4;
+    probe_regs.isconst = UINT64_C(1) << 8;
+    probe_regs.constmap[8] = UINT64_C(0xfffffffe);
+    memset(code, 0, sizeof(code));
+    out = (u_char *)code;
+    emit_dd_cmd_watch_probe_value(&probe_regs, 4, ARG1_REG);
+    count = (unsigned int)(((u_char *)out - (u_char *)code)
+        / sizeof(code[0]));
+    assert(code_has_word(code, count,
+        UINT32_C(0x12800000) | (UINT32_C(1) << 5) | ARG1_REG,
+        UINT32_C(0xffffffff)));
+    assert(code_has_word(code, count,
+        UINT32_C(0x13000000) | (UINT32_C(31) << 16)
+            | (UINT32_C(31) << 10) | (UINT32_C(0) << 5)
+            | HOST_TEMPREG, UINT32_C(0xffffffff)));
+
+    /*
+     * An explicitly unneeded/dirty missing half is not a hot-state guess.
+     * Each selected call field is checked independently.
+     */
+    for (i = 0; i < sizeof(probe_regs_guest) / sizeof(probe_regs_guest[0]);
+            ++i)
+    {
+        struct regstat missing = probe_regs;
+        int guest = probe_regs_guest[i];
+        int low;
+        int high;
+
+        low = get_reg(missing.regmap, guest);
+        high = get_reg(missing.regmap, guest | 64);
+        if (low >= 0)
+            missing.regmap[low] = -1;
+        if (high >= 0)
+            missing.regmap[high] = -1;
+        missing.u |= UINT64_C(1) << guest;
+        assert(!emit_dd_cmd_watch_probe_reg_valid(&missing, guest));
+        memset(code, 0, sizeof(code));
+        out = (u_char *)code;
+        emit_dd_cmd_watch_call_probe(&missing,
+            DD_CMD_WATCH_TARGET_CALL_PC,
+            DD_CMD_WATCH_TARGET_CALL_OPCODE,
+            DD_CMD_WATCH_TARGET_DELAY_OPCODE,
+            DD_CMD_WATCH_TARGET_ENTRY_PC, i + 1);
+        count = (unsigned int)(((u_char *)out - (u_char *)code)
+            / sizeof(code[0]));
+        assert(count != 0);
+    }
+}
+
 static void test_pagespan_context_route_gate(void)
 {
     /*
@@ -780,6 +896,7 @@ int main(void)
     test_context_codegen_uses_live_mappings();
     test_context_codegen_machine_words();
     test_compiled_call_probe_machine_words();
+    test_probe_constants_and_partial_words();
     test_link_delay_slot_ra_fail_closed();
     test_pagespan_context_route_gate();
     test_entry_probe_internal_gap();

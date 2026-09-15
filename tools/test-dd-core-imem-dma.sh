@@ -10,6 +10,7 @@ trap 'rm -f "$test_binary"' EXIT
     -I mupen64plus-core/upstream/src \
     tools/tests/dd-core-imem-dma-test.c \
     mupen64plus-core/upstream/src/device/rcp/rsp/rsp_core.c \
+    mupen64plus-core/upstream/src/device/dd/dd_load_history.c \
     mupen64plus-core/upstream/src/device/dd/dd_cmd_watch.c \
     -Wl,--gc-sections -o "$test_binary"
 "$test_binary"

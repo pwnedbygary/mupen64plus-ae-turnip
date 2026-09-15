@@ -75,20 +75,49 @@ static void dd_dynarec_capture_probe(
     struct dd_cmd_watch_probe_snapshot *snapshot)
 {
   void *context = NULL;
+  static const uint32_t stack_offsets[] = {
+    UINT32_C(0x38), UINT32_C(0x3c), UINT32_C(0x4c), UINT32_C(0x58)
+  };
+  uint32_t header_sample[16] = { 0 };
+  uint32_t stack_sample[4] = { 0 };
+  uint32_t header_sample_valid_mask = 0;
+  uint32_t stack_sample_valid_mask = 0;
   uint32_t source_header_value = 0;
   int source_header_valid = 0;
+  unsigned int i;
 
   if (snapshot == NULL
       || !DdStartupDiagnosticsEnabled()
       || !DdRuntimePolicyGet()
       || DdStartupDiagnosticsGetCallback(&context) == NULL)
     return;
-  if (snapshot->kind == DD_CMD_WATCH_PROBE_CALL)
-    source_header_valid = dd_fault_guest_read_u32(
-        g_dev.rdram.dram, g_dev.rdram.dram_size,
-        (uint32_t)snapshot->t8, &source_header_value);
-  dd_cmd_watch_capture_probe(snapshot, source_header_valid,
-      source_header_value);
+  if (snapshot->kind == DD_CMD_WATCH_PROBE_CALL
+      && (snapshot->flags & DD_CMD_WATCH_PROBE_VALID_T8))
+  {
+    for (i = 0; i < sizeof(header_sample) / sizeof(header_sample[0]); ++i)
+    {
+      uint32_t address = (uint32_t)snapshot->t8 + i * 4;
+      if (dd_fault_guest_read_u32(g_dev.rdram.dram, g_dev.rdram.dram_size,
+              address, &header_sample[i]))
+        header_sample_valid_mask |= UINT32_C(1) << i;
+    }
+    source_header_valid = (header_sample_valid_mask & 1u) != 0;
+    if (source_header_valid)
+      source_header_value = header_sample[0];
+  }
+  if (snapshot->flags & DD_CMD_WATCH_PROBE_VALID_SP)
+  {
+    for (i = 0; i < sizeof(stack_offsets) / sizeof(stack_offsets[0]); ++i)
+    {
+      uint32_t address = (uint32_t)snapshot->sp + stack_offsets[i];
+      if (dd_fault_guest_read_u32(g_dev.rdram.dram, g_dev.rdram.dram_size,
+              address, &stack_sample[i]))
+        stack_sample_valid_mask |= UINT32_C(1) << i;
+    }
+  }
+  dd_cmd_watch_capture_probe_samples(snapshot, source_header_valid,
+      source_header_value, header_sample, header_sample_valid_mask,
+      stack_sample, stack_sample_valid_mask);
 }
 #endif
 #endif
@@ -7753,11 +7782,16 @@ static void ujump_assemble(int i,struct regstat *i_regs)
    */
   if(start + i * 4 == DD_CMD_WATCH_TARGET_CALL_PC
       && ba[i] == DD_CMD_WATCH_TARGET_ENTRY_PC
-      && rt1[i] == 31
-      && dd_dynarec_watch_route_allowed())
-    emit_dd_cmd_watch_call_probe(&branch_regs[i],
-        start + i * 4, source[i], source[i + 1], ba[i],
-        dd_dynarec_compile_generation);
+      && rt1[i] == 31)
+  {
+    if (dd_dynarec_watch_route_allowed())
+      emit_dd_cmd_watch_call_probe(&branch_regs[i],
+          start + i * 4, source[i], source[i + 1], ba[i],
+          dd_dynarec_compile_generation);
+    else if (dd_dynarec_pagespan_compile)
+      dd_cmd_watch_note_compile_rejection(DD_CMD_WATCH_PROBE_CALL,
+          DD_CMD_WATCH_PROBE_COMPILE_PAGE_SPAN, 0);
+  }
 #endif
   int cc,adj;
   cc=get_reg(branch_regs[i].regmap,CCREG);
@@ -12234,10 +12268,15 @@ int new_recompile_block(int addr)
        * zero-fill routine; the recorder still requires the link value from
        * the independent compiled-call probe.
        */
-      if(dd_dynarec_watch_entry_source_eligible(i, start)
-          && dd_dynarec_watch_route_allowed())
-        emit_dd_cmd_watch_entry_probe(&regs[i], start, source[i],
-            dd_dynarec_compile_generation);
+      if(dd_dynarec_watch_entry_source_eligible(i, start))
+      {
+        if (dd_dynarec_watch_route_allowed())
+          emit_dd_cmd_watch_entry_probe(&regs[i], start, source[i],
+              dd_dynarec_compile_generation);
+        else if (dd_dynarec_pagespan_compile)
+          dd_cmd_watch_note_compile_rejection(DD_CMD_WATCH_PROBE_ENTRY,
+              DD_CMD_WATCH_PROBE_COMPILE_PAGE_SPAN, 0);
+      }
 #endif
       if(itype[i]==RJUMP||itype[i]==UJUMP||itype[i]==CJUMP||itype[i]==SJUMP||itype[i]==FJUMP)
       {

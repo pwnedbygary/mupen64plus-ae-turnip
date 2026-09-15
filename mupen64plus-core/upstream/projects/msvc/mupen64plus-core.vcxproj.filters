@@ -375,6 +375,9 @@
     <ClCompile Include="..\..\src\device\rcp\pi\pi_controller.c">
       <Filter>device\rcp\pi</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\src\device\dd\dd_load_history.c">
+      <Filter>device\dd</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\src\device\rcp\ri\ri_controller.c">
       <Filter>device\rcp\ri</Filter>
     </ClCompile>

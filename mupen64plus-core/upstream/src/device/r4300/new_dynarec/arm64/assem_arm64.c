@@ -3291,6 +3291,23 @@ static void emit_dd_cmd_watch_context(int i,
 static int emit_dd_cmd_watch_probe_reg_valid(
     const struct regstat *i_regs, int reg)
 {
+  int low;
+  int high;
+  int is32;
+
+  if (reg == 0)
+    return 1;
+
+  low = get_reg((signed char *)i_regs->regmap, reg);
+  is32 = (int)((i_regs->is32 >> reg) & 1);
+  if (low >= 0 && ((i_regs->isconst >> low) & 1))
+  {
+    if (is32)
+      return 1;
+    high = get_reg((signed char *)i_regs->regmap, reg | 64);
+    return high >= 0 && ((i_regs->isconst >> high) & 1);
+  }
+
   /*
    * Reuse the allocator's unneeded-half contract, but do not accept a
    * missing mapped value whose hot-state copy is explicitly unmaterialized.
@@ -3302,6 +3319,8 @@ static int emit_dd_cmd_watch_probe_reg_valid(
 static void emit_dd_cmd_watch_probe_value(
     const struct regstat *i_regs, int reg, int target)
 {
+  int low;
+  int high;
   int is32;
 
   if (reg == 0)
@@ -3309,6 +3328,37 @@ static void emit_dd_cmd_watch_probe_value(
     emit_zeroreg64(target);
     return;
   }
+
+  /*
+   * A constant in the allocator state is newer evidence than the hot-state
+   * fallback.  Materialize both halves from constmap so a stale spill cannot
+   * masquerade as a live call argument.  Full-width constants require both
+   * allocator halves; sign-extended 32-bit values require only the proven
+   * low half and are extended here.
+   */
+  low = get_reg((signed char *)i_regs->regmap, reg);
+  is32 = (int)((i_regs->is32 >> reg) & 1);
+  if (low >= 0 && ((i_regs->isconst >> low) & 1)
+      && (is32 || (get_reg((signed char *)i_regs->regmap, reg | 64) >= 0
+          && ((i_regs->isconst
+              >> get_reg((signed char *)i_regs->regmap, reg | 64)) & 1))))
+  {
+    if (is32)
+    {
+      emit_movimm((u_int)i_regs->constmap[low], target);
+      emit_sarimm(target, 31, HOST_TEMPREG);
+      emit_orrshlimm64(HOST_TEMPREG, 32, target);
+    }
+    else
+    {
+      high = get_reg((signed char *)i_regs->regmap, reg | 64);
+      emit_movimm((u_int)i_regs->constmap[low], target);
+      emit_movimm((u_int)i_regs->constmap[high], HOST_TEMPREG);
+      emit_orrshlimm64(HOST_TEMPREG, 32, target);
+    }
+    return;
+  }
+
   is32 = (int)((i_regs->is32 >> reg) & 1);
   /*
    * The selected values were spilled before this routine is called.  Always
@@ -3340,9 +3390,13 @@ static void emit_dd_cmd_watch_probe_u64(
     const struct regstat *i_regs,
     int reg,
     intptr_t address,
-    int target)
+    int target,
+    int valid)
 {
-  emit_dd_cmd_watch_probe_value(i_regs, reg, target);
+  if (valid)
+    emit_dd_cmd_watch_probe_value(i_regs, reg, target);
+  else
+    emit_zeroreg64(target);
   emit_writedword(target, address);
 }
 
@@ -3371,23 +3425,41 @@ static void emit_dd_cmd_watch_call_probe(
   u_int reglist;
   uint32_t flags;
   static const int context_regs[] = { 4, 5, 24, 9, 31, 29 };
+  static const uint32_t context_bits[] = {
+    DD_CMD_WATCH_PROBE_VALID_A0,
+    DD_CMD_WATCH_PROBE_VALID_A1,
+    DD_CMD_WATCH_PROBE_VALID_T8,
+    DD_CMD_WATCH_PROBE_VALID_T1,
+    DD_CMD_WATCH_PROBE_VALID_RA,
+    DD_CMD_WATCH_PROBE_VALID_SP
+  };
+  uint32_t valid_mask = 0;
   unsigned int i;
 
   if (call_pc != DD_CMD_WATCH_TARGET_CALL_PC
       || call_opcode != DD_CMD_WATCH_TARGET_CALL_OPCODE
       || delay_opcode != DD_CMD_WATCH_TARGET_DELAY_OPCODE
       || target != DD_CMD_WATCH_TARGET_ENTRY_PC)
+  {
+    dd_cmd_watch_note_compile_rejection(DD_CMD_WATCH_PROBE_CALL,
+        DD_CMD_WATCH_PROBE_COMPILE_OPCODE_GATE, 0);
     return;
+  }
   for (i = 0; i < sizeof(context_regs) / sizeof(context_regs[0]); ++i)
-    if (!emit_dd_cmd_watch_probe_reg_valid(i_regs, context_regs[i]))
-      return;
+    if (emit_dd_cmd_watch_probe_reg_valid(i_regs, context_regs[i]))
+      valid_mask |= context_bits[i];
+  if ((valid_mask & DD_CMD_WATCH_PROBE_CALL_REQUIRED)
+      != DD_CMD_WATCH_PROBE_CALL_REQUIRED)
+    dd_cmd_watch_note_compile_rejection(DD_CMD_WATCH_PROBE_CALL,
+        DD_CMD_WATCH_PROBE_COMPILE_MISSING_REGISTER, valid_mask);
 
   reglist = emit_dd_cmd_watch_probe_reglist(i_regs);
   save_regs(reglist);
   for (i = 0; i < sizeof(context_regs) / sizeof(context_regs[0]); ++i)
-    emit_dd_cmd_watch_context_spill(i_regs, context_regs[i]);
+    if (valid_mask & context_bits[i])
+      emit_dd_cmd_watch_context_spill(i_regs, context_regs[i]);
 
-  flags = DD_CMD_WATCH_PROBE_AFTER_DELAY | DD_CMD_WATCH_PROBE_CALL_VALID;
+  flags = DD_CMD_WATCH_PROBE_AFTER_DELAY | valid_mask;
   emit_dd_cmd_watch_probe_u32(base
       + offsetof(struct dd_cmd_watch_probe_snapshot, call_pc),
       call_pc, ARG1_REG);
@@ -3416,17 +3488,23 @@ static void emit_dd_cmd_watch_call_probe(
       + offsetof(struct dd_cmd_watch_probe_snapshot, generation),
       generation, ARG1_REG);
   emit_dd_cmd_watch_probe_u64(i_regs, 4, base
-      + offsetof(struct dd_cmd_watch_probe_snapshot, a0), ARG1_REG);
+      + offsetof(struct dd_cmd_watch_probe_snapshot, a0), ARG1_REG,
+      (valid_mask & DD_CMD_WATCH_PROBE_VALID_A0) != 0);
   emit_dd_cmd_watch_probe_u64(i_regs, 5, base
-      + offsetof(struct dd_cmd_watch_probe_snapshot, a1), ARG1_REG);
+      + offsetof(struct dd_cmd_watch_probe_snapshot, a1), ARG1_REG,
+      (valid_mask & DD_CMD_WATCH_PROBE_VALID_A1) != 0);
   emit_dd_cmd_watch_probe_u64(i_regs, 24, base
-      + offsetof(struct dd_cmd_watch_probe_snapshot, t8), ARG1_REG);
+      + offsetof(struct dd_cmd_watch_probe_snapshot, t8), ARG1_REG,
+      (valid_mask & DD_CMD_WATCH_PROBE_VALID_T8) != 0);
   emit_dd_cmd_watch_probe_u64(i_regs, 9, base
-      + offsetof(struct dd_cmd_watch_probe_snapshot, t1), ARG1_REG);
+      + offsetof(struct dd_cmd_watch_probe_snapshot, t1), ARG1_REG,
+      (valid_mask & DD_CMD_WATCH_PROBE_VALID_T1) != 0);
   emit_dd_cmd_watch_probe_u64(i_regs, 31, base
-      + offsetof(struct dd_cmd_watch_probe_snapshot, ra), ARG1_REG);
+      + offsetof(struct dd_cmd_watch_probe_snapshot, ra), ARG1_REG,
+      (valid_mask & DD_CMD_WATCH_PROBE_VALID_RA) != 0);
   emit_dd_cmd_watch_probe_u64(i_regs, 29, base
-      + offsetof(struct dd_cmd_watch_probe_snapshot, sp), ARG1_REG);
+      + offsetof(struct dd_cmd_watch_probe_snapshot, sp), ARG1_REG,
+      (valid_mask & DD_CMD_WATCH_PROBE_VALID_SP) != 0);
   /*
    * `base` is a host pointer.  emit_movimm() accepts only a 32-bit
    * immediate, so using it here truncates the pointer before the C helper
@@ -3449,20 +3527,38 @@ static void emit_dd_cmd_watch_entry_probe(
   const intptr_t base =
       (intptr_t)&g_dev.r4300.new_dynarec_hot_state.dd_cmd_watch_probe;
   u_int reglist;
+  uint32_t flags;
+  uint32_t valid_mask = 0;
   unsigned int i;
   static const int context_regs[] = { 4, 5, 31, 29 };
+  static const uint32_t context_bits[] = {
+    DD_CMD_WATCH_PROBE_VALID_A0,
+    DD_CMD_WATCH_PROBE_VALID_A1,
+    DD_CMD_WATCH_PROBE_VALID_RA,
+    DD_CMD_WATCH_PROBE_VALID_SP
+  };
 
   if (entry_pc != DD_CMD_WATCH_TARGET_ENTRY_PC)
+  {
+    dd_cmd_watch_note_compile_rejection(DD_CMD_WATCH_PROBE_ENTRY,
+        DD_CMD_WATCH_PROBE_COMPILE_PROVENANCE, 0);
     return;
+  }
   for (i = 0; i < sizeof(context_regs) / sizeof(context_regs[0]); ++i)
-    if (!emit_dd_cmd_watch_probe_reg_valid(i_regs, context_regs[i]))
-      return;
+    if (emit_dd_cmd_watch_probe_reg_valid(i_regs, context_regs[i]))
+      valid_mask |= context_bits[i];
+  if ((valid_mask & DD_CMD_WATCH_PROBE_ENTRY_VALID)
+      != DD_CMD_WATCH_PROBE_ENTRY_VALID)
+    dd_cmd_watch_note_compile_rejection(DD_CMD_WATCH_PROBE_ENTRY,
+        DD_CMD_WATCH_PROBE_COMPILE_MISSING_REGISTER, valid_mask);
 
   reglist = emit_dd_cmd_watch_probe_reglist(i_regs);
   save_regs(reglist);
   for (i = 0; i < sizeof(context_regs) / sizeof(context_regs[0]); ++i)
-    emit_dd_cmd_watch_context_spill(i_regs, context_regs[i]);
+    if (valid_mask & context_bits[i])
+      emit_dd_cmd_watch_context_spill(i_regs, context_regs[i]);
 
+  flags = valid_mask;
   emit_dd_cmd_watch_probe_u32(base
       + offsetof(struct dd_cmd_watch_probe_snapshot, call_pc),
       DD_CMD_WATCH_TARGET_CALL_PC, ARG1_REG);
@@ -3486,18 +3582,22 @@ static void emit_dd_cmd_watch_entry_probe(
       DD_CMD_WATCH_PROBE_ENTRY, ARG1_REG);
   emit_dd_cmd_watch_probe_u32(base
       + offsetof(struct dd_cmd_watch_probe_snapshot, flags),
-      DD_CMD_WATCH_PROBE_ENTRY_VALID, ARG1_REG);
+      flags, ARG1_REG);
   emit_dd_cmd_watch_probe_u32(base
       + offsetof(struct dd_cmd_watch_probe_snapshot, generation),
       generation, ARG1_REG);
   emit_dd_cmd_watch_probe_u64(i_regs, 4, base
-      + offsetof(struct dd_cmd_watch_probe_snapshot, a0), ARG1_REG);
+      + offsetof(struct dd_cmd_watch_probe_snapshot, a0), ARG1_REG,
+      (valid_mask & DD_CMD_WATCH_PROBE_VALID_A0) != 0);
   emit_dd_cmd_watch_probe_u64(i_regs, 5, base
-      + offsetof(struct dd_cmd_watch_probe_snapshot, a1), ARG1_REG);
+      + offsetof(struct dd_cmd_watch_probe_snapshot, a1), ARG1_REG,
+      (valid_mask & DD_CMD_WATCH_PROBE_VALID_A1) != 0);
   emit_dd_cmd_watch_probe_u64(i_regs, 31, base
-      + offsetof(struct dd_cmd_watch_probe_snapshot, ra), ARG1_REG);
+      + offsetof(struct dd_cmd_watch_probe_snapshot, ra), ARG1_REG,
+      (valid_mask & DD_CMD_WATCH_PROBE_VALID_RA) != 0);
   emit_dd_cmd_watch_probe_u64(i_regs, 29, base
-      + offsetof(struct dd_cmd_watch_probe_snapshot, sp), ARG1_REG);
+      + offsetof(struct dd_cmd_watch_probe_snapshot, sp), ARG1_REG,
+      (valid_mask & DD_CMD_WATCH_PROBE_VALID_SP) != 0);
   /* Keep the diagnostic hot-state snapshot pointer 64-bit on ARM64. */
   emit_loadlp((uintptr_t)base, ARG1_REG);
 #ifndef DD_CMD_WATCH_CODEGEN_TEST

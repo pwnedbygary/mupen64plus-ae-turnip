@@ -1,3 +1,10 @@
+All register values in DDSTART15 are zeroed at formatting time unless their
+individual validity bit is set; a nonzero stale hot-state slot therefore
+cannot masquerade as a live `a0/a1/ra/sp`. PI/load-history flushes occur only
+after the corresponding DDSTART15 call/entry line is actually accepted within
+the probe budget; rejected RA/opcode records and exhausted budgets create no
+orphan flush.
+
 # 2026-09-15 — bounded aligned CPU writer diagnostic
 
 The latest private capture reproduced the zero buffer at SP launch 880,
@@ -4303,38 +4310,73 @@ slot and after JAL link materialization, so it reports
 the clear argument. It records compiled call PC/opcode/delay/target and
 compile generation rather than rereading current RDRAM for code provenance.
 
-The call probe requires coherent live allocator values for `a0`, `a1`, `t8`,
-`t1`, `ra`, and `sp`. Existing mapped-value/spill extraction is reused:
-selected mappings are materialized through the diagnostic hot-state slot,
-reloaded for the observer, and an explicitly unmaterialized or
-dirty-but-unmapped half rejects the probe. The wrapper validates `t8` as
-aligned unmapped KSEG0/KSEG1 and reads
-one source-header word through the bounded direct-RDRAM reader. The emitted
-record includes the validated header address/value and live `comparator_t1`.
+The call probe materializes each allocator value independently through the
+diagnostic hot-state slot and reloads it for the observer. `a0`, `a1`, `ra`
+and `sp` retain per-field validity; `t1` and `t8` are optional comparator and
+source probes. An unknown field is emitted as zero with its validity bit
+clear, so a partial record does not turn stale hot-state data into evidence.
+A valid but wrong `ra` fails closed; an unknown `ra` is retained as an
+explicitly invalid field. Dirty-but-unmapped halves and unproven constants
+remain rejected by the allocator-side materialization. The wrapper validates
+`t8` as aligned unmapped KSEG0/KSEG1, reads a bounded 64-byte raw sample
+through the direct-RDRAM reader, and reports the first word only when that
+word is individually valid; the record also carries explicit validity for
+the full sample and raw stack offsets.
 
 Separately, a probe is emitted at the compiled block entry
-`0x80747240`, recording its compiled first instruction word and requiring
-the retained link value `ra & 0xffffffff == 0x800aea14`. It requires
-coherent entry `a0/a1/ra/sp` and is the only record labeled
-`original_arguments=callee-entry`. The call-site metadata is carried into
-this record as fixed compiled provenance. A matching target address found
-internally in an already compiled block is an explicit fail-closed entry
-coverage gap; the post-delay callsite probe is the primary executed-path
-observation and block generation is not broadened. Page-span blocks and
-link-delay uncertainty fail closed; no branch is redirected or spoofed.
+`0x80747240`, recording its compiled first instruction word and fixed
+call-site provenance. Entry fields use the same per-field validity contract:
+missing `a0/a1/ra/sp` produces an explicit partial record, while a valid but
+wrong `ra & 0xffffffff` rejects the observation. Only an entry record with
+all required fields valid and the expected link is labeled
+`original_arguments=callee-entry`; otherwise it is `original_arguments=unproven`.
+The call-site metadata is carried into this record as fixed compiled
+provenance. A matching target address found internally in an already compiled
+block is an explicit fail-closed entry coverage gap; the post-delay callsite
+probe is the primary executed-path observation and block generation is not
+broadened. Page-span blocks and link-delay uncertainty fail closed; no branch
+is redirected or spoofed.
 
 ### Tests and limits
 
 `dd_cmd_watch_test.c` now checks exact host call/entry records, source-word
 rejection, after-delay labeling, expected-return-RA rejection, validated-KSEG
-and invalid-header behavior, the bounded budget/reset contract, and the
-production entry-word fixture (`0x0c00a128` from the corrected P07 RDRAM
-window). The dynarec fixture explicitly checks snapshot stores relative to
-the hot-state snapshot base and save/restore words.
+and invalid-header behavior, partial validity masks, raw validated header and
+stack samples, the bounded budget/reset contract, and the production
+entry-word fixture (`0x0c00a128` from the corrected P07 RDRAM window). The
+dynarec fixture explicitly checks snapshot stores relative to the hot-state
+snapshot base and save/restore words. A missing optional `t1` comparator or
+`t8` header probe no longer suppresses trustworthy `a0/a1/ra/sp`; the record
+names `header-unavailable` and retains its per-field mask. Exact decoded
+call/delay/target gates remain fail-closed.
+
+Allocator-proven constants are materialized from `constmap` (full 64-bit
+values require both halves; sign-extended 32-bit values require the proven
+low half). An explicitly dirty/unneeded unknown half remains fail-closed,
+and no stale hot-state value is substituted for a known allocator constant.
+Compile-time missing-register, page-span, provenance and opcode-gate
+rejections have a separate bounded telemetry budget. Call records carry a
+bounded 64-byte direct-RDRAM sample at validated `t8` plus raw direct-RDRAM
+words at `sp+0x38`, `sp+0x3c`, `sp+0x4c`, and `sp+0x58`; validity masks and
+`validated-direct-rdram-raw` provenance are explicit and these words are not
+decoded as semantics. The existing DDSTART14 first/latest clear records retain
+the latest two qualifying clear ranges with before/after values; correlate
+them with DDSTART15 by generation and address rather than treating either
+sample as proof of ownership.
+
+The existing watcher also retains a bounded last-four audio-launch descriptor
+history (word-wise descriptor hash plus raw four-word prefix/suffix) and emits
+it at a zero-audio boundary. It does not infer PI ownership from that
+descriptor snapshot. The watcher calls the separate bounded PI/load-history
+module at session reset and flushes it at validated call, entry, and
+zero-audio boundaries; the module's own ring/budget owns recent
+PI->RDRAM/DMA evidence.
 `dd-startup-dynarec-observer-test.c` invokes the actual production ARM64
 probe emitters and checks generated hot-state field-store words plus
 exact-word suppression. ARM64 syntax checking uses NDK
 26.1.10909125. TLB, page-span, unaligned and DMA paths remain uncovered by
-design; a missing live t8/t1 or failed source-header bounds check produces no
-executed-call claim. This package has no APK/build/device result, commit or
-push; independent review remains pending.
+design. This is an evidence package for choosing the next fix, not complete
+proof: the invalid-data/clear-wrong-range/stale-reuse checklist still
+requires correlation with a bounded recent load/DMA context ring. This
+package has no APK/build/device result, commit or push; independent review
+remains pending.

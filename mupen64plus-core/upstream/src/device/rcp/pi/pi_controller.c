@@ -29,6 +29,7 @@
 #include "api/m64p_types.h"
 #include "device/device.h"
 #include "device/dd/dd_controller.h"
+#include "device/dd/dd_load_history.h"
 #include "device/memory/memory.h"
 #include "device/r4300/r4300_core.h"
 #include "device/rcp/mi/mi_controller.h"
@@ -102,6 +103,9 @@ static void dma_pi_read(struct pi_controller* pi)
 
 static void dma_pi_write(struct pi_controller* pi)
 {
+    struct dd_load_history_dma load_history;
+    int observe_dd_dma;
+
     if (!validate_pi_request(pi))
         return;
 
@@ -125,6 +129,10 @@ static void dma_pi_write(struct pi_controller* pi)
         length += 1;
     if (length <= 0x80)
         length -= dram_addr & 0x7;
+    observe_dd_dma = pi->dd != NULL && is_dd_pi_address(cart_addr);
+    if (observe_dd_dma)
+        dd_load_history_pi_dma_begin(&load_history, dram, pi->ri->rdram->dram_size,
+            cart_addr, dram_addr, length);
     if (DdStartupDiagnosticsEnabled() && pi->dd != NULL && is_dd_pi_address(cart_addr)) {
         DdStartupDiagnosticsTrace(DD_TRACE_PI_DMA, DD_TRACE_EARLY,
             "DDSTART3 PI DMA start: direction=write dram=%08" PRIX32
@@ -132,6 +140,9 @@ static void dma_pi_write(struct pi_controller* pi)
             dram_addr, cart_addr, length);
     }
     unsigned int cycles = handler->dma_write(opaque, dram, dram_addr, cart_addr, length);
+    if (observe_dd_dma)
+        dd_load_history_pi_dma_complete(&load_history, dram,
+            pi->ri->rdram->dram_size);
 
     post_framebuffer_write(&pi->dp->fb, dram_addr, length);
 

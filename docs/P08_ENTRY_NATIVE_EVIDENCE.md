@@ -1,3 +1,10 @@
+DDSTART15 formatting treats validity as an information boundary: `a0`, `a1`,
+`ra`, `sp`, `t1`, and `t8` values are zeroed unless their individual
+validity/provenance bit is set. A stale nonzero hot-state slot is never
+printed as live evidence. The PI/load-history ring is flushed only after a
+call/entry record is accepted by the DDSTART15 probe budget; wrong-RA,
+opcode-gate, and exhausted-budget paths produce no orphan flush.
+
 # P08 task-entry observation — native capture, 2026-09-15
 
 ## Scope and provenance
@@ -285,38 +292,66 @@ materialized. Consequently its `a1` is labeled
 the clear argument.
 
 The call record carries the exact compiled call PC, opcode, delay opcode,
-target and compile generation. It requires coherent live allocator values
-for `a0`, `a1`, `t8`, `t1`, `ra` and `sp`. Selected mappings are spilled to
-the diagnostic hot-state slot only when needed, then reloaded before the
-observational C call; an explicitly unmaterialized or dirty-but-unmapped
-half rejects the probe.
+target and compile generation. `a0`, `a1`, `ra` and `sp` are independent
+per-field observations; `t1` is an optional comparator and `t8` is an
+optional source-header probe. Selected mappings are spilled to the
+diagnostic hot-state slot only when needed, then reloaded before the
+observational C call. The generated record retains a per-field validity mask
+and explicit rejection reason instead of silently dropping a partial
+observation. A field whose validity bit is clear is formatted as zero, never
+as a stale hot-state value. A valid but wrong `ra` rejects the observation;
+an unknown `ra` remains an explicitly invalid field in a partial record.
+Allocator-proven constants are materialized from `constmap`: full-width
+values require both proven halves, while a proven sign-extended 32-bit value
+requires only its low half. Dirty/unneeded unknown halves fail closed and
+are never replaced by stale hot-state data.
 The wrapper validates `t8` as an aligned unmapped KSEG0/KSEG1 address and
-reads exactly one word through the existing bounded direct-RDRAM reader.
-The record therefore reports both `source_header_address` and the
-validated `source_header_value`, plus the live `comparator_t1`. A missing
-mapping, non-KSEG address, failed bounds check, disabled callback, disabled
-DD policy, or source-word mismatch emits no executed-call claim.
+reads a bounded 64-byte raw sample through the existing direct-RDRAM reader.
+The record reports `source_header_address`, header validity/reason, the
+validated first word when available, and optional `comparator_t1` validity.
+It also carries raw, individually validated words at stack offsets
+`0x38/0x3c/0x4c/0x58`; these samples have explicit provenance and are not
+decoded as resource or stack semantics. Missing `t8`, an invalid address, or
+a failed bounds check reports `header-unavailable` while retaining trusted
+call fields. Exact decoded call/delay/target gates remain fail-closed.
 
 An independent entry probe is emitted only for a non-page-span compiled block
 starting at `0x80747240`. It records that block's compiled first word and
-requires `ra & 0xffffffff == 0x800aea14`, in addition to coherent entry
-`a0/a1/ra/sp`. Its call-site opcode/delay/target fields are fixed compiled
-provenance, so a current-RDRAM snapshot cannot manufacture a match. The
-entry record is the only output labeled `original_arguments=callee-entry`;
-the call record remains an after-delay observation. A matching
+uses the same partial per-field contract for entry `a0/a1/ra/sp`: missing
+fields are retained with clear validity bits, while a valid but wrong
+`ra & 0xffffffff` rejects the observation. Its call-site opcode/delay/target
+fields are fixed compiled provenance, so a current-RDRAM snapshot cannot
+manufacture a match. Only an entry with all required fields valid and the
+expected link is labeled `original_arguments=callee-entry`; an entry with an
+unknown required field is `original_arguments=unproven`. The call record
+remains an after-delay observation. A matching
 `0x80747240` address found internally in an already compiled block is an
 explicit fail-closed entry-coverage gap; the post-delay callsite probe is the
 primary executed-path observation and block generation is not broadened.
 Page-span blocks and link-delay-slot uncertainty fail closed.
 
-The probe has an independent eight-record session budget and remains bounded
-by the existing diagnostics and runtime DD policy gates. Host coverage adds
-production emitter machine-word fixtures for exact-word rejection and
-hot-state field stores, plus recorder records for the validated call and
-callee-entry forms. ARM64 syntax verification remains the NDK
-26.1.10909125 check. This is a specialized address diagnostic, not a
-runtime fix or a claim that the compared MIO0/header branch is understood;
-device evidence is still required.
+The probe has an independent eight-record session budget and separate bounded
+compile-rejection telemetry for missing registers, page-span and provenance
+gaps. Host coverage adds production emitter machine-word fixtures for
+exact-word rejection, partial field stores, constant extraction and
+hot-state field stores, plus recorder records for validated, partial and
+header-unavailable call forms and callee-entry forms. ARM64 syntax
+verification remains the NDK 26.1.10909125 check. TLB, page-span, unaligned
+and DMA paths remain uncovered by design. Existing DDSTART14 first/latest
+clear records retain the latest two qualifying clear ranges and before/after
+values. The implemented bounded PI history supplies chronological sequence,
+addresses and before/after samples. Correlation with DDSTART14/DDSTART15 is
+temporal and address-based, not a shared generation key or ownership proof.
+This supports the invalid-data, clear-wrong-range and stale-reuse checklist.
+This package is evidence for choosing the next fix,
+not complete proof, and device evidence is still required.
+
+The watcher lifecycle additionally retains the last four audio-launch
+descriptors as a bounded word-wise hash with raw four-word prefix/suffix and
+emits them at a zero-audio boundary. Reset/flush calls to the separate
+bounded PI/load-history ring use the narrow `dd_load_history_reset()` and
+`dd_load_history_flush(const char *reason)` interface; this package does not
+decode the descriptor samples or claim ownership from them.
 
 ### DDSTART15 native-crash regression triage
 

@@ -6,11 +6,27 @@
 #include <string.h>
 
 #include "api/callbacks.h"
+#include "device/dd/dd_load_history.h"
 
 #define DD_CMD_WATCH_KSEG_MASK UINT32_C(0x1fffffff)
 #define DD_CMD_WATCH_KSEG0 UINT32_C(0x80000000)
 #define DD_CMD_WATCH_KSEG1 UINT32_C(0xa0000000)
 #define DD_CMD_WATCH_ROUTE_SLACK 7u
+#define DD_CMD_WATCH_LAUNCH_HISTORY_CAPACITY 4u
+#define DD_CMD_WATCH_LAUNCH_HISTORY_BUDGET 16u
+#define DD_CMD_WATCH_LAUNCH_SAMPLE_WORDS 4u
+
+struct dd_cmd_watch_launch_snapshot
+{
+    uint32_t generation;
+    uint64_t descriptor_hash;
+    uint32_t data_ptr;
+    uint32_t data_size;
+    uint32_t prefix[DD_CMD_WATCH_LAUNCH_SAMPLE_WORDS];
+    uint32_t suffix[DD_CMD_WATCH_LAUNCH_SAMPLE_WORDS];
+    uint32_t buffer_valid;
+    uint32_t nonzero_words;
+};
 
 struct dd_cmd_watch_slot
 {
@@ -45,10 +61,117 @@ struct dd_cmd_watch_slot
     } first_context, latest_context;
 };
 
+static struct dd_cmd_watch_launch_snapshot launch_history[
+    DD_CMD_WATCH_LAUNCH_HISTORY_CAPACITY];
+static unsigned int launch_history_head;
+static unsigned int launch_history_count;
+static unsigned int launch_history_remaining = DD_CMD_WATCH_LAUNCH_HISTORY_BUDGET;
+
+static int dd_cmd_watch_diagnostics_open(void);
+static void dd_cmd_watch_emit(const char *message);
+
+static uint64_t dd_cmd_watch_launch_hash(const uint32_t *task_words)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+    unsigned int i;
+
+    for (i = 0; i < 16; ++i)
+        hash = (hash * UINT64_C(1099511628211)) ^ task_words[i];
+    return hash;
+}
+
+static void dd_cmd_watch_clear_launch_history(void)
+{
+    memset(launch_history, 0, sizeof(launch_history));
+    launch_history_head = 0;
+    launch_history_count = 0;
+    launch_history_remaining = DD_CMD_WATCH_LAUNCH_HISTORY_BUDGET;
+}
+
+static void dd_cmd_watch_record_launch(
+    const uint32_t *task_words, uint32_t generation,
+    int buffer_valid, uint32_t nonzero_words)
+{
+    struct dd_cmd_watch_launch_snapshot *snapshot;
+    unsigned int index;
+    unsigned int i;
+
+    if (launch_history_count < DD_CMD_WATCH_LAUNCH_HISTORY_CAPACITY)
+    {
+        index = (launch_history_head + launch_history_count)
+            % DD_CMD_WATCH_LAUNCH_HISTORY_CAPACITY;
+        ++launch_history_count;
+    }
+    else
+    {
+        index = launch_history_head;
+        launch_history_head = (launch_history_head + 1)
+            % DD_CMD_WATCH_LAUNCH_HISTORY_CAPACITY;
+    }
+    snapshot = &launch_history[index];
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->generation = generation;
+    snapshot->descriptor_hash = dd_cmd_watch_launch_hash(task_words);
+    snapshot->data_ptr = task_words[12];
+    snapshot->data_size = task_words[13];
+    snapshot->buffer_valid = buffer_valid != 0;
+    snapshot->nonzero_words = nonzero_words;
+    for (i = 0; i < DD_CMD_WATCH_LAUNCH_SAMPLE_WORDS; ++i)
+    {
+        snapshot->prefix[i] = task_words[i];
+        snapshot->suffix[i] = task_words[16
+            - DD_CMD_WATCH_LAUNCH_SAMPLE_WORDS + i];
+    }
+}
+
+static void dd_cmd_watch_emit_launch_history(void)
+{
+    unsigned int i;
+    char message[512];
+
+    if (!dd_cmd_watch_diagnostics_open() || launch_history_remaining == 0)
+        return;
+    for (i = 0; i < launch_history_count
+            && launch_history_remaining != 0; ++i)
+    {
+        const struct dd_cmd_watch_launch_snapshot *snapshot =
+            &launch_history[(launch_history_head + i)
+                % DD_CMD_WATCH_LAUNCH_HISTORY_CAPACITY];
+
+        (void)snprintf(message, sizeof(message),
+            "DDSTART14 RSP launch_snapshot source=TASK_DESCRIPTOR"
+            " generation=%" PRIu32
+            " descriptor_hash=0x%016" PRIx64
+            " data_ptr_raw=0x%08" PRIx32
+            " data_size_raw=0x%08" PRIx32
+            " buffer_valid=%" PRIu32
+            " nonzero_words=%" PRIu32
+            " descriptor_prefix={0x%08" PRIx32 ",0x%08" PRIx32
+            ",0x%08" PRIx32 ",0x%08" PRIx32 "}"
+            " descriptor_suffix={0x%08" PRIx32 ",0x%08" PRIx32
+            ",0x%08" PRIx32 ",0x%08" PRIx32 "}"
+            " sample_provenance=raw-descriptor-retained",
+            snapshot->generation, snapshot->descriptor_hash,
+            snapshot->data_ptr, snapshot->data_size, snapshot->buffer_valid,
+            snapshot->nonzero_words,
+            snapshot->prefix[0], snapshot->prefix[1],
+            snapshot->prefix[2], snapshot->prefix[3],
+            snapshot->suffix[0], snapshot->suffix[1],
+            snapshot->suffix[2], snapshot->suffix[3]);
+        dd_cmd_watch_emit(message);
+        --launch_history_remaining;
+    }
+}
+
 static struct dd_cmd_watch_slot slots[DD_CMD_WATCH_BUFFER_COUNT];
 static unsigned int trace_remaining = DD_CMD_WATCH_TRACE_BUDGET;
 static unsigned int context_remaining = DD_CMD_WATCH_CONTEXT_BUDGET;
 static unsigned int probe_remaining = DD_CMD_WATCH_PROBE_BUDGET;
+static unsigned int compile_rejection_remaining =
+    DD_CMD_WATCH_COMPILE_REJECTION_BUDGET;
+static unsigned int probe_header_unavailable_count;
+static unsigned int probe_header_invalid_t8_count;
+static unsigned int probe_missing_required_count;
 static int route_pending;
 static struct dd_cmd_watch_context_record pending_context;
 static unsigned int coverage =
@@ -143,9 +266,15 @@ static void dd_cmd_watch_close(void)
     trace_remaining = DD_CMD_WATCH_TRACE_BUDGET;
     context_remaining = DD_CMD_WATCH_CONTEXT_BUDGET;
     probe_remaining = DD_CMD_WATCH_PROBE_BUDGET;
+    compile_rejection_remaining = DD_CMD_WATCH_COMPILE_REJECTION_BUDGET;
+    probe_header_unavailable_count = 0;
+    probe_header_invalid_t8_count = 0;
+    probe_missing_required_count = 0;
     route_pending = 0;
     memset(&pending_context, 0, sizeof(pending_context));
     dd_cmd_watch_clear_routes();
+    dd_cmd_watch_clear_launch_history();
+    dd_load_history_reset();
 }
 
 static void dd_cmd_watch_build_routes(void)
@@ -234,17 +363,64 @@ static void dd_cmd_watch_emit(const char *message)
     (*callback)(context, M64MSG_INFO, message);
 }
 
-static void dd_cmd_watch_emit_probe(const char *message)
+static int dd_cmd_watch_emit_probe(const char *message)
 {
     void *context = NULL;
     ptr_DdStartupDiagnosticsCallback callback;
 
     if (probe_remaining == 0 || message == NULL)
+        return 0;
+    callback = DdStartupDiagnosticsGetCallback(&context);
+    if (callback == NULL || !DdRuntimePolicyGet())
+        return 0;
+    --probe_remaining;
+    (*callback)(context, M64MSG_INFO, message);
+    return 1;
+}
+
+static const char *dd_cmd_watch_probe_kind_name(uint32_t kind)
+{
+    return kind == DD_CMD_WATCH_PROBE_CALL ? "call"
+        : kind == DD_CMD_WATCH_PROBE_ENTRY ? "entry" : "unknown";
+}
+
+static const char *dd_cmd_watch_compile_reason_name(uint32_t reason)
+{
+    switch (reason)
+    {
+    case DD_CMD_WATCH_PROBE_COMPILE_MISSING_REGISTER:
+        return "missing-register";
+    case DD_CMD_WATCH_PROBE_COMPILE_PAGE_SPAN:
+        return "page-span";
+    case DD_CMD_WATCH_PROBE_COMPILE_PROVENANCE:
+        return "provenance";
+    case DD_CMD_WATCH_PROBE_COMPILE_OPCODE_GATE:
+        return "opcode-gate";
+    default:
+        return "unknown";
+    }
+}
+
+void dd_cmd_watch_note_compile_rejection(
+    uint32_t kind, uint32_t reason, uint32_t valid_mask)
+{
+    void *context = NULL;
+    ptr_DdStartupDiagnosticsCallback callback;
+    char message[256];
+
+    if (compile_rejection_remaining == 0
+            || !dd_cmd_watch_diagnostics_open())
         return;
     callback = DdStartupDiagnosticsGetCallback(&context);
     if (callback == NULL || !DdRuntimePolicyGet())
         return;
-    --probe_remaining;
+    (void)snprintf(message, sizeof(message),
+        "DDSTART15 probe_compile_reject kind=%s reason=%s"
+        " valid_mask=0x%08" PRIx32 " budget_remaining=%u",
+        dd_cmd_watch_probe_kind_name(kind),
+        dd_cmd_watch_compile_reason_name(reason), valid_mask,
+        compile_rejection_remaining - 1);
+    --compile_rejection_remaining;
     (*callback)(context, M64MSG_INFO, message);
 }
 
@@ -396,9 +572,15 @@ void dd_cmd_watch_reset(void)
     trace_remaining = DD_CMD_WATCH_TRACE_BUDGET;
     context_remaining = DD_CMD_WATCH_CONTEXT_BUDGET;
     probe_remaining = DD_CMD_WATCH_PROBE_BUDGET;
+    compile_rejection_remaining = DD_CMD_WATCH_COMPILE_REJECTION_BUDGET;
+    probe_header_unavailable_count = 0;
+    probe_header_invalid_t8_count = 0;
+    probe_missing_required_count = 0;
     route_pending = 0;
     memset(&pending_context, 0, sizeof(pending_context));
     dd_cmd_watch_clear_routes();
+    dd_cmd_watch_clear_launch_history();
+    dd_load_history_reset();
 }
 
 void dd_cmd_watch_task_entry(const uint32_t *task_words,
@@ -418,7 +600,16 @@ void dd_cmd_watch_task_entry(const uint32_t *task_words,
         dd_cmd_watch_close();
         return;
     }
-    if (task_words == NULL || task_words[0] != 2u || !buffer_valid)
+    if (task_words == NULL || task_words[0] != 2u)
+        return;
+    dd_cmd_watch_record_launch(task_words, generation, buffer_valid,
+        nonzero_words);
+    if (nonzero_words == 0)
+    {
+        dd_cmd_watch_emit_launch_history();
+        dd_load_history_flush("zero-audio");
+    }
+    if (!buffer_valid)
         return;
 
     base = dd_cmd_watch_task_physical(task_words[12]);
@@ -561,18 +752,62 @@ void dd_cmd_watch_capture_context(uint32_t address,
     pending_context.a3 = a3;
 }
 
+static void dd_cmd_watch_format_sample(
+    char *destination, size_t capacity, const uint32_t *sample,
+    uint32_t valid_mask, unsigned int count)
+{
+    size_t used = 0;
+    unsigned int i;
+
+    if (destination == NULL || capacity == 0)
+        return;
+    destination[0] = '\0';
+    for (i = 0; i < count; ++i)
+    {
+        int written = snprintf(destination + used, capacity - used,
+            "%s%08" PRIx32, i == 0 ? "" : ",",
+            sample != NULL && (valid_mask & (UINT32_C(1) << i))
+                ? sample[i] : 0);
+        if (written < 0 || (size_t)written >= capacity - used)
+            break;
+        used += (size_t)written;
+    }
+}
+
 void dd_cmd_watch_capture_probe(
     const struct dd_cmd_watch_probe_snapshot *snapshot,
     int source_header_valid,
     uint32_t source_header_value)
 {
-    char message[1024];
-    uint32_t flags;
+    dd_cmd_watch_capture_probe_samples(snapshot, source_header_valid,
+        source_header_value, NULL, 0, NULL, 0);
+}
 
-    if (snapshot == NULL || !dd_cmd_watch_diagnostics_open())
+void dd_cmd_watch_capture_probe_samples(
+    const struct dd_cmd_watch_probe_snapshot *snapshot,
+    int source_header_valid,
+    uint32_t source_header_value,
+    const uint32_t *header_sample,
+    uint32_t header_sample_valid_mask,
+    const uint32_t *stack_sample,
+    uint32_t stack_sample_valid_mask)
+{
+    char message[2048];
+    char header_sample_text[512];
+    char stack_sample_text[128];
+    uint32_t flags;
+    uint32_t valid_mask;
+
+    if (snapshot == NULL || !dd_cmd_watch_diagnostics_open()
+            || probe_remaining == 0)
         return;
 
     flags = snapshot->flags;
+    valid_mask = flags & DD_CMD_WATCH_PROBE_REGISTER_MASK;
+    dd_cmd_watch_format_sample(header_sample_text,
+        sizeof(header_sample_text), header_sample, header_sample_valid_mask, 16);
+    dd_cmd_watch_format_sample(stack_sample_text,
+        sizeof(stack_sample_text), stack_sample, stack_sample_valid_mask, 4);
     if (snapshot->kind == DD_CMD_WATCH_PROBE_CALL)
     {
         /*
@@ -580,19 +815,39 @@ void dd_cmd_watch_capture_probe(
          * labeled as the pre-delay value: the compiled delay word is checked
          * as `or a1,s0,zero` and the emitter places this call after the link
          * value has also been materialized.
+         *
+         * The decoded call/delay/target gates remain exact.  The live
+         * register fields are deliberately independent, however: t1 is an
+         * optional comparator and t8 is an optional source-header probe.
+         * Missing either must not hide trustworthy a0/a1/ra/sp evidence.
          */
         if (snapshot->call_pc != DD_CMD_WATCH_TARGET_CALL_PC
                 || snapshot->call_opcode != DD_CMD_WATCH_TARGET_CALL_OPCODE
                 || snapshot->delay_opcode != DD_CMD_WATCH_TARGET_DELAY_OPCODE
                 || snapshot->target != DD_CMD_WATCH_TARGET_ENTRY_PC
-                || (flags & (DD_CMD_WATCH_PROBE_CALL_VALID
-                    | DD_CMD_WATCH_PROBE_AFTER_DELAY))
-                    != (DD_CMD_WATCH_PROBE_CALL_VALID
-                        | DD_CMD_WATCH_PROBE_AFTER_DELAY)
-                || !source_header_valid
-                || (uint32_t)snapshot->ra != DD_CMD_WATCH_TARGET_RETURN_PC
-                || !dd_cmd_watch_probe_kseg_address(snapshot->t8))
+                || !(flags & DD_CMD_WATCH_PROBE_AFTER_DELAY))
             return;
+        if ((flags & DD_CMD_WATCH_PROBE_VALID_RA)
+                && (uint32_t)snapshot->ra != DD_CMD_WATCH_TARGET_RETURN_PC)
+            return;
+
+        if ((flags & DD_CMD_WATCH_PROBE_CALL_REQUIRED)
+                != DD_CMD_WATCH_PROBE_CALL_REQUIRED)
+            ++probe_missing_required_count;
+
+        if (!(flags & DD_CMD_WATCH_PROBE_VALID_T8))
+        {
+            ++probe_header_unavailable_count;
+        }
+        else if (!dd_cmd_watch_probe_kseg_address(snapshot->t8))
+        {
+            ++probe_header_unavailable_count;
+            ++probe_header_invalid_t8_count;
+        }
+        else if (!source_header_valid)
+        {
+            ++probe_header_unavailable_count;
+        }
 
         (void)snprintf(message, sizeof(message),
             "DDSTART15 load_clear_call source=ARM64_COMPILED_JAL"
@@ -602,19 +857,85 @@ void dd_cmd_watch_capture_probe(
             " target=0x%08" PRIx32
             " phase=after-delay"
             " generation=%" PRIu32
-            " a0=0x%016" PRIx64 " a1=0x%016" PRIx64
+            " valid_mask=0x%08" PRIx32
+            " a0=0x%016" PRIx64 " a0_valid=%u"
+            " a1=0x%016" PRIx64 " a1_valid=%u"
             " source_header_address=0x%08" PRIx32
             " source_header_value=0x%08" PRIx32
-            " comparator_t1=0x%016" PRIx64
-            " ra=0x%016" PRIx64 " sp=0x%016" PRIx64
+            " source_header_valid=%u"
+            " comparator_t1=0x%016" PRIx64 " comparator_t1_valid=%u"
+            " ra=0x%016" PRIx64 " ra_valid=%u"
+            " sp=0x%016" PRIx64 " sp_valid=%u"
+            " header_reason=%s"
+            " header_unavailable_count=%u"
+            " header_invalid_t8_count=%u"
+            " missing_required_count=%u"
+            " rejection_reason=%s"
             " a1_provenance=compiled-delay-or-a1-s0"
-            " header_provenance=validated-kseg-t8"
+            " header_provenance=%s"
             " compiled_provenance=source-word-target-not-rdram",
             snapshot->call_pc, snapshot->call_opcode,
             snapshot->delay_opcode, snapshot->target, snapshot->generation,
-            snapshot->a0, snapshot->a1, (uint32_t)snapshot->t8,
-            source_header_value, snapshot->t1, snapshot->ra, snapshot->sp);
-        dd_cmd_watch_emit_probe(message);
+            valid_mask,
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_A0)
+                ? snapshot->a0 : 0,
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_A0) != 0,
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_A1)
+                ? snapshot->a1 : 0,
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_A1) != 0,
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_T8)
+                ? (uint32_t)snapshot->t8 : 0,
+            source_header_valid
+                && (flags & DD_CMD_WATCH_PROBE_VALID_T8) != 0
+                && dd_cmd_watch_probe_kseg_address(snapshot->t8)
+                ? source_header_value : 0,
+            source_header_valid
+                && (flags & DD_CMD_WATCH_PROBE_VALID_T8) != 0
+                && dd_cmd_watch_probe_kseg_address(snapshot->t8),
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_T1) != 0
+                ? snapshot->t1 : 0,
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_T1) != 0,
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_RA)
+                ? snapshot->ra : 0,
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_RA) != 0,
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_SP)
+                ? snapshot->sp : 0,
+            (valid_mask & DD_CMD_WATCH_PROBE_VALID_SP) != 0,
+            !(flags & DD_CMD_WATCH_PROBE_VALID_T8)
+                ? "t8-unavailable"
+                : !dd_cmd_watch_probe_kseg_address(snapshot->t8)
+                    ? "invalid-t8"
+                    : !source_header_valid
+                        ? "bounds-unavailable" : "validated",
+            probe_header_unavailable_count, probe_header_invalid_t8_count,
+            probe_missing_required_count,
+            (flags & DD_CMD_WATCH_PROBE_CALL_REQUIRED)
+                != DD_CMD_WATCH_PROBE_CALL_REQUIRED
+                ? "missing-required-register"
+                : !(flags & DD_CMD_WATCH_PROBE_VALID_T8)
+                    || !source_header_valid
+                    || !dd_cmd_watch_probe_kseg_address(snapshot->t8)
+                    ? "header-unavailable" : "none",
+            source_header_valid
+                && (flags & DD_CMD_WATCH_PROBE_VALID_T8) != 0
+                && dd_cmd_watch_probe_kseg_address(snapshot->t8)
+                ? "validated-kseg-t8" : "unavailable");
+        {
+            size_t used = strlen(message);
+            (void)snprintf(message + used, sizeof(message) - used,
+                " header_sample_valid_mask=0x%08" PRIx32
+                " header_sample_bytes=64"
+                " header_sample_raw=%s"
+                " header_sample_provenance=validated-direct-rdram-raw"
+                " stack_sample_valid_mask=0x%08" PRIx32
+                " stack_sample_raw=%s"
+                " stack_sample_offsets=0x38,0x3c,0x4c,0x58"
+                " stack_sample_provenance=validated-direct-rdram-raw",
+                header_sample_valid_mask, header_sample_text,
+                stack_sample_valid_mask, stack_sample_text);
+        }
+        if (dd_cmd_watch_emit_probe(message))
+            dd_load_history_flush("call");
         return;
     }
 
@@ -624,10 +945,15 @@ void dd_cmd_watch_capture_probe(
             || snapshot->call_opcode != DD_CMD_WATCH_TARGET_CALL_OPCODE
             || snapshot->delay_opcode != DD_CMD_WATCH_TARGET_DELAY_OPCODE
             || snapshot->target != DD_CMD_WATCH_TARGET_ENTRY_PC
-            || (flags & DD_CMD_WATCH_PROBE_ENTRY_VALID)
-                != DD_CMD_WATCH_PROBE_ENTRY_VALID
-            || (uint32_t)snapshot->ra != DD_CMD_WATCH_TARGET_RETURN_PC)
+            )
         return;
+    if ((flags & DD_CMD_WATCH_PROBE_VALID_RA)
+            && (uint32_t)snapshot->ra != DD_CMD_WATCH_TARGET_RETURN_PC)
+        return;
+
+    if ((flags & DD_CMD_WATCH_PROBE_ENTRY_VALID)
+            != DD_CMD_WATCH_PROBE_ENTRY_VALID)
+        ++probe_missing_required_count;
 
     (void)snprintf(message, sizeof(message),
         "DDSTART15 load_clear_entry source=ARM64_COMPILED_ENTRY"
@@ -635,20 +961,44 @@ void dd_cmd_watch_capture_probe(
         " entry_opcode=0x%08" PRIx32
         " expected_return_ra=0x%08" PRIx32
         " generation=%" PRIu32
-        " a0=0x%016" PRIx64 " a1=0x%016" PRIx64
-        " ra=0x%016" PRIx64 " sp=0x%016" PRIx64
-        " call_pc=0x%08" PRIx32
-        " call_opcode=0x%08" PRIx32
-        " delay_opcode=0x%08" PRIx32
-        " target=0x%08" PRIx32
-        " original_arguments=callee-entry"
+        " valid_mask=0x%08" PRIx32
+        " a0=0x%016" PRIx64 " a0_valid=%u"
+        " a1=0x%016" PRIx64 " a1_valid=%u"
+        " ra=0x%016" PRIx64 " ra_valid=%u"
+        " sp=0x%016" PRIx64 " sp_valid=%u"
+        " missing_required_count=%u"
+        " rejection_reason=%s"
+        " original_arguments=%s"
+        " original_arguments_proven=%u"
         " compiled_provenance=entry-word-call-site-target-not-rdram",
         snapshot->entry_pc, snapshot->entry_opcode,
-        DD_CMD_WATCH_TARGET_RETURN_PC, snapshot->generation,
-        snapshot->a0, snapshot->a1, snapshot->ra, snapshot->sp,
-        snapshot->call_pc, snapshot->call_opcode,
-        snapshot->delay_opcode, snapshot->target);
-    dd_cmd_watch_emit_probe(message);
+        DD_CMD_WATCH_TARGET_RETURN_PC, snapshot->generation, valid_mask,
+        (valid_mask & DD_CMD_WATCH_PROBE_VALID_A0)
+            ? snapshot->a0 : 0,
+        (valid_mask & DD_CMD_WATCH_PROBE_VALID_A0) != 0,
+        (valid_mask & DD_CMD_WATCH_PROBE_VALID_A1)
+            ? snapshot->a1 : 0,
+        (valid_mask & DD_CMD_WATCH_PROBE_VALID_A1) != 0,
+        (valid_mask & DD_CMD_WATCH_PROBE_VALID_RA)
+            ? snapshot->ra : 0,
+        (valid_mask & DD_CMD_WATCH_PROBE_VALID_RA) != 0,
+        (valid_mask & DD_CMD_WATCH_PROBE_VALID_SP)
+            ? snapshot->sp : 0,
+        (valid_mask & DD_CMD_WATCH_PROBE_VALID_SP) != 0,
+        probe_missing_required_count,
+        (flags & DD_CMD_WATCH_PROBE_ENTRY_VALID)
+            != DD_CMD_WATCH_PROBE_ENTRY_VALID
+            ? "missing-required-register"
+            : "none",
+        (flags & DD_CMD_WATCH_PROBE_ENTRY_VALID)
+            == DD_CMD_WATCH_PROBE_ENTRY_VALID
+            && (uint32_t)snapshot->ra == DD_CMD_WATCH_TARGET_RETURN_PC
+            ? "callee-entry" : "unproven",
+        (flags & DD_CMD_WATCH_PROBE_ENTRY_VALID)
+            == DD_CMD_WATCH_PROBE_ENTRY_VALID
+            && (uint32_t)snapshot->ra == DD_CMD_WATCH_TARGET_RETURN_PC);
+    if (dd_cmd_watch_emit_probe(message))
+        dd_load_history_flush("entry");
 }
 
 int dd_cmd_watch_in_range(uint32_t address, uint32_t width)

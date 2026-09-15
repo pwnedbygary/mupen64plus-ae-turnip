@@ -15,6 +15,7 @@
 #define DD_CMD_WATCH_TRACE_BUDGET 128u
 #define DD_CMD_WATCH_CONTEXT_BUDGET 16u
 #define DD_CMD_WATCH_PROBE_BUDGET 8u
+#define DD_CMD_WATCH_COMPILE_REJECTION_BUDGET 8u
 
 /*
  * P08e targets one compiled ARM64 caller/callee pair.  These constants are
@@ -53,11 +54,28 @@ enum dd_cmd_watch_probe_flags
      | DD_CMD_WATCH_PROBE_VALID_RA \
      | DD_CMD_WATCH_PROBE_VALID_SP)
 
+#define DD_CMD_WATCH_PROBE_REGISTER_MASK \
+    DD_CMD_WATCH_PROBE_CALL_VALID
+
+#define DD_CMD_WATCH_PROBE_CALL_REQUIRED \
+    (DD_CMD_WATCH_PROBE_VALID_A0 \
+     | DD_CMD_WATCH_PROBE_VALID_A1 \
+     | DD_CMD_WATCH_PROBE_VALID_RA \
+     | DD_CMD_WATCH_PROBE_VALID_SP)
+
 #define DD_CMD_WATCH_PROBE_ENTRY_VALID \
     (DD_CMD_WATCH_PROBE_VALID_A0 \
      | DD_CMD_WATCH_PROBE_VALID_A1 \
      | DD_CMD_WATCH_PROBE_VALID_RA \
      | DD_CMD_WATCH_PROBE_VALID_SP)
+
+enum dd_cmd_watch_probe_compile_reason
+{
+    DD_CMD_WATCH_PROBE_COMPILE_MISSING_REGISTER = 1u,
+    DD_CMD_WATCH_PROBE_COMPILE_PAGE_SPAN = 2u,
+    DD_CMD_WATCH_PROBE_COMPILE_PROVENANCE = 3u,
+    DD_CMD_WATCH_PROBE_COMPILE_OPCODE_GATE = 4u
+};
 
 /*
  * This is written only to the diagnostic hot-state slot immediately before
@@ -154,7 +172,8 @@ void dd_cmd_watch_reset(void);
 /*
  * Called for a valid audio task at the launch boundary.  `nonzero_words` is
  * the already-computed command-buffer summary, so this function never walks
- * RDRAM or changes task execution.
+ * RDRAM or changes task execution.  It retains only a bounded raw descriptor
+ * hash/prefix/suffix history and emits that history at a zero-audio boundary.
  */
 void dd_cmd_watch_task_entry(const uint32_t *task_words,
                              uint32_t generation,
@@ -190,12 +209,37 @@ void dd_cmd_watch_capture_context(uint32_t address,
  * Consume a materialized compiled-call/entry snapshot.  For a call probe,
  * `source_header_valid` and `source_header_value` are produced by a wrapper
  * that has first checked t8 through dd_fault_guest_read_u32().  Invalid or
- * non-KSEG source addresses are rejected; no guest memory handler is used.
+ * non-KSEG source addresses remain explicit unavailable evidence; no guest
+ * memory handler is used.
  */
 void dd_cmd_watch_capture_probe(
     const struct dd_cmd_watch_probe_snapshot *snapshot,
     int source_header_valid,
     uint32_t source_header_value);
+
+/*
+ * Extended call evidence supplied by the ARM64 wrapper after each direct
+ * RDRAM read has passed dd_fault_guest_read_u32().  `header_sample` has
+ * sixteen raw words (64 bytes), and `stack_sample` has four raw words in
+ * the fixed 0x38/0x3c/0x4c/0x58 order.  Samples are never decoded as a
+ * header, resource, or stack object.
+ */
+void dd_cmd_watch_capture_probe_samples(
+    const struct dd_cmd_watch_probe_snapshot *snapshot,
+    int source_header_valid,
+    uint32_t source_header_value,
+    const uint32_t *header_sample,
+    uint32_t header_sample_valid_mask,
+    const uint32_t *stack_sample,
+    uint32_t stack_sample_valid_mask);
+
+/*
+ * A compile-time probe rejection is host-side bounded telemetry.  It does
+ * not emit guest code and is intentionally separate from the runtime record
+ * budget, so a missing optional mapping cannot hide a later executed call.
+ */
+void dd_cmd_watch_note_compile_rejection(
+    uint32_t kind, uint32_t reason, uint32_t valid_mask);
 
 /*
  * Append one successful aligned write.  The caller supplies values read

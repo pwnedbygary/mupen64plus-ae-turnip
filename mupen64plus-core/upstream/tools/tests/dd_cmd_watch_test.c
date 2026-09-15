@@ -16,7 +16,7 @@
 static int diagnostics_enabled;
 static int runtime_policy;
 static unsigned int callback_lines;
-static char callback_last[1024];
+static char callback_last[2048];
 static int callback_saw_sd;
 static int callback_saw_pc;
 static int callback_saw_context_first;
@@ -25,6 +25,13 @@ static int callback_saw_resize_latest;
 static int callback_saw_context_provenance;
 static int callback_saw_compiled_call;
 static int callback_saw_compiled_entry;
+static int callback_saw_header_unavailable;
+static int callback_saw_partial_call;
+static int callback_saw_raw_samples;
+static int callback_saw_launch_snapshot;
+static unsigned int load_history_reset_calls;
+static unsigned int load_history_flush_calls;
+static char load_history_last_reason[32];
 
 static void test_callback(void *context, int level, const char *message);
 
@@ -36,6 +43,18 @@ int DdStartupDiagnosticsEnabled(void)
 int DdRuntimePolicyGet(void)
 {
     return runtime_policy;
+}
+
+void dd_load_history_reset(void)
+{
+    ++load_history_reset_calls;
+}
+
+void dd_load_history_flush(const char *reason)
+{
+    ++load_history_flush_calls;
+    (void)snprintf(load_history_last_reason,
+        sizeof(load_history_last_reason), "%s", reason);
 }
 
 ptr_DdStartupDiagnosticsCallback DdStartupDiagnosticsGetCallback(void **context)
@@ -86,6 +105,29 @@ static void test_callback(void *context, int level, const char *message)
             && strstr(message, "source_header_value=0x4d494f30") != NULL
             && strstr(message, "a1_provenance=compiled-delay-or-a1-s0") != NULL)
         callback_saw_compiled_call = 1;
+    if (strstr(message, "DDSTART15 load_clear_call") != NULL
+            && strstr(message, "header_reason=bounds-unavailable") != NULL
+            && strstr(message, "rejection_reason=header-unavailable") != NULL)
+        callback_saw_header_unavailable = 1;
+    if (strstr(message, "DDSTART15 load_clear_call") != NULL
+            && strstr(message, "valid_mask=0x0000007a") != NULL
+            && strstr(message, "rejection_reason=missing-required-register")
+                != NULL)
+        callback_saw_partial_call = 1;
+    if (strstr(message, "header_sample_valid_mask=0x000000ff") != NULL
+            && strstr(message, "header_sample_raw=4d494f30,00000001")
+                != NULL
+            && strstr(message, "stack_sample_valid_mask=0x0000000f")
+                != NULL
+            && strstr(message, "stack_sample_raw=00000038,0000003c")
+                != NULL)
+        callback_saw_raw_samples = 1;
+    if (strstr(message, "DDSTART14 RSP launch_snapshot") != NULL
+            && strstr(message, "descriptor_hash=0x") != NULL
+            && strstr(message, "descriptor_prefix={0x00000002") != NULL
+            && strstr(message, "descriptor_suffix={0x00411910,0x000001a0")
+                != NULL)
+        callback_saw_launch_snapshot = 1;
     if (strstr(message, "DDSTART15 load_clear_entry") != NULL
             && strstr(message, "entry_pc=0x80747240") != NULL
             && strstr(message, "entry_opcode=0x0c00a128") != NULL
@@ -115,11 +157,24 @@ int main(void)
 {
     uint32_t words[16];
     struct dd_cmd_watch_probe_snapshot probe;
+    uint32_t header_sample[16] = {
+        UINT32_C(0x4d494f30), UINT32_C(0x00000001), UINT32_C(0x00000002),
+        UINT32_C(0x00000003), UINT32_C(0x00000004), UINT32_C(0x00000005),
+        UINT32_C(0x00000006), UINT32_C(0x00000007), UINT32_C(0x00000008),
+        UINT32_C(0x00000009), UINT32_C(0x0000000a), UINT32_C(0x0000000b),
+        UINT32_C(0x0000000c), UINT32_C(0x0000000d), UINT32_C(0x0000000e),
+        UINT32_C(0x0000000f)
+    };
+    uint32_t stack_sample[4] = {
+        UINT32_C(0x00000038), UINT32_C(0x0000003c),
+        UINT32_C(0x0000004c), UINT32_C(0x00000058)
+    };
     unsigned int i;
 
     diagnostics_enabled = 1;
     runtime_policy = 1;
     dd_cmd_watch_reset();
+    assert(load_history_reset_calls == 1);
 
     task_words(words, UINT32_C(0x00411910), UINT32_C(0x1a0));
     dd_cmd_watch_task_entry(words, 10, 1, 104);
@@ -137,6 +192,8 @@ int main(void)
 
     task_words(words, UINT32_C(0x00411910), UINT32_C(0x1a0));
     dd_cmd_watch_task_entry(words, 11, 1, 0);
+    assert(strcmp(load_history_last_reason, "zero-audio") == 0);
+    assert(callback_saw_launch_snapshot);
     assert(callback_lines >= 33);
     assert(strstr(callback_last, "coverage=0x0000003f") != NULL);
 
@@ -155,7 +212,7 @@ int main(void)
         unsigned int lines_before = callback_lines;
         task_words(words, UINT32_C(0x00411910), UINT32_C(0x1a0));
         dd_cmd_watch_task_entry(words, 21, 1, 0);
-        assert(callback_lines == lines_before + 1);
+        assert(callback_lines >= lines_before + 1);
         assert(strstr(callback_last, "recent=0") != NULL);
     }
     assert(!callback_saw_sd);
@@ -253,8 +310,12 @@ int main(void)
     probe.t1 = UINT64_C(0x000000004d494f30);
     probe.ra = UINT64_C(0xffffffff800aea14);
     probe.sp = UINT64_C(0xffffffff80796c10);
-    dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+    dd_cmd_watch_capture_probe_samples(&probe, 1,
+        UINT32_C(0x4d494f30), header_sample, UINT32_C(0xff),
+        stack_sample, UINT32_C(0xf));
+    assert(strcmp(load_history_last_reason, "call") == 0);
     assert(callback_saw_compiled_call);
+    assert(callback_saw_raw_samples);
 
     {
         unsigned int lines_before = callback_lines;
@@ -266,24 +327,80 @@ int main(void)
 
     {
         unsigned int lines_before = callback_lines;
+        unsigned int flushes_before = load_history_flush_calls;
         probe.ra ^= 1;
         dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
         assert(callback_lines == lines_before);
+        assert(load_history_flush_calls == flushes_before);
         probe.ra = UINT64_C(0xffffffff800aea14);
     }
 
     {
         unsigned int lines_before = callback_lines;
         dd_cmd_watch_capture_probe(&probe, 0, 0);
-        assert(callback_lines == lines_before);
+        assert(callback_lines == lines_before + 1);
+        assert(callback_saw_header_unavailable);
     }
 
     {
         unsigned int lines_before = callback_lines;
         probe.t8 = UINT64_C(0x0000000012345000);
         dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
-        assert(callback_lines == lines_before);
+        assert(callback_lines == lines_before + 1);
+        assert(strstr(callback_last, "header_reason=invalid-t8") != NULL);
         probe.t8 = UINT64_C(0xffffffff80002000);
+    }
+
+    /*
+     * Optional t1/t8 comparator values do not gate the trustworthy call
+     * fields.  A missing required field is retained as a partial record with
+     * its validity mask rather than being silently discarded.
+     */
+    {
+        unsigned int lines_before = callback_lines;
+        probe.flags = DD_CMD_WATCH_PROBE_AFTER_DELAY
+            | DD_CMD_WATCH_PROBE_CALL_REQUIRED;
+        dd_cmd_watch_capture_probe(&probe, 0, 0);
+        assert(callback_lines == lines_before + 1);
+        assert(strstr(callback_last, "valid_mask=0x00000066") != NULL);
+        assert(strstr(callback_last,
+            "rejection_reason=header-unavailable") != NULL);
+        probe.flags = DD_CMD_WATCH_PROBE_AFTER_DELAY
+            | DD_CMD_WATCH_PROBE_CALL_VALID;
+
+        lines_before = callback_lines;
+        probe.flags &= ~DD_CMD_WATCH_PROBE_VALID_A1;
+        dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+        assert(callback_lines == lines_before + 1);
+        assert(callback_saw_partial_call);
+        assert(strstr(callback_last,
+            "a1=0x0000000000000000 a1_valid=0") != NULL);
+
+        /*
+         * Validity bits are an information boundary: deliberately stale
+         * values in all invalid fields must not appear in the record.
+         */
+        probe.flags = DD_CMD_WATCH_PROBE_AFTER_DELAY
+            | DD_CMD_WATCH_PROBE_VALID_T8;
+        probe.a0 = UINT64_C(0x1111111111111111);
+        probe.a1 = UINT64_C(0x2222222222222222);
+        probe.ra = UINT64_C(0x3333333333333333);
+        probe.sp = UINT64_C(0x4444444444444444);
+        dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+        assert(strstr(callback_last,
+            "a0=0x0000000000000000 a0_valid=0") != NULL);
+        assert(strstr(callback_last,
+            "a1=0x0000000000000000 a1_valid=0") != NULL);
+        assert(strstr(callback_last,
+            "ra=0x0000000000000000 ra_valid=0") != NULL);
+        assert(strstr(callback_last,
+            "sp=0x0000000000000000 sp_valid=0") != NULL);
+        probe.a0 = UINT64_C(0x0000000080411920);
+        probe.a1 = UINT64_C(0x0000000080411ac0);
+        probe.ra = UINT64_C(0xffffffff800aea14);
+        probe.sp = UINT64_C(0xffffffff80796c10);
+        probe.flags = DD_CMD_WATCH_PROBE_AFTER_DELAY
+            | DD_CMD_WATCH_PROBE_CALL_VALID;
     }
 
     {
@@ -296,18 +413,42 @@ int main(void)
 
     {
         unsigned int lines_before;
+        unsigned int flushes_before;
         unsigned int n;
 
         dd_cmd_watch_reset();
         lines_before = callback_lines;
+        flushes_before = load_history_flush_calls;
         for (n = 0; n < DD_CMD_WATCH_PROBE_BUDGET + 1; ++n)
             dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
         assert(callback_lines == lines_before + DD_CMD_WATCH_PROBE_BUDGET);
+        assert(load_history_flush_calls == flushes_before
+            + DD_CMD_WATCH_PROBE_BUDGET);
 
         /* Reset starts a fresh bounded session; it does not latch exhaustion. */
         dd_cmd_watch_reset();
         lines_before = callback_lines;
+        flushes_before = load_history_flush_calls;
         dd_cmd_watch_capture_probe(&probe, 1, UINT32_C(0x4d494f30));
+        assert(callback_lines == lines_before + 1);
+        assert(load_history_flush_calls == flushes_before + 1);
+    }
+
+    {
+        unsigned int lines_before;
+        unsigned int n;
+
+        dd_cmd_watch_reset();
+        lines_before = callback_lines;
+        for (n = 0; n < DD_CMD_WATCH_COMPILE_REJECTION_BUDGET + 1; ++n)
+            dd_cmd_watch_note_compile_rejection(DD_CMD_WATCH_PROBE_CALL,
+                DD_CMD_WATCH_PROBE_COMPILE_MISSING_REGISTER, 0);
+        assert(callback_lines == lines_before
+            + DD_CMD_WATCH_COMPILE_REJECTION_BUDGET);
+        dd_cmd_watch_reset();
+        lines_before = callback_lines;
+        dd_cmd_watch_note_compile_rejection(DD_CMD_WATCH_PROBE_ENTRY,
+            DD_CMD_WATCH_PROBE_COMPILE_PAGE_SPAN, 0);
         assert(callback_lines == lines_before + 1);
     }
 
@@ -326,8 +467,18 @@ int main(void)
     probe.a1 = UINT64_C(0x0000000080411ac0);
     probe.ra = UINT64_C(0xffffffff800aea14);
     probe.sp = UINT64_C(0xffffffff80796c10);
+    probe.flags = DD_CMD_WATCH_PROBE_VALID_A0;
+    dd_cmd_watch_capture_probe(&probe, 0, 0);
+    assert(strstr(callback_last,
+        "a1=0x0000000000000000 a1_valid=0") != NULL);
+    assert(strstr(callback_last,
+        "ra=0x0000000000000000 ra_valid=0") != NULL);
+    assert(strstr(callback_last,
+        "sp=0x0000000000000000 sp_valid=0") != NULL);
+    probe.flags = DD_CMD_WATCH_PROBE_ENTRY_VALID;
     dd_cmd_watch_capture_probe(&probe, 0, 0);
     assert(callback_saw_compiled_entry);
+    assert(strcmp(load_history_last_reason, "entry") == 0);
 
     return 0;
 }
