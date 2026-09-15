@@ -3532,3 +3532,118 @@ Next eligible package and required inputs: P08 — fetch provenance first:
   statement) before implementation. No emulator behavior change; DMA
   correction and DDSTART9 untouched.
 ```
+
+## P08a: watched-range observation infrastructure, synthetic-event tested — 2026-09-14
+
+```markdown
+Package: P08a — infrastructure for the P08 writer investigation: a dynamic
+  watched range, a generation model and a bounded ring, exercised with
+  synthetic events and no generated-code changes. Observes only: no call
+  site exists yet, and no emulator-visible value, timing or ordering changes.
+Baseline / exact reviewed snapshot: d115b7c82 (P07-C), clean tree.
+Verified observations (host, this round):
+  - The module's contract holds under synthetic events. The per-game DD
+    policy gate (P03) refuses to arm, and every refused call is counted;
+    arming normalizes a KSEG0/KSEG1 base (0x803DA9F0 arms the physical
+    0x3DA9F0); range membership is exact at both ends of the documented
+    aligned zero run [0x3DA9F0, 0x6ECA10) — both command buffers
+    (0x411910, 0x4132D0) inside, gAudioCtx (0x6ECA10) outside, and the
+    KSEG0 mirror of a member inside; the documented run starts one byte
+    earlier (0x3DA9EF), and that byte is outside the armed range and
+    therefore unwatched — immaterial for the command buffers, stated so
+    the coverage is not overstated; the stored event's generation is the
+    module's, not the caller's
+    (a caller-supplied 0xDEADBEEF is replaced);
+    and the bounded ring retains the OLDEST events (300 calls → 256
+    stored, 44 dropped) with the accounting identity
+    total + dropped + rejected == calls holding exactly. Rejection takes
+    precedence over a full ring.
+  - tools/test-dd-watch.sh compiles the real device/dd/dd_watch.c together
+    with the real core policy state (api/callbacks.c) — no production
+    logic is stubbed — and drives it through the production seam.
+  - The new translation unit compiles with the project's ACTUAL build
+    flags: NDK 26.1.10909125 clang 17.0.2, targets
+    aarch64-linux-android23 and armv7a-linux-androideabi23 (minSdk 23, not
+    21), COMMON_CFLAGS
+    (-Oz -fcommon -ffast-math -ftree-vectorize -fno-omit-frame-pointer
+    -fvisibility=hidden -Wno-error=implicit-function-declaration) plus the
+    core's LOCAL_CFLAGS (-DANDROID -DIOAPI_NO_64 -DNOCRYPT -DNOUNCRYPT
+    -DM64P_NETPLAY=1 -DWITHOUT_SDL=1 -DUSE_GLES=1), with no -std flag
+    (clang 17's default, __STDC_VERSION__ 201710L) — clean for both ABIs.
+    Review corrected this line: it previously described the check with the
+    HOST SUITE's flags (-std=gnu11 -Wall -Wextra -Werror, API 21), which is
+    not the shipping configuration — the flag list above is the real one.
+    mupen64plus-core.mk lists the source.
+  - Retention choice recorded as a deliberate divergence: the ring keeps
+    the OLDEST events where the work-packages text says "fixed
+    recent-event ring" (P08 step 7). Oldest-retention preserves the first
+    transition after arming — the evidence P08 wants — at the cost that
+    once 256 in-range events are stored, every later event is dropped and
+    only dd_watch_dropped survives; P08b must arm narrowly and expect to
+    re-arm per generation for more coverage.
+  - Address semantics are reference-class, not measured here: the
+    0x1FFFFFFF KSEG0/KSEG1 mask follows core convention (r4300_core.c,
+    api/debugger.c) and differs from the sibling
+    device/r4300/dd_fault_layout.h helper, which REJECTS a segment that is
+    not exactly KSEG0/KSEG1. KUSEG/TLB-mapped virtual addresses are not
+    translated (0x003DA9F0 and the physical 0x3DA9F0 are
+    indistinguishable), so a recording site must pass the address its
+    writer path already resolved.
+  - The suite caught two of my own errors before review, which is the
+    point of building it first: a ring-fill arithmetic slip that ignored a
+    pre-existing event, and a wrap-guard expectation that ignored arm-time
+    normalization (the guard applies to the NORMALIZED range).
+Derived results and inputs: P08b can now be written against a fixed,
+  tested contract — policy-gated arming, static bounded storage,
+  oldest-retention with coverage counters, and module-stamped generations
+  (the generation counter the fetch-provenance trace needs). A writer hook
+  cannot silently weaken these invariants; the tests assert them.
+Remaining hypotheses: unchanged — producer-side zeroing (game heap clear /
+  DD load delivering zeros / emulator-side clear), consumer-side
+  fetch/decode error, stale-buffer reuse. The fetch provenance remains the
+  missing link.
+Changed files: mupen64plus-core/upstream/src/device/dd/dd_watch.h (new),
+  mupen64plus-core/upstream/src/device/dd/dd_watch.c (new),
+  mupen64plus-core/mupen64plus-core.mk (source list),
+  tools/tests/dd-watch-test.c (new), tools/test-dd-watch.sh (new),
+  docs/HANDOFF_NEW.md, docs/P08_CHECKPOINT.md (new).
+Checks actually run and results: tools/test-dd-watch.sh — pass, run with the
+  host's default cc (GCC 16.2.1 x86_64); NDK single
+  translation-unit compile for arm64-v8a and armv7a with the real
+  COMMON_CFLAGS/LOCAL_CFLAGS and minSdk 23 — clean; mutation checks on
+  /tmp copies of the module (never repo files) — the suite fails when the
+  stored-address normalization is removed and when the range test ignores
+  the armed flag, i.e. the two gaps this review round found are now closed,
+  with an unmutated control passing under the same clang substitution
+  (this host's gcc driver cannot spawn cc1 outside the suite's bash — a
+  documented host quirk, not a suite failure); full debug APK build
+  (`./gradlew :app:assembleDebug`) — BUILD SUCCESSFUL, and the new
+  translation unit really was compiled rather than skipped by the native
+  cache: dd_watch.o and its dependency file were produced for all four
+  ABIs (arm64-v8a, armeabi-v7a, x86, x86_64) in that run, verified by
+  object presence and timestamps rather than by the build status alone (an
+  earlier check of mine looked only at objects newer than 20 minutes and
+  wrongly reported the TU missing — the objects were present). The other
+  host suites are
+  unaffected by an unlinked translation unit and were last run at P07-C
+  (d115b7c82): test-dd-core-imem-dma, test-dd-policy, test-dd-dma-transfer
+  and test-dd-root-stacks pass; test-dd-startup fails in its compile step
+  and test-dd-rsp-mac reports 6 passed / 8 failed, both pre-existing and
+  unchanged.
+Checks not run and why: no device run — an unlinked observer cannot be
+  observed natively, and P08b is the package that wires a writer and
+  therefore needs the native capture. The five-point hardware-evidence
+  checklist does not apply to this subdivision because no emulator-visible
+  behavior changes (stated in the module header); P08b must carry it.
+Independent reviewer, verdict and finding dispositions: (pending — filled
+  in the commit message)
+Commit, if approved: (pending)
+Remaining blockers: none.
+Next eligible package and required inputs: P08b — the fetch-provenance
+  capture the evidence prompt requires first (at task submission and at the
+  microcode's command fetch: the address fetched, the bytes returned and
+  the buffer generation), reusing this generation model; the writer-family
+  watch follows only if the trace does not separate the competing
+  hypotheses. Requires the per-game DD activation gate on every new
+  observation and one native run (user-driven device step).
+```
