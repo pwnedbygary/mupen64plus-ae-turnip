@@ -395,3 +395,50 @@ Verified observations: for an audio task (`task_words[0] == 2`) with the
  Independent reviewer and verdict: pending.
  Remaining blocker: a native DD-enabled run is still required to compare the
   DDSTART13 launch state with the existing DDSTART12/fetch generations.
+
+## P08d checkpoint (native confirmation run)
+
+Package: P08d — independent native run of the P08 instrumentation to confirm
+  or refute the parallel session's documented findings. Documentation-only.
+Baseline / Reviewed snapshot: 6cbcae2d2 (plus the mode-only fix 7ee30ad26).
+Run identity: APK from 6cbcae2d2, sha256 6f8a46d775c7510c81dea90ea509317e…
+  (43,045,095 B), `3.0.336 (beta) 6cbcae2d`, cert 311f4e35…, serial 49016109,
+  DD from stored prefs, launched via adb (card tap -> Start). Capture
+  local-only: `.fzxwork/p08d-capture/logcat-p08d-run1.txt`, 3,130,929 B,
+  sha256 c20ec502162d957ec2a09a01c316be3e….
+Verified observations: family counts (DDSTART11 2020 / 12 401 / 13 401 / 14
+  37 / 15 4); the process stopped and spun at ~102 ticks/s (freeze). The
+  documented zero-at-entry result reproduces at the identical hash
+  0x8d0350be04626145 (19:34:12.130, 0x00411910/0x1a0, nonzero_words=0; one of
+  401 entries), 26 ms after the same buffer read 101 nonzero words (12.104).
+  DDSTART15 emitted four records with no crash (the pointer-truncation fix
+  holds natively); DDSTART14 captured zeroing stores with before/after and
+  PCs plus a summary (recent=32 dropped=592 replaced_events=46618).
+Correction: this session's own "mixed descriptor pair" claim is withdrawn —
+  all four (pointer, size) pairings occur routinely (153/152/48/48), so the
+  pairing is normal; the descriptor-pairing question is closed.
+Derived results and inputs: two independent runs agree the buffer is zero
+  before the RSP reads it, with the same hash, tens of ms after it was valid;
+  the divergence is upstream of the read, and the RSP's own read of the zero
+  buffer is corroborated in-capture (the only all-zero payload among 1604
+  watched fetches). No writer is identified; whether
+  the captured stores are the legitimate scene clear or the defect is open.
+Remaining hypotheses: which operation emptied the buffer and when; stale or
+  out-of-phase buffer reuse; the decode half of the consumer hypothesis; the
+  step-1 generation tail as a possible precursor.
+Changed files: `docs/HANDOFF_NEW.md`, `docs/P08_CHECKPOINT.md`.
+Checks actually run and why: the four host suites at this HEAD — all pass;
+  the APK identity verified before install; the analysis recomputed from the
+  capture.
+Checks not run and why: no artifact archived for the spin measurement (the
+  P08c cpu-delta/screenshot carry remains open); logcat rotation retained
+  only the last 401 of about 880 entry/launch events (sequence 480..880), so
+  ~479 earlier events are absent and the one-zero-entry finding is scoped to
+  the retained set; tools/test-dd-startup.sh was not run (compile-step
+  -Werror portability issue on this host).
+Independent reviewer and verdict: see the commit message.
+Commit, if approved: (this file's commit).
+Remaining blockers: none.
+Next eligible package and required inputs: continue the writer/load-decision
+  thread with the DDSTART15 call provenance; do not reopen the descriptor
+  pairing.

@@ -4380,3 +4380,120 @@ proof: the invalid-data/clear-wrong-range/stale-reuse checklist still
 requires correlation with a bounded recent load/DMA context ring. This
 package has no APK/build/device result, commit or push; independent review
 remains pending.
+
+## P08d: native confirmation run of the P08 instrumentation — 2026-09-15
+
+```markdown
+Package: P08d — an independent native run of the instrumentation landed by the
+  parallel P08 session (DDSTART12 task-entry observations, DDSTART13 launch
+  boundary, DDSTART14 bounded CPU writer probe, DDSTART15 executed
+  load/clear-call probe), to confirm or refute its documented findings from a
+  fresh session. Documentation-only: no code change in this package.
+Baseline / exact reviewed snapshot: 6cbcae2d2 (plus the separately reviewed
+  mode-only fix 7ee30ad26, which touches only a test script's file mode).
+Run identity: APK built from 6cbcae2d2, sha256
+  6f8a46d775c7510c81dea90ea509317e… (43,045,095 bytes), versionName
+  `3.0.336 (beta) 6cbcae2d`, signing cert 311f4e35…, device serial 49016109.
+  Launched through adb: SplashActivity -> Gallery -> tap the F-ZERO X (J)
+  card -> context menu -> **Start** (fresh boot). DD from the stored per-game
+  prefs. NOTE for anyone repeating this: a blind chained tap does not launch
+  the game — the card must be tapped, and then Start on the resulting menu.
+Capture: `.fzxwork/p08d-capture/logcat-p08d-run1.txt`, 3,130,929 bytes,
+  sha256 c20ec502162d957ec2a09a01c316be3e… (local-only, never published).
+Observed (record family counts, then the decisive items):
+  - DDSTART11 2020 records, DDSTART12 401, DDSTART13 401, DDSTART14 37,
+    DDSTART15 4. The process stopped producing records and spun at ~102
+    ticks/s (utime 8768 -> 9075 over ~3 s) — the freeze signature.
+  - THE DOCUMENTED FINDING REPRODUCES, at the same hash value: the tail of
+    the task-entry records shows the buffer valid twice (nonzero 101/104 at
+    0x00411910 and 109/112 at 0x004132d0), then an entry at 19:34:12.130 with
+    data_ptr=0x00411910, size=0x1a0, hash=0x8d0350be04626145 and
+    nonzero_words=0 — the identical all-zero entry hash the parallel
+    session's document records, from a different run. Exactly ONE of the 401
+    entry records has zero nonzero words.
+  - The transition window is bounded in this run too: the same buffer
+    (0x00411910) read 101 nonzero words at 12.104 and zero at 12.130 — 26 ms
+    — with the ONE intervening entry normal (12.112, 0x004132d0/0x1c0, 109
+    nonzero); the 0x004132d0/0x00411910 alternation with 101/109 describes
+    the surrounding sequence, not two intervening entries. This agrees with
+    the P08c timeline (~21 ms) from a
+    different session.
+  - Two further in-capture corroborations: (a) the watched fetch for
+    fetch_generation=1512 at 19:34:12.130 read raw_dma_dram=0x00411910 with
+    fetch_buffer_offset=0 and payload_hash=0x88201fb960ff6465 — the ONLY
+    all-zero payload among the 1604 watched-fetch records, so the RSP's own
+    read returned zeros; (b) the captured store PCs (0x80747278..0x80747298)
+    lie +0x38..+0x58 after the DDSTART15-observed routine entry at
+    0x80747240, i.e. inside that routine's body. Generations are not a join
+    key across families: the DDSTART14 store records carry the routed
+    generation 878 while the zero content was consumed at launch 880, and the
+    DDSTART15 call/entry forms carry different counters (2868 vs 457).
+  - The DDSTART15 probe emitted four records and did NOT crash, confirming
+    natively that the pointer-truncation fix (936185be3) holds:
+    load_clear_call source=ARM64_COMPILED_JAL call_pc=0x800aea0c
+    call_opcode=0x0c1d1c90 delay_opcode=0x02002825 target=0x80747240
+    phase=after-delay; load_clear_entry entry_pc=0x80747240
+    entry_opcode=0x28a1000c expected_return_ra=0x800aea14, with a0 and
+    validity masks on both forms.
+  - DDSTART14 recorded zeroing stores inside the buffer with before/after
+    values and record PCs, e.g. source=ROUTED_ALIGNED buffer=0x00411910
+    size=0x1a0 generation=878 address=0x80411aac width=4
+    before=0x0000000080401080 after=0x0000000000000000 pc=0x8074…, and a
+    store_summary with recent=32 dropped=592 replaced_events=46618
+    replacements=209 suppressed=0.
+CORRECTION issued by this package (my own earlier claim, withdrawn):
+  a prior message from this session flagged a "mixed pair" in generation
+  877's launch snapshot (data_ptr 0x004132d0 with size 0x1a0) as a possible
+  descriptor anomaly. The entry data refutes it: across 401 entries all four
+  (pointer, size) combinations occur routinely — (0x411910, 0x1a0) 153,
+  (0x4132d0, 0x1a0) 152, (0x411910, 0x1c0) 48, (0x4132d0, 0x1c0) 48 — the
+  size is per-generation, as P08c found, and is not bound to the pointer.
+  The descriptor-pairing question is closed; it is not a lead.
+Interpretation, kept to what the evidence supports:
+  - Two independent runs now agree that the buffer arrives at the core's
+    pre-RSP observation already zero, with the same hash value, and that the
+    same buffer was non-zero tens of milliseconds earlier. The divergence is
+    upstream of the RSP's read: a consumer-side fetch-ADDRESS error is
+    excluded (recorded fetches read the task's own data_ptr), while the decode
+    half of the consumer hypothesis stays open and is carried in the
+    checkpoint.
+  - The bounded writer probe shows CPU stores that zero the buffer's words
+    with before-values non-zero, but the ring overwrote older events
+    (replaced_events 46618 in this run), so the complete clearing history is
+    not captured and NO writer is identified as the cause. Whether these
+    stores are the legitimate scene-transition clear or the defect remains
+    open: caller, range, ownership and later reuse must be established
+    before any suppression or modification is considered.
+  - No runtime fix is claimed or implied by this package.
+Limits (do not over-read): one run; the logcat ring rotated HARD during it —
+  the retained window is the last 401 of about 880 entry/launch events
+  (DDSTART13 sequence values 480..880 are dense), so roughly 479 earlier
+  events are absent and "exactly one" is scoped to the RETAINED set, not to
+  the whole run. The `.fzxwork/p08d-capture/` directory also holds
+  `cpu-deltas.txt` and `screenshot-frozen.png` from an EARLIER run
+  (pid 30267, 01:22), not from this one (pid 29797, 19:34); the store records are routed observations rather than
+  sampled execution PCs; the run's device-side facts (launch path, freeze
+  spin) are as measured at the times stated, with no artifact archived for
+  the spin measurement — the cpu-delta/screenshot carry from P08c remains
+  open.
+Checks actually run and why: the four host suites at this HEAD
+  (test-dd-cmd-watch, test-dd-watch, test-dd-core-imem-dma, test-dd-policy)
+  — all pass; the APK's signing identity and versionName were verified
+  before install; the analysis above is recomputed from the capture.
+Checks not run and why: no host suite covers the device-side behaviour;
+  tools/test-dd-startup.sh (the dynarec-observer suite that exercises the
+  probe's emit path) was NOT run here — it fails in its compile step on this
+  host's documented -Werror portability issue — so the native no-crash result
+  and the full-width ra/sp/a0 values in the records are the evidence for the
+  fix, and that rests on one run; no independent review of the run's
+  interpretation existed before this record (that review is this package's
+  gate).
+Independent reviewer, verdict and finding dispositions: (pending)
+Commit, if approved: (pending)
+Remaining blockers: none.
+Next eligible package and required inputs: continue the writer/load-decision
+  thread — establish caller, ownership and later reuse for the captured
+  zeroing stores using the DDSTART15 call provenance, so the legitimate
+  scene-transition clear can be separated from the defect; the descriptor
+  pairing is closed and must not be reopened as a lead.
+```
