@@ -7,6 +7,9 @@ not a browser application.
 
 ## Read first
 
+- [Current status and orchestrator handoff](N64DD_CURRENT_STATUS.md): current
+  evidence, parallel-run boundaries, next analysis, proposed-fix gates and
+  prohibited claims. Read this before the chronological records below.
 - [Repair plan](N64DD_DMA_AUDIO_REPAIR_PLAN.md): evidence, constraints and policy gates.
 - [Work packages](N64DD_DMA_AUDIO_WORK_PACKAGES.md): assignments, diagnostic prompt
   and mandatory independent review before every commit.
