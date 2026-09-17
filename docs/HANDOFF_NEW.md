@@ -4497,3 +4497,46 @@ Next eligible package and required inputs: continue the writer/load-decision
   scene-transition clear can be separated from the defect; the descriptor
   pairing is closed and must not be reopened as a lead.
 ```
+
+## P09 — provenance of the DD-transition "clear" (analysis only, 2026-09-16)
+
+Purpose: resolve what the two transition "clears" actually are, using the
+combined DDSTART15/DDSTART16 records already available (no new APK, no source
+change), and correct the earlier MIO0-decompression reading.
+
+Changes: `docs/P09_LOAD_CLEAR_PROVENANCE.md` added; the superseded interpretation
+in `N64DD_CURRENT_STATUS.md` retracted in place with a pointer to it. No code,
+no APK, no device-side script, no signing or save data touched.
+
+Observations: the executed routine at `0x80747240` is a plain `memset(dest, 0,
+len)`; the executed call site `0x800aea0c` is the resource loader's "head is not
+`MIO0`" fallback; the length passed there is `word1` of the resource head read by
+that loader, which the live samples confirm for both calls (`0x00460020` /
+`0x00460000`). The audio command buffers lie inside the first destination range.
+The failing destination is registered in the loader's own table against id
+`0x0F25F0B0`, whose derived read source is `0x5193D0`, and the bytes read there
+are data, not a resource head, matching an asset region packed with small `MIO0`
+blocks.
+
+Actual verification: static disassembly of the live-loaded image in the P07-R
+coordinate-correct frozen RDRAM window, plus the DDSTART15/16 records of the
+existing P08d capture; a cold launch on the now-attached device was performed
+here root-free (`run-as` + `/proc/<pid>/mem`, no root, no reinstall) and it
+reproduced the transition records with the same arguments, head samples, sites
+and all-zero submission hash `0x8d0350be04626145`; generation counters and some
+retained store `before` values differ, and the record populations are not the
+same (401 vs 880 entry/launch lines) — see P09 for the limits. Independent read-only review of this package is
+the gate for publication.
+
+Limitations: no hardware or reference comparison exists, so whether the compared
+head should have been `MIO0` is unknown; the loader's per-call `id` is still not
+instrumented, so the id/read-source pairing is derived, not observed; cart-ROM PI
+transfers are not instrumented at all; the live memory sample is post-transition
+only; and the "clear is legitimate but stale reuse" and "clear arguments wrong"
+possibilities both remain open.
+
+Next test instructions: implement the single instrumented capture described in
+P09's "Proposed next step" (loader id and computed read source, bounded staging
+writes, and cart PI transfers) behind the existing per-game DD gate, then compare
+the delivered head bytes for the same id across states. Do not change runtime
+behaviour before that record exists.

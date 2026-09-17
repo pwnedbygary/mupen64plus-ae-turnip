@@ -5,6 +5,27 @@ Updated 2026-09-16. Read this before the chronological
 [detailed evidence](P08_ENTRY_NATIVE_EVIDENCE.md).
 This is the current coordination document, not a claim that the repair is done.
 
+### Dated evidence reconciliation (2026-09-16)
+
+Status documents are dated evidence, not guaranteed current truth. This line was
+reconciled against live Git on 2026-09-16:
+
+- HEAD advanced to `b6dfedd9d` "Document current N64DD evidence, uncertainties and
+  conditional repair gates", which sits directly on top of the previously-documented
+  remote tip `85dd5faf9`. The remote-history section above (which stopped at
+  `85dd5faf9`) is now superseded by this commit; both are preserved.
+- Local branch `dd-eos-watchdog-checkpoint` is exactly in sync with origin (`0 ahead /
+  0 behind`). No diverged parallel work to preserve on this branch.
+- Untreated working-tree state: `docs/N64DD_CURRENT_STATUS.md` (this note + the
+  UNREVIEWED/UNCOMMITTED P08d draft analysis below) and `.gitignore` (+2 lines for
+  local Pi runtime state). Two MSVC `*.vcxproj[.filters]` re-saved with only
+  whitespace/BOM differences (no content change) — unrelated churn that must NOT be
+  published into the source branch. A stray untracked `./]` file is junk, not part of
+  this repo's work.
+- Draft tool `tools/analyze-p08d-entry-vs-fetch.py` and its capture are present but
+  UNREVIEWED / UNCOMMITTED; they have not passed the mandatory independent read-only
+  reviewer and are reported as draft findings, not accepted evidence.
+
 ## Executive state
 
 The native DD scene transition remains unresolved. Dynarec is required;
@@ -46,15 +67,34 @@ possibilities together, rather than request a device run for each missing field.
 
 ### Distinct native evidence streams
 
-This workspace has no reachable Android device. Its latest analyzed user upload
-was the pointer-fix capture from 2026-09-15 at 18:13:13; the combined test bundle
-was then delivered, with its user-returned capture still pending here.
+This workspace's earlier sessions had no reachable Android device. Its latest
+analyzed user upload was the pointer-fix capture from 2026-09-15 at 18:13:13;
+the combined test bundle was then delivered, with its user-returned capture
+still pending here.
+
+CORRECTED (2026-09-16): a device IS now attached to this workspace (Retroid
+Pocket 6, Android 13, adb serial `49016109`) with the diagnostic build installed,
+and a cold launch plus a root-free `run-as` + `/proc/<pid>/mem` sample of the
+live emulation process were performed here — no root, no device-side script, no
+APK change, no reinstall. That run reproduced the transition in its DDSTART
+records with the same arguments, head samples and sites, and the same all-zero
+submission hash (generation counters and some retained store `before` values do
+differ; details and limits in [P09](P09_LOAD_CLEAR_PROVENANCE.md)). Statements elsewhere in this document that
+assume no device is reachable describe the earlier sessions only.
 
 The newer remote P08d handoff independently reports a run built from `6cbcae2d2`,
 including four DDSTART15 call/entry records and the same zero-buffer failure.
-Those raw private logs are not available in this workspace. Treat that as
-published parallel-session evidence, NOT as our re-analysis of a returned ZIP.
-Its APK hash differs from the bundle below: do not merge build/capture identities.
+
+NOTE (corrected 2026-09-16): the P08d raw log IS now present in this workspace
+at `.fzxwork/p08d-capture/logcat-p08d-run1.txt` (3,130,929 bytes; sha256
+c20ec502162d957ec2a09a01c316be3ecfe9e0b2039712bb98f3b25273c32321, matching the
+`85dd5faf9` record). It was analyzed on 2026-09-16 with
+`tools/analyze-p08d-entry-vs-fetch.py`. That analysis is NEW direct evidence for
+this workspace, but it is UNREVIEWED and UNCOMMITTED; it has not passed the
+mandatory independent read-only reviewer, so it is reported here as a draft
+finding, not as published/accepted evidence. Its APK identity still differs from
+the earlier bundle (hash `6f8a46d7…` vs the bundle's `fa33d400…`): do not merge
+build/capture identities.
 The remote note also reports log rotation, an earlier-run screenshot/CPU artifact,
 and host-specific startup-suite compilation trouble. Preserve these limitations.
 Before asking for another capture, obtain and analyze the available combined
@@ -62,6 +102,160 @@ records; do not duplicate a device run merely because a different session did it
 The remote document body still contains review/commit placeholders, but the
 `85dd5faf9` commit metadata records reviewed snapshot hashes and an independent
 PASS. That review record does not mean the raw capture was reanalyzed here.
+
+## Newly analyzed P08d capture (2026-09-16, UNREVIEWED / UNCOMMITTED)
+
+This subsection is a draft for independent review. It has NOT been committed and
+has NOT passed review. Do not treat it as accepted evidence or as justification
+to build/publish. It sharpens, but does not resolve, the open root-cause
+question: is the guest clear itself wrong, or legitimate with a downstream
+producer/publication/consumer divergence?
+
+### Direct observations (from `.fzxwork/p08d-capture/logcat-p08d-run1.txt`)
+
+- 401 command-entry lines, 1604 fetch records, 4 `load_clear` records.
+- Buffer `0x00411910` (KSEG0 `0x80411910`) was submitted NONZERO (~101 words)
+  repeatedly from 19:34:05.305 through 19:34:12.104, then submitted ALL ZERO at
+  19:34:12.130 (`data_size=0x1a0`, `hash=0x8d0350be04626145`, `nonzero_words=0`,
+  `words=104`; task gen 880, `clear_halt=1`). The tool reports exactly ONE
+  all-zero-at-submission entry among 401 and ZERO entries that were nonzero at
+  submission yet fetched as zeros.
+- The immediately preceding same-buffer entry (12.104) was nonzero (101). So the
+  buffer's transition to zero is a single clean step in a long stable nonzero
+  pattern, not an intermittent flip. This argues against "random corruption"
+  and for a state-dependent event at this scene transition.
+- Two adjacent clear-routine entries bracket the transition (all at entry PC
+  `0x80747240`, expected RA `0x800aea14`): #1 at 19:34:12.102 with
+  `a0=0x8012b520, a1=0x460020` (end `0x8058b540`); #2 at 19:34:12.126 with
+  `a0=0x8058b540, a1=0x460000` (start == #1's end). They are contiguous:
+  together they nominally clear `0x8012b520..0x809eb540`.
+- `0x80411910` lies inside clear #1's nominal range at offset `0x2E63F0`.
+- Exact aligned stores into `0x00411910` are at PCs `0x80747278..0x80747298`
+  (the clear routine); 31 of the 32 change a non-zero word to zero and all 32
+  have after-value 0 (one has before-value 0). This is direct writer evidence for
+  those stores, not the full write
+  history (store_summary gen 878: recent=32, dropped=592, replaced_events=46618).
+- The buffer was still nonzero (101) at 12.104, ~2 ms after clear #1 was
+  probed at entry. Clearing a 4.5 MB range takes many cycles, so clear #1 can
+  still reach `0x80411910` (3 MB in) after that sample; this is consistent with,
+  but does not prove, clear #1 being the zeroing clear.
+- Retained PI DMA history: ring `overwritten=10345`; no captured transfer targets
+  `dram_addr=0x00411910`. Captured cart-to-RDRAM loads landed at `0x00405xxx`
+  (game assets). The PI/DD write that originally populated the audio buffer is
+  lost to ring overwrite.
+
+### Interpretation (provisional, not accepted)
+
+- The failure is a single deterministic transition from a stable nonzero pattern
+  to an all-zero submission at the gameplay-demo boundary. The two adjacent clear
+  entries are the leading candidates for the zeroing clear; clear #1's range
+  covers the audio buffer, clear #2's starts just past it.
+- This does NOT establish that clear #1 is the defect. Two possibilities remain
+  open and are NOT discriminated by this capture alone:
+  (a) the clear is wrong/over-wide and clobbers the audio buffer, or
+  (b) the clear is legitimate and the audio buffer should not be reused from
+      that region, or a load that should have re-populated it did not run.
+- SUPERSEDED (2026-09-16, see [P09](P09_LOAD_CLEAR_PROVENANCE.md)): the earlier
+  reading of this subsection — that these are MIO0 decompression/workspace
+  clears whose length came from an "MIO0-style length" field — is wrong. The
+  executed routine is a plain `memset` called from the resource loader's
+  **"head is not MIO0" fallback**, and the length passed to it is `word1` of the
+  bytes read from the resource head, i.e. resource data used as a size (live:
+  `a1 = 0x00460020` with head word1 `0x00460020`; `a1 = 0x00460000` with head
+  word1 `0x00460000`). The adjacent-clear pairing and the ranges in the table
+  above stand; the interpretation of *why* they are that wide does not.
+
+### Newly correlated store-writer + launch chain (re-analyzed 2026-09-16,
+### UNREVIEWED / UNCOMMITTED)
+
+This subsection is a draft for independent review. It has NOT been committed and
+has NOT passed review. It is derived from the same `.fzxwork/p08d-capture`
+log already listed above; the values below are my own re-extraction from the
+raw lines, not a re-run of an approved analysis.
+
+Direct observations (all timestamps 2026-09-15 19:34:12, DDSTART markers):
+
+- Exactly ONE `cmd_entry` is all-zero among 401: `data_ptr=0x00411910`,
+  `data_size=0x1a0`, `hash=0x8d0350be04626145`, `nonzero_words=0`, `words=104`
+  at 12.130. The other 400 entries are nonzero (101 or 109 words). The two
+  command buffers alternate across the run: `0x00411910` (201 entries) and
+  `0x004132d0` (200 entries). The zeroed buffer is the one the game is
+  currently consuming.
+- The RSP launch at 12.130 (DDSTART13, sequence 880, type 2, `clear_halt=1`,
+  status 0x43->0x40) carries descriptor `w12=0x00411910, w13=0x1a0` and reports
+  the same all-zero buffer. The immediately preceding launch 879 (12.112) uses
+  the alternate buffer `0x004132d0` and is nonzero (109 words). So the failure
+  is specific to buffer `0x00411910` at this transition, not a global launch
+  fault.
+- The RSP source DMA that consumes this buffer (DDSTART11, record 3524, 12.130)
+  reads `raw_dma_dram=0x00411910`, `requested_length=64`, with all four
+  `imem_before_samples`/`imem_after_samples` = 0 and `payload_hash=0x88201fb9…`.
+  The RSP read the zeroed buffer as a task source and got zeros.
+- The 32 retained aligned CPU stores into `0x00411910` (DDSTART14, generation
+  878, 12.130) are the zeroing writes: PCs `0x80747278..0x80747298` (the clear
+  routine, including the delay-slot SW at 0x98), addresses `0x80411a30..0x80411aac`,
+  31 of them changing a non-zero word to zero (one has `before=0`); all 32 have
+  `after=0`. `store_summary`: recent=32, dropped=592,
+  replaced_events=46618. This is direct writer evidence for those stores, not a
+  complete write history.
+- The two `load_clear` entries bracket the failure. Clear #1 (12.102):
+  `call_pc=0x800aea0c -> target=0x80747240`, `a0=0x8012b520`, `a1=0x460020`
+  (exclusive end `0x8058b540`), RA `0x800aea14`, header at `0x803da5f0=0x00460026`.
+  Clear #2 (12.126): `a0=0x8058b540`, `a1=0x460000` (end `0x809eb540`), header
+  `0x00460000`. They are contiguous (#1 end == #2 start) and together nominally
+  clear `0x8012b520..0x809eb540` (~4.5 MB). `0x80411910` sits at offset
+  `0x2E63F0` inside clear #1's range. Both headers are the resource-loader head
+  words described in [P09](P09_LOAD_CLEAR_PROVENANCE.md) (`word0`, `word1`),
+  whose `word1` is passed as the memset length, and both come from caller
+  `0x800aea0c` -> `0x80747240` with RA `0x800aea14`.
+- The store `before` values in `0x00411910` (e.g. `0x14160c80`, `0x804154d0`,
+  `0x0c340000`, `0x0c800940`) are audio-command-shaped words of the same kind
+  seen live in the alternate buffer `0x004132d0` fetches. The buffer held real,
+  actively-launched audio data moments before it was zeroed.
+
+Interpretation (provisional, not accepted):
+
+- The failure is a single deterministic transition: a wide, contiguous ~4.5 MB
+  resource-loader fallback `memset` (clear #1, `a0=0x8012b520`, `a1=0x460020`,
+  length taken from the resource head's second word per
+  [P09](P09_LOAD_CLEAR_PROVENANCE.md)) runs at the gameplay-demo transition and
+  its store path lands on the live
+  audio command buffer `0x00411910`, zeroing it; the guest then submits and the
+  RSP consumes that buffer all-zero. The 400+ earlier nonzero launches show the
+  buffer is normally intact, so the clear is a NEW/over-reaching event at this
+  scene boundary rather than a constant condition.
+- This does NOT yet establish that clear #1 is the emulator defect. It is
+  consistent with both (a) the destination/range being wrong before the guest
+  call and (b) the destination/range being correct guest state whose region
+  legitimately contains an audio buffer the allocator placed inside it. Note the
+  correction above: the executed routine is the resource loader's "head is not
+  MIO0" fallback, so "workspace decompression clear" is no longer the right
+  description. A large length alone does not prove the emulator's behaviour is
+  wider or different than hardware (see the "Out-of-range clear" prohibited
+  claim).
+
+### Exact missing evidence (first target before another APK)
+
+- The store window between the 12.104 nonzero sample and the 12.130 zero
+  submission is now directly observed (32 aligned stores, PCs
+  `0x80747278..0x80747298`, 31 of them before=nonzero to after=0 and all 32
+  after=0, generation 878). The remaining join-key gap is NOT the
+  stores themselves but confirming, WITHOUT relying on interchangeable
+  generation counters (per the join-key caveat in this doc), that these 878
+  stores belong to clear #1 (`a0=0x8012b520`) rather than clear #2 (`a0=0x8058b540`)
+  or a later pass. The store `before` values being audio-command words (not the
+  MIO0 source bytes of either clear) is supportive but not a proof of origin.
+- The PI/DD write that originally populated `0x00411910` is now CONFIRMED LOST
+  to ring overwrite: the retained PI history (`DDSTART16`) shows `ring_capacity=16,
+  ring_wrapped=1, overwritten=10345`; all 16 retained transfers land at
+  `0x00405xxx` (game assets) or `0x007c5620`, never `0x00411910`. Confirming the
+  nonzero data was a real resource load therefore requires a fresh, higher-
+  retention capture, not a re-read of this one.
+- The discriminating check remains: does clear #1's guest range (or the
+  emulator's bank-mask/row-clamp result) legitimately include `0x80411910` on
+  hardware, or is the emulator's clear over-wide? This needs a hardware or
+  reference comparison of the clear's intended destination, which is not
+  available in this workspace.
 
 ## Evidence ledger
 
