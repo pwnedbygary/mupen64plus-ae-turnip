@@ -1302,20 +1302,6 @@ static int load_dd_disk(struct dd_disk* dd_disk, const struct storage_backend_in
         DebugMessage(M64MSG_WARNING, "Loading a saved disk");
     }
 
-    if (DdStartupDiagnosticsEnabled()) {
-        const char *region_name = dd_disk->region == DDREGION_JAPAN ? "JAPAN"
-            : dd_disk->region == DDREGION_US ? "USA"
-            : dd_disk->region == DDREGION_DEV ? "DEVELOPMENT" : "UNKNOWN";
-        DebugMessage(M64MSG_INFO, "DDSTART2 disk: region=%s development=%u region_word=%08x",
-            region_name, development, (unsigned int)w);
-        if (offset_id <= fstorage->size && fstorage->size - offset_id >= 6) {
-            const uint8_t *id = fstorage->data + offset_id;
-            DebugMessage(M64MSG_INFO,
-                "DDSTART2 disk ID bytes: %02x %02x %02x %02x %02x %02x (stored byte order)",
-                id[0], id[1], id[2], id[3], id[4], id[5]);
-        }
-    }
-
     free(dd_disk_filename);
     return 1;
 

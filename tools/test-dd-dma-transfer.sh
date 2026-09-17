@@ -27,7 +27,6 @@ ${CXX:-c++} -std=c++14 -Wall -Wextra -Werror -DPARALLEL_INTEGRATION -DM64P_PLUGI
 	tools/tests/rsp-dd-dma-transfer-test.cpp \
 	mupen64plus-rsp-parallel/upstream/rsp/cp0.cpp \
 	mupen64plus-rsp-parallel/upstream/dd_policy.cpp \
-	mupen64plus-rsp-parallel/upstream/rsp_diag.cpp \
 	-o "$binary"
 
 "$binary" legacy

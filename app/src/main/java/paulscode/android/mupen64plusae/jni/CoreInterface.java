@@ -545,29 +545,16 @@ class CoreInterface
         mCoreContext = new Memory(bytes.length + 1);
         mCoreContext.setString(0, coreContextText);
 
-        CoreLibrary.DebugCallback debugCallback = null;
+        // Keep the core callback installed so startup failures still reach the
+        // Android error/warning log. Release shrinking removes routine
+        // verbose/status/info logging without changing failure reporting.
+        CoreLibrary.DebugCallback debugCallback = mDebugCallBackCore;
         // Comparison candidate: only explicit DD support plus a real cart route.
         // Reset on every launch so direct disks/ordinary carts cannot inherit it.
         if (LibC.INSTANCE.setenv("M64P_DD_COMBO_CART_BOOT",
                 enable64DdSupport && !directNdd ? "1" : "0", 1) != 0) {
             Log.e(TAG, "Unable to configure DD combo boot comparison");
             return -1;
-        }
-        // The native core filters/bounds these messages before crossing JNA.
-        // Reset for every session, including DD-disabled cartridge launches.
-        if (LibC.INSTANCE.setenv("M64P_DD_STARTUP_DIAGNOSTICS",
-                enable64DdSupport ? "1" : "0", 1) != 0) {
-            Log.e(TAG, "Unable to configure DD startup diagnostics");
-            return -1;
-        }
-        if (enable64DdSupport) {
-            Log.i(TAG, "DDSTART1 requested: support64dd=true; native marker required");
-            debugCallback = mDebugCallBackCore;
-        } else if (!new File(mDdRom).exists()) {
-            Log.i(TAG, "DDROM file does not exists:" + mDdRom);
-            debugCallback = mDebugCallBackCore;
-        } else {
-            Log.i(TAG, "Disable core debug due to 64DD ROM found");
         }
 
         int returnValue = mMupen64PlusLibrary.CoreStartup(CoreLibrary.coreAPIVersion, configDirPath,

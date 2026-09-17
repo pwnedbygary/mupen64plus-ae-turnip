@@ -120,49 +120,13 @@ static void update_rtc(struct dd_rtc* rtc)
 static void signal_dd_interrupt(struct dd_controller* dd, uint32_t bm_int)
 {
     dd->regs[DD_ASIC_CMD_STATUS] |= bm_int;
-    if (DdStartupDiagnosticsEnabled())
-        DdStartupDiagnosticsTrace(DD_TRACE_INTERRUPT, DD_TRACE_EARLY,
-            "DDSTART3 interrupt: source=DD assert=%08x status=%08x",
-            bm_int, dd->regs[DD_ASIC_CMD_STATUS]);
     r4300_check_interrupt(dd->r4300, CP0_CAUSE_IP3, 1);
 }
 
 static void clear_dd_interrupt(struct dd_controller* dd, uint32_t bm_int)
 {
     dd->regs[DD_ASIC_CMD_STATUS] &= ~bm_int;
-    if (DdStartupDiagnosticsEnabled())
-        DdStartupDiagnosticsTrace(DD_TRACE_INTERRUPT, DD_TRACE_EARLY,
-            "DDSTART3 interrupt: source=DD clear=%08x status=%08x",
-            bm_int, dd->regs[DD_ASIC_CMD_STATUS]);
     r4300_check_interrupt(dd->r4300, CP0_CAUSE_IP3, 0);
-}
-
-static void trace_bm_state(struct dd_controller* dd, const char* phase,
-        const char* action)
-{
-    unsigned int head;
-    unsigned int track;
-    unsigned int sector;
-    const char *format;
-
-    if (!DdStartupDiagnosticsEnabled())
-        return;
-
-    head = (dd->regs[DD_ASIC_CUR_TK] & 0x10000000) >> 28;
-    track = (dd->regs[DD_ASIC_CUR_TK] & 0x0fff0000) >> 16;
-    sector = (dd->regs[DD_ASIC_CUR_SECTOR] >> 16) & 0xff;
-    if (strcmp(phase, "entry") == 0)
-        format = "DDSTART4 BM entry: sector=%u head=%u track=%u"
-            " status=%08x bm=%08x action=%s";
-    else if (strcmp(phase, "ack") == 0)
-        format = "DDSTART4 BM ack: sector=%u head=%u track=%u"
-            " status=%08x bm=%08x action=%s";
-    else
-        format = "DDSTART4 BM exit: sector=%u head=%u track=%u"
-            " status=%08x bm=%08x action=%s";
-    DdStartupDiagnosticsTrace(DD_TRACE_BM_HANDSHAKE, DD_TRACE_EARLY,
-        format, sector, head, track, dd->regs[DD_ASIC_CMD_STATUS],
-        dd->regs[DD_ASIC_BM_STATUS_CTL], action);
 }
 
 static void read_C2(struct dd_controller* dd)
@@ -234,19 +198,14 @@ static void write_sector(struct dd_controller* dd)
 void dd_update_bm(void* opaque)
 {
     struct dd_controller* dd = (struct dd_controller*)opaque;
-    const char *action;
 
-    trace_bm_state(dd, "entry", "enter");
     /* not running */
-	if ((dd->regs[DD_ASIC_BM_STATUS_CTL] & DD_BM_STATUS_RUNNING) == 0) {
-        trace_bm_state(dd, "exit", "not-running");
+	if ((dd->regs[DD_ASIC_BM_STATUS_CTL] & DD_BM_STATUS_RUNNING) == 0)
 		return;
-    }
 
     unsigned int sector = (dd->regs[DD_ASIC_CUR_SECTOR] >> 16) & 0xff;
     unsigned int block = sector / 90;
     sector %= 90;
-    action = "unknown";
 
     /* handle writes (BM mode 0) */
     if (dd->bm_write) {
@@ -254,14 +213,12 @@ void dd_update_bm(void* opaque)
         if (sector == 0) {
             dd->regs[DD_ASIC_CUR_SECTOR] += 0x10000;
             dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_DATA_RQ;
-            action = "write-first-sector";
         }
         /* subsequent sectors: write previous sector */
         else if (sector < SECTORS_PER_BLOCK) {
             write_sector(dd);
             dd->regs[DD_ASIC_CUR_SECTOR] += 0x10000;
             dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_DATA_RQ;
-            action = "write-sector";
         }
         /* otherwise write last sector */
         else if (sector < SECTORS_PER_BLOCK + 1) {
@@ -273,17 +230,14 @@ void dd_update_bm(void* opaque)
                 dd->regs[DD_ASIC_CUR_SECTOR] = ((1 - block) * 90 + 1) << 16;
                 dd->regs[DD_ASIC_BM_STATUS_CTL] &= ~DD_BM_STATUS_BLOCK;
                 dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_DATA_RQ;
-                action = "write-next-block";
             /* quit writing after second block */
             } else {
                 dd->regs[DD_ASIC_CUR_SECTOR] += 0x10000;
                 dd->regs[DD_ASIC_BM_STATUS_CTL] &= ~DD_BM_STATUS_RUNNING;
-                action = "write-stop";
             }
         }
         else {
             DebugMessage(M64MSG_ERROR, "DD Write, sector overrun");
-            action = "write-overrun";
         }
     }
     /* handle reads (BM mode 1) */
@@ -293,14 +247,12 @@ void dd_update_bm(void* opaque)
         if ((((dd->regs[DD_ASIC_CUR_TK] >> 16) & 0x1fff) == 6) && block == 0 && !dev) {
             dd->regs[DD_ASIC_CMD_STATUS] &= ~DD_STATUS_DATA_RQ;
             dd->regs[DD_ASIC_BM_STATUS_CTL] |= DD_BM_STATUS_MICRO;
-            action = "read-track-fail";
         }
         /* data sectors : read sector and signal BM interrupt */
         else if (sector < SECTORS_PER_BLOCK) {
             read_sector(dd);
             dd->regs[DD_ASIC_CUR_SECTOR] += 0x10000;
             dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_DATA_RQ;
-            action = "read-data";
         }
         /* C2 sectors: do nothing since they're loaded with zeros */
         else if (sector < SECTORS_PER_BLOCK + 4) {
@@ -309,7 +261,6 @@ void dd_update_bm(void* opaque)
             if ((sector + 1) == SECTORS_PER_BLOCK + 4) {
                 dd->regs[DD_ASIC_CMD_STATUS] |= DD_STATUS_C2_XFER;
             }
-            action = "read-c2";
         }
         /* Gap sector: continue to next block, quit after second block */
         else if (sector == SECTORS_PER_BLOCK + 4) {
@@ -317,22 +268,18 @@ void dd_update_bm(void* opaque)
                 // Start at next block sector 0.
                 dd->regs[DD_ASIC_CUR_SECTOR] = ((1 - block) * 90 + 0) << 16;
                 dd->regs[DD_ASIC_BM_STATUS_CTL] &= ~DD_BM_STATUS_BLOCK;
-                action = "read-next-block";
             }
             else {
                 dd->regs[DD_ASIC_BM_STATUS_CTL] &= ~DD_BM_STATUS_RUNNING;
-                action = "read-stop";
             }
         }
         else {
             DebugMessage(M64MSG_ERROR, "DD Read, sector overrun");
-            action = "read-overrun";
         }
     }
 
     /* Signal a BM interrupt */
     signal_dd_interrupt(dd, DD_STATUS_BM_INT);
-    trace_bm_state(dd, "exit", action);
 }
 
 
@@ -384,9 +331,6 @@ void read_dd_regs(void* opaque, uint32_t address, uint32_t* value)
 
     if (address < MM_DD_REGS || address >= MM_DD_MS_RAM) {
         DebugMessage(M64MSG_ERROR, "Unknown access in DD registers MMIO space %08x", address);
-        if (DdStartupDiagnosticsEnabled())
-            DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_READ, DD_TRACE_SPARSE,
-                "DDSTART3 reg read invalid: address=%08x", address);
         *value = 0;
         return;
     }
@@ -405,10 +349,6 @@ void read_dd_regs(void* opaque, uint32_t address, uint32_t* value)
 
     *value = dd->regs[reg];
     DebugMessage(M64MSG_VERBOSE, "DD REG: %08X -> %08x", address, *value);
-    if (DdStartupDiagnosticsEnabled())
-        DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_READ, DD_TRACE_SPARSE,
-            "DDSTART3 reg read: address=%08x reg=%u response=%08x status=%08x",
-            address, reg, *value, dd->regs[DD_ASIC_CMD_STATUS]);
 
     /* post read update. Not part of the returned value */
     switch(reg)
@@ -432,10 +372,6 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
 
     if (address < MM_DD_REGS || address >= MM_DD_MS_RAM) {
         DebugMessage(M64MSG_ERROR, "Unknown access in DD registers MMIO space %08x", address);
-        if (DdStartupDiagnosticsEnabled())
-            DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_COMMAND, DD_TRACE_EARLY,
-                "DDSTART3 reg write invalid: address=%08x value=%08x mask=%08x",
-                address, value, mask);
         return;
     }
 
@@ -444,11 +380,6 @@ void write_dd_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
     assert(mask == ~UINT32_C(0));
 
     DebugMessage(M64MSG_VERBOSE, "DD REG: %08X <- %08x", address, value);
-    if (DdStartupDiagnosticsEnabled())
-        DdStartupDiagnosticsTrace(DD_TRACE_REGISTER_COMMAND, DD_TRACE_EARLY,
-            "DDSTART3 reg write: address=%08x reg=%u value=%08x mask=%08x command=%02x",
-            address, reg, value, mask, reg == DD_ASIC_CMD_STATUS
-                ? (value >> 16) & 0xff : 0);
 
     switch (reg)
     {
@@ -702,24 +633,15 @@ unsigned int dd_dom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr, u
 
 void dd_on_pi_cart_addr_write(struct dd_controller* dd, uint32_t address)
 {
-    if (DdStartupDiagnosticsEnabled()
-            && ((address >= MM_DD_C2S_BUFFER && address < MM_DD_DS_BUFFER)
-                || (address >= MM_DD_DS_BUFFER && address < MM_DD_REGS)))
-        DdStartupDiagnosticsTrace(DD_TRACE_INTERRUPT, DD_TRACE_EARLY,
-            "DDSTART3 interrupt: source=PI cart_ack=%08x status_before=%08x",
-            address, dd->regs[DD_ASIC_CMD_STATUS]);
-
     /* clear C2 xfer */
     if (address == MM_DD_C2S_BUFFER) {
         dd->regs[DD_ASIC_CMD_STATUS] &= ~(DD_STATUS_C2_XFER | DD_STATUS_BM_ERR);
         clear_dd_interrupt(dd, DD_STATUS_BM_INT);
-        trace_bm_state(dd, "ack", "c2");
     }
     /* clear data RQ */
     else if (address == MM_DD_DS_BUFFER) {
         dd->regs[DD_ASIC_CMD_STATUS] &= ~(DD_STATUS_DATA_RQ | DD_STATUS_BM_ERR);
         clear_dd_interrupt(dd, DD_STATUS_BM_INT);
-        trace_bm_state(dd, "ack", "ds");
     }
 }
 

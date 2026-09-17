@@ -138,14 +138,6 @@ void write_rsp_regs2(void* opaque, uint32_t address, uint32_t value, uint32_t ma
 
 void do_SP_Task(struct rsp_core* sp);
 
-/*
- * P08c-writer (2/2): emits the audio command buffer's state at submission
- * (one DDSTART12 line per entry) when DD diagnostics and the per-game DD
- * policy are enabled.  Called from do_SP_Task's audio branch; exposed so the
- * host fixture can drive it without an RSP plugin.  Observation only.
- */
-void dd_cmd_entry_hash_observe(struct rsp_core* sp);
-
 void rsp_interrupt_event(void* opaque);
 void rsp_end_of_dma_event(void* opaque);
 

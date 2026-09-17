@@ -3,7 +3,6 @@
 #else
 #include "rsp_jit.hpp"
 #endif
-#include "rsp_diag.hpp"
 #include "dd_policy.hpp"
 #include <stdint.h>
 #include <stdarg.h>
@@ -50,34 +49,8 @@ short MFC0_count[32];
 int SP_STATUS_TIMEOUT;
 } // namespace RSP
 
-static uint64_t hash_rsp_task(const unsigned char *dmem)
-{
-	static const uint64_t FNV_PRIME = UINT64_C(0x100000001b3);
-	uint64_t hash = UINT64_C(0xcbf29ce484222325);
-
-	/*
-	 * The task descriptor occupies the final 64 bytes of DMEM.  Hashing this
-	 * small fixed window is substantially cheaper than hashing IMEM on every
-	 * entry and does not read guest memory outside the RSP task area.
-	 */
-	for (unsigned i = 0xfc0; i < 0x1000; ++i)
-		hash = (hash * FNV_PRIME) ^ dmem[i];
-	return hash;
-}
-
 extern "C"
 {
-	/*
-	 * Optional core-to-plugin bridge.  The historical RSP ABI does not
-	 * require this symbol; DD-disabled sessions pass a NULL callback.
-	 */
-	EXPORT void CALL DdStartupDiagnosticsSetCallback(
-	    ptr_DdStartupDiagnosticsCallback callback, void *context)
-	{
-		RSP::Diagnostics::set_callback(callback, context);
-		RSP::cpu.set_diagnostics_enabled(callback != NULL);
-	}
-
 	/*
 	 * Optional core-to-plugin DD runtime-policy receiver (P03).  The core
 	 * pushes the explicit per-game launch policy through this symbol; the
@@ -101,27 +74,8 @@ extern "C"
 		memset(&RSP::cpu.get_state().cp2, 0, sizeof(RSP::cpu.get_state().cp2));
 	}
 
-#ifdef INTENSE_DEBUG
-	// Need super-fast hash here.
-	static uint64_t hash_imem(const uint8_t *data, size_t size)
-	{
-		uint64_t h = 0xcbf29ce484222325ull;
-		size_t i;
-		for (i = 0; i < size; i++)
-			h = (h * 0x100000001b3ull) ^ data[i];
-		return h;
-	}
-
-	void log_rsp_mem_parallel(void)
-	{
-		fprintf(stderr, "IMEM HASH: 0x%016llx\n", hash_imem(RSP::rsp.IMEM, 0x1000));
-		fprintf(stderr, "DMEM HASH: 0x%016llx\n", hash_imem(RSP::rsp.DMEM, 0x1000));
-	}
-#endif
-
 	EXPORT unsigned int CALL DoRspCycles(unsigned int cycles)
 	{
-		const bool diagnostics_enabled = RSP::Diagnostics::enabled();
 		if (*RSP::rsp.SP_STATUS_REG & (SP_STATUS_HALT | SP_STATUS_BROKE))
 			return 0;
 
@@ -130,30 +84,7 @@ extern "C"
 
 		// Run CPU until we either break or we need to fire an IRQ.
 		uint32_t sp_pc = *RSP::rsp.SP_PC_REG;
-		bool recorded_entry = false;
 		RSP::cpu.get_state().pc = sp_pc & 0xfff;
-		if (diagnostics_enabled)
-		{
-			uint32_t task_type = 0;
-			memcpy(&task_type, RSP::rsp.DMEM + 0xfc0, sizeof(task_type));
-			recorded_entry = RSP::Diagnostics::trace_rsp_entry(
-			    hash_rsp_task(RSP::rsp.DMEM),
-			    RSP::cpu.diagnostic_imem_hash(), task_type, sp_pc,
-			    reinterpret_cast<const uint32_t *>(RSP::rsp.DMEM + 0xfc0));
-			/*
-			 * P08b: arm the command-buffer watch for an audio task when the
-			 * per-game DD policy is enabled, so fetches of that buffer are
-			 * captured with the generation this entry established.  The
-			 * function re-checks task type, callback and policy.
-			 */
-			RSP::Diagnostics::watch_arm_from_task(
-			    reinterpret_cast<const uint32_t *>(RSP::rsp.DMEM + 0xfc0));
-		}
-
-#ifdef INTENSE_DEBUG
-		fprintf(stderr, "RUN TASK: %u\n", RSP::cpu.get_state().pc);
-		log_rsp_mem_parallel();
-#endif
 
 		for (auto &count : RSP::MFC0_count)
 			count = 0;
@@ -170,8 +101,6 @@ extern "C"
 		// From CXD4.
 		if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_BROKE)
 		{
-			if (recorded_entry)
-				RSP::Diagnostics::rsp_return();
 			return cycles;
 		}
 		else if (*RSP::cpu.get_state().cp0.irq & 1)
@@ -185,8 +114,6 @@ extern "C"
 		// CPU restarts with the correct SIGs.
 		*RSP::rsp.SP_STATUS_REG &= ~SP_STATUS_HALT;
 
-		if (recorded_entry)
-			RSP::Diagnostics::rsp_return();
 		return cycles;
 	}
 
@@ -211,8 +138,6 @@ extern "C"
 
 	EXPORT void CALL RomClosed(void)
 	{
-		RSP::Diagnostics::set_callback(nullptr, nullptr);
-		RSP::cpu.set_diagnostics_enabled(false);
 		*RSP::rsp.SP_PC_REG = 0x00000000;
 	}
 
@@ -261,8 +186,6 @@ extern "C"
 	EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle CoreLibHandle, void *Context,
 									 void (*DebugCallback)(void *, int, const char *))
 	{
-        RSP::Diagnostics::set_callback(nullptr, nullptr);
-        RSP::cpu.set_diagnostics_enabled(false);
         /* first thing is to set the callback function for debug info */
         l_DebugCallback = DebugCallback;
         l_DebugCallContext = Context;
@@ -275,8 +198,6 @@ extern "C"
 
 	EXPORT m64p_error CALL PluginShutdown(void)
 	{
-		RSP::Diagnostics::set_callback(nullptr, nullptr);
-		RSP::cpu.set_diagnostics_enabled(false);
 		return M64ERR_SUCCESS;
 	}
 

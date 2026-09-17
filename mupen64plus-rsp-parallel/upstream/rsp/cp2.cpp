@@ -31,10 +31,6 @@ extern "C"
 	{
 		uint16_t *e = rsp->cp2.regs[rd].e;
 
-#ifdef INTENSE_DEBUG
-		fprintf(stderr, "MTC2, rt = %u, [rt] = 0x%x, rd = %u, e = %u\n", rt, rsp->sr[rt], rd, element);
-#endif
-
 		unsigned lo = element >> 1;
 		rt = rsp->sr[rt];
 

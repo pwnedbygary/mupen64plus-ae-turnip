@@ -119,8 +119,6 @@ typedef struct _rsp_plugin_functions
 	ptr_DoRspCycles         doRspCycles;
 	ptr_InitiateRSP         initiateRSP;
 	ptr_RomClosed           romClosed;
-	/* Optional DD-only diagnostic bridge; never required for RSP plugins. */
-	void (*setDdStartupDiagnostics)(ptr_DdStartupDiagnosticsCallback, void *);
 	/*
 	 * Optional DD runtime-policy receiver (P03).  The core pushes the
 	 * explicit per-game policy here; absence means the selected plugin

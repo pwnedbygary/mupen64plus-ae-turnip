@@ -623,15 +623,6 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
             boolean loadingSuccess;
 
-            if (mGamePrefs.enable64DdSupport) {
-                Log.i(TAG, "DDSTART1 launch: support64dd=true; directNdd=" + isNdd
-                        + "; configuredIpl=" + !TextUtils.isEmpty(isNdd
-                            ? mGlobalPrefs.japanIplPath : mGamePrefs.idlPath64Dd)
-                        + "; configuredDisk=" + (isNdd || !TextUtils.isEmpty(mGamePrefs.diskPath64Dd))
-                        + "; autoLoadRequested=" + !mIsRestarting
-                        + "; countPerOp=" + mGamePrefs.countPerOp
-                        + "; countPerOpDen=" + mGamePrefs.countPerOpDen);
-            }
             loadingSuccess = mCoreInterface.coreStartup(mGamePrefs.getCoreUserConfigDir(), null, mGlobalPrefs.coreUserDataDir,
                     mGlobalPrefs.coreUserCacheDir, mGamePrefs.enable64DdSupport, isNdd) == 0;
             final boolean coreInitialized = loadingSuccess;
@@ -795,7 +786,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                     SyncToGoogleDriveService.syncToGoogleDrive(getApplicationContext(), mGamePrefs.getGameDataDirName(), mRomGoodName, mRomHeaderName, false);
                 }
             } else if (mGamePrefs.enable64DdSupport && coreInitialized) {
-                // No emulation ran: release DD diagnostic callbacks on setup failure.
+                // No emulation ran: release the initialized core on setup failure.
                 // Do not prune, export or sync any saves on this failure path.
                 mCoreInterface.coreDetachPlugin(CoreTypes.m64p_plugin_type.M64PLUGIN_GFX);
                 mCoreInterface.coreDetachPlugin(CoreTypes.m64p_plugin_type.M64PLUGIN_RSP);

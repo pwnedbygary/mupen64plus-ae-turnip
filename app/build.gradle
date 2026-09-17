@@ -30,10 +30,10 @@ android {
     }
     signingConfigs {
         release {
-            def keystoreProperties = new Properties()
-            def keystorePropertiesFile = rootProject.file('keystore.properties')
-            if (keystorePropertiesFile.exists()) {
-                keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+            def releaseKeystorePropertiesFile = rootProject.file('keystore.properties')
+            if (releaseKeystorePropertiesFile.exists()) {
+                def keystoreProperties = new Properties()
+                keystoreProperties.load(new FileInputStream(releaseKeystorePropertiesFile))
                 storeFile file(keystoreProperties['storeFile'])
                 storePassword keystoreProperties['storePassword']
                 keyAlias keystoreProperties['keyAlias']
@@ -45,8 +45,6 @@ android {
         release {
             if (rootProject.file('keystore.properties').exists()) {
                 signingConfig signingConfigs.release
-            } else {
-                signingConfig signingConfigs.debug
             }
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
@@ -69,6 +67,21 @@ android {
                 def builtType = variant.buildType.name
                 outputFileName = "Mupen64PlusAE-${builtType}.apk"
             }
+        }
+    }
+
+    // Do not make a release artifact appear signed with the debug key when
+    // release credentials are absent. This check is deferred until a release
+    // packaging task is requested so assembleDebug remains usable on a clean
+    // checkout.
+    gradle.taskGraph.whenReady { taskGraph ->
+        def releaseKeystorePropertiesFile = rootProject.file('keystore.properties')
+        def releasePackagingRequested = taskGraph.allTasks.any { task ->
+            task.name ==~ /(?i).*(assemble|bundle|package|sign).*release.*/
+        }
+        if (releasePackagingRequested && !releaseKeystorePropertiesFile.exists()) {
+            throw new GradleException(
+                    "Release signing is not configured: keystore.properties is missing")
         }
     }
 

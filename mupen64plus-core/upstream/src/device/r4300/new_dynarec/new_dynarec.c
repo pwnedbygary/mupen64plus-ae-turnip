@@ -20,7 +20,6 @@
 
 #include <stdio.h>
 #include <stdint.h>
-#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -46,8 +45,6 @@
 #include "device/r4300/cp1.h"
 #include "device/r4300/interrupt.h"
 #include "device/r4300/tlb.h"
-#include "device/r4300/dd_fault_layout.h"
-#include "device/dd/dd_cmd_watch.h"
 #include "device/r4300/fpu.h"
 #include "device/rcp/mi/mi_controller.h"
 #include "device/rcp/rsp/rsp_core.h"
@@ -62,66 +59,6 @@ void recomp_dbg_cleanup(void);
 void recomp_dbg_block(int addr);
 #endif
 
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-#ifndef DD_CMD_WATCH_CODEGEN_TEST
-/*
- * The generated probe passes a pointer to a diagnostic-only hot-state slot.
- * Keep the direct RDRAM read here, beside the existing validated guest
- * readers, rather than teaching the recorder to interpret host state.  The
- * callback/gate check precedes the read so an old compiled block cannot read
- * memory after diagnostics or the per-game DD policy is disabled.
- */
-static void dd_dynarec_capture_probe(
-    struct dd_cmd_watch_probe_snapshot *snapshot)
-{
-  void *context = NULL;
-  static const uint32_t stack_offsets[] = {
-    UINT32_C(0x38), UINT32_C(0x3c), UINT32_C(0x4c), UINT32_C(0x58)
-  };
-  uint32_t header_sample[16] = { 0 };
-  uint32_t stack_sample[4] = { 0 };
-  uint32_t header_sample_valid_mask = 0;
-  uint32_t stack_sample_valid_mask = 0;
-  uint32_t source_header_value = 0;
-  int source_header_valid = 0;
-  unsigned int i;
-
-  if (snapshot == NULL
-      || !DdStartupDiagnosticsEnabled()
-      || !DdRuntimePolicyGet()
-      || DdStartupDiagnosticsGetCallback(&context) == NULL)
-    return;
-  if (snapshot->kind == DD_CMD_WATCH_PROBE_CALL
-      && (snapshot->flags & DD_CMD_WATCH_PROBE_VALID_T8))
-  {
-    for (i = 0; i < sizeof(header_sample) / sizeof(header_sample[0]); ++i)
-    {
-      uint32_t address = (uint32_t)snapshot->t8 + i * 4;
-      if (dd_fault_guest_read_u32(g_dev.rdram.dram, g_dev.rdram.dram_size,
-              address, &header_sample[i]))
-        header_sample_valid_mask |= UINT32_C(1) << i;
-    }
-    source_header_valid = (header_sample_valid_mask & 1u) != 0;
-    if (source_header_valid)
-      source_header_value = header_sample[0];
-  }
-  if (snapshot->flags & DD_CMD_WATCH_PROBE_VALID_SP)
-  {
-    for (i = 0; i < sizeof(stack_offsets) / sizeof(stack_offsets[0]); ++i)
-    {
-      uint32_t address = (uint32_t)snapshot->sp + stack_offsets[i];
-      if (dd_fault_guest_read_u32(g_dev.rdram.dram, g_dev.rdram.dram_size,
-              address, &stack_sample[i]))
-        stack_sample_valid_mask |= UINT32_C(1) << i;
-    }
-  }
-  dd_cmd_watch_capture_probe_samples(snapshot, source_header_valid,
-      source_header_value, header_sample, header_sample_valid_mask,
-      stack_sample, stack_sample_valid_mask);
-}
-#endif
-#endif
-
 #if NEW_DYNAREC == NEW_DYNAREC_X86
 #include "x86/assem_x86.h"
 #elif  NEW_DYNAREC == NEW_DYNAREC_X64
@@ -133,31 +70,6 @@ static void dd_dynarec_capture_probe(
 #include "arm64/assem_arm64.h"
 #else
 #error Unsupported dynarec architecture
-#endif
-
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-struct regstat;
-static intptr_t emit_dd_cmd_watch_route_branch(int addr,
-                                               uint32_t width,
-                                               u_int reglist);
-static void emit_dd_cmd_watch_context(int i,
-                                      struct regstat *i_regs,
-                                      int addr,
-                                      u_int reglist,
-                                      int delay_slot,
-                                      int link_delay_slot);
-static void emit_dd_cmd_watch_call_probe(
-    struct regstat *i_regs,
-    uint32_t call_pc,
-    uint32_t call_opcode,
-    uint32_t delay_opcode,
-    uint32_t target,
-    uint32_t generation);
-static void emit_dd_cmd_watch_entry_probe(
-    struct regstat *i_regs,
-    uint32_t entry_pc,
-    uint32_t entry_opcode,
-    uint32_t generation);
 #endif
 
 /* debug */
@@ -327,11 +239,6 @@ void *get_addr_32(u_int vaddr,u_int flags);
 
 static void load_regs_entry(int t);
 static void inline_readstub(int type,int i,u_int addr_const,char addr,struct regstat *i_regs,int target,int adj,u_int reglist);
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-static int dd_dynarec_prepare_byte_store(uint32_t address, uint32_t *beforeword);
-static void dd_dynarec_trace_byte_store(int pcaddr, uint32_t address,
-    uint32_t shifted_value, unsigned int shift, uint32_t beforeword);
-#endif
 
 void *base_addr;
 void *base_addr_rx;
@@ -340,14 +247,6 @@ unsigned int using_tlb;
 unsigned int stop_after_jal;
 
 static u_int start;
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-/*
- * new_recompile_block() receives bit 0 as the page-span delay-slot marker,
- * but normalizes it out of `start`.  Keep the marker only as a compile-time
- * route gate; it must never be used as guest execution state.
- */
-static int dd_dynarec_pagespan_compile;
-#endif
 static u_int *source;
 static u_int pagelimit;
 static char insn[MAXBLOCK][10];
@@ -403,28 +302,6 @@ static struct ll_entry *jump_in[4096];
 static struct ll_entry *jump_dirty[4096];
 static struct ll_entry *jump_out[4096];
 static unsigned char restore_candidate[512];
-
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-/*
- * DDSTART8 is intentionally confined to the ARM64 new dynarec.  The
- * callback gate is checked both while emitting the observer and by every
- * observer, so non-DD titles neither get generated probes nor perform the
- * direct RDRAM reads below.
- *
- * The coherence caps divide the 64-record callback budget between compile,
- * verify, invalidation, and exact slow-path byte-store evidence.  Relevant
- * compilation therefore cannot exhaust records before later evidence arrives.
- * The fault filter has a separate,
- * tiny allowance; it never consumes one of the two complete snapshots.
- */
-static uint32_t dd_dynarec_compile_generation;
-static unsigned int dd_dynarec_fault_snapshots_remaining;
-static unsigned int dd_dynarec_fault_filter_remaining;
-static unsigned int dd_dynarec_coherence_compile_remaining;
-static unsigned int dd_dynarec_coherence_verify_remaining;
-static unsigned int dd_dynarec_coherence_invalidate_remaining;
-static unsigned int dd_dynarec_coherence_writer_remaining;
-#endif
 
 #if COUNT_NOTCOMPILEDS
 static int notcompiledCount = 0;
@@ -2212,73 +2089,6 @@ static unsigned int hshift(uint32_t address)
     return ((address & 2) ^ 2) << 3;
 }
 
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-/*
- * The command-buffer adapter observes only the already-routed aligned slow
- * helpers.  Reads use a validated KSEG0 alias and therefore cannot invoke a
- * device handler or alter the architectural write path.
- */
-static int dd_dynarec_cmd_watch_read(uint32_t address,
-                                     uint32_t width,
-                                     uint64_t *value)
-{
-    uint32_t physical = address & UINT32_C(0x1fffffff);
-    uint32_t guest;
-    uint32_t word;
-    unsigned int shift;
-
-    if (value == NULL)
-        return 0;
-    if (width == 8)
-    {
-        guest = (physical & ~UINT32_C(7)) | UINT32_C(0x80000000);
-        return dd_fault_guest_read_u64(g_dev.rdram.dram,
-            g_dev.rdram.dram_size, guest, value);
-    }
-    if (width != 1 && width != 2 && width != 4)
-        return 0;
-
-    guest = (physical & ~UINT32_C(3)) | UINT32_C(0x80000000);
-    if (!dd_fault_guest_read_u32(g_dev.rdram.dram,
-            g_dev.rdram.dram_size, guest, &word))
-        return 0;
-    if (width == 1)
-        shift = bshift(physical);
-    else if (width == 2)
-        shift = hshift(physical);
-    else
-        shift = 0;
-    if (width == 4)
-        *value = word;
-    else
-        *value = (word >> shift) & ((UINT32_C(1) << (width * 8)) - 1);
-    return 1;
-}
-
-static int dd_dynarec_cmd_watch_prepare(uint32_t address,
-                                        uint32_t width,
-                                        uint64_t *before)
-{
-    if (!dd_cmd_watch_in_range(address, width))
-        return 0;
-    return dd_dynarec_cmd_watch_read(address, width, before);
-}
-
-static void dd_dynarec_cmd_watch_commit(uint32_t address,
-                                        uint32_t width,
-                                        uint64_t before,
-                                        uint32_t pcaddr,
-                                        int write_succeeded)
-{
-    uint64_t after;
-
-    if (!write_succeeded
-            || !dd_dynarec_cmd_watch_read(address, width, &after))
-        return;
-    dd_cmd_watch_record_aligned(address, width, before, after, pcaddr);
-}
-#endif
-
 static void read_byte_new(int pcaddr, int count)
 {
   uint32_t value;
@@ -2332,36 +2142,8 @@ static void write_byte_new(int pcaddr, int count)
   state->pcaddr = pcaddr&~1;
   r4300->delay_slot = pcaddr & 1;
   unsigned int shift = bshift(state->address);
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  int cmd_watch_store=0;
-  uint64_t cmd_watch_before=0;
-  if(dd_cmd_watch_route_consume())
-    cmd_watch_store=dd_dynarec_cmd_watch_prepare(state->address,1,
-        &cmd_watch_before);
-#endif
   state->wword <<= shift;
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  /*
-   * This is a C slow-path observation, not a generated ABI call.  The gate
-   * precedes all diagnostic snapshots/direct RDRAM reads; the store below is
-   * the pre-existing masked aligned-word implementation of the byte store.
-   */
-  uint32_t beforeword;
-  int trace_byte_store=0;
-  if(DdStartupDiagnosticsEnabled())
-    trace_byte_store=dd_dynarec_prepare_byte_store(state->address,&beforeword);
-#endif
-  int write_succeeded = r4300_write_aligned_word(r4300, state->address,
-      state->wword, UINT32_C(0xff) << shift);
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  if(cmd_watch_store)
-    dd_dynarec_cmd_watch_commit(state->address,1,cmd_watch_before,pcaddr,
-        write_succeeded);
-#endif
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  if(trace_byte_store)
-    dd_dynarec_trace_byte_store(pcaddr,state->address,state->wword,shift,beforeword);
-#endif
+  r4300_write_aligned_word(r4300, state->address, state->wword, UINT32_C(0xff) << shift);
   UPDATE_COUNT_OUT
 }
 
@@ -2371,21 +2153,8 @@ static void write_hword_new(int pcaddr, int count)
   state->pcaddr = pcaddr&~1;
   r4300->delay_slot = pcaddr & 1;
   unsigned int shift = hshift(state->address);
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  int cmd_watch_store=0;
-  uint64_t cmd_watch_before=0;
-  if(dd_cmd_watch_route_consume())
-    cmd_watch_store=dd_dynarec_cmd_watch_prepare(state->address,2,
-        &cmd_watch_before);
-#endif
   state->wword <<= shift;
-  int write_succeeded = r4300_write_aligned_word(r4300, state->address,
-      state->wword, UINT32_C(0xffff) << shift);
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  if(cmd_watch_store)
-    dd_dynarec_cmd_watch_commit(state->address,2,cmd_watch_before,pcaddr,
-        write_succeeded);
-#endif
+  r4300_write_aligned_word(r4300, state->address, state->wword, UINT32_C(0xffff) << shift);
   UPDATE_COUNT_OUT
 }
 
@@ -2394,20 +2163,7 @@ static void write_word_new(int pcaddr, int count)
   UPDATE_COUNT_IN
   state->pcaddr = pcaddr&~1;
   r4300->delay_slot = pcaddr & 1;
-  int cmd_watch_store=0;
-  uint64_t cmd_watch_before=0;
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  if(dd_cmd_watch_route_consume())
-    cmd_watch_store=dd_dynarec_cmd_watch_prepare(state->address,4,
-        &cmd_watch_before);
-#endif
-  int write_succeeded = r4300_write_aligned_word(r4300, state->address,
-      state->wword, UINT32_C(0xffffffff));
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  if(cmd_watch_store)
-    dd_dynarec_cmd_watch_commit(state->address,4,cmd_watch_before,pcaddr,
-        write_succeeded);
-#endif
+  r4300_write_aligned_word(r4300, state->address, state->wword, UINT32_C(0xffffffff));
   UPDATE_COUNT_OUT
 }
 
@@ -2417,20 +2173,7 @@ static void write_dword_new(int pcaddr, int count)
   state->pcaddr = pcaddr&~1;
   r4300->delay_slot = pcaddr & 1;
   /* NOTE: in dynarec, we only need an all-one mask */
-  int cmd_watch_store=0;
-  uint64_t cmd_watch_before=0;
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  if(dd_cmd_watch_route_consume())
-    cmd_watch_store=dd_dynarec_cmd_watch_prepare(state->address,8,
-        &cmd_watch_before);
-#endif
-  int write_succeeded = r4300_write_aligned_dword(r4300, state->address,
-      state->wdword, ~UINT64_C(0));
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  if(cmd_watch_store)
-    dd_dynarec_cmd_watch_commit(state->address,8,cmd_watch_before,pcaddr,
-        write_succeeded);
-#endif
+  r4300_write_aligned_dword(r4300, state->address, state->wdword, ~UINT64_C(0));
   UPDATE_COUNT_OUT
 }
 
@@ -2542,273 +2285,6 @@ static void SDR_new(int pcaddr, int count)
   UPDATE_COUNT_OUT
 }
 
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-#define DD_DYNAREC_BOOT_FIRST UINT32_C(0x800bb540)
-#define DD_DYNAREC_BOOT_LAST  UINT32_C(0x800bb9a4) /* exclusive */
-#define DD_DYNAREC_KSEG_LAST  UINT32_C(0x80800000)
-
-static int dd_dynarec_boot_overlap(uint32_t block_start, size_t bytes)
-{
-  uint64_t block_end=(uint64_t)block_start+bytes;
-  return block_start<DD_DYNAREC_BOOT_LAST
-      && block_end>DD_DYNAREC_BOOT_FIRST;
-}
-
-static uint32_t dd_dynarec_hash_words(const uint32_t *words, size_t count)
-{
-  uint32_t hash=UINT32_C(2166136261);
-  size_t i;
-  for(i=0;i<count;i++) {
-    hash^=words[i];
-    hash*=UINT32_C(16777619);
-  }
-  return hash;
-}
-
-/* This is deliberately a direct, range-checked RDRAM reader, never MMIO. */
-static uint32_t dd_dynarec_hash_rdram(uint32_t address, size_t count, int *valid)
-{
-  uint32_t hash=UINT32_C(2166136261),word;
-  size_t i;
-  for(i=0;i<count;i++) {
-    if(!dd_fault_guest_read_u32(g_dev.rdram.dram,g_dev.rdram.dram_size,
-          address+(uint32_t)(i*4),&word)) {
-      *valid=0;
-      return 0;
-    }
-    hash^=word;
-    hash*=UINT32_C(16777619);
-  }
-  *valid=1;
-  return hash;
-}
-
-static void dd_dynarec_trace_compile(uint32_t block_start, size_t words,
-    uint32_t generation, const uint32_t *copied)
-{
-  uint32_t copied_hash,current_hash;
-  int current_valid;
-
-  if(!DdStartupDiagnosticsEnabled() || copied==NULL
-      || dd_dynarec_coherence_compile_remaining==0
-      || !dd_dynarec_boot_overlap(block_start,words*4))
-    return;
-
-  copied_hash=dd_dynarec_hash_words(copied,words);
-  current_hash=dd_dynarec_hash_rdram(block_start,words,&current_valid);
-  if(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
-        "DDSTART8 coherence: stage=compile generation=%" PRIu32
-        " block=%08" PRIx32 " words=%zu copied_hash=%08" PRIx32
-        " current_hash=%08" PRIx32 " current=%s compare=%s"
-        " entry=not-instrumented host_abi_risk",
-        generation,block_start,words,copied_hash,current_hash,
-        current_valid ? "direct-rdram" : "unavailable",
-        current_valid && copied_hash==current_hash ? "match" : "reject"))
-    dd_dynarec_coherence_compile_remaining--;
-}
-
-static void dd_dynarec_trace_verify(const struct ll_entry *head, int dirty)
-{
-  size_t words;
-  uint32_t copied_hash,current_hash;
-  int current_valid;
-
-  if(!DdStartupDiagnosticsEnabled() || head==NULL || head->copy==NULL
-      || dd_dynarec_coherence_verify_remaining==0 || head->length==0
-      || (head->length&3)!=0
-      || !dd_dynarec_boot_overlap(head->start,head->length))
-    return;
-
-  words=head->length/4;
-  copied_hash=dd_dynarec_hash_words((const uint32_t *)head->copy,words);
-  current_hash=dd_dynarec_hash_rdram(head->start,words,&current_valid);
-  if(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
-        "DDSTART8 coherence: stage=verify result=%s vaddr=%08" PRIx32
-        " block=%08" PRIx32 " words=%zu copied_hash=%08" PRIx32
-        " current_hash=%08" PRIx32 " current=%s evidence=memcmp",
-        dirty ? "reject" : "match",head->vaddr,head->start,words,
-        copied_hash,current_hash,current_valid ? "direct-rdram" : "unavailable"))
-    dd_dynarec_coherence_verify_remaining--;
-}
-
-static void dd_dynarec_trace_invalidate(uint32_t block, uint32_t page)
-{
-  if(!DdStartupDiagnosticsEnabled()
-      || dd_dynarec_coherence_invalidate_remaining==0
-      || (block!=UINT32_C(0x800bb) && page!=UINT32_C(0x0bb)))
-    return;
-
-  if(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
-        "DDSTART8 coherence: stage=invalidate block=%08" PRIx32
-        " invalidation_page=%05" PRIx32
-        " writer=unavailable no_generated_store_evidence",
-        block<<12,page))
-    dd_dynarec_coherence_invalidate_remaining--;
-}
-
-static int dd_dynarec_boot_alias_address(uint32_t address)
-{
-  uint32_t segment=address&UINT32_C(0xe0000000);
-  uint32_t physical=address&UINT32_C(0x1fffffff);
-  return (segment==UINT32_C(0x80000000) || segment==UINT32_C(0xa0000000))
-      && physical>=(DD_DYNAREC_BOOT_FIRST&UINT32_C(0x1fffffff))
-      && physical<(DD_DYNAREC_BOOT_LAST&UINT32_C(0x1fffffff));
-}
-
-/*
- * write_byte_new is reached from an emitted write stub with pcaddr set to
- * (start + (i + 1) * 4) + delay_slot.  It is therefore safe to derive an
- * exact writer PC here, unlike an arbitrary sampled PC.
- */
-static int dd_dynarec_prepare_byte_store(uint32_t address, uint32_t *beforeword)
-{
-  if(!DdStartupDiagnosticsEnabled()
-      || dd_dynarec_coherence_writer_remaining==0
-      || !dd_dynarec_boot_alias_address(address))
-    return 0;
-  return dd_fault_guest_read_u32(g_dev.rdram.dram,g_dev.rdram.dram_size,
-      address&~UINT32_C(3),beforeword);
-}
-
-static void dd_dynarec_trace_byte_store(int pcaddr, uint32_t address,
-    uint32_t shifted_value, unsigned int shift, uint32_t beforeword)
-{
-  uint32_t afterword=0;
-  int after_valid;
-
-  if(!DdStartupDiagnosticsEnabled()
-      || dd_dynarec_coherence_writer_remaining==0
-      || !dd_dynarec_boot_alias_address(address))
-    return;
-  after_valid=dd_fault_guest_read_u32(g_dev.rdram.dram,g_dev.rdram.dram_size,
-      address&~UINT32_C(3),&afterword);
-  if(DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_COHERENCE,
-        "DDSTART8 coherence: stage=byte-store address=%08" PRIx32
-        " value=%02" PRIx32 " beforeword=%08" PRIx32 " afterword=%08" PRIx32
-        " after=%s pending_exception=%d writer_pc=%08" PRIx32
-        " delay_slot=%d writer_provenance=generated-write_byte_new-pcarg",
-        address,(shifted_value>>shift)&UINT32_C(0xff),beforeword,afterword,
-        after_valid ? "direct-rdram" : "unavailable",
-        g_dev.r4300.new_dynarec_hot_state.pending_exception,
-        ((uint32_t)pcaddr&~UINT32_C(1))-4,pcaddr&1))
-    dd_dynarec_coherence_writer_remaining--;
-}
-
-static void dd_dynarec_trace_fault_window(unsigned int snapshot,
-    const char *stage, uint32_t center)
-{
-  uint32_t words[5];
-  unsigned int i;
-  int valid=1;
-  for(i=0;i<5;i++) {
-    if(!dd_fault_guest_read_u32(g_dev.rdram.dram,g_dev.rdram.dram_size,
-          center-8+i*4,&words[i])) {
-      valid=0;
-      break;
-    }
-  }
-  if(valid) {
-    (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
-        "DDSTART8 fault: snapshot=%u stage=%s center=%08" PRIx32
-        " words=%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32 ",%08" PRIx32
-        ",%08" PRIx32 " evidence=direct-rdram",
-        snapshot,stage,center,words[0],words[1],words[2],words[3],words[4]);
-  } else {
-    (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
-        "DDSTART8 fault: snapshot=%u stage=%s center=%08" PRIx32
-        " evidence=direct-rdram-unavailable",snapshot,stage,center);
-  }
-}
-
-/*
- * This is called only by an ARM64 generated read stub after restore_regs(),
- * constant materialization, and wb_dirtys().  Thus hot_state contains the
- * spilled architectural GPR values that CP0 will observe; no live host
- * register is sampled.  The call site saves the ordinary caller-save set
- * before entering C, preserving the generated-code ABI.
- */
-static void dd_dynarec_fault_observer(uint32_t compiled_pc,
-    uint32_t compiled_instruction, uint32_t block_start, uint32_t generation)
-{
-  struct new_dynarec_hot_state *hot=&g_dev.r4300.new_dynarec_hot_state;
-  uint32_t *cp0=hot->cp0_regs;
-  uint32_t cause,epc,badvaddr,current_instruction,fault_pc;
-  unsigned int snapshot,i;
-  int known,valid_instruction;
-
-  if(!DdStartupDiagnosticsEnabled())
-    return;
-
-  cause=cp0[CP0_CAUSE_REG];
-  epc=cp0[CP0_EPC_REG];
-  badvaddr=cp0[CP0_BADVADDR_REG];
-  fault_pc=epc+((cause&UINT32_C(0x80000000)) ? 4 : 0);
-  if((cause&CP0_CAUSE_EXCCODE_MASK)!=CP0_CAUSE_EXCCODE_TLBL
-      || compiled_pc<UINT32_C(0x80000000) || compiled_pc>=DD_DYNAREC_KSEG_LAST
-      || (hot->address>=UINT32_C(0x80000000)
-          && hot->address<UINT32_C(0xc0000000)))
-    return;
-
-  known=fault_pc==UINT32_C(0x800ad4ac)
-      || compiled_pc==UINT32_C(0x800ad4ac)
-      || badvaddr==UINT32_C(0x079bb080);
-  if(!known) {
-    if(dd_dynarec_fault_filter_remaining!=0
-        && DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
-          "DDSTART8 fault: stage=filter result=not-snapshotted"
-          " coverage=tlbl-kseg-rdram-to-low-or-tlb compiled_pc=%08" PRIx32
-          " derived_fault_pc=%08" PRIx32 " badvaddr=%08" PRIx32,
-          compiled_pc,fault_pc,badvaddr))
-      dd_dynarec_fault_filter_remaining--;
-    return;
-  }
-  if(dd_dynarec_fault_snapshots_remaining==0)
-    return;
-  dd_dynarec_fault_snapshots_remaining--;
-  snapshot=2-dd_dynarec_fault_snapshots_remaining;
-  current_instruction=0;
-  valid_instruction=dd_fault_guest_read_u32(g_dev.rdram.dram,
-      g_dev.rdram.dram_size,compiled_pc,&current_instruction);
-
-  (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
-      "DDSTART8 fault: snapshot=%u stage=pending_exception"
-      " compiled_pc=%08" PRIx32 " block=%08" PRIx32 " generation=%" PRIu32
-      " epc=%08" PRIx32 " cause=%08" PRIx32 " badvaddr=%08" PRIx32
-      " status=%08" PRIx32 " entryhi=%08" PRIx32 " context=%08" PRIx32
-      " load_address=%08" PRIx32 " derived_fault_pc=%08" PRIx32
-      " bd=%u pc_agreement=%s"
-      " gpr_source=hot_state_after_wb_dirtys host_live=not_sampled",
-      snapshot,compiled_pc,block_start,generation,epc,cause,badvaddr,
-      cp0[CP0_STATUS_REG],cp0[CP0_ENTRYHI_REG],cp0[CP0_CONTEXT_REG],
-      hot->address,fault_pc,(cause&UINT32_C(0x80000000)) ? 1u : 0u,
-      compiled_pc==fault_pc ? "match" : "reject");
-  (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
-      "DDSTART8 fault: snapshot=%u stage=instruction compiled=%08" PRIx32
-      " current=%08" PRIx32 " current_source=%s compare=%s",
-      snapshot,compiled_instruction,current_instruction,
-      valid_instruction ? "direct-rdram" : "unavailable",
-      valid_instruction && compiled_instruction==current_instruction
-          ? "match" : "reject");
-  for(i=0;i<32;i+=4) {
-    (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
-        "DDSTART8 fault: snapshot=%u stage=gprs"
-        " r%02u=%016" PRIx64 " r%02u=%016" PRIx64
-        " r%02u=%016" PRIx64 " r%02u=%016" PRIx64
-        " source=spilled",
-        snapshot,i,(uint64_t)hot->regs[i],i+1,(uint64_t)hot->regs[i+1],
-        i+2,(uint64_t)hot->regs[i+2],i+3,(uint64_t)hot->regs[i+3]);
-  }
-  (void) DdStartupDiagnosticsTraceDynarec(DD_DYNAREC_FAULT,
-      "DDSTART8 fault: snapshot=%u stage=hilo lo=%016" PRIx64
-      " hi=%016" PRIx64 " source=spilled",
-      snapshot,(uint64_t)hot->lo,(uint64_t)hot->hi);
-  dd_dynarec_trace_fault_window(snapshot,"pc_window",compiled_pc);
-  dd_dynarec_trace_fault_window(snapshot,"boot_window",UINT32_C(0x800bb648));
-  dd_dynarec_trace_fault_window(snapshot,"ra_window",(uint32_t)hot->regs[31]);
-  dd_dynarec_trace_fault_window(snapshot,"candidate_window",UINT32_C(0x800bb67c));
-}
-#endif
-
 #if NEW_DYNAREC == NEW_DYNAREC_X86
 #include "x86/assem_x86.c"
 #elif NEW_DYNAREC == NEW_DYNAREC_X64
@@ -2891,13 +2367,10 @@ u_int verify_dirty(struct ll_entry * head)
   else
     assert(0);
 
-  {
-    int dirty=memcmp(source,head->copy,head->length)!=0;
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-    dd_dynarec_trace_verify(head,dirty);
-#endif
-    return dirty ? head->vaddr : 0;
-  }
+  if(memcmp(source,head->copy,head->length))
+    return head->vaddr;
+  else
+    return 0;
 }
 
 // Add virtual address mapping for 32-bit compiled block
@@ -3351,9 +2824,6 @@ void invalidate_block(u_int block)
   if(page>262143&&g_dev.r4300.cp0.tlb.LUT_r[block]) page=(g_dev.r4300.cp0.tlb.LUT_r[block]^0x80000000)>>12;
   if(page>2048) page=2048+(page&2047);
   inv_debug("INVALIDATE: %x (%d)\n",block<<12,page);
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  dd_dynarec_trace_invalidate(block,page);
-#endif
   u_int first,last;
   first=last=page;
   struct ll_entry *head;
@@ -5405,23 +4875,6 @@ static void do_readstub(int n)
   if(!ds) load_all_consts(regs[i].regmap_entry,regs[i].was32,regs[i].wasdirty,regs[i].wasconst,i);
   wb_dirtys(i_regs->regmap_entry,i_regs->was32,i_regs->wasdirty);
 
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  /*
-   * Keep this after restore_regs(), constant materialization and wb_dirtys:
-   * CP0's pending-exception path then observes the same spilled GPR state as
-   * this observer.  save/restore protects the generated ARM64 caller-save
-   * set around the C ABI call; its four arguments are compilation immediates.
-   */
-  if(DdStartupDiagnosticsEnabled()) {
-    save_regs(reglist);
-    emit_movimm(start+i*4,ARG1_REG);
-    emit_movimm(source[i],ARG2_REG);
-    emit_movimm(start,ARG3_REG);
-    emit_movimm(dd_dynarec_compile_generation,ARG4_REG);
-    emit_call((intptr_t)dd_dynarec_fault_observer);
-    restore_regs(reglist);
-  }
-#endif
   emit_jmp((intptr_t)&do_interrupt);
   set_jump_target(jaddr,(intptr_t)out);
 
@@ -5557,48 +5010,12 @@ static void inline_readstub(int type, int i, u_int addr_const, char addr, struct
   }
 }
 
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-static int dd_dynarec_watch_link_delay_slot(int i, int delay_slot)
-{
-  /* CJUMP (including the known-zero loop BNE case) does not link. */
-  if (!delay_slot || i <= 0 || rt1[i - 1] != 31)
-    return 0;
-  return itype[i - 1] == UJUMP
-      || itype[i - 1] == RJUMP
-      || itype[i - 1] == SJUMP;
-}
-
-static int dd_dynarec_watch_route_allowed(void)
-{
-  return !dd_dynarec_pagespan_compile
-      && DdStartupDiagnosticsEnabled()
-      && DdRuntimePolicyGet();
-}
-
-/*
- * The entry observation is intentionally narrower than the callsite probe:
- * only a block entry can establish the selected callee's first instruction.
- * A matching target found at an internal instruction is a documented
- * fail-closed coverage gap, not a reason to broaden block generation.
- */
-static int dd_dynarec_watch_entry_source_eligible(int i,
-                                                  uint32_t block_start)
-{
-  return i == 0
-      && block_start == DD_CMD_WATCH_TARGET_ENTRY_PC;
-}
-#endif
-
 static void do_writestub(int n)
 {
   assem_debug("do_writestub %x",start+stubs[n][3]*4);
   literal_pool(256);
   set_jump_target(stubs[n][1],(intptr_t)out);
   int type=stubs[n][0];
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  int watch_context=(type&DD_CMD_WATCH_CONTEXT_STUB)!=0;
-  type&=~DD_CMD_WATCH_CONTEXT_STUB;
-#endif
   int i=stubs[n][3];
   int addr=stubs[n][4];
   struct regstat *i_regs=(struct regstat *)stubs[n][5];
@@ -5659,15 +5076,8 @@ static void do_writestub(int n)
     emit_storereg(CCREG,cc);
   }
 
-  int ds=i_regs!=&regs[i];
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  int link_ds=dd_dynarec_watch_link_delay_slot(i,ds);
-#endif
   save_regs(reglist);
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  if(watch_context)
-    emit_dd_cmd_watch_context(i,i_regs,addr,reglist,ds,link_ds);
-#endif
+  int ds=i_regs!=&regs[i];
 
 #if NEW_DYNAREC == NEW_DYNAREC_X86
   emit_pushimm(CLOCK_DIVIDER*(stubs[n][6]+1));
@@ -6899,10 +6309,6 @@ static void store_assemble(int i,struct regstat *i_regs)
   signed char s,th,tl,real_addr,addr,temp,map=-1,cache=-1;
   int offset,type=0,memtarget=0,c=0;
   intptr_t jaddr=0;
-  intptr_t dd_watch_jaddr=0;
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  int dd_watch_type=0;
-#endif
   u_int hr,reglist=0;
   int agr=AGEN1+(i&1);
   th=get_reg(i_regs->regmap,rs2[i]|64);
@@ -6932,38 +6338,6 @@ static void store_assemble(int i,struct regstat *i_regs)
     case 0x2B: type=STOREW_STUB; break;
     case 0x3F: type=STORED_STUB; break;
   }
-
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  /*
-   * Route only the unmapped/no-TLB path.  This branch is deliberately before
-   * do_tlb_w and the normal fallback branch, so the TLB mapping register is
-   * never live across the C predicate.  The augmented register list also
-   * protects AGEN's effective-address scratch when it is not a guest-live
-   * register.
-   */
-  /*
-   * Page-span entry blocks carry their architectural delay-slot marker in
-   * addr bit 0.  pagespan_ds() then assembles the slot through regs[0] with
-   * is_delayslot cleared, so neither route form may invent context here.
-   */
-  if(!using_tlb && dd_dynarec_watch_route_allowed()) {
-    uint32_t dd_watch_width =
-        opcode[i]==0x28 ? 1u :
-        opcode[i]==0x29 ? 2u :
-        opcode[i]==0x2B ? 4u : 8u;
-    u_int dd_watch_reglist=reglist;
-    if(addr >= 0 && addr < 32)
-      dd_watch_reglist |= 1u << addr;
-    if(c&&!memtarget)
-      dd_watch_jaddr=emit_dd_cmd_watch_route_branch_imm(
-          (uint32_t)(constmap[i][max(0,s)]+offset),
-          dd_watch_width,dd_watch_reglist,addr);
-    else
-      dd_watch_jaddr=emit_dd_cmd_watch_route_branch(addr,dd_watch_width,
-          dd_watch_reglist);
-    dd_watch_type = type | DD_CMD_WATCH_CONTEXT_STUB;
-  }
-#endif
 
 #ifndef INTERPRET_STORE
   if(!using_tlb) {
@@ -7062,11 +6436,6 @@ static void store_assemble(int i,struct regstat *i_regs)
   } else if(c&&!memtarget) {
     inline_writestub(type,i,constmap[i][max(0,s)]+offset,real_addr,i_regs,rs2[i],ccadj[i],reglist);
   }
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  if(dd_watch_jaddr)
-    add_stub(dd_watch_type,dd_watch_jaddr,(intptr_t)out,i,real_addr,
-        (intptr_t)i_regs,ccadj[i],reglist);
-#endif
 #else
   inline_writestub(type,i,c?(constmap[i][max(0,s)]+offset):0,real_addr,i_regs,rs2[i],ccadj[i],reglist);
 #endif
@@ -7773,26 +7142,6 @@ static void ujump_assemble(int i,struct regstat *i_regs)
       }
     }
   }
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  /*
-   * The delay slot has already executed in the generated sequence above,
-   * and the JAL link has now been materialized.  Capturing here avoids the
-   * invalid pre-delay interpretation of a1 for the targeted `or a1,s0,zero`
-   * slot.  The eventual jump/linker path is left untouched.
-   */
-  if(start + i * 4 == DD_CMD_WATCH_TARGET_CALL_PC
-      && ba[i] == DD_CMD_WATCH_TARGET_ENTRY_PC
-      && rt1[i] == 31)
-  {
-    if (dd_dynarec_watch_route_allowed())
-      emit_dd_cmd_watch_call_probe(&branch_regs[i],
-          start + i * 4, source[i], source[i + 1], ba[i],
-          dd_dynarec_compile_generation);
-    else if (dd_dynarec_pagespan_compile)
-      dd_cmd_watch_note_compile_rejection(DD_CMD_WATCH_PROBE_CALL,
-          DD_CMD_WATCH_PROBE_COMPILE_PAGE_SPAN, 0);
-  }
-#endif
   int cc,adj;
   cc=get_reg(branch_regs[i].regmap,CCREG);
   assert(cc==HOST_CCREG);
@@ -9298,26 +8647,6 @@ void new_dynarec_init(void)
 {
   DebugMessage(M64MSG_INFO, "Init new dynarec");
 
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  /*
-   * These are local reservation caps, separate from the callback-owned
-   * DDSTART8 budgets reset at callback registration.
-   */
-  if(DdStartupDiagnosticsEnabled()) {
-    dd_dynarec_compile_generation=0;
-    dd_dynarec_fault_snapshots_remaining=2;
-    dd_dynarec_fault_filter_remaining=2;
-    dd_dynarec_coherence_compile_remaining=16;
-    dd_dynarec_coherence_verify_remaining=24;
-    dd_dynarec_coherence_invalidate_remaining=12;
-    dd_dynarec_coherence_writer_remaining=12;
-  }
-#endif
-  if(DdStartupDiagnosticsEnabled())
-    DebugMessage(M64MSG_INFO,
-        "DDSTART9 boundary: retain_nonlink_terminators=true"
-        " delay_slot=preserved");
-
 #if defined(RECOMPILER_DEBUG) && !defined(RECOMP_DBG)
   recomp_dbg_init();
 #endif
@@ -9449,16 +8778,16 @@ void new_dynarec_cleanup(void)
 }
 
 /*
- * Keep the historical target scan for ordinary titles.  DD startup
- * diagnostics deliberately do not reopen a block after a non-linking
- * unconditional terminator: the caller's decision index still leaves the
- * architectural delay slot to the existing assembler path.
+ * DD boot code can decode and execute a block around a non-linking
+ * unconditional terminator.  Under the explicit runtime policy retain that
+ * terminator as the block boundary; the existing assembler still emits the
+ * architectural delay slot.  Ordinary titles keep the historical target scan.
  */
 static int dd_dynarec_nonlink_block_continues(int decision_index)
 {
   int j;
 
-  if(DdStartupDiagnosticsEnabled())
+  if(DdRuntimePolicyGet())
     return 0;
   for(j=decision_index-1;j>=0;j--)
   {
@@ -9482,9 +8811,6 @@ int new_recompile_block(int addr)
   DebugMessage(M64MSG_VERBOSE, "notcompiledCount=%i", notcompiledCount );
 #endif
   start = (u_int)addr&~3;
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  dd_dynarec_pagespan_compile = ((u_int)addr & 1) != 0;
-#endif
   //assert(((u_int)addr&1)==0);
   if ((int)addr >= 0xa4000000 && (int)addr < 0xa4001000) {
     source = (u_int *)((uintptr_t)g_dev.sp.mem+start-0xa4000000);
@@ -9522,16 +8848,6 @@ int new_recompile_block(int addr)
     DebugMessage(M64MSG_ERROR, "Compile at bogus memory address: %x", (int)addr);
     exit(1);
   }
-
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  /*
-   * This number is copied into every generated DDSTART8 observer call as an
-   * immediate.  It therefore identifies this compilation, not a later
-   * global counter value.
-   */
-  if(DdStartupDiagnosticsEnabled())
-    dd_dynarec_compile_generation++;
-#endif
 
   /* Pass 1: disassemble */
   /* Pass 2: register dependencies, branch targets */
@@ -12261,23 +11577,6 @@ int new_recompile_block(int addr)
       load_regs(regs[i].regmap_entry,regs[i].regmap,regs[i].was32,rs1[i],rs2[i]);
       address_generation(i,&regs[i],regs[i].regmap_entry);
       load_consts(regmap_pre[i],regs[i].regmap,regs[i].was32,i);
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-      /*
-       * This is an entry observation, not a callee redirect.  It is emitted
-       * only for a non-page-span block whose compiled start is the selected
-       * zero-fill routine; the recorder still requires the link value from
-       * the independent compiled-call probe.
-       */
-      if(dd_dynarec_watch_entry_source_eligible(i, start))
-      {
-        if (dd_dynarec_watch_route_allowed())
-          emit_dd_cmd_watch_entry_probe(&regs[i], start, source[i],
-              dd_dynarec_compile_generation);
-        else if (dd_dynarec_pagespan_compile)
-          dd_cmd_watch_note_compile_rejection(DD_CMD_WATCH_PROBE_ENTRY,
-              DD_CMD_WATCH_PROBE_COMPILE_PAGE_SPAN, 0);
-      }
-#endif
       if(itype[i]==RJUMP||itype[i]==UJUMP||itype[i]==CJUMP||itype[i]==SJUMP||itype[i]==FJUMP)
       {
         // Load the delay slot registers if necessary
@@ -12404,11 +11703,7 @@ int new_recompile_block(int addr)
   // Stubs
   for(i=0;i<stubcount;i++)
   {
-    int stub_type=stubs[i][0];
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-    stub_type&=~DD_CMD_WATCH_CONTEXT_STUB;
-#endif
-    switch(stub_type)
+    switch(stubs[i][0])
     {
       case LOADB_STUB:
       case LOADH_STUB:
@@ -12547,11 +11842,6 @@ int new_recompile_block(int addr)
   memcpy(copy,(char*)source,slen*4);
   u_int *ptr=(u_int*)copy;
   ptr[slen]=dirty_entry_count;
-
-#if NEW_DYNAREC == NEW_DYNAREC_ARM64
-  dd_dynarec_trace_compile(start,slen,dd_dynarec_compile_generation,
-      (const uint32_t *)copy);
-#endif
 
   #if NEW_DYNAREC >= NEW_DYNAREC_ARM
   intptr_t beginning_rx=((intptr_t)beginning-(intptr_t)base_addr)+(intptr_t)base_addr_rx;

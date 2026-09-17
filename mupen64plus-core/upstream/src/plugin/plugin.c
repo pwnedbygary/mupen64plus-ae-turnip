@@ -109,7 +109,6 @@ static const rsp_plugin_functions dummy_rsp = {
     dummyrsp_DoRspCycles,
     dummyrsp_InitiateRSP,
     dummyrsp_RomClosed,
-    NULL,
     NULL
 };
 
@@ -449,8 +448,6 @@ static m64p_error plugin_start_input(void)
 
 static void plugin_disconnect_rsp(void)
 {
-    if (rsp.setDdStartupDiagnostics != NULL)
-        rsp.setDdStartupDiagnostics(NULL, NULL);
     /*
      * Detach must also drop any DD runtime-policy authorization the plugin
      * holds, so a detached or replaced plugin never retains corrected-mode
@@ -460,18 +457,6 @@ static void plugin_disconnect_rsp(void)
         rsp.setDdRuntimePolicy(0);
     rsp = dummy_rsp;
     l_RspAttached = 0;
-}
-
-static void plugin_update_rsp_diagnostics(void)
-{
-    void *context = NULL;
-    ptr_DdStartupDiagnosticsCallback callback = NULL;
-
-    if (rsp.setDdStartupDiagnostics == NULL)
-        return;
-
-    callback = DdStartupDiagnosticsGetCallback(&context);
-    rsp.setDdStartupDiagnostics(callback, context);
 }
 
 void plugin_update_dd_runtime_policy(void)
@@ -513,18 +498,9 @@ static m64p_error plugin_connect_rsp(m64p_dynlib_handle plugin_handle)
         }
 
         /*
-         * This symbol is optional.  It gives the selected plugin the already
-         * gated core callback without making the historical RSP ABI mandatory.
-         * DD-disabled carts therefore pass a NULL callback even when the
-         * frontend supplied an ordinary core debug callback.
-         */
-        rsp.setDdStartupDiagnostics =
-            (void (*)(ptr_DdStartupDiagnosticsCallback, void *))
-            osal_dynlib_getproc(plugin_handle, "DdStartupDiagnosticsSetCallback");
-        /*
          * This symbol is optional too.  It carries the explicit per-game DD
-         * runtime policy decided at launch, independently of diagnostics.
-         * An old plugin without it simply keeps legacy DMA semantics; when
+         * runtime policy decided at launch.  An old plugin without it simply
+         * keeps legacy DMA semantics; when
          * the policy is enabled but the symbol is missing, say so plainly
          * instead of silently claiming a corrected plugin (validation G13).
          */
@@ -536,7 +512,6 @@ static m64p_error plugin_connect_rsp(m64p_dynlib_handle plugin_handle)
                          "DD runtime policy is enabled, but the selected RSP "
                          "plugin does not support DdRspRuntimePolicySet; "
                          "corrected DMA policy cannot be applied");
-        plugin_update_rsp_diagnostics();
         plugin_update_dd_runtime_policy();
         l_RspAttached = 1;
     }
@@ -575,9 +550,6 @@ static m64p_error plugin_start_rsp(void)
     rsp_info.ProcessAlistList = audio.processAList;
     rsp_info.ProcessRdpList = gfx.processRDPList;
     rsp_info.ShowCFB = gfx.showCFB;
-
-    /* Reset the optional observer at each ROM/plugin start boundary. */
-    plugin_update_rsp_diagnostics();
 
     /* call the RSP plugin  */
     rsp.initiateRSP(rsp_info, NULL);

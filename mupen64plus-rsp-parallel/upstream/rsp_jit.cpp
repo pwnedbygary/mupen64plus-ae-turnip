@@ -1,14 +1,9 @@
 #include "rsp_jit.hpp"
 #include "rsp_disasm.hpp"
-#include "rsp_diag.hpp"
 #include <utility>
 #include <assert.h>
 
 using namespace std;
-
-//#define TRACE
-//#define TRACE_ENTER
-//#define TRACE_DISASM
 
 // We're only guaranteed 3 V registers (x86).
 #define JIT_REGISTER_STATE JIT_V0
@@ -44,42 +39,17 @@ CPU::~CPU()
 
 void CPU::invalidate_imem()
 {
-	bool changed = false;
 	for (unsigned i = 0; i < CODE_BLOCKS; i++)
 		if (memcmp(cached_imem + i * CODE_BLOCK_WORDS, state.imem + i * CODE_BLOCK_WORDS, CODE_BLOCK_SIZE))
 		{
 			state.dirty_blocks |= (0x3 << i) >> 1;
-			changed = true;
 		}
-
-	if (changed)
-		diagnostic_imem_hash_valid = false;
-}
-
-void CPU::set_diagnostics_enabled(bool enabled)
-{
-	diagnostics_enabled = enabled;
-	reported_cache_hits.clear();
-	diagnostic_imem_hash_valid = false;
-}
-
-uint64_t CPU::diagnostic_imem_hash()
-{
-	if (!diagnostic_imem_hash_valid)
-	{
-		cached_diagnostic_imem_hash = hash_imem(0, IMEM_WORDS);
-		diagnostic_imem_hash_valid = true;
-	}
-	return cached_diagnostic_imem_hash;
 }
 
 void CPU::invalidate_code()
 {
 	if (!state.dirty_blocks)
 		return;
-
-	if (diagnostics_enabled && Diagnostics::enabled())
-		diagnostic_imem_hash_valid = false;
 
 	for (unsigned i = 0; i < CODE_BLOCKS; i++)
 	{
@@ -107,32 +77,6 @@ uint64_t CPU::hash_imem(unsigned pc, unsigned count) const
 		h = (h * 0x100000001b3ull) ^ data[i];
 	return h;
 }
-
-#ifdef TRACE
-static uint64_t hash_registers(const CPUState *rsp)
-{
-	const auto *data = rsp->sr;
-	uint64_t h = 0xcbf29ce484222325ull;
-	for (size_t i = 1; i < 32; i++)
-		h = (h * 0x100000001b3ull) ^ data[i];
-
-	data = reinterpret_cast<const uint32_t *>(&rsp->cp2);
-	unsigned words = sizeof(rsp->cp2) >> 2;
-	for (size_t i = 0; i < words; i++)
-		h = (h * 0x100000001b3ull) ^ data[i];
-
-	return h;
-}
-
-static uint64_t hash_dmem(const CPUState *rsp)
-{
-	const auto *data = rsp->dmem;
-	uint64_t h = 0xcbf29ce484222325ull;
-	for (size_t i = 0; i < 1024; i++)
-		h = (h * 0x100000001b3ull) ^ data[i];
-	return h;
-}
-#endif
 
 unsigned CPU::analyze_static_end(unsigned pc, unsigned end)
 {
@@ -318,21 +262,6 @@ extern "C"
 		dram[off3] = (data >> 0) & 0xff;
 	}
 
-#ifdef TRACE
-	static void rsp_report_pc(const CPUState *state, jit_uword_t pc, jit_uword_t instr)
-	{
-		auto disasm = disassemble(pc, instr);
-		disasm += " (" + std::to_string(hash_registers(state)) + ") (" + std::to_string(hash_dmem(state)) + ")";
-		puts(disasm.c_str());
-	}
-#endif
-
-#ifdef TRACE_ENTER
-	static void rsp_report_enter(jit_uword_t pc)
-	{
-		printf("  ... Enter 0x%03x ...  ", unsigned(pc & 0xffcu));
-	}
-#endif
 }
 
 void CPU::jit_save_indirect_register(jit_state_t *_jit, unsigned mips_register)
@@ -417,17 +346,6 @@ void CPU::init_jit_thunks()
 	// When thunks need non-local goto, they jump here.
 	auto *entry_label = jit_indirect();
 
-#ifdef TRACE_ENTER
-	{
-		// Save PC.
-		jit_stxi_i(offsetof(CPUState, pc), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
-		jit_prepare();
-		jit_pushargr(JIT_REGISTER_NEXT_PC);
-		jit_finishi(reinterpret_cast<jit_pointer_t>(rsp_report_enter));
-		jit_ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, pc));
-	}
-#endif
-
 	jit_prepare();
 	jit_pushargr(JIT_REGISTER_STATE);
 	jit_pushargr(JIT_REGISTER_NEXT_PC);
@@ -478,7 +396,6 @@ Func CPU::get_jit_block(uint32_t pc)
 	pc &= IMEM_SIZE - 1;
 	uint32_t word_pc = pc >> 2;
 	auto &block = blocks[word_pc];
-	bool cache_hit = block != nullptr;
 
 	if (!block)
 	{
@@ -492,7 +409,6 @@ Func CPU::get_jit_block(uint32_t pc)
 		if (ptr)
 		{
 			block = ptr;
-			cache_hit = true;
 		}
 		else
 		{
@@ -500,30 +416,6 @@ Func CPU::get_jit_block(uint32_t pc)
 		}
 	}
 
-	/*
-	 * A region can have been compiled before DD diagnostics were enabled.
-	 * Report a cache-selected region once per session so that a later capture
-	 * still has its exact host range and IMEM provenance without logging every
-	 * execution of the block.
-	 */
-	if (cache_hit && diagnostics_enabled && Diagnostics::enabled())
-	{
-		const uintptr_t host_entry = reinterpret_cast<uintptr_t>(block);
-		if (reported_cache_hits.emplace(host_entry, true).second)
-		{
-			auto it = region_provenance.find(host_entry);
-			if (it != region_provenance.end())
-			{
-				const auto &provenance = it->second;
-				Diagnostics::trace_jit(
-				    provenance.host_start, provenance.host_end,
-				    provenance.imem_start_pc, provenance.instruction_count,
-				    provenance.existing_region_hash, "cache-hit");
-			}
-			else
-				Diagnostics::trace_jit_range_unavailable(host_entry);
-		}
-	}
 	return block;
 }
 
@@ -911,15 +803,6 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
                           InstructionInfo &info, const InstructionInfo &last_info,
                           bool first_instruction, bool next_instruction_is_branch_target)
 {
-#ifdef TRACE
-	regs.flush_register_window(_jit);
-	jit_begin_call(_jit);
-	jit_pushargr(JIT_REGISTER_STATE);
-	jit_pushargi(pc);
-	jit_pushargi(instr);
-	jit_end_call(_jit, reinterpret_cast<jit_pointer_t>(rsp_report_pc));
-#endif
-
 	// VU
 	if ((instr >> 25) == 0x25)
 	{
@@ -1848,11 +1731,10 @@ void CPU::jit_handle_latent_delay_slot(jit_state_t *_jit, const InstructionInfo 
 	}
 }
 
-Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count)
+Func CPU::jit_region(uint64_t, unsigned pc_word, unsigned instruction_count)
 {
 	regs.reset();
 
-	mips_disasm.clear();
 	jit_state_t *_jit = jit_new_state();
 
 	jit_prolog();
@@ -1883,23 +1765,6 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 		}
 
 		uint32_t instr = state.imem[pc_word + i];
-
-#ifdef TRACE_DISASM
-		mips_disasm += disassemble((pc_word + i) << 2, instr);
-		if (last_info.branch)
-		{
-			mips_disasm += "  [branch]";
-			if (last_info.conditional)
-				mips_disasm += "  [cond]";
-			if (last_info.indirect)
-				mips_disasm += "  [indirect]";
-			if (last_info.handles_delay_slot)
-				mips_disasm += "  [handles delay slot]";
-		}
-		if (block_entry[i])
-			mips_disasm += "  [block entry]";
-		mips_disasm += "\n";
-#endif
 
 		InstructionInfo inst_info = {};
 		jit_instruction(_jit, (pc_word + i) << 2, instr, inst_info, last_info, i == 0,
@@ -1959,37 +1824,12 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 
 	auto ret = reinterpret_cast<Func>(jit_emit());
 
-#ifdef TRACE_DISASM
-	printf(" === DISASM ===\n");
-	printf("%s\n", mips_disasm.c_str());
-	jit_disassemble();
-	printf(" === DISASM END ===\n\n");
-#endif
 	jit_clear_state();
 	jit_destroy_state();
 
 	if (!Allocator::commit_code(block_code, code_size))
 		abort();
 
-	if (diagnostics_enabled && Diagnostics::enabled())
-	{
-		const RegionProvenance provenance = {
-			reinterpret_cast<uintptr_t>(block_code),
-			reinterpret_cast<uintptr_t>(block_code) + code_size,
-			pc_word << 2,
-			instruction_count,
-			hash
-		};
-		region_provenance[reinterpret_cast<uintptr_t>(ret)] = provenance;
-		Diagnostics::trace_jit(
-		    provenance.host_start, provenance.host_end,
-		    provenance.imem_start_pc, provenance.instruction_count,
-		    provenance.existing_region_hash, "commit");
-		Diagnostics::trace_jit_compile_words(
-		    provenance.host_start, provenance.imem_start_pc,
-		    state.imem + pc_word, instruction_count);
-		reported_cache_hits.emplace(reinterpret_cast<uintptr_t>(ret), true);
-	}
 	return ret;
 }
 

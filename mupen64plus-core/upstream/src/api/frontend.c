@@ -56,9 +56,6 @@ static int l_CallerUsingSDL = 0;
 
 static m64p_error startup_failure(m64p_error error)
 {
-    /* Only discard the added diagnostic state; preserve baseline cleanup. */
-    if (DdStartupDiagnosticsEnabled())
-        SetDebugCallback(NULL, NULL);
     return error;
 }
 
@@ -137,11 +134,6 @@ EXPORT m64p_error CALL CoreShutdown(void)
     /* deallocate base memory */
     release_mem_base(g_mem_base);
     g_mem_base = NULL;
-
-    /* DD diagnostics must not retain their callback after producers stop.
-     * Keep the historical callback lifecycle unchanged for non-DD sessions. */
-    if (DdStartupDiagnosticsEnabled())
-        SetDebugCallback(NULL, NULL);
 
     /*
      * The DD runtime policy is per-session.  Clearing it here also covers

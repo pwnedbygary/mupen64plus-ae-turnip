@@ -20,6 +20,14 @@
 
 -keep, includedescriptorclasses class paulscode.android.mupen64plusae.jni.** { *; }
 
+# Routine Java logging is useful during development but adds release noise.
+# Keep errors and warnings above this level so startup failures remain visible.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}
+
 -dontwarn java.awt.event.*
 -dontwarn java.awt.dnd.*
 -dontwarn java.awt.*

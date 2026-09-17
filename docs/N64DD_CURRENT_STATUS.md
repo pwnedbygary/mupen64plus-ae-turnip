@@ -3,7 +3,184 @@
 Updated 2026-09-17. Read this before the chronological
 [handoff](HANDOFF_NEW.md), [checkpoint](P08_CHECKPOINT.md) and
 [detailed evidence](P08_ENTRY_NATIVE_EVIDENCE.md).
-This is the current coordination document, not a claim that the repair is done.
+This is the current coordination document. The latest working-configuration result
+below supersedes older unresolved-symptom and next-APK instructions, not their
+historical evidence or pending source-review requirements.
+
+### Working configuration confirmed by user (2026-09-17)
+
+**Release-tag comparison now supplied:** the user subsequently tested public
+v336 (`dc955483`; its APK actually reports code 335). It displayed the 3D N logo,
+then the disk-alone / insert F-Zero X Game Pak screen. The working beta is
+`5ebdc720`, not release-tag v336. Preserve the beta's explicit cart-first combo
+boot in the v337 cleanup; it is a functional difference from v336's IPL-first
+selection. This comparison does not prove every other fix was necessary.
+See [the updated result](N64DD_USA_IPL_SUCCESS.md) and
+[v337 release notes](RELEASE_V337.md).
+
+With the **USA cartridge + English USA-region NDD + prototype USA IPL**, the user
+reports that EK now works perfectly. The [new working-control report](N64DD_USA_IPL_SUCCESS.md)
+verifies two fresh DD-enabled dynarec/Parallel-RSP launches, disk block-manager
+activity and 9,631 nonzero audio-command entries, with no recorded all-zero
+command submission. No new APK or emulator patch was applied for the comparison.
+
+The only requested configuration change from the preceding failed USA-cartridge
+test was the IPL selection. Preserve this demonstrated Mupen configuration; do not
+substitute the Japanese IPL based on assumptions about another emulator. This
+strongly supports a configuration blocker, not a newly established corrupting
+writer or a new emulator-code fix.
+
+The core-stall investigation no longer justifies another diagnostic build for
+this now-working setup. Remaining acceptance: exact installed APK identity,
+native disk save/reopen and writable-cart persistence. Autosave log messages do
+not establish those persistence checks. The pending diagnostic implementation
+and source changes below remain unreviewed/unaccepted for publication.
+
+### Prior failed USA-cartridge test (2026-09-17)
+
+The [new capture analysis](N64DD_USA_CAPTURE_ANALYSIS.md) establishes a DD-off
+USA base run and a later DD-on USA-cartridge/USA-disk run with a Japan-named IPL.
+The user reports base success and EK failure. Both cartridge identities match;
+the EK disk and IPL load successfully, dynarec and Parallel RSP run, DDSTART9 is
+active, and save-state autoload is not requested. Earlier missing-file messages
+belong to a separate failed launch.
+
+The app is the debug package; v336 is not established by this log. Interrupt
+callbacks continue before normal UI-driven shutdown, without a recorded native
+crash. Sampled PC `80414dc0` is not an exact executing/writing PC or proof of a
+specific DD loop. The old large-clear failure is not demonstrated in this run.
+The subsequent IPL-only comparison succeeded, as recorded above. Exact installed
+version remains unverified; no replacement instrumented build is needed on the
+strength of this now-resolved reproduction.
+No emulator behavior was changed based on this capture.
+
+### Historical symptom and control (user report, 2026-09-17)
+
+The base cartridge passes the comparable gameplay/attract-mode transition.
+The freeze occurs with EK and the attached NDD; menu graphics are also reported
+garbled. Treat the transition as the point of visible failure, not proof of the
+first bad write or value. Do not assume an audio-only or graphics-only cause.
+An earlier invalid asset selection, transport result or reused buffer could
+become visible at this boundary. The failing configuration has DD mode and
+diagnostic logging enabled, so the policy-gate correction below does not explain
+that run.
+
+The [regional texture metadata comparison](N64DD_RESOURCE_METADATA_REVIEW.md)
+finds that P09's inferred three-ID sequence exactly matches US race-menu texture
+offsets, while its supplied segment base matches JP. This is a specific
+compatibility/caller-provenance lead, not a verified live reader argument or
+native root-cause claim. No matched base/EK transition capture is available here.
+
+**Latest user correction (2026-09-17), superseding the earlier compatibility
+confirmation:** the translation's release instructions explicitly require the
+**USA cartridge, not Japan**. The prior Japanese-cartridge control was therefore
+incorrect for this translated disk. US texture offsets combined with a JP asset
+base are a strong configuration explanation for the reported bad-header/large-clear
+path, not sufficient evidence of an emulator defect. Retest the supported pairing
+before treating that symptom as unresolved with correct inputs. Do not discard
+separately established core defects or rewrite historical observations.
+
+The user earlier reported Phobos/Ares release 1.0.0 working on their phone but
+not on the RP6, with the same files and drivers. This is a separate device
+comparison. The RP6 runs the base cartridge, then the pause-menu Load N64DD
+button opens the file picker. Selecting the NDD should reboot into EK but instead
+leaves a black screen. The same sequence works on the phone. This is a disk-attach/
+reboot failure, not an established match to the earlier Mupen gameplay transition.
+The reported platforms are RP6 Snapdragon 8 Gen 2 / Android 13 versus phone
+Snapdragon Gen 3 / Android 16, with the same release, game, IPL, NDD and drivers.
+OS and hardware differences are confounded; neither is identified as the cause.
+Use the phone's working
+USA cartridge / translated NDD / particular IPL / release combination as the
+control. Japanese and prototype-USA IPLs are not assumed interchangeable.
+Preserve saves and files; compare effective configuration, fresh Start versus
+Resume, file access and device behavior before changing emulation semantics.
+**Scope clarification:** the user supplied the Phobos behavior only as background
+evidence and does not want to debug that separate project here. They also confirm
+the same IPL files are configured on both devices and report that the RP6 worked
+previously. Do not divert into Phobos code changes or capture requirements.
+The active investigation remains Mupen, with the supported USA cartridge/NDD
+pair established before interpreting another transition failure. Workspace has
+no reachable device; the subsequently uploaded USA-run capture is analyzed above.
+
+**Subsequent user result (2026-09-17):** after resetting/removing and reinstalling
+Phobos, it now loads on the RP6 too, using the same reported files, IPL and
+drivers. This establishes that the handheld can run that setup. It suggests an
+app-local state or installation difference, but the reset changed multiple
+variables and does not identify the cause. The Phobos failure above is historical,
+not a current hardware blocker. This is not a Mupen acceptance result and does
+not authorize uninstalling Mupen or deleting its data/saves. Continue with a fresh
+Mupen Start using the supported USA cartridge and translated NDD.
+
+### Immediate check: corrected inputs on the installed release
+
+The user is ready to test and believes the installed Mupen release is v336.
+Confirm its displayed version, but do not install a debug candidate for this first
+check. Compare the USA cartridge with DD disabled against the same cartridge with
+DD enabled, translated NDD attached and the working IPL configured. Use fresh
+Start, not Resume, with consistent CPU/RSP/graphics/audio settings and preserved
+saves. Observe menu graphics/audio and the automatic gameplay/attract transition.
+
+This is a corrected-input baseline on the existing release, not delivery of the
+unreviewed combined diagnostic package below. Package-agnostic Android logcat can
+be collected without `run-as`, memory reads or clearing logs. Do not use the old
+collector's default debug package against an assumed release package. Release
+logs may not expose detailed guest operations; no trace coverage is inferred
+from a successful collection. A failure would guide the next verified debug
+build, while success would not retroactively validate every source change here.
+
+### Focused dynarec policy correction (2026-09-17)
+
+Source review found the existing DDSTART9 non-linking block-boundary correction
+was controlled by diagnostic enablement, not by explicit DD runtime policy.
+Consequently DD-on/logging-off lost the correction, while DD-off/logging-on
+changed ordinary-cart compilation. The correction now uses the DD policy;
+logging and callback availability do not authorize emulation behavior.
+
+A production-helper regression covering all four DD-policy/logging combinations
+failed on the old gate before the correction. It also checks callback-null and
+ordinary-cart target-scan behavior. After correction, `tools/test-dd-startup.sh`
+passed its callback, dynarec, ABI and RSP provenance checks; the NDK ARM64 syntax
+check also passed. The host fixture suppresses only unused-but-set temporary
+warnings around its included production emitter, retaining `-Werror`.
+This establishes the gate defect, not the
+cause or resolution of the currently reported native menu/audio stall.
+No guest patch, boot-source override, save change, or PI interrupt-policy change
+is part of this correction.
+
+### Coding-phase reconciliation (2026-09-17)
+
+The remote branch advanced through `2fdec44b1` and `93c9fc7fc` after the
+next-test runbook. Those changes have been retrieved without importing the
+separate workspace SDK/MSVC history. Independent source review contradicts the
+new handoff's claim that they deliver the combined capture:
+
+- **OBSERVED in the fetched source:** the added hook is in `dma_pi_read`
+  (RDRAM-to-device). Incoming cartridge reads use `dma_pi_write`, whose history
+  hook still excludes cartridge-ROM addresses. The new hook therefore does not
+  supply the promised incoming cartridge evidence.
+- **OBSERVED:** the classifier labels every non-DD address as cartridge ROM;
+  the record uses decimal formatting after a hexadecimal prefix, and its
+  purported destination is a derived exclusive end. These are diagnostic
+  correctness defects, not evidence of the native stall's cause.
+- **SUPPLIED-ONLY:** the local build/install/capture claims in the older handoff.
+  The cited private files are absent from this workspace; their names and a
+  commit message do not verify their contents or launch configuration.
+
+The source-only repair described in
+[the PI observation contract](N64DD_PI_OBSERVATION_CONTRACT.md) is being checked
+with production-path and parser fixtures. This is **not** a re-scope authorizing
+a PI-only diagnostic APK. The combined runbook's loader, dynamically armed
+staging, publication, protected-retention and native acceptance gates remain in
+force unless an explicit, independently reviewed coverage re-scope replaces them.
+
+**Current user direction (2026-09-17):** disregard unavailable historical files
+and continue troubleshooting with the available source and documented evidence.
+Do not request the missing local bundle or make its recovery a prerequisite.
+The bundle-collection step has been removed. Investigate the existing DMA/cache/
+interrupt paths and derive safe observation sites from source and checked
+instruction/descriptor contracts. Unknown live values stay unknown; public
+reference source or documented disassembly is not a substitute for an observed
+runtime value. Missing native evidence still prevents a native-success claim.
 
 ### Current next-test instructions (2026-09-17)
 
@@ -18,8 +195,11 @@ in the fetched `5ebdc720d` baseline for independent verification here. A wrapped
 PI ring does not prove a particular populating write was captured and then lost.
 The next package must join live loader/compare evidence, dynamic staging writes,
 cart PI delivery and descriptor/publication observations before requesting a
-new diagnostic run. Launch identity is a prerequisite: F-ZERO X (J) cartridge,
-Japanese IPL and attached NDD, using Start, not direct NDD or Resume.
+new diagnostic run. Launch identity is a prerequisite: F-ZERO X **USA** cartridge
+for this English-translated NDD, with the particular IPL proven in the working
+control, using Start, not direct NDD or Resume. Earlier JP-only instructions are
+superseded for this patch. Revalidate any region-specific guest sites before
+using old fixed-PC diagnostics with the corrected cartridge.
 
 The emulator repair and native/persistence acceptance remain incomplete.
 
@@ -278,7 +458,11 @@ Interpretation (provisional, not accepted):
   ring_wrapped=1, overwritten=10345`; all 16 retained transfers land at
   `0x00405xxx` (game assets) or `0x007c5620`, never `0x00411910`. Confirming the
   nonzero data was a real resource load therefore requires a fresh, higher-
-  retention capture, not a re-read of this one. (This is exactly P09's instrumented capture: the PI DMA read path is now instrumented (unconditional on reads, address-gated on writes) so every DD-ROM and cart-origin transfer records `source_region` plus its full dram range behind the shared callback double-gate; P09 documents why the unconditional read hook is safe off-DD — implemented and host-tested, but blocked on a device NDD rom + manual **Start**, since neither is available in an unattended session. See P09 in HANDOFF_NEW.md.)
+  retention capture, not a re-read of this one. The subsequently published P09
+  PI addition did **not** supply incoming cartridge coverage: it instrumented
+  the reverse operation while retaining the incoming path's DD-address filter.
+  See the coding-phase reconciliation above. A new capture remains subject to
+  the complete next-test delivery gate, not just device availability.
 - The discriminating check remains: does clear #1's guest range (or the
   emulator's bank-mask/row-clamp result) legitimately include `0x80411910` on
   hardware, or is the emulator's clear over-wide? This needs a hardware or
@@ -444,7 +628,9 @@ currently installed on the device; verify that separately for each capture.
 Mac ADB is `~/Downloads/platform-tools/adb`; do not assume PATH. Install with
 `adb install -r`. Force-stop loses unsaved session progress but preserves stored
 saves. Use `tools/capture-p08-mac.py --duration 60 --manual-start`: select
-F-ZERO X (J) → Start, not Resume; leave controls alone through automatic demo.
+F-ZERO X USA → Start for the English disk patch, not Resume; leave controls alone
+through automatic demo. The earlier JP launch instruction was incorrect for this
+patch. These historical package details do not establish a new USA-run result.
 Do not use `--memory`: the watchdog remains unreliable and memory capture is
 not needed for this package. UIAutomator is unreliable on this handheld.
 Present terminal commands in one copy-pastable block, one physical line each.

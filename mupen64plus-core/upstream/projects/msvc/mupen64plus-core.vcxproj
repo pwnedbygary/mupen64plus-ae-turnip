@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="ARM64_New_Dynarec_Debug|x64">
@@ -193,7 +193,6 @@
     <ClCompile Include="..\..\src\osd\oglft_c.cpp" />
     <ClCompile Include="..\..\src\osd\osd.c" />
     <ClCompile Include="..\..\src\device\rcp\pi\pi_controller.c" />
-    <ClCompile Include="..\..\src\device\dd\dd_load_history.c" />
     <ClCompile Include="..\..\src\plugin\dummy_audio.c" />
     <ClCompile Include="..\..\src\plugin\dummy_input.c" />
     <ClCompile Include="..\..\src\plugin\dummy_rsp.c" />

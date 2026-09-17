@@ -38,83 +38,13 @@
 
 /* Functions for use by the Core, to send information back to the front-end app */
 extern m64p_error SetDebugCallback(ptr_DebugCallback pFunc, void *Context);
-extern int DdStartupDiagnosticsEnabled(void);
-extern ptr_DdStartupDiagnosticsCallback DdStartupDiagnosticsGetCallback(void **Context);
 /*
  * Explicit DD runtime-policy channel.  The front-end sets this from its
- * per-game DD preference; it is deliberately independent of the debug
- * callback, of DdStartupDiagnosticsEnabled() and of any log budget, and it
- * carries hardware-policy authorization only (it never enables
- * diagnostics).  Default is off (legacy semantics).
+ * per-game DD preference and carries hardware-policy authorization only.
+ * Default is off (legacy semantics).
  */
 extern m64p_error SetDdRuntimePolicy(int enabled);
 extern int DdRuntimePolicyGet(void);
-enum dd_startup_trace_kind
-{
-    DD_TRACE_REGISTER_COMMAND = 0,
-    DD_TRACE_REGISTER_READ,
-    DD_TRACE_PI_DMA,
-    DD_TRACE_PI_BOUNDARY,
-    DD_TRACE_INTERRUPT,
-    DD_TRACE_PROGRESS,
-    DD_TRACE_BM_HANDSHAKE,
-    DD_TRACE_KIND_COUNT
-};
-
-enum dd_startup_trace_mode
-{
-    DD_TRACE_EARLY = 0,
-    DD_TRACE_SPARSE,
-    DD_TRACE_PROGRESS_SPARSE
-};
-
-enum dd_dynarec_trace_kind
-{
-    DD_DYNAREC_FAULT = 0,
-    DD_DYNAREC_COHERENCE = 1,
-    DD_DYNAREC_TRACE_KIND_COUNT
-};
-
-extern void DdStartupDiagnosticsTrace(enum dd_startup_trace_kind kind,
-                                      enum dd_startup_trace_mode mode,
-                                      const char *message, ...) ATTR_FMT(3,4);
-/*
- * Return the progress ordinal which the next DDSTART3 progress trace will
- * receive.  This is used only at the existing emulation-thread boundary to
- * select the two DDSTART5 observation points; it does not advance the
- * counter.
- */
-extern unsigned int DdStartupDiagnosticsNextProgressOrdinal(void);
-/*
- * DDSTART5 has its own bounded record class.  It deliberately does not use
- * the aggregate DDSTART3/DDSTART4 budget, so late context evidence remains
- * available after earlier classes fill.
- */
-extern int DdStartupDiagnosticsTraceContext(const char *message, ...)
-    ATTR_FMT(1,2);
-/*
- * DDSTART6 has its own 64-record session budget.  It is deliberately
- * separate from DDSTART1/DDSTART3/DDSTART4 and DDSTART5, and is reset by
- * every callback registration.
- */
-extern int DdStartupDiagnosticsTraceScheduler(const char *message, ...)
-    ATTR_FMT(1,2);
-/*
- * DDSTART7 has an independent 18-record session budget: two late candidates
- * times the nine records in a complete saved-thread snapshot.  It is reset
- * by every callback registration and remains subject to the same explicit
- * host gate.
- */
-extern int DdStartupDiagnosticsTraceFault(const char *message, ...)
-    ATTR_FMT(1,2);
-/*
- * DDSTART8 has independent 32-record fault and 64-record coherence budgets.
- * Both classes are reset by every callback registration and remain subject
- * to the same explicit host gate.
- */
-extern int DdStartupDiagnosticsTraceDynarec(enum dd_dynarec_trace_kind kind,
-                                            const char *message, ...)
-    ATTR_FMT(2,3);
 extern m64p_error SetStateCallback(ptr_StateCallback pFunc, void *Context);
 extern void       DebugMessage(int level, const char *message, ...) ATTR_FMT(2,3);
 extern void       StateChanged(m64p_core_param param_type, int new_value);

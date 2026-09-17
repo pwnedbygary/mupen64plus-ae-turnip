@@ -4,34 +4,6 @@
 
 using namespace std;
 
-#define TRACE
-
-extern "C"
-{
-#ifdef INTENSE_DEBUG
-	static uint64_t hash_imem(const uint8_t *data, size_t size)
-	{
-		uint64_t h = 0xcbf29ce484222325ull;
-		size_t i;
-		for (i = 0; i < size; i++)
-			h = (h * 0x100000001b3ull) ^ data[i];
-
-		if (h == BREAKVAL)
-			breakme();
-
-		return h;
-	}
-
-	void RSP_DEBUG(RSP::CPUState *rsp, const char *tag, unsigned pc, unsigned value)
-	{
-		uint64_t hash = hash_imem((const uint8_t *)rsp->cp2.regs, sizeof(rsp->cp2.regs));
-		fprintf(DUMP_FILE, "%s (PC: %u): %u, %llu\n", tag, pc, value, hash);
-		if (value)
-			fprintf(DUMP_FILE, "  DMEM HASH: 0x%016llx\n", hash_imem((const uint8_t *)rsp->dmem, 0x1000));
-	}
-#endif
-}
-
 namespace RSP
 {
 CPU::CPU()
@@ -52,11 +24,6 @@ void CPU::init_symbol_table()
 	S(EXIT);
 	S(CALL);
 	S(RETURN);
-	S(REPORT_PC);
-
-#ifdef INTENSE_DEBUG
-	S(DEBUG);
-#endif
 	S(MFC0);
 	S(MTC0);
 
@@ -501,9 +468,6 @@ Func CPU::jit_region(uint64_t hash, unsigned pc, unsigned count)
 	{
 		uint32_t instr = state.imem[pc + i];
 		APPEND("pc_%03x:\n", (pc + i) * 4);
-#ifdef TRACE
-		APPEND("RSP_REPORT_PC(STATE, %u, %u);\n", (pc + i) * 4, instr);
-#endif
 		PIPELINE_BRANCH();
 
 		uint32_t type = instr >> 26;
@@ -540,9 +504,6 @@ Func CPU::jit_region(uint64_t hash, unsigned pc, unsigned count)
 				//fprintf(DUMP_FILE, "Unimplemented COP2 op %u.\n", op);
 			}
 
-#ifdef INTENSE_DEBUG
-			APPEND("RSP_DEBUG(STATE, \"CP2\", %u, 0);\n", op);
-#endif
 		}
 		else
 		{
@@ -600,17 +561,11 @@ Func CPU::jit_region(uint64_t hash, unsigned pc, unsigned count)
 					set_pc_indirect(rs);
 					pipe_pending_indirect_call = true;
 					DISASM("jalr %s\n", register_name(rs));
-#ifdef INTENSE_DEBUG
-					APPEND("RSP_DEBUG(STATE, \"JALR\", pipe_branch_delay * 4, 0);\n");
-#endif
 					break;
 				case 010: // JR
 					set_pc_indirect(rs);
 					pipe_pending_return = true;
 					DISASM("jr %s\n", register_name(rs));
-#ifdef INTENSE_DEBUG
-					APPEND("RSP_DEBUG(STATE, \"JR\", pipe_branch_delay * 4, 0);\n");
-#endif
 					break;
 
 				case 015: // BREAK
@@ -712,9 +667,6 @@ Func CPU::jit_region(uint64_t hash, unsigned pc, unsigned count)
 				pipe_pending_call = true;
 				APPEND("BRANCH();\n");
 				DISASM("jal 0x%x\n", (instr & 0x3ff) << 2);
-#ifdef INTENSE_DEBUG
-				APPEND("RSP_DEBUG(STATE, \"JAL\", %u, 0);\n", pipe_branch_delay * 4);
-#endif
 				break;
 
 			case 002: // J
@@ -863,9 +815,6 @@ Func CPU::jit_region(uint64_t hash, unsigned pc, unsigned count)
 				case 004: // MTC2
 					APPEND("RSP_MTC2(STATE, %u, %u, %u);\n", rt, rd, imm);
 					DISASM("mtc2 %u, %u, %u\n", rt, rd, imm);
-#ifdef INTENSE_DEBUG
-					APPEND("RSP_DEBUG(STATE, \"MTC2\", %u, 0);\n", 0);
-#endif
 					break;
 
 				case 006: // CTC2
@@ -1000,9 +949,6 @@ Func CPU::jit_region(uint64_t hash, unsigned pc, unsigned count)
 					DISASM("%s %u, %u, %d, %u\n", op, rt, imm, simm, rs);
 				}
 
-#ifdef INTENSE_DEBUG
-				APPEND("RSP_DEBUG(STATE, \"LWC2\", %u, %u);\n", (pc + i + 1) << 2, instr);
-#endif
 				break;
 			}
 
@@ -1027,10 +973,6 @@ Func CPU::jit_region(uint64_t hash, unsigned pc, unsigned count)
 					APPEND("RSP_%s(STATE, %u, %u, %d, %u);\n", op, rt, imm, simm, rs);
 					DISASM("%s %u, %u, %d, %u\n", op, rt, imm, simm, rs);
 				}
-
-#ifdef INTENSE_DEBUG
-				APPEND("RSP_DEBUG(STATE, \"SWC2\", %u, %u);\n", (pc + i + 1) << 2, instr);
-#endif
 
 				break;
 			}
@@ -1104,8 +1046,6 @@ extern void RSP_MFC2(struct cpu_state *STATE, unsigned rt, unsigned vs, unsigned
 extern void RSP_CFC2(struct cpu_state *STATE, unsigned rt, unsigned rd);
 extern void RSP_CTC2(struct cpu_state *STATE, unsigned rt, unsigned rd);
 
-extern void RSP_REPORT_PC(struct cpu_state *STATE, unsigned pc, unsigned instr);
-
 #define DECL_LS(op) \
    extern void RSP_##op(struct cpu_state *STATE, unsigned rt, unsigned element, int offset, unsigned base)
 
@@ -1136,8 +1076,6 @@ extern void RSP_CALL(void *opaque, unsigned target, unsigned ret);
 extern int RSP_RETURN(void *opaque, unsigned pc);
 extern void RSP_EXIT(void *opaque, enum ReturnMode mode);
 #define EXIT(mode) RSP_EXIT(opaque, mode)
-
-extern void RSP_DEBUG(struct cpu_state *STATE, const char *tag, unsigned pc, unsigned value);
 
 #define DECL_COP2(op) \
    extern void RSP_##op(struct cpu_state *STATE, unsigned vd, unsigned vs, unsigned vt, unsigned e)
@@ -1338,23 +1276,6 @@ extern "C"
 		static_cast<CPU *>(cpu)->exit(static_cast<ReturnMode>(mode));
 	}
 
-	void RSP_REPORT_PC(void *cpu, unsigned pc, unsigned instr)
-	{
-		auto *state = static_cast<const CPUState *>(cpu);
-		auto disasm = disassemble(pc, instr);
-		puts(disasm.c_str());
-
-		for (unsigned i = 0; i < 32; i++)
-		{
-			if (i == 0)
-				printf("                  ");
-			else
-				printf("[%s = 0x%08x] ", register_name(i), state->sr[i]);
-			if ((i & 7) == 7)
-				printf("\n");
-		}
-		printf("\n");
-	}
 }
 
 void CPU::enter(uint32_t pc)

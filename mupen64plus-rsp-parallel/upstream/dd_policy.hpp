@@ -3,10 +3,9 @@
  *
  * The core pushes the per-game launch policy here through the optional
  * DdRspRuntimePolicySet capability; see plugin.c.  This channel is the only
- * authority for corrected DMA semantics: it is independent of the
- * diagnostics callback, of Diagnostics::enabled() and of any log budget,
- * and it defaults to off (legacy semantics) so DD-disabled sessions and
- * old cores can never enable it by accident.
+ * authority for corrected DMA semantics. It defaults to off (legacy
+ * semantics), so DD-disabled sessions and old cores can never enable it by
+ * accident.
  *
  * P03 establishes the channel and lifecycle only; the DMA path consults
  * this state starting with the P04 correction.

@@ -3,17 +3,10 @@
  *
  * The core pushes the explicit per-game policy through the optional
  * DdRspRuntimePolicySet capability into RSP::DdRuntimePolicySet.  These
- * tests verify the receiver's readback contract and its independence from
- * the diagnostics observer (validation G03/G05/G10 receiver behavior).
- * The DMA path consuming this state arrives with the P04 correction; the
- * P02 transfer suite re-run proves DMA behavior is unchanged by P03.
+ * tests verify the receiver's readback contract. The DMA transfer fixture
+ * independently verifies the legacy and corrected paths that consume it.
  */
 #include "dd_policy.hpp"
-#include "rsp_diag.hpp"
-
-static void noop(void *, int, const char *)
-{
-}
 
 int main()
 {
@@ -34,14 +27,8 @@ int main()
 	if (RSP::DdRuntimePolicyEnabled() != 0)
 		return 1;
 
-	/* Policy never enables diagnostics by itself (G05): the observer
-	 * stays off without a callback even while the policy is enabled. */
+	/* Policy state is retained until the explicit clear from the core. */
 	RSP::DdRuntimePolicySet(1);
-	if (RSP::Diagnostics::enabled())
-		return 1;
-	RSP::Diagnostics::set_callback(nullptr, nullptr);
-	if (RSP::Diagnostics::enabled())
-		return 1;
 	if (RSP::DdRuntimePolicyEnabled() != 1)
 		return 1;
 
@@ -49,17 +36,6 @@ int main()
 	 * returns to legacy semantics. */
 	RSP::DdRuntimePolicySet(0);
 	if (RSP::DdRuntimePolicyEnabled() != 0)
-		return 1;
-
-	/* Diagnostics on with policy off (G03 receiver side): callback
-	 * presence must not change the policy state. */
-	RSP::Diagnostics::set_callback(&noop, nullptr);
-	if (!RSP::Diagnostics::enabled())
-		return 1;
-	if (RSP::DdRuntimePolicyEnabled() != 0)
-		return 1;
-	RSP::Diagnostics::set_callback(nullptr, nullptr);
-	if (RSP::Diagnostics::enabled())
 		return 1;
 
 	return 0;

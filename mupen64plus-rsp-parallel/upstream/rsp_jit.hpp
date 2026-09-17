@@ -107,10 +107,7 @@ public:
 		state.rdram = rdram;
 	}
 
-	void set_diagnostics_enabled(bool enabled);
-
 	void invalidate_imem();
-	uint64_t diagnostic_imem_hash();
 
 	CPUState &get_state()
 	{
@@ -150,20 +147,6 @@ private:
 	} thunks;
 
 	unsigned analyze_static_end(unsigned pc, unsigned end);
-
-	struct RegionProvenance
-	{
-		uintptr_t host_start;
-		uintptr_t host_end;
-		unsigned imem_start_pc;
-		unsigned instruction_count;
-		uint64_t existing_region_hash;
-	};
-	std::unordered_map<uintptr_t, RegionProvenance> region_provenance;
-	std::unordered_map<uintptr_t, bool> reported_cache_hits;
-	bool diagnostics_enabled = false;
-	bool diagnostic_imem_hash_valid = false;
-	uint64_t cached_diagnostic_imem_hash = 0;
 
 	struct InstructionInfo
 	{
@@ -205,7 +188,6 @@ private:
 	static void jit_save_illegal_indirect_register(jit_state_t *_jit);
 	static void jit_load_illegal_indirect_register(jit_state_t *_jit, unsigned jit_reg);
 
-	std::string mips_disasm;
 	struct Link
 	{
 		jit_node_t *node;

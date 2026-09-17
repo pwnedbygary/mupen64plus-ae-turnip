@@ -70,7 +70,8 @@ struct pi_dma_handler
     unsigned int (*dma_write)(void* opaque, uint8_t* dram, uint32_t dram_addr, uint32_t cart_addr, uint32_t length);
 };
 
-typedef void (*pi_dma_handler_getter)(struct cart* cart, struct dd_controller* dd, uint32_t address, void** opaque, const struct pi_dma_handler** handler);
+typedef void (*pi_dma_handler_getter)(struct cart* cart, struct dd_controller* dd,
+    uint32_t address, void** opaque, const struct pi_dma_handler** handler);
 
 struct pi_controller
 {

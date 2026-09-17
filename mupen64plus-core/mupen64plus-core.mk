@@ -97,9 +97,6 @@ LOCAL_SRC_FILES :=                                              \
     $(SRCDIR)/device/rcp/vi/vi_controller.c                     \
     $(SRCDIR)/device/rcp/rdp/fb.c                               \
     $(SRCDIR)/device/dd/dd_controller.c                         \
-    $(SRCDIR)/device/dd/dd_load_history.c                       \
-    $(SRCDIR)/device/dd/dd_cmd_watch.c                          \
-    $(SRCDIR)/device/dd/dd_watch.c                              \
     $(SRCDIR)/device/dd/disk.c                                  \
     $(SRCDIR)/main/screenshot.c                                 \
     #$(SRCDIR)/debugger/dbg_breakpoints.c                       \

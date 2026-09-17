@@ -31,7 +31,6 @@
 #include "state.hpp"
 #include "rsp_op.hpp"
 #include "rsp_1.1.h"
-#include "rsp_diag.hpp"
 #include "dd_policy.hpp"
 
 #include <sys/mman.h>
@@ -336,7 +335,6 @@ struct Case
 	const char *why;
 	uint32_t cache, dram, len;
 	Kind kind;
-	bool diagnostics;      // capture production observer counts (D01)
 	uint64_t oracle_words; // oracle self-check, 0 = skip
 	uint64_t oracle_imem;  // oracle self-check, 0 = skip
 };
@@ -344,95 +342,53 @@ struct Case
 const Case kCases[] = {
 	// ---- Shared semantics (both policies must agree; oracle cross-check) ----
 	{"D03", "short ordinary DMEM row", 0x0000, 0x00000100, 0x0000003b,
-	 Kind::Shared, false, 16, 0},
+	 Kind::Shared, 16, 0},
 	{"D09a", "raw length 0 -> 8 bytes, never zero-byte", 0x0100, 0x00000300,
-	 0x00000000, Kind::Shared, false, 2, 0},
+	 0x00000000, Kind::Shared, 2, 0},
 	{"D09b", "raw length 7 -> 8 bytes", 0x0108, 0x00000380, 0x00000007,
-	 Kind::Shared, false, 2, 0},
+	 Kind::Shared, 2, 0},
 	{"D10", "count 0xff -> exactly 256 rows", 0x0000, 0x00001000,
-	 0x000ff007, Kind::Shared, false, 512, 0},
+	 0x000ff007, Kind::Shared, 512, 0},
 	{"D12", "DRAM low bits masked ~7", 0x0200, 0x00001234, 0x00000007,
-	 Kind::Shared, false, 2, 0},
+	 Kind::Shared, 2, 0},
 	// ---- Legacy pins (must keep passing post-fix in legacy mode) ----
-	{"D01", "captured request under legacy policy", 0x0fb0, 0x00000000,
-	 0xffffffff, Kind::Legacy, true, 5120, 3052},
+	{"D01", "large request under legacy policy", 0x0fb0, 0x00000000,
+	 0xffffffff, Kind::Legacy, 5120, 3052},
 	{"D22a", "clamp once, crossing across rows", 0x0f80, 0x00004000,
-	 0x000010ff, Kind::Legacy, false, 64, 32},
+	 0x000010ff, Kind::Legacy, 64, 32},
 	{"D22b", "raw unaligned skip, word-floor source", 0x0100, 0x00001000,
-	 0x1230203f, Kind::Legacy, false, 48, 0},
-	{"X1", "plain full-IMEM load: no crossing tag", 0x1000, 0x00007000,
-	 0x00000fff, Kind::Legacy, true, 1024, 1024},
+	 0x1230203f, Kind::Legacy, 48, 0},
+	{"X1", "plain full-IMEM load", 0x1000, 0x00007000,
+	 0x00000fff, Kind::Legacy, 1024, 1024},
 	{"X2", "genuine DMEM-started crossing across rows", 0x0ff0,
-	 0x00008000, 0x0000101f, Kind::Legacy, true, 8, 4},
+	 0x00008000, 0x0000101f, Kind::Legacy, 8, 4},
 	{"D14L", "legacy 4-byte SP alignment at 4-mod-8", 0x1ab4, 0x00006000,
-	 0x0000001f, Kind::Legacy, false, 8, 8},
+	 0x0000001f, Kind::Legacy, 8, 8},
 	// ---- Corrected expectations (production corrected arm, P04) ----
 	// D05 (exact fit ending at 0x1000) is here, not Shared: bytes agree but
 	// the final register poststate diverges (legacy writes back the raw
 	// accumulated 0x1000; corrected writes back 0x0000 per ledger row 9).
 	{"D05", "DMEM exact fit; register poststate per row 9", 0x0fc0,
-	 0x00000200, 0x00000038, Kind::Corrected, false, 16, 0},
-	{"D02", "captured request under corrected policy", 0x0fb0, 0x00000000,
-	 0xffffffff, Kind::Corrected, false, 262144, 0},
-	{"D02diag", "captured request, diagnostics on: still observed, zero "
-	 "IMEM writes", 0x0fb0, 0x00000000, 0xffffffff, Kind::Corrected, true,
-	 262144, 0},
+	 0x00000200, 0x00000038, Kind::Corrected, 16, 0},
+	{"D02", "large corrected DMEM transfer stays in its bank", 0x0fb0,
+	 0x00000000, 0xffffffff, Kind::Corrected, 262144, 0},
 	{"D06", "DMEM row wraps inside bank, never IMEM", 0x0fb0, 0x00002000,
-	 0x00000fff, Kind::Corrected, false, 1024, 0},
+	 0x00000fff, Kind::Corrected, 1024, 0},
 	{"D07", "IMEM row wraps inside bank, never DMEM", 0x1fb0, 0x00003000,
-	 0x00000fff, Kind::Corrected, false, 1024, 1024},
+	 0x00000fff, Kind::Corrected, 1024, 1024},
 	{"D08", "cumulative crossing, bank stays latched", 0x0f00, 0x00004000,
-	 0x000010ff, Kind::Corrected, false, 128, 0},
+	 0x000010ff, Kind::Corrected, 128, 0},
 	{"D11", "8-byte SP alignment at 4-mod-8 start", 0x0ff4, 0x00005000,
-	 0x00000007, Kind::Corrected, false, 2, 0},
+	 0x00000007, Kind::Corrected, 2, 0},
 	{"D13", "skip low bits aligned to 8", 0x0000, 0x00001000, 0xfff01007,
-	 Kind::Corrected, false, 4, 0},
+	 Kind::Corrected, 4, 0},
 	{"D14", "bit-12 bank + 8-byte offset decode", 0x1abc, 0x00006000,
-	 0x0000001f, Kind::Corrected, false, 8, 8},
+	 0x0000001f, Kind::Corrected, 8, 8},
 	{"D16", "two full-circle rows; last writer wins", 0x0800, 0x00007000,
-	 0x00001fff, Kind::Corrected, false, 2048, 0},
+	 0x00001fff, Kind::Corrected, 2048, 0},
 	{"D19", "no trailing skip in final DRAM register", 0x0100, 0x00001000,
-	 0x0100203f, Kind::Corrected, false, 48, 0},
+	 0x0100203f, Kind::Corrected, 48, 0},
 };
-
-std::vector<std::string> g_trace_lines;
-
-void trace_capture(void *context, int level, const char *line)
-{
-	(void)context;
-	(void)level;
-	if (line != nullptr && g_trace_lines.size() < 64)
-		g_trace_lines.emplace_back(line);
-}
-
-bool parse_u32_field(const std::string &lines, const char *field,
-                     uint64_t *out)
-{
-	const size_t pos = lines.rfind(field);
-	if (pos == std::string::npos)
-		return false;
-	*out = strtoull(lines.c_str() + pos + strlen(field), nullptr, 10);
-	return true;
-}
-
-bool parse_hex_field(const std::string &lines, const char *field,
-                     uint64_t *out)
-{
-	const size_t pos = lines.rfind(field);
-	if (pos == std::string::npos)
-		return false;
-	*out = strtoull(lines.c_str() + pos + strlen(field), nullptr, 16);
-	return true;
-}
-
-unsigned count_substring(const std::string &text, const char *needle)
-{
-	unsigned count = 0;
-	for (size_t pos = text.find(needle); pos != std::string::npos;
-	     pos = text.find(needle, pos + 1))
-		++count;
-	return count;
-}
 
 struct Diff
 {
@@ -504,18 +460,9 @@ void run_case(const Case &c, Result (*oracle)(uint32_t, uint32_t, uint32_t),
 {
 	g_state.refill();
 
-	if (c.diagnostics)
-	{
-		g_trace_lines.clear();
-		RSP::Diagnostics::set_callback(&trace_capture, nullptr);
-	}
-
 	const uint32_t mode =
 	    production_dma_read(c.cache, c.dram, c.len);
 	g_state.last_read_mode = mode;
-
-	if (c.diagnostics)
-		RSP::Diagnostics::set_callback(nullptr, nullptr);
 
 	Result expected = oracle(c.cache, c.dram, c.len);
 
@@ -540,97 +487,6 @@ void run_case(const Case &c, Result (*oracle)(uint32_t, uint32_t, uint32_t),
 
 	const std::vector<Diff> diffs = compare(expected);
 
-	if (c.diagnostics)
-	{
-		std::string all;
-		for (const auto &l : g_trace_lines)
-			all += l + "\n";
-		uint64_t payload_words = 0, imem_writes = 0;
-		const bool have_payload =
-		    parse_u32_field(all, "payload_word_count=", &payload_words);
-		const bool have_imem =
-		    parse_u32_field(all, "imem_write_word_count=", &imem_writes);
-		if (!have_payload || !have_imem)
-		{
-			fprintf(stderr,
-			        "[FAIL] %s: production DMA observer did not report "
-			        "word counts (diagnostics enabled)\n",
-			        c.id);
-			g_failures++;
-		}
-		else if (payload_words != c.oracle_words ||
-		         imem_writes != c.oracle_imem)
-		{
-			fprintf(stderr,
-			        "[FAIL] %s: production observer counts (payload=%" PRIu64
-			        " imem=%" PRIu64 ") disagree with oracle (%" PRIu64
-			        "/%" PRIu64 ")\n",
-			        c.id, payload_words, imem_writes, c.oracle_words,
-			        c.oracle_imem);
-			g_failures++;
-		}
-		else
-		{
-			printf("  %s production observer: payload=%" PRIu64
-			       " imem_writes=%" PRIu64 " (matches DDSTART11 record)\n",
-			       c.id, payload_words, imem_writes);
-		}
-
-		/* P05 evidence-contract fields on the same emitted record. */
-		{
-			uint64_t policy = 0, trigger = 0, eligible = 0, actual = 0;
-			uint64_t skip_effective = 0, probe_skipped = 0;
-			uint64_t final_cache = 0, final_dram = 0;
-			const bool have =
-			    parse_u32_field(all, "policy=", &policy)
-			    && parse_u32_field(all, "trigger=", &trigger)
-			    && parse_u32_field(all, "capture_eligible=", &eligible)
-			    && parse_u32_field(all, "actual_imem_writes=", &actual)
-			    && parse_u32_field(all, "skip_effective=", &skip_effective)
-			    && parse_u32_field(all, "probe_skipped=", &probe_skipped)
-			    && parse_hex_field(all, "final_cache=0x", &final_cache)
-			    && parse_hex_field(all, "final_dram=0x", &final_dram);
-			const bool corrected_mode = oracle_name[0] == 'c';
-			uint64_t want_trigger = 0;
-			if (c.len == 0xffffffffu
-			    && (c.dram & 0x00ffffffu) == 0)
-				want_trigger = 1;
-			else if (!corrected_mode
-			         && (c.cache & 0x1000u) == 0
-			         && c.oracle_imem != 0)
-				want_trigger = 2;
-			const uint64_t want_skip_effective =
-			    corrected_mode
-			        ? ((c.len >> 20) & 0xFFF) & 0xFF8
-			        : ((c.len >> 20) & 0xFFF);
-			if (!have || policy != (corrected_mode ? 1u : 0u)
-			    || trigger != want_trigger || eligible == 0
-			    || actual != c.oracle_imem
-			    || skip_effective != want_skip_effective
-			    || probe_skipped != 0
-			    || final_cache != expected.final_cache
-			    || final_dram != expected.final_dram)
-			{
-				fprintf(stderr,
-				        "[FAIL] %s: P05 contract fields wrong "
-				        "(policy=%llu trigger=%llu eligible=%llu "
-				        "actual=%llu skip_eff=%llu probe=%llu "
-				        "final=%llx/%llx want %llx/%llx)\n",
-				        c.id, (unsigned long long)policy,
-				        (unsigned long long)trigger,
-				        (unsigned long long)eligible,
-				        (unsigned long long)actual,
-				        (unsigned long long)skip_effective,
-				        (unsigned long long)probe_skipped,
-				        (unsigned long long)final_cache,
-				        (unsigned long long)final_dram,
-				        (unsigned long long)expected.final_cache,
-				        (unsigned long long)expected.final_dram);
-				g_failures++;
-			}
-		}
-	}
-
 	if (diffs.empty())
 	{
 		printf("[PASS] %s (%s)\n", c.id, c.why);
@@ -641,77 +497,6 @@ void run_case(const Case &c, Result (*oracle)(uint32_t, uint32_t, uint32_t),
 	for (const auto &d : diffs)
 		fprintf(stderr, "       %s: %s\n", d.field, d.detail.c_str());
 	g_failures++;
-}
-
-/* P05: the suspect request recurs every audio task.  The first four
- * occurrences emit detailed trigger snapshots (dedup-exempt, own budget);
- * later occurrences are counted, reported once as exhaustion, and summarized
- * at diagnostics re-registration.  Guest behavior must be identical in every
- * run, and the GPR snapshot must capture the live t9/k0 registers (origin:
- * exact, per the static DDSTART11 helper analysis). */
-void run_trigger_duplicates()
-{
-	g_trace_lines.clear();
-	RSP::Diagnostics::set_callback(&trace_capture, nullptr);
-	g_state.cpu.sr[25] = 0x12345678; // t9
-	g_state.cpu.sr[26] = 0x0abcdef0; // k0
-	int bad = 0;
-	for (int iter = 0; iter < 6; ++iter)
-	{
-		g_state.refill();
-		const uint32_t mode = production_dma_read(0x0fb0, 0, 0xffffffff);
-		g_state.last_read_mode = mode;
-		const Result expected = oracle_corrected(0x0fb0, 0, 0xffffffff);
-		const std::vector<Diff> diffs = compare(expected);
-		if (!diffs.empty())
-		{
-			if (bad == 0)
-				fprintf(stderr,
-				        "[FAIL] T-dup run %d diverged: %s: %s\n",
-				        iter, diffs[0].field,
-				        diffs[0].detail.c_str());
-			bad++;
-		}
-	}
-	if (bad != 0)
-	{
-		fprintf(stderr, "[FAIL] T-dup: %d/6 runs changed guest state\n", bad);
-		g_failures++;
-		return;
-	}
-
-	/* Resetting diagnostics emits the session summary while the capture is
-	 * still installed, then clears the budget state. */
-	RSP::Diagnostics::set_callback(nullptr, nullptr);
-
-	std::string all;
-	for (const auto &l : g_trace_lines)
-		all += l + "\n";
-	const unsigned snapshots = count_substring(all, "trigger=1 ");
-	const unsigned exhaustion =
-	    count_substring(all, "DDSTART11 RSP trigger_budget exhaustion");
-	uint64_t summary_snapshots = 0, summary_duplicates = 0;
-	const bool have_summary =
-	    parse_u32_field(all, "trigger_summary snapshots=", &summary_snapshots)
-	    && parse_u32_field(all, "duplicates=", &summary_duplicates);
-	uint64_t t9 = 0, k0 = 0;
-	const bool have_gprs = parse_hex_field(all, "t9=0x", &t9)
-	    && parse_hex_field(all, "k0=0x", &k0);
-	if (snapshots != 4 || exhaustion != 1 || !have_summary
-	    || summary_snapshots != 4 || summary_duplicates != 2 || !have_gprs
-	    || t9 != 0x12345678u || k0 != 0x0abcdef0u)
-	{
-		fprintf(stderr,
-		        "[FAIL] T-dup: snapshots=%u exhaustion=%u summary=%llu/%llu "
-		        "have_summary=%d t9=0x%llx k0=0x%llx\n",
-		        snapshots, exhaustion, (unsigned long long)summary_snapshots,
-		        (unsigned long long)summary_duplicates, have_summary ? 1 : 0,
-		        (unsigned long long)t9, (unsigned long long)k0);
-		g_failures++;
-		return;
-	}
-	printf("[PASS] T-dup (4 trigger snapshots, duplicates counted and "
-	       "summarized, guest state unchanged, GPR capture exact)\n");
 }
 
 /* D23: pin the rsp_dma_write path (deliberately unchanged by the repair). */
@@ -916,7 +701,6 @@ int main(int argc, char **argv)
 			if (c.kind == Kind::Shared || c.kind == Kind::Corrected)
 				run_case(c, oracle_corrected, "corrected");
 		}
-		run_trigger_duplicates();
 		RSP::DdRuntimePolicySet(0);
 	}
 

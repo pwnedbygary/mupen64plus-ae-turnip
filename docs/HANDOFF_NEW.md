@@ -1,3 +1,36 @@
+# 2026-09-17 — v337 release cleanup
+
+The user confirmed native EK works with the USA cartridge, English USA-region
+NDD and prototype USA IPL on beta commit `5ebdc720`. The original native-stall
+investigation is considered complete by the user. The published v336 tag is
+`dc955483`, not that beta; its actual release APK reports version code 335.
+The user subsequently tested release-tag v336: it showed the 3D N logo and then
+“F-ZERO X cannot be played with this disk alone.” This supports retaining the
+beta's explicit cartridge-first combo boot instead of v336's IPL-first selection.
+It does not isolate the necessity of every other intervening fix.
+
+The user chose to preserve v336 and prepare **v337**. Investigation callbacks,
+observer histories, generated JIT probes and verbose RSP traces are being removed.
+The DD runtime policy, real CPU boundary/DMA behavior and independent WritableROM
+support must remain. See [release notes](RELEASE_V337.md) for the accurate scope
+and the separate debug/release package and save-migration caveat.
+
+Do not publish the imported workspace history or private Android captures.
+Publish only reviewed application/test/release changes on a verified live GitHub
+parent. The full local debug APK build passed with Java 17; policy, dynarec
+boundary, core/Parallel RSP DMA and ARM64 syntax checks passed, and independent
+static review approved the runtime cleanup. The compiled libraries contain no
+DD investigation markers. Signed CI release validation/publication remains
+pending; no v337 tag or release APK is claimed published by this entry.
+
+The GitHub Actions run for installed beta commit `5ebdc720` failed at Android SDK
+setup and skipped both APK build and upload; it produced no artifacts. A local
+build can carry the same hash. The installed beta's build machine/provenance is
+not established by its version string. The pending workflow explicitly requests
+`platform-tools` instead of the setup action's obsolete default `tools` package.
+
+---
+
 All register values in DDSTART15 are zeroed at formatting time unless their
 individual validity bit is set; a nonzero stale hot-state slot therefore
 cannot masquerade as a live `a0/a1/ra/sp`. PI/load-history flushes occur only
@@ -4541,7 +4574,17 @@ writes, and cart PI transfers) behind the existing per-game DD gate, then compar
 the delivered head bytes for the same id across states. Do not change runtime
 behaviour before that record exists.
 
-## P09 instrumented capture — implemented, capture blocked on device rom + manual Start (2026-09-16)
+## Historical local report: partial P09 PI logging change (2026-09-16)
+
+**Superseded assessment, reconciled 2026-09-17:** the following local report
+does not establish a completed diagnostic package. Source review of the fetched
+`93c9fc7fc` shows that `dma_pi_read` is RDRAM-to-device and that incoming cartridge
+transfers in `dma_pi_write` are still excluded by the DD-address filter.
+Classification, numeric formatting and range labels also need correction.
+The claimed local build/install and storage inspection have not been verified
+against their private artifacts here. Do not use the command or the "implemented"
+claim below to bypass [the complete delivery gate](N64DD_NEXT_TEST_RUNBOOK.md).
+The text is retained as a supplied-only historical report.
 
 What shipped this round (host-only; no runtime behaviour change): the single
 instrumented capture from the "Proposed next step" above is now in code. The PI

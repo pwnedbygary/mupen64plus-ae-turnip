@@ -20,7 +20,6 @@
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 #include "device.h"
-#include "api/callbacks.h"
 #include "dd/boot_policy.h"
 #include <stdlib.h>
 
@@ -49,7 +48,9 @@ static void write_open_bus(void* opaque, uint32_t address, uint32_t value, uint3
 {
 }
 
-static void get_pi_dma_handler(struct cart* cart, struct dd_controller* dd, uint32_t address, void** opaque, const struct pi_dma_handler** handler)
+static void get_pi_dma_handler(struct cart* cart, struct dd_controller* dd,
+                               uint32_t address, void** opaque,
+                               const struct pi_dma_handler** handler)
 {
 #define RW(o, x) \
     do { \
@@ -58,6 +59,8 @@ static void get_pi_dma_handler(struct cart* cart, struct dd_controller* dd, uint
     *handler = &h; \
     } while(0)
 
+    *opaque = NULL;
+    *handler = NULL;
     if (address >= MM_CART_ROM) {
         if (address >= MM_CART_DOM3) {
             /* 0x1fd00000 - 0x7fffffff : dom3 addr2, cart rom (Paper Mario (U)) ??? */
@@ -206,12 +209,6 @@ void init_device(struct device* dev,
         getenv("M64P_DD_COMBO_CART_BOOT"), rom_size, dd_rom_size);
     if (combo_cart_boot)
         rom_base = MM_CART_ROM;
-
-    if (DdStartupDiagnosticsEnabled())
-        DebugMessage(M64MSG_INFO,
-            "DDSTART2 boot selection: cart_bytes=%zu ipl_bytes=%zu source=%s combo_cart_boot=%d",
-            (size_t)rom_size, (size_t)dd_rom_size,
-            rom_base == MM_DD_ROM ? "DD_IPL" : "CART", combo_cart_boot);
 
     init_pif(&dev->pif,
         (uint8_t*)mem_base_u32(base, MM_PIF_MEM),

@@ -3,13 +3,17 @@
  *
  * Covers the core-side truth table of validation section 3 that is
  * host-testable: default-off, strict value validation, independence from
- * the debug callback and from the DD startup-diagnostics gate (G03/G05),
- * and the set/clear lifecycle used by the launch and ROM-close paths
- * (G06/G07).  The policy state must never enable diagnostics by itself.
+ * the debug callback (G03/G05), and the set/clear lifecycle used by the
+ * launch and ROM-close paths (G06/G07).
  */
 #include <assert.h>
-#include <stdlib.h>
+#include <stddef.h>
 #include "api/callbacks.h"
+
+_Static_assert(M64CMD_ROM_SET_SETTINGS == 27,
+    "existing m64p_command values are ABI");
+_Static_assert(M64CMD_DD_RUNTIME_POLICY_SET == 28,
+    "DD runtime-policy command must remain appended");
 
 static void capture(void *context, int level, const char *message)
 {
@@ -35,30 +39,17 @@ int main(void)
 
     /* The policy is independent of the debug callback: a null callback
      * must not clear it (G05) and callback presence must not flip it
-     * (G03).  DebugCallback re-registration also resets every diagnostics
-     * budget; it must leave the policy untouched. */
+     * (G03).  DebugCallback re-registration must leave the policy
+     * untouched. */
     SetDebugCallback(NULL, NULL);
     assert(DdRuntimePolicyGet() == 1);
     SetDebugCallback(capture, NULL);
     assert(DdRuntimePolicyGet() == 1);
 
-    /* Enabling the policy never enables diagnostics by itself. */
-    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "0", 1);
+    /* Re-registering the callback cannot change the explicit policy. */
     SetDebugCallback(NULL, NULL);
     assert(DdRuntimePolicyGet() == 1);
-    assert(!DdStartupDiagnosticsEnabled());
     SetDebugCallback(capture, NULL);
-    assert(DdRuntimePolicyGet() == 1);
-    assert(!DdStartupDiagnosticsEnabled());
-
-    /* Conversely, diagnostics gate changes never move the policy. */
-    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "1", 1);
-    SetDebugCallback(capture, NULL);
-    assert(DdStartupDiagnosticsEnabled());
-    assert(DdRuntimePolicyGet() == 1);
-    setenv("M64P_DD_STARTUP_DIAGNOSTICS", "0", 1);
-    SetDebugCallback(capture, NULL);
-    assert(!DdStartupDiagnosticsEnabled());
     assert(DdRuntimePolicyGet() == 1);
 
     /* Clearing restores legacy semantics (ROM-close lifecycle). */

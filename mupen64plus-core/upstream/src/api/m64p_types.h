@@ -168,8 +168,9 @@ typedef enum {
   M64CMD_NETPLAY_GET_VERSION,
   M64CMD_NETPLAY_CLOSE,
   M64CMD_PIF_OPEN,
-  M64CMD_ROM_SET_SETTINGS,
-  M64CMD_DD_RUNTIME_POLICY_SET
+  M64CMD_ROM_SET_SETTINGS = 27,
+  /* Appended extension: do not renumber the existing command ABI. */
+  M64CMD_DD_RUNTIME_POLICY_SET = 28
 } m64p_command;
 
 typedef struct {
