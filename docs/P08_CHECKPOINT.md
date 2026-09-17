@@ -442,3 +442,74 @@ Remaining blockers: none.
 Next eligible package and required inputs: continue the writer/load-decision
   thread with the DDSTART15 call provenance; do not reopen the descriptor
   pairing.
+
+## P08d entry-vs-fetch correlation (analysis of the P08d records, 2026-09-16)
+
+Package: P08d analysis — apply the pre-registered decision rule to the combined
+  DDSTART12 entry records and DDSTART11 watched-fetch records (the instrument
+  families the rule was written for), and carry it from the retained tail of the
+  P08d capture to a complete capture.
+  Documentation plus the analysis tool only; no source, APK or device change
+  beyond a launch and read-only sampling.
+Baseline / Reviewed snapshot: 6cbcae2d2 + 7ee30ad26 (the P08d instrumentation);
+  analysis performed at 173408879.
+Tool: `tools/analyze-p08d-entry-vs-fetch.py` (new, executable). Correlation is
+  by line order plus range containment: a fetch (`fetch_watched=1`,
+  `raw_dma_dram`) belongs to the most recent preceding entry
+  (`data_ptr`/`data_size`) whose range contains the address it read. Neither
+  counter appears on the DDSTART12 record — the plugin's fetch generation is its
+  own counter, not a key into the core's entry stream — so no explicit join key
+  exists, and none is invented here. A fetch matching no preceding
+  entry is reported as unattributed rather than guessed.
+Verified observations, P08d capture (retained tail: 401 entries, sequence
+  480..880; 1604 fetch records): exactly ONE entry is all-zero at submission
+  (19:34:12.130, `0x00411910`/`0x1a0`, hash `0x8d0350be04626145`,
+  `nonzero_words=0` of 104) and ZERO entries are non-zero at submission while a
+  fetch of the same buffer reads zeros. Three fetches are unattributed. The
+  all-zero-at-submission entry has one recorded fetch in the window
+  (`payload_hash=0x88201fb960ff6465`, 16 words, `raw_dma_dram=0x00411910`,
+  `DDSTART11 record=3524`).
+Verified observations, complete second capture (this workspace's device,
+  2026-09-16, `.fzxwork/p09-live/logcat-20260916-2036.txt`; 880 entries,
+  sequence 1..880 with no gaps, 3517 fetch records): again exactly ONE entry is
+  all-zero at submission, at the identical address, size, hash and word count
+  (`0x00411910`/`0x1a0`, `0x8d0350be04626145`, 0 of 104 words), with again
+  exactly one zero-payload fetch, and again ZERO entries non-zero at submission
+  but read as zeros. This closes the P08d coverage carry: the one-zero-entry
+  result now holds over the complete entry population, not only the retained
+  tail. The two sessions are NOT byte-identical and must not be treated as one
+  run: of the 401 entries the P08d capture retained, 60 (a contiguous block in
+  sequences 820..879) carry different entry hashes in the second capture, while
+  the freeze entry and its fetch coincide in all load-bearing fields.
+Checks actually run and why: the tool's parsing is lossless (all 1604 and all
+  3517 `fetch_watched=1` lines parsed; every field its regexes require is
+  present on every line, so nothing is dropped silently); its zero-payload
+  test was verified against the emulator's own hash rather than assumed — the
+  multiply-then-xor FNV over 16 zero words is `0x88201fb960ff6465`, exactly the
+  payload hash the failing generation's fetch recorded, which also confirms
+  that fetch read zeros; both captures were run through the tool in this
+  workspace.
+Interpretation, in the decision rule's own terms: this is the rule's first
+  branch — the buffer was already empty when the guest submitted the task, so
+  the RSP/plugin fetch and write paths are not the subject of the failure by
+  this rule. The rule identifies no writer: it says nothing about WHICH
+  operation emptied the buffer. Provenance work on that separate question lives
+  in [P09](P09_LOAD_CLEAR_PROVENANCE.md) and is reviewed there on its own
+  evidence, not here.
+Limits: the branch separates submission-time states, not writers; the
+  zero-reading branch is counted here under the stricter all-attributed-fetches
+  reading (the looser any-fetch reading also yields 0 in both captures); fetch
+  visibility is budgeted per generation, so the failing entry's single recorded
+  fetch is a cap, not the machine's total (the P08c cap lesson applies); a
+  fetch outside the watched range is invisible by construction, so "zero
+  entries non-zero-at-submission-but-read-as-zeros" is scoped to what the
+  watcher can see; when reading any fetch record's sample fields, note the
+  pre-existing emitter label quirk that the field printed after `t9=`/`k0=` as
+  `gprs=[...]` carries the payload sample words while the register file appears
+  later as `gprs_full=[...]`; the P08d capture's entry coverage was the retained tail
+  only (now closed by the second capture, whose own coverage is 1..880 with no
+  observed gaps in the launch sequence); and the second capture's device-session
+  identity, hash and limits are recorded in
+  [P09](P09_LOAD_CLEAR_PROVENANCE.md).
+Changed files: `tools/analyze-p08d-entry-vs-fetch.py`,
+  `docs/P08_CHECKPOINT.md`.
