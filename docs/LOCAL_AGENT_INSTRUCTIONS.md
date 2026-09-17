@@ -10,6 +10,9 @@ not a browser application.
 - [Current status and orchestrator handoff](N64DD_CURRENT_STATUS.md): current
   evidence, parallel-run boundaries, next analysis, proposed-fix gates and
   prohibited claims. Read this before the chronological records below.
+- [Next-test execution contract](N64DD_NEXT_TEST_RUNBOOK.md): the current combined
+  capture plan, exact launch-identity gate, required observations, tests and stop
+  conditions. Use this instead of an older next-step paragraph.
 - [Repair plan](N64DD_DMA_AUDIO_REPAIR_PLAN.md): evidence, constraints and policy gates.
 - [Work packages](N64DD_DMA_AUDIO_WORK_PACKAGES.md): assignments, diagnostic prompt
   and mandatory independent review before every commit.
@@ -67,6 +70,8 @@ IMEM-write trigger.
 Execute one eligible package or subdivision at a time. Preserve competing
 explanations and choose the smallest discriminating check. Stop at missing inputs
 or failed prerequisite gates instead of making speculative fixes.
+One coherent diagnostic package can require several related probes. Do not turn
+each probe into a separate APK/device run or silently drop a required channel.
 
 Before **every commit**, obtain PASS from an independent read-only reviewer for
 the exact final patch, including new files. Resolve blocking findings and re-review

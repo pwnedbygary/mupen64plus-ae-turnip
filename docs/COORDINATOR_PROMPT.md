@@ -13,6 +13,8 @@ You are the coordinating engineer for an evidence-based N64DD emulator repair.
 
 Read:
 - docs/LOCAL_AGENT_INSTRUCTIONS.md
+- docs/N64DD_CURRENT_STATUS.md
+- docs/N64DD_NEXT_TEST_RUNBOOK.md
 - docs/N64DD_DMA_AUDIO_REPAIR_PLAN.md
 - docs/N64DD_DMA_AUDIO_WORK_PACKAGES.md
 - docs/N64DD_DMA_AUDIO_VALIDATION.md
@@ -28,9 +30,11 @@ Adopt the work-package guide's evidence-based diagnostic prompt and independent
 review-before-every-commit protocol. They apply to you and every delegated agent.
 
 Objective:
-Repair the demonstrated internal Parallel-RSP DMA defect, then determine from
-fresh native evidence whether a separate audio-command defect remains. Dynarec
-is required. Do not assume the audio producer is faulty.
+Preserve the reviewed internal Parallel-RSP DMA correction and establish the
+first demonstrated divergence behind the remaining native DD transition stall.
+Use current status and the next-test runbook to identify the eligible phase;
+do not restart completed historical packages. Dynarec is required. Do not assume
+the clear, audio producer or resource loader is faulty.
 
 Operating rules:
 1. Start with P00 only. Verify the current checkout, actual branch, dirty changes,
@@ -72,6 +76,12 @@ Operating rules:
 12. Optimize for the next justified conclusion, not for producing a quick fix.
     Keep competing explanations and choose the smallest safe discriminating check.
     When blocked, return the precise missing input and smallest next action.
+13. The reproduction is F-ZERO X (J) cartridge + Japanese IPL + attached NDD,
+    fresh Start. Verify loaded inputs and engine; never substitute direct NDD
+    or infer launch identity from a PID or Recently Played entry alone.
+14. Complete the combined observation contract in N64DD_NEXT_TEST_RUNBOOK.md before
+    device delivery. Do not ship one-field APKs or silently omit staging writes,
+    cart PI delivery, publication evidence, validity or reserved trigger coverage.
 
 Your first response should contain:
 - P00 baseline findings and whether they match the documented starting point.

@@ -1,9 +1,27 @@
 # Native N64DD: current status and orchestrator handoff
 
-Updated 2026-09-16. Read this before the chronological
+Updated 2026-09-17. Read this before the chronological
 [handoff](HANDOFF_NEW.md), [checkpoint](P08_CHECKPOINT.md) and
 [detailed evidence](P08_ENTRY_NATIVE_EVIDENCE.md).
 This is the current coordination document, not a claim that the repair is done.
+
+### Current next-test instructions (2026-09-17)
+
+Use [N64DD_NEXT_TEST_RUNBOOK.md](N64DD_NEXT_TEST_RUNBOOK.md) for the next
+diagnostic package. It supersedes older next-experiment paragraphs, including the
+short supplied local proposal, without replacing their historical observations.
+No runtime change or new native test was performed for this runbook update.
+
+The supplied local follow-up reports no demonstrated emulator divergence and
+uncommitted diagnostic defects; its working diff/private capture were not present
+in the fetched `5ebdc720d` baseline for independent verification here. A wrapped
+PI ring does not prove a particular populating write was captured and then lost.
+The next package must join live loader/compare evidence, dynamic staging writes,
+cart PI delivery and descriptor/publication observations before requesting a
+new diagnostic run. Launch identity is a prerequisite: F-ZERO X (J) cartridge,
+Japanese IPL and attached NDD, using Start, not direct NDD or Resume.
+
+The emulator repair and native/persistence acceptance remain incomplete.
 
 ### Dated evidence reconciliation (2026-09-16)
 

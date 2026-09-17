@@ -5,6 +5,12 @@ hardware-divergence claim, or a native acceptance claim. Read with
 [N64DD_CURRENT_STATUS.md](N64DD_CURRENT_STATUS.md) and the evidence prompt
 [N64DD_EVIDENCE_REVIEW_PROMPT.md](N64DD_EVIDENCE_REVIEW_PROMPT.md).
 
+Next-experiment update, 2026-09-17: use
+[the detailed execution contract](N64DD_NEXT_TEST_RUNBOOK.md). The original
+three-item proposal below is historical, not the complete delivery gate. In
+particular, derive a staging RAM window from an executed destination; the resource
+base/offset formula alone does not establish that window's address space.
+
 ## Why this package exists
 
 The status documents described the transition behaviour as a MIO0-style
