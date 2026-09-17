@@ -14,7 +14,43 @@
 
 ---
 
-## What's New in v335
+## What's New in v337
+
+- **Native F-Zero X Expansion Kit support** — preserves cartridge-first combo boot and the DD CPU/DMA and RSP fixes from the working development build. Native N64DD loading and custom-machine saving were confirmed on the cleaned CI candidate.
+- **F-Zero X EK Cart Hack works and saves** — the WritableROM fix allows the hack to save changes to its embedded Expansion Kit data, which would otherwise be treated as read-only cartridge ROM. This is separate from native N64DD support and works with N64DD disabled.
+- **Cleaned release build** — removes DD/RSP investigation tracing, snapshots, and diagnostic CPU hooks while retaining normal error reporting.
+- **Per-game N64DD activation** — DD-specific behavior remains limited to games with N64DD explicitly enabled. WritableROM support for cartridge hacks remains independently controlled.
+- **Consistent release version** — version code **337**, with version name **3.0.337** plus the build commit hash.
+
+### Confirmed English Expansion Kit configuration
+
+- F-Zero X **USA cartridge**
+- English-translated **USA-region NDD**
+- **Prototype USA IPL**
+- **Dynamic Recompiler** and **Parallel RSP**
+
+This configuration applies to the English translation; it is not a claim of compatibility with every cartridge, disk, or IPL combination.
+
+**Installation and saves:** the signed release keeps the existing release package and signing identity, so it can update the earlier signed release without uninstalling. It does not replace the separate `.debug` beta or automatically transfer its private saves. Keep backups: full-restart persistence, custom-track saves, and writable-cart persistence have not been re-tested on the cleaned binary. Device acceptance covered the CI debug candidate, not a separate test of the signed release APK.
+
+[Download v337](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/tag/v337) · [Full release notes](docs/RELEASE_V337.md)
+
+### How the EK Cart Hack saves with WritableROM
+
+The **F-Zero X EK Cart Hack** combines the cartridge game and Expansion Kit disk data into one extended ROM. It runs as a cartridge game, rather than using an external NDD and the emulated 64DD drive. However, its save operations still target the cartridge address space containing that embedded data.
+
+Ordinary cartridge ROM is read-only. Without special handling, those writes do not update the ROM data, so the hack can run while its editor saves fail. Our **WritableROM** fix adds an opt-in persistence path for this behavior:
+
+1. **Enable it only for the appropriate ROM.** The per-ROM database setting `WritableROM=True` enables the feature; other cartridges retain normal read-only behavior. It does not require N64DD activation.
+2. **Capture the writes.** Both direct CPU writes and PI DMA transfers into cartridge ROM space update the emulator's in-memory ROM buffer. The game can then read its changes back during the same session.
+3. **Store changes separately.** Modified bytes are mirrored into a `<game-name>.cart_ram` file in the configured save directory. A companion `<game-name>.cart_ram.idx` records the address and length of each written region. **The original ROM file is not modified.**
+4. **Restore only what changed.** On the next launch, the emulator loads the original ROM and overlays only the regions recorded in the index before emulation starts. Untouched ROM data stays intact. Overlapping or adjacent index entries are merged, while gaps remain separate so unwritten areas are not overwritten with zeros.
+
+This is what lets the Cart Hack **work and save**, despite placing writable Expansion Kit data inside what would normally be read-only ROM space. It is separate from native N64DD disk saving and from emulator save states.
+
+**Backup advice:** keep the `.cart_ram` and `.cart_ram.idx` files together, along with the game's other save files. Exit emulation normally before copying them so buffered writes are closed; this mechanism is not a guarantee against data loss from a crash or force-stop. The v337 re-test limitations noted above still apply.
+
+### UI and driver highlights
 
 - **Overhauled Glassmorphic & Neon UI**:
   - Multi-pass **Neon Light-Pipe Glow** with Gaussian falloff and white-hot filament center highlights.
@@ -63,7 +99,7 @@ The custom driver applies to the **Parallel** plugin (the Vulkan renderer). If t
 
 | Build Type | Link |
 | :--- | :--- |
-| **Signed Release Builds** | [Latest Releases](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases) |
+| **Latest Signed Release — v337** | [Download v337](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/tag/v337) |
 | **Nightly CI Builds** | [![Build Status][Build]][Actions] |
 
 [Actions]: https://github.com/pwnedbygary/mupen64plus-ae-turnip/actions/workflows/build.yml
