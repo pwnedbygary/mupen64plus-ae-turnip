@@ -7,6 +7,15 @@
 #include "api/callbacks.h"
 #include "osal/preproc.h"
 
+/* Window constants for the source-region classification. */
+#include "device/device.h"
+
+enum dd_dma_source_region dd_pi_dma_source_region(uint32_t cart_addr)
+{
+    return (cart_addr >= MM_DOM2_ADDR1 && cart_addr < MM_DOM2_ADDR2)
+        ? DD_DMA_SOURCE_DD_ROM : DD_DMA_SOURCE_CART_ROM;
+}
+
 struct dd_load_history_record
 {
     uint32_t sequence;
@@ -19,6 +28,7 @@ struct dd_load_history_record
     uint8_t after_length;
     uint8_t sample_clipped;
     uint8_t before_out_of_bounds;
+    enum dd_dma_source_region source_region; /* set at begin from cart_addr */
     uint8_t after_out_of_bounds;
 };
 
@@ -146,6 +156,7 @@ static void dd_load_history_push(const struct dd_load_history_dma *transfer)
     record->sample_clipped = transfer->sample_clipped;
     record->before_out_of_bounds = transfer->before_out_of_bounds;
     record->after_out_of_bounds = transfer->after_out_of_bounds;
+    record->source_region = transfer->source_region;
 }
 
 static void dd_load_history_clear_ring(void)
@@ -175,6 +186,8 @@ void dd_load_history_pi_dma_begin(struct dd_load_history_dma *transfer,
     transfer->cart_addr = cart_addr;
     transfer->dram_addr = dram_addr;
     transfer->requested_length = requested_length;
+    /* Classify the source ROM window at capture time (pure, testable). */
+    transfer->source_region = dd_pi_dma_source_region(cart_addr);
     transfer->sample_clipped =
         requested_length > DD_LOAD_HISTORY_SAMPLE_BYTES;
     transfer->before_length = (uint8_t)dd_load_history_sample(
@@ -223,11 +236,12 @@ static void dd_load_history_emit(
     dd_load_history_format_sample(after_text, sizeof(after_text),
         record->after, record->after_length);
     (void)snprintf(message, sizeof(message),
-        "DDSTART16 PI DMA completion source=DD_PI_CART_TO_RDRAM"
-        " direction=cart-to-rdram phase=completion"
+        "DDSTART16 PI DMA completion source=DD_PI_DMA_COMPLETION"
+        " source_region=%s phase=completion"
         " sequence=%" PRIu32
         " cart_addr=0x%08" PRIx32
-        " dram_addr=0x%08" PRIx32
+        " dram_src=0x%08" PRIu32
+        " dram_dst=0x%016" PRIu64
         " requested_length=0x%08" PRIx32
         " length_semantics=requested-not-exact-completed"
         " before_sample_length=%u after_sample_length=%u"
@@ -235,7 +249,8 @@ static void dd_load_history_emit(
         " before_out_of_bounds=%u after_out_of_bounds=%u"
         " before_guest_order=%s after_guest_order=%s"
         " sample_provenance=validated-direct-rdram-guest-order",
-        record->sequence, record->cart_addr, record->dram_addr,
+        record->source_region == DD_DMA_SOURCE_DD_ROM ? "dd_rom" : "cart_rom",
+        record->sequence, record->cart_addr, record->dram_addr, (uint64_t)record->dram_addr + record->requested_length,
         record->requested_length, record->before_length,
         record->after_length, record->sample_clipped,
         record->before_out_of_bounds, record->after_out_of_bounds,

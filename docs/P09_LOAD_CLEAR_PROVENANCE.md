@@ -236,6 +236,46 @@ Not established here (do not claim):
   first call's nominal range. Whether the first sweep had reached that address,
   or the region is repopulated, is not observable with the current records.
 
+## Read-path gate structure and isolation assessment (this session)
+
+The staged instrumented capture hooks both PI choke points, but at two different
+guard granularities. This section records that asymmetry explicitly and states the
+isolation conclusion derived from tracing the exact staged code, so reviewers do not
+have to re-derive it.
+
+**Structure.** In `pi_controller.c` the write path (`dma_pi_write`) brackets a
+load-history record only inside a guard keyed on `pi->dd != NULL &&
+is_dd_pi_address(cart_addr)` — i.e. DD-window cart addresses. The read path
+(`dma_pi_read`) calls `dd_load_history_pi_dma_begin()` /
+`dd_load_history_pi_dma_complete()` *unconditionally*, with no equivalent write-path
+guard, so on paper a non-DD cart appears to sample RDRAM on every PI load.
+
+**Why that is not an isolation risk.** The unconditional invocation is a true no-op
+off-DD because both helpers gate internally on the same double-gate callback:
+
+- `dd_load_history_pi_dma_begin` returns immediately after zeroing the transfer
+  struct unless `dd_load_history_callback(NULL) != NULL`. For DD-disabled carts it is
+  reached unconditionally but still bails at this gate.
+- The callback (`dd_load_history_callback`) returns `NULL` unless *both* gates hold —
+  `DdStartupDiagnosticsEnabled()` **and** `DdRuntimePolicyGet()` (see the file, begin +
+  callback). For a DD-disabled cart neither is set, so the callback is NULL and nothing
+  is sampled, no sequence advances, and nothing is pushed to the ring.
+
+So for non-DD carts the read path does exactly what it must; for DD carts both paths are
+active behind identical gates. The two "symmetric" descriptions in `N64DD_CURRENT_STATUS.md` / `HANDOFF_NEW.md` (the capture section) are imprecise: both choke points are hooked, but only the write path carries an explicit address guard — the read path's safety rests entirely on the shared callback double-gate. No RDRAM is written and no PI timing or transfer length is changed by either helper (observer-only contract).
+
+**Review flags (non-blocking).** Two items from independent review that do not block
+publication:
+
+1. Defense-in-depth guard mirroring the write-path `observe_dd_dma` on the read path, so
+   the unconditional call is explicit rather than relying solely on the callback's
+   internal gate. Purely cosmetic to behaviour; optional.
+2. The pure classifier returns `cart_rom` for any cart address outside the DD window —
+   which includes reverse-PI (RDRAM→cart) transfers and save writes that are not ROM
+   loads and arguably should read differently in analysis output. Does not affect the
+   capture's ability to distinguish DD-ROM from cart-ROM reads; an analysis-label fix,
+   optional.
+
 ## Proposed next step (one instrumented capture, no guessing)
 
 Add, behind the existing per-game DD activation gate, a bounded record set in

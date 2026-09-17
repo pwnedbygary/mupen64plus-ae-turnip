@@ -278,7 +278,7 @@ Interpretation (provisional, not accepted):
   ring_wrapped=1, overwritten=10345`; all 16 retained transfers land at
   `0x00405xxx` (game assets) or `0x007c5620`, never `0x00411910`. Confirming the
   nonzero data was a real resource load therefore requires a fresh, higher-
-  retention capture, not a re-read of this one.
+  retention capture, not a re-read of this one. (This is exactly P09's instrumented capture: the PI DMA read path is now instrumented (unconditional on reads, address-gated on writes) so every DD-ROM and cart-origin transfer records `source_region` plus its full dram range behind the shared callback double-gate; P09 documents why the unconditional read hook is safe off-DD — implemented and host-tested, but blocked on a device NDD rom + manual **Start**, since neither is available in an unattended session. See P09 in HANDOFF_NEW.md.)
 - The discriminating check remains: does clear #1's guest range (or the
   emulator's bank-mask/row-clamp result) legitimately include `0x80411910` on
   hardware, or is the emulator's clear over-wide? This needs a hardware or

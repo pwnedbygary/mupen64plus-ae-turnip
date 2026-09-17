@@ -82,13 +82,18 @@ static void dma_pi_read(struct pi_controller* pi)
     /* PI seems to treat the first 128 bytes differently, see https://n64brew.dev/wiki/Peripheral_Interface#Unaligned_DMA_transfer */
     if (length >= 0x7f && (length & 1))
         length += 1;
+
+    struct dd_load_history_dma load_history;
     if (DdStartupDiagnosticsEnabled() && pi->dd != NULL && is_dd_pi_address(cart_addr)) {
         DdStartupDiagnosticsTrace(DD_TRACE_PI_DMA, DD_TRACE_EARLY,
             "DDSTART3 PI DMA start: direction=read dram=%08" PRIX32
             " cart=%08" PRIX32 " length=%08" PRIX32,
             dram_addr, cart_addr, length);
     }
+        dd_load_history_pi_dma_begin(&load_history, dram, pi->ri->rdram->dram_size, cart_addr, dram_addr, length);
     unsigned int cycles = handler->dma_read(opaque, dram, dram_addr, cart_addr, length);
+        dd_load_history_pi_dma_complete(&load_history, dram,
+            pi->ri->rdram->dram_size);
 
     /* Mark DMA as busy */
     pi->regs[PI_STATUS_REG] |= PI_STATUS_DMA_BUSY;
@@ -131,8 +136,7 @@ static void dma_pi_write(struct pi_controller* pi)
         length -= dram_addr & 0x7;
     observe_dd_dma = pi->dd != NULL && is_dd_pi_address(cart_addr);
     if (observe_dd_dma)
-        dd_load_history_pi_dma_begin(&load_history, dram, pi->ri->rdram->dram_size,
-            cart_addr, dram_addr, length);
+            dd_load_history_pi_dma_begin(&load_history, dram, pi->ri->rdram->dram_size, cart_addr, dram_addr, length);
     if (DdStartupDiagnosticsEnabled() && pi->dd != NULL && is_dd_pi_address(cart_addr)) {
         DdStartupDiagnosticsTrace(DD_TRACE_PI_DMA, DD_TRACE_EARLY,
             "DDSTART3 PI DMA start: direction=write dram=%08" PRIX32
