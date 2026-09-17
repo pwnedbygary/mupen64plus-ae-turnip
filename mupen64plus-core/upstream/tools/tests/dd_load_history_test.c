@@ -94,8 +94,8 @@ static void test_endian_and_bounds(void)
     dd_load_history_flush("bounds-endian");
 
     assert(callback_lines == 2);
-    assert(strstr(callback_text[0],
-        "cart_addr=0x06000000 dram_addr=0x00000020") != NULL);
+    /* P09 emit schema: tag the ROM window a transfer came from (DD-ROM window => dd_rom). */
+    assert(strstr(callback_text[0],"source_region=dd_rom") != NULL);
     assert(strstr(callback_text[0],
         "requested_length=0x00000028") != NULL);
     assert(strstr(callback_text[0],
