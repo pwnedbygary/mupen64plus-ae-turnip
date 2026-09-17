@@ -16,15 +16,21 @@ reconciled against live Git on 2026-09-16:
   `85dd5faf9`) is now superseded by this commit; both are preserved.
 - Local branch `dd-eos-watchdog-checkpoint` is exactly in sync with origin (`0 ahead /
   0 behind`). No diverged parallel work to preserve on this branch.
-- Untreated working-tree state: `docs/N64DD_CURRENT_STATUS.md` (this note + the
-  UNREVIEWED/UNCOMMITTED P08d draft analysis below) and `.gitignore` (+2 lines for
-  local Pi runtime state). Two MSVC `*.vcxproj[.filters]` re-saved with only
+- Working-tree state at the time of writing: `docs/N64DD_CURRENT_STATUS.md`
+  (this note plus the P08d draft analysis below, which has since been committed
+  and is now marked as pre-review material superseded by the reviewed records)
+  and `.gitignore` (+2 lines for
+  local Pi runtime state, still uncommitted). Two MSVC `*.vcxproj[.filters]` re-saved with only
   whitespace/BOM differences (no content change) — unrelated churn that must NOT be
   published into the source branch. A stray untracked `./]` file is junk, not part of
   this repo's work.
-- Draft tool `tools/analyze-p08d-entry-vs-fetch.py` and its capture are present but
-  UNREVIEWED / UNCOMMITTED; they have not passed the mandatory independent read-only
-  reviewer and are reported as draft findings, not accepted evidence.
+- The P08d entry-vs-fetch tool is now reviewed and published: the tool and the
+  reviewed correlation section are part of commit `5b0485825`, whose appended section in
+  [P08_CHECKPOINT.md](P08_CHECKPOINT.md) carries the reviewed correlation
+  (exactly one all-zero-at-submission entry, zero entries non-zero at submission
+  read as zeros, in both captures) with its limits. The two subsections below
+  keep a pre-review provenance note as a historical record; where they differ
+  from `P08_CHECKPOINT.md`, the reviewed section governs.
 
 ## Executive state
 
@@ -89,10 +95,11 @@ NOTE (corrected 2026-09-16): the P08d raw log IS now present in this workspace
 at `.fzxwork/p08d-capture/logcat-p08d-run1.txt` (3,130,929 bytes; sha256
 c20ec502162d957ec2a09a01c316be3ecfe9e0b2039712bb98f3b25273c32321, matching the
 `85dd5faf9` record). It was analyzed on 2026-09-16 with
-`tools/analyze-p08d-entry-vs-fetch.py`. That analysis is NEW direct evidence for
-this workspace, but it is UNREVIEWED and UNCOMMITTED; it has not passed the
-mandatory independent read-only reviewer, so it is reported here as a draft
-finding, not as published/accepted evidence. Its APK identity still differs from
+`tools/analyze-p08d-entry-vs-fetch.py`; that analysis was reviewed and published
+as commit `5b0485825`, and the reviewed result lives in the "P08d entry-vs-fetch
+correlation" section of [P08_CHECKPOINT.md](P08_CHECKPOINT.md) with its limits.
+The raw captures themselves remain private, untracked artifacts. Its APK
+identity still differs from
 the earlier bundle (hash `6f8a46d7…` vs the bundle's `fa33d400…`): do not merge
 build/capture identities.
 The remote note also reports log rotation, an earlier-run screenshot/CPU artifact,
@@ -103,11 +110,13 @@ The remote document body still contains review/commit placeholders, but the
 `85dd5faf9` commit metadata records reviewed snapshot hashes and an independent
 PASS. That review record does not mean the raw capture was reanalyzed here.
 
-## Newly analyzed P08d capture (2026-09-16, UNREVIEWED / UNCOMMITTED)
+## Newly analyzed P08d capture (written 2026-09-16; superseded by reviewed records)
 
-This subsection is a draft for independent review. It has NOT been committed and
-has NOT passed review. Do not treat it as accepted evidence or as justification
-to build/publish. It sharpens, but does not resolve, the open root-cause
+Draft provenance, kept for the record: this subsection was written before
+review. It is now superseded for its counts and conclusions by the reviewed
+[P08_CHECKPOINT.md](P08_CHECKPOINT.md) "P08d entry-vs-fetch correlation" section
+and by [P09](P09_LOAD_CLEAR_PROVENANCE.md), and the plan/BUILD guidance below
+still applies. It sharpens, but does not resolve, the open root-cause
 question: is the guest clear itself wrong, or legitimate with a downstream
 producer/publication/consumer divergence?
 
@@ -165,13 +174,14 @@ producer/publication/consumer divergence?
   word1 `0x00460000`). The adjacent-clear pairing and the ranges in the table
   above stand; the interpretation of *why* they are that wide does not.
 
-### Newly correlated store-writer + launch chain (re-analyzed 2026-09-16,
-### UNREVIEWED / UNCOMMITTED)
+### Newly correlated store-writer + launch chain (re-analyzed 2026-09-16)
 
-This subsection is a draft for independent review. It has NOT been committed and
-has NOT passed review. It is derived from the same `.fzxwork/p08d-capture`
-log already listed above; the values below are my own re-extraction from the
-raw lines, not a re-run of an approved analysis.
+Draft provenance, kept for the record: this subsection was written before
+review and its values were re-extracted from the same `.fzxwork/p08d-capture`
+log listed above. It is now superseded for counts and conclusions by the
+reviewed "P08d entry-vs-fetch correlation" section of
+[P08_CHECKPOINT.md](P08_CHECKPOINT.md) and by
+[P09](P09_LOAD_CLEAR_PROVENANCE.md).
 
 Direct observations (all timestamps 2026-09-15 19:34:12, DDSTART markers):
 
