@@ -21,13 +21,17 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '11076708'
+          packages: 'platform-tools'
+          log-accepted-android-sdk-licenses: false
 
       - name: Accept SDK licenses
         run: yes | sdkmanager --licenses > /dev/null || true
 
       - name: Install NDK and CMake
         run: |
-          yes | sdkmanager "ndk;26.1.10909125" "cmake;3.22.1" > /dev/null
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -61,13 +65,17 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '11076708'
+          packages: 'platform-tools'
+          log-accepted-android-sdk-licenses: false
 
       - name: Accept SDK licenses
         run: yes | sdkmanager --licenses > /dev/null || true
 
       - name: Install NDK and CMake
         run: |
-          yes | sdkmanager "ndk;26.1.10909125" "cmake;3.22.1" > /dev/null
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -93,8 +101,13 @@ jobs:
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --console=plain
 
+      - name: Verify release identity and signing continuity
+        run: |
+          curl --fail --location --retry 3 https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/download/v336/Mupen64PlusAE-release.apk --output "$RUNNER_TEMP/original-v336.apk"
+          bash tools/verify-release-apk.sh app/build/outputs/apk/release/Mupen64PlusAE-release.apk "$RUNNER_TEMP/original-v336.apk"
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: app/build/outputs/apk/release/*.apk
-          generate_release_notes: true
+          body_path: docs/RELEASE_V337.md
