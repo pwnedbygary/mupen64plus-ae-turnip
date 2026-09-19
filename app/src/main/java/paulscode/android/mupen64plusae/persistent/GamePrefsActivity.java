@@ -354,6 +354,7 @@ public class GamePrefsActivity extends AppCompatPreferenceActivity implements On
     {
         DriverPreference gpuDriverPreference = (DriverPreference) findPreference("gpuDriver");
         if (gpuDriverPreference != null) {
+            gpuDriverPreference.setPerGameMode(true);
             gpuDriverPreference.populateDriverOptions(this);
             gpuDriverPreference.setOnImportDriverCallback(this::startDriverPicker);
             gpuDriverPreference.setOnDownloadDriverCallback(this::startDriverDownload);
