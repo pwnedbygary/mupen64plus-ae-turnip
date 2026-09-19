@@ -54,6 +54,15 @@ public class ThemePresetPreference extends ListPreference implements OnPreferenc
 
     @Override
     public void onPrepareDialogBuilder(Context context, androidx.appcompat.app.AlertDialog.Builder builder) {
+        // Guards against stacking multiple activity.recreate() calls when presets are tapped quickly.
+        // Declared here so it is fresh for every open of this dialog. At most one recreate() may be
+        // queued per open; rapid taps before a recreation completes are collapsed onto that single
+        // pending recreation while still applying every selected preset (last wins). Because the flag
+        // is never reset until a brand-new dialog opens, more than one recreate() can never pile up on
+        // the main thread and crash with IllegalStateException. A primitive holder avoids depending on
+        // java.util.concurrent.atomic in this module's compile classpath.
+        final boolean[] recreateScheduled = {false};
+
         final List<UiTheme.Preset> presets = UiTheme.PRESETS;
         final String[] keys = new String[presets.size()];
         final CharSequence[] names = new CharSequence[presets.size()];
@@ -86,13 +95,27 @@ public class ThemePresetPreference extends ListPreference implements OnPreferenc
         builder.setTitle(R.string.uiThemePresets_title);
         builder.setAdapter(adapter, (dialog, which) -> {
             UiTheme.Preset preset = presets.get(which);
+            // Every tap still applies its preset, so the last selection wins.
             UiTheme.get(context).applyPreset(preset);
             dialog.dismiss();
-            // Refresh the settings screen so every summary shows the new values
-            if (context instanceof Activity) {
-                final Activity activity = (Activity) context;
-                new Handler(Looper.getMainLooper()).post(activity::recreate);
+
+            if (!(context instanceof Activity)) {
+                return;
             }
+
+            final Activity activity = (Activity) context;
+            // Only the first scheduled recreation proceeds. The flag stays set for the rest of this
+            // dialog session, so rapid taps can never stack a second recreate().
+            if (recreateScheduled[0]) {
+                return;
+            }
+            recreateScheduled[0] = true;
+
+            new Handler(Looper.getMainLooper()).post(() -> {
+                if (!activity.isFinishing() && !activity.isDestroyed()) {
+                    activity.recreate(); // single, safe recreation of the settings screen
+                }
+            });
         });
         builder.setNegativeButton(android.R.string.cancel, null);
     }

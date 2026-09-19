@@ -66,3 +66,5 @@ keystore.properties
 .gradle_home/
 files/
 gradle/gradle-daemon-jvm.properties
+# Local Pi runtime state
+.atl/
