@@ -37,6 +37,7 @@
 #include "api/m64p_config.h"
 #include "api/m64p_types.h"
 #include "device/device.h"
+#include "device/memory/memory.h"
 #include "main.h"
 #include "md5.h"
 #include "osal/files.h"
@@ -152,6 +153,15 @@ m64p_error open_rom(const unsigned char* romimage, unsigned int size)
     if (romimage == NULL || !is_valid_rom(romimage))
     {
         DebugMessage(M64MSG_ERROR, "open_rom(): not a valid ROM image");
+        return M64ERR_INPUT_INVALID;
+    }
+
+    /* Refuse ROMs larger than the cart region reserved in memory_base instead
+     * of overrunning it: the ROM is copied at MM_CART_ROM with no other bound. */
+    if (size > CART_ROM_MAX_SIZE)
+    {
+        DebugMessage(M64MSG_ERROR, "open_rom(): ROM size %u exceeds maximum %u bytes",
+            size, (unsigned int)CART_ROM_MAX_SIZE);
         return M64ERR_INPUT_INVALID;
     }
 

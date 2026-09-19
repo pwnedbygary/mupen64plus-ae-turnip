@@ -4642,3 +4642,154 @@ docs, not merely as advisory.
 Caveat for reviewers: `AGENTS.md` is currently **untracked** by git (working-tree only), so
 this wording change is *not* captured by a plain `git diff --cached`; check `git status` and
 read the file directly when verifying §3's current wording, as this handoff instructs.
+
+## Issue #3 big-ROM fix — B3313 v1.0.2 Hot Fix 3 (2026-09-19)
+
+**Scope and baseline.** Branch `fix/big-rom-64mb` created from clean `master`
+`6f76296595c70319b68c085e31a468752e02734f`. Target: GitHub issue #3, B3313
+v1.0.2 Hot Fix 3 (96MB, 100,663,296 bytes) crashes when a new save is created.
+Not issue #1 (sunny-moon session). Intended paths: `cart_rom.c`, `cart_rom.h`,
+`memory.h`, `rom.c`, plus new host test and this handoff.
+
+**Observed defect (baseline source).** `cart_rom.c:183` masked PI DMA cart
+addresses with `0x03ffffff` and `cart_rom.h:46` masked CPU reads with
+`0x03fffffc`, so every cart access >= 64MB wrapped to an offset below 64MB;
+`memory.h:33` reserved only `0x4000000` for the cart slot in the compressed
+`mem_base` layout, so a 96MB copy at `MB_CART_ROM` overran the allocation by
+~28MB and overlapped RSP/DD/PIF. `open_rom()` copied any size unconditionally.
+Reference patches consulted: `mupen64plus-ae/mupen64plus-ae#1179` (DMA mask
+`0x0fffffff`, `CART_ROM_MAX_SIZE = 0x10000000`) and
+`mupen64plus/mupen64plus-core#1103` (also fixes `rom_address()` and replaces
+the fixed cart slot with a dynamic ROM allocation; only the former was ported,
+plus the `rom_address` mask, which #1179 left at 64MB).
+
+**Changed files (frozen hashes for review).**
+- `mupen64plus-core/upstream/src/device/cart/cart_rom.c` sha256 `7373a879…e78f`
+  (`CART_ROM_ADDR_MASK` `0x03ffffff` -> `0x0fffffff`; both DMA directions)
+- `mupen64plus-core/upstream/src/device/cart/cart_rom.h` sha256 `2356d97a…bb5e`
+  (`rom_address()` `0x03fffffc` -> `0x0ffffffc`; CPU reads)
+- `mupen64plus-core/upstream/src/device/memory/memory.h` sha256 `94088998…d2e8`
+  (`CART_ROM_MAX_SIZE` `0x4000000` -> `0x10000000`; moves the RSP/DD/PIF
+  compressed-layout slots above a 256MB cart slot)
+- `mupen64plus-core/upstream/src/main/rom.c` sha256 `b08ea946…07ae`
+  (`open_rom()` rejects `size > CART_ROM_MAX_SIZE` with `M64ERR_INPUT_INVALID`
+  instead of overrunning the cart slot)
+- `tools/test-big-rom-bounds.sh` sha256 `f0e1eb49…802e` (host gate)
+- `tools/tests/big-rom-bounds-test.c` sha256 `33bc09b0…f596` (96MB fixture; links
+  the real `cart_rom.c` and includes the real `memory.c` layout/`mem_base_u32`)
+
+`device.c:163` was audited: `A(MM_CART_ROM, rom_size-1)` needs no change once
+`rom_size <= CART_ROM_MAX_SIZE` is enforced; `MM_IS_VIEWER` was already shadowed
+by any 64MB ROM (pre-existing, unchanged). The dynarec `ROM_COPY`
+`munmap(…, 67108864)` is inside `#ifdef ROM_COPY`, which no build defines, so it
+is inert and was not touched.
+
+**Host checks actually run.**
+- `tools/test-big-rom-bounds.sh` against the baseline source (test files copied
+  into a detached `6f76296` worktree): FAIL, 9 checks — `baseline-test-failure.log`
+  sha256 `14831eeb…a935` (DMA ROM->RDRAM wrap, CPU read wrap, WritableROM
+  DRAM->ROM wrap, last-ROM-word wrap, `CART_ROM_MAX_SIZE < 96MB`, layout
+  overlap).
+- Same script on the fixed tree: PASS — `fixed-test-pass.log` sha256 `d43584aa…a2c0`.
+- `tools/test-dd-arm64-syntax.sh`, `test-dd-core-imem-dma.sh`,
+  `test-dd-dma-transfer.sh`, `test-dd-policy.sh`, `test-dd-root-stacks.sh`,
+  `test-dd-dynarec-boundary.sh` (via `bash`; file lacks +x), `test-dd-startup.sh`
+  (via `bash`; lacks +x): all PASS on the fixed tree.
+- `tools/test-dd-rsp-mac.sh`: FAIL 6 passed / 8 failed both at baseline
+  (`rsp-mac-baseline.log`) and on the fixed tree — pre-existing, unrelated
+  (macOS capture-orchestration fixture), not a regression.
+- Host compiler: `cc` (GCC) worked; no `CC=clang` substitution needed.
+  `-fcommon` is used to mirror `build_common/native_common.mk:40`.
+
+**Build checks.** `./gradlew :app:assembleDebug --console=plain` (wrapper,
+Gradle 8.4) BUILD SUCCESSFUL. Fixed APK
+`app/build/outputs/apk/debug/Mupen64PlusAE-debug.apk` sha256
+`9a7b14c6e65bfaf7e6f0a55f36629efe42db4b68405caab700c529160b549059`; its
+`lib/arm64-v8a/libmupen64plus-core.so` contains the new "exceeds maximum"
+string. Baseline APK from the detached worktree sha256
+`f847295f62c8887bc2a2b87ba2fa4bca542a063be611ee06c27f015fb59fdb58` (same
+string absent). `versionName` still reports `6f762965` for both because only the
+working tree changed, not HEAD; the installed-APK hash was used to identify the
+build on device.
+
+**Device checks (Retroid Pocket 6, Android 13, arm64-v8a `49016109`).**
+Padded `m64p_test_rom.v64` copies at 32/48/64/96MB, launched through the
+exported `SplashActivity` VIEW path with `file://` URIs in the app's external
+files dir: baseline and fixed both open all four (`Using full mem base`,
+`Rom size: 100663296 bytes ...`, `Save type: 5`), no FATAL/AndroidRuntime/
+SIGSEGV lines, test ROM renders. The padded ROM itself never reads above 64MB,
+so these runs are integration/no-regression evidence only; the host fixture is
+the address-mapping evidence.
+
+Real title, user-supplied legal copies staged on device (never committed):
+- **Baseline, fresh save + `GlideN64-Very-Accurate`** (per-game prefs;
+  `EnableCopyColorToRDRAM=3` logged): new-save flow reaches the emulated N64
+  exception screen `THREAD:5 (TLB EXCEPTION ON STORE) PC:802C98FC VA:00000060`
+  and the process spins at ~250% CPU — screenshot `baseline-b3313-newsave-t90.png`
+  sha256 `af48b60c…9378`. This is the reporter's failure.
+- **Fixed, fresh save + `GlideN64-Very-Accurate`**: the same flow renders the
+  "WELCOME TO MARIO WONDERLAND" new-game cutscene (screenshot
+  `fixed-b3313-newsave-t90.png` sha256 `a96142b4…57d1`); a repeat fresh-save run
+  reached the "PRESS START" title screen (`fixed-b3313-newsave2-t80.png`
+  sha256 `98886892…d237`) and also wrote a fresh 512-byte
+  `SramData/ULTRA 64 MARIO BROS (unknown rom).eep`
+  (`fixed-b3313-eep-artifact.txt` sha256 `b8517895…43d8`); the process is alive
+  and active at capture (`fixed-b3313-top.txt` sha256 `8027fc4c…583b`,
+  57.6% CPU). The baseline run also recreated a 512-byte `.eep`
+  (`b3313-eep-artifact.txt` sha256 `10ce4b0e…d35f`) before hitting the
+  exception screen; the pristine `.eep` from the first fixed run was deleted by
+  the later baseline test, which is why the fixed artifact was re-captured.
+- **Plugin matrix (fixed build, HF3, fresh `.eep` per run)**: every profile in
+  `emulation.cfg` renders the game — Glide64-Fast/Accurate, GlideN64-
+  Fast/Medium/Accurate/Very-Accurate, Gln64-Fast/Accurate, Rice-Fast/Accurate,
+  and Software-Renderer (angrylion-plus reaches the "PRESS START" title by
+  t=150s: `Software-Renderer-t150.png` sha256 `d78dff4f…b7af4`; the t=85s frame
+  was a boot transient). **Parallel is driver-dependent, not ROM-size
+  dependent**: with Turnip v26.0.0-R8 (previously installed) Granite rejects it
+  at plugin init (`VK_KHR_8bit_storage for SSBOs is not supported!`, Adreno
+  740; log `Parallel.log` sha256 `d5a74df8…c4830`) and the core closes the ROM
+  cleanly; with the stock Adreno driver it loads but the operator observed
+  extremely glitchy and slow rendering (session-observed; log
+  `Parallel-stockdriver.log` sha256 `11736aaa…d91f`); with the user-downloaded
+  Turnip v26.3.0-R5 (`libvulkan_freedreno.so`, Granite driver 26.2.99) it
+  renders the game correctly, logs `Enabling device extension:
+  VK_KHR_8bit_storage`, and stays active at 73% CPU
+  (`Parallel-turnip263-running.png` sha256 `ca0ef3d7…e82d`, log
+  `Parallel-turnip263-running.log` sha256 `7a636a2d…a98b`, top
+  `Parallel-turnip263-top.txt` sha256 `3f455eac…d3b1`).
+- **UAA2 Anniversary Edition (48MB) positive control**: renders gameplay on
+  baseline (`baseline-uaa2-t90.png` sha256 `8e265a2c…088e`), on the fixed
+  build (`fixed-uaa2-t75.png` sha256 `a3440051…8b6f`), and on the fixed build
+  with Parallel + Turnip v26.3.0-R5 (`Goodname: BUILD 3313`, 48MB,
+  `VK_KHR_8bit_storage` enabled; `Parallel-uaa2-turnip263-running.png` sha256
+  `db5fca39…3d81` — byte-identical copy of the live capture `inprogress.png` —
+  log `Parallel-uaa2-turnip263-running.log` sha256
+  `d6bc7a71…88a5`, top `Parallel-uaa2-turnip263-top.txt` sha256
+  `2e552ad4…9faf`, 46.1% CPU).
+
+Secondary hypotheses: the unknown-ROM fallback really is `SAVETYPE_EEPROM_4K`
+(`Save type: 0`) and the `.eep` first-write path produced a 512-byte file;
+no `OutOfMemoryError` or `Launch failure` occurred while opening/extracting the
+96MB ROM on this device (0 occurrences across the matrix logs), so the
+`CoreInterface`/JNA whole-ROM copy is not the observed defect; the report's
+"Glide64-Very-Accurate" profile does not exist and the App-side fallback picks a
+real profile (`Glide64-Accurate` by default, `GlideN64-Very-Accurate` when set
+per game), which does not affect the fix.
+
+**Limitations / unknowns.** (1) The guest TLB-exception screen is rendered, not
+logged; the baseline/fixed screenshots are the primary real-ROM evidence, and no
+logcat line carries the PC/VA. (2) Only the user-supplied B3313 copies were
+tested; the extracted ROMs are not in the repo or snapshots. (3) The 256MB cap
+means ROMs above 256MB now fail cleanly at `open_rom()` rather than corrupting
+memory; no >256MB ROM was tested. (4) The compressed-layout path was exercised
+by the host fixture (full layout selected on device), not on-device.
+
+**Next instructions.** Independent read-only review of the frozen snapshot
+above (full diff + test source + logs + this section); resolve findings and
+delta-re-review any edit; then stage exactly the seven paths above (four core
+files, two test files, this handoff), commit with the reviewer verdict/hashes,
+push `fix/big-rom-64mb` non-force, and open a PR referencing issue #3. After
+publish, delete the temporary device ROMs staged in
+`/sdcard/Android/data/<pkg>/files/roms/` and record that the fixed debug build
+remains installed. Reporter confirmation of the exact title remains the final
+acceptance signal; do not close issue #3 on this record alone.
