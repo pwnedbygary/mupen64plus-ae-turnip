@@ -78,6 +78,14 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
     private OnImportDriver mImportCallback = null;
     private OnDownloadDriver mDownloadCallback = null;
 
+    /**
+     * Stored value forcing the stock system driver. Only offered in per-game mode;
+     * empty ({@code ""}) means "use the global setting" instead.
+     */
+    public static final String VALUE_SYSTEM = "system";
+
+    private boolean mPerGameMode = false;
+
     public DriverPreference(Context context )
     {
         super( context );
@@ -146,8 +154,19 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
     }
 
     /**
+     * Enable per-game mode: the empty value is labeled "Use global setting" (with the
+     * current global driver shown underneath) and an extra "Stock system driver" row
+     * stores {@link #VALUE_SYSTEM} to force the system driver for this game only.
+     * Global (Display) usage keeps the default mode where empty means stock.
+     */
+    public void setPerGameMode(boolean perGameMode) {
+        mPerGameMode = perGameMode;
+    }
+
+    /**
      * Populate the list of installed drivers, grouped under section headers.
-     * The stock system driver is always offered as the first choice.
+     * The system section always comes first; see {@link #setPerGameMode} for how
+     * its rows differ between the global screen and per-game overrides.
      */
     public void populateDriverOptions(Context context)
     {
@@ -160,9 +179,22 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
         mDriverRows.add(new DriverRow(
                 context.getString(R.string.gpuDriver_sectionSystem).toUpperCase(), "", true));
 
-        entriesList.add(context.getString(R.string.gpuDriver_default));
-        valuesList.add("");
-        mDriverRows.add(new DriverRow(context.getString(R.string.gpuDriver_default), "", false));
+        if (mPerGameMode) {
+            // Empty means "inherit the global setting" here, so label it truthfully and
+            // show which driver that currently resolves to. A separate row forces stock.
+            String useGlobalLabel = context.getString(R.string.gpuDriver_gameDefault);
+            entriesList.add(useGlobalLabel);
+            valuesList.add("");
+            mDriverRows.add(new DriverRow(useGlobalLabel, resolveGlobalDriverLabel(context), false));
+
+            entriesList.add(context.getString(R.string.gpuDriver_default));
+            valuesList.add(VALUE_SYSTEM);
+            mDriverRows.add(new DriverRow(context.getString(R.string.gpuDriver_default), "", false));
+        } else {
+            entriesList.add(context.getString(R.string.gpuDriver_default));
+            valuesList.add("");
+            mDriverRows.add(new DriverRow(context.getString(R.string.gpuDriver_default), "", false));
+        }
 
         File driverDir = getDriverDir(context);
         File[] drivers = driverDir.listFiles(File::isDirectory);
@@ -183,6 +215,21 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
         setEntries(entriesList.toArray(new CharSequence[0]));
         setEntryValues(valuesList.toArray(new CharSequence[0]));
         setValue(getPersistedString(""));
+    }
+
+    /**
+     * Name of the driver the global setting currently resolves to, for display under
+     * the per-game "Use global setting" row. The global driver lives in the default
+     * shared preferences even when this preference itself persists per-game.
+     */
+    private static String resolveGlobalDriverLabel(Context context)
+    {
+        String globalName = androidx.preference.PreferenceManager.getDefaultSharedPreferences(context)
+                .getString(paulscode.android.mupen64plusae.persistent.GlobalPrefs.KEY_GPU_DRIVER_NAME, "");
+        if (TextUtils.isEmpty(globalName)) {
+            return context.getString(R.string.gpuDriver_default);
+        }
+        return globalName;
     }
 
     /**
@@ -347,7 +394,7 @@ public class DriverPreference extends ListPreference implements OnPreferenceDial
     private void deleteSelectedDriver()
     {
         String driverName = getCurrentValue();
-        if (TextUtils.isEmpty(driverName)) {
+        if (TextUtils.isEmpty(driverName) || VALUE_SYSTEM.equals(driverName)) {
             Notifier.showToast(getContext(), R.string.gpuDriver_noDriverToDelete);
             return;
         }

@@ -133,7 +133,7 @@ public class GamePrefs
     /** The selected video plug-in. */
     public final Plugin videoPlugin;
 
-    /** Custom GPU driver override; empty means inherit the global setting. */
+    /** Custom GPU driver override: empty inherits the global setting, "system" forces the stock system driver. */
     public final String gpuDriverName;
 
     public final String gpuDriverLib;
@@ -478,7 +478,7 @@ public class GamePrefs
         videoPluginLib = AppData.VideoPlugin.getPlugin(videoPlugin.name);
         audioPluginLib = AppData.AudioPlugin.getPlugin(mGlobalPrefs);
 
-        // Custom GPU driver override, empty means inherit the global setting
+        // Custom GPU driver override: empty inherits the global setting, "system" forces stock
         gpuDriverName = mPreferences.getString( "gpuDriverName", "" );
         gpuDriverLib = mPreferences.getString( "gpuDriverLib", "" );
 

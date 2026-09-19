@@ -748,6 +748,11 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                             && mGamePrefs.videoPluginLib == AppData.VideoPlugin.PARALLEL) {
                         String driverName = TextUtils.isEmpty(mGamePrefs.gpuDriverName)
                                 ? mGlobalPrefs.getGpuDriverName() : mGamePrefs.gpuDriverName;
+                        if (paulscode.android.mupen64plusae.preference.DriverPreference.VALUE_SYSTEM
+                                .equals(mGamePrefs.gpuDriverName)) {
+                            // Forced stock: same keyless handling as an empty (stock) global.
+                            driverName = "";
+                        }
                         startBenchmark(driverName);
                     }
 

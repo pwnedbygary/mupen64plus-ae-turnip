@@ -617,11 +617,16 @@ class CoreInterface
      *
      * @param context application context
      * @param usingParallelPlugin true when the parallel plugin will be attached
-     * @param gameDriverName per-game driver override, or null/empty to use the global setting
+     * @param gameDriverName per-game driver override: null/empty uses the global setting,
+     *     {@code "system"} (DriverPreference.VALUE_SYSTEM) forces the stock system driver
      * @param gameDriverLib library name matching gameDriverName
      */
     void setCustomVulkanDriver(Context context, boolean usingParallelPlugin, String gameDriverName, String gameDriverLib)
     {
+        if (paulscode.android.mupen64plusae.preference.DriverPreference.VALUE_SYSTEM.equals(gameDriverName)) {
+            mAeBridgeLibrary.setCustomVulkanDriver(null, null, null);
+            return;
+        }
         String driverName = TextUtils.isEmpty(gameDriverName) ? mGlobalPrefs.getGpuDriverName() : gameDriverName;
         String driverLib = TextUtils.isEmpty(gameDriverName) ? mGlobalPrefs.getGpuDriverLib() : gameDriverLib;
 
