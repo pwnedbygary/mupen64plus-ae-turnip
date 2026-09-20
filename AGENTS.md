@@ -28,6 +28,18 @@ signing lessons mined from the theme-preset crash-fix sessions.
   (`posix_spawnp: No such file or directory`), the reviewed substitution is
   `CC=clang CXX=clang++`; record it per run. Full D4 ledger example is in
   `docs/N64DD_NEXT_TEST_RUNBOOK.md`.
+- Native symbol exports: `mupen64plus-core/upstream/src/api/api_export.ver` is
+  the export gate for the core `.so` — new native entry points must be listed
+  there or they link yet stay invisible to `System.loadLibrary` callers.
+  Verify with `nm -D` / `readelf` against the merged/packaged `.so`, never
+  `cxx` intermediates; read the exact link command from
+  `app/build/intermediates/cxx/.../build_command_*` instead of hand-rolling
+  `ndk-build` invocations.
+- rcheevos is vendored per `mupen64plus-core/rcheevos/VENDOR.md` (pin, file
+  list, deliberately excluded `md5.c` — the core's
+  `upstream/subprojects/md5/md5.c` already provides `md5_*`). Update the
+  vendored set via that record, never hand-edit copies; glue lives in
+  `upstream/src/api/ra_glue.{c,h}`, wired via `mupen64plus-core/mupen64plus-core.mk`.
 - This is a native multi-module Android app; there is no browser preview.
 
 ## 2. Package and signing identities (mechanism only, never credentials)
