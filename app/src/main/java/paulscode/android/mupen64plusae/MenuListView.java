@@ -116,6 +116,17 @@ public class MenuListView extends ExpandableListView
         return mAdapter;
     }
     
+    /**
+     * Re-apply role-based text colors to every cached row view. Called when the runtime
+     * theme is re-applied (e.g. on activity resume) so rows tinted by an older preset do
+     * not stay stale until they happen to be rebound.
+     */
+    public void restyleRowColors( UiTheme theme )
+    {
+        if( mAdapter != null )
+            mAdapter.restyleRowColors( theme );
+    }
+
     public void reload()
     {
         mAdapter.notifyDataSetChanged();
@@ -340,6 +351,21 @@ public class MenuListView extends ExpandableListView
             return true;
         }
         
+        void restyleRowColors( UiTheme theme )
+        {
+            for( int i = 0; i < mMenuViews.size(); i++ )
+                restyleRow( theme, mMenuViews.valueAt( i ) );
+            for( int i = 0; i < mMenuViewsExpanded.size(); i++ )
+                restyleRow( theme, mMenuViewsExpanded.valueAt( i ) );
+        }
+
+        private void restyleRow( UiTheme theme, View view )
+        {
+            if( view == null )
+                return;
+            theme.styleMenuText( view.findViewById( R.id.text1 ), view.findViewById( R.id.text2 ) );
+        }
+
         View getViewFromMenuId(int menuId)
         {
             return mMenuViews.get(menuId);
