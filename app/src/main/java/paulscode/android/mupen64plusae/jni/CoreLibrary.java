@@ -68,4 +68,72 @@ public interface CoreLibrary extends Library {
      * currently active cheats.
      */
     int CoreCheatEnabled(String CheatName, int Enabled);
+
+    /* ---- RetroAchievements (rcheevos glue, see api/ra_glue.h) ----
+     *
+     * These symbols are exported by the core .so (api_export.ver). The bridge
+     * callbacks are JNA trampolines whose function pointers are handed to the
+     * native side via ra_glue_set_java_bridge(). Keep references to the callback
+     * instances alive for as long as the glue client lives, or JNA may collect
+     * the trampoline and the native side will call freed code.
+     */
+
+    interface RaServerCallCallback extends Callback {
+        void invoke(int requestId, String url, String postData, String contentType);
+    }
+
+    interface RaEventCallback extends Callback {
+        void invoke(String json);
+    }
+
+    interface RaAsyncResultCallback extends Callback {
+        void invoke(int result, String errorMessage);
+    }
+
+    int ra_glue_create();
+
+    void ra_glue_shutdown();
+
+    void ra_glue_set_java_bridge(RaServerCallCallback serverCall, RaEventCallback event,
+                                 RaAsyncResultCallback asyncResult);
+
+    void ra_glue_do_frame();
+
+    void ra_glue_idle();
+
+    void ra_glue_reset();
+
+    void ra_glue_set_hardcore(int enabled);
+
+    int ra_glue_get_hardcore();
+
+    int ra_glue_login_password(String username, String password);
+
+    int ra_glue_login_token(String username, String token);
+
+    int ra_glue_logout();
+
+    int ra_glue_load_game(String md5);
+
+    int ra_glue_is_logged_in();
+
+    int ra_glue_is_game_loaded();
+
+    int ra_glue_get_load_game_state();
+
+    int ra_glue_get_user_name(byte[] buffer, int bufferSize);
+
+    int ra_glue_get_game_name(byte[] buffer, int bufferSize);
+
+    int ra_glue_get_summary_json(byte[] buffer, int bufferSize);
+
+    int ra_glue_get_achievements_json(byte[] buffer, int bufferSize);
+
+    int ra_glue_serialize_progress(byte[] buffer, int bufferSize);
+
+    int ra_glue_deserialize_progress(byte[] buffer, int bufferSize);
+
+    void ra_glue_dispatch_server_response(int requestId, byte[] body, int bodyLength, int httpStatus);
+
+    String ra_glue_get_last_error();
 }
