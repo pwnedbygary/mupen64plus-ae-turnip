@@ -238,6 +238,17 @@
 
     <string name="categoryData_title">Data</string>
     <string name="categoryNetplay_title">Netplay</string>
+    <string name="categoryRetroAchievements_title">RetroAchievements</string>
+
+    <!-- RetroAchievements preferences -->
+    <string name="retroAchievementsEnabled_title">Enable RetroAchievements</string>
+    <string name="retroAchievementsEnabled_summary">Track achievements and leaderboards for supported games</string>
+    <string name="retroAchievementsUsername_title">RetroAchievements username</string>
+    <string name="retroAchievementsUsername_summary">Your retroachievements.org user name</string>
+    <string name="retroAchievementsWebApiKey_title">Web API key</string>
+    <string name="retroAchievementsWebApiKey_summary">From retroachievements.org settings (Keys)</string>
+    <string name="retroAchievementsHardcore_title">Hardcore mode</string>
+    <string name="retroAchievementsHardcore_summary">Disables save states, fast-forward and cheats while achievements are active</string>
 
     <!-- Checkbox Preferences -->
     <string name="playShowCheats_title">Enable cheats</string>

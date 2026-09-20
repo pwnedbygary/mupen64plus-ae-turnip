@@ -831,6 +831,9 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         } else if (item.getItemId() == R.id.menuItem_categoryNetplay) {
             ActivityHelper.startNetplayPrefsActivity( this );
             return true;
+        } else if (item.getItemId() == R.id.menuItem_categoryRetroAchievements) {
+            ActivityHelper.startRaPrefsActivity( this );
+            return true;
          } else if (item.getItemId() == R.id.menuItem_categoryDefaults) {
             ActivityHelper.startDefaultPrefsActivity( this );
             return true;

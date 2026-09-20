@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    RetroAchievements settings. Credentials are read by GlobalPrefs and used by
+    RetroAchievementsManager (jni). See preferences_library.xml for the
+    project's preference conventions.
+-->
+<androidx.preference.PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    android:key="screenRoot" >
+
+    <androidx.preference.CheckBoxPreference
+        android:defaultValue="false"
+        android:key="retroAchievementsEnabled"
+        android:summary="@string/retroAchievementsEnabled_summary"
+        android:title="@string/retroAchievementsEnabled_title" />
+    <androidx.preference.EditTextPreference
+        android:dependency="retroAchievementsEnabled"
+        android:key="retroAchievementsUsername"
+        android:summary="@string/retroAchievementsUsername_summary"
+        android:title="@string/retroAchievementsUsername_title" />
+    <androidx.preference.EditTextPreference
+        android:dependency="retroAchievementsEnabled"
+        android:key="retroAchievementsWebApiKey"
+        android:summary="@string/retroAchievementsWebApiKey_summary"
+        android:title="@string/retroAchievementsWebApiKey_title" />
+    <androidx.preference.CheckBoxPreference
+        android:defaultValue="false"
+        android:dependency="retroAchievementsEnabled"
+        android:key="retroAchievementsHardcore"
+        android:summary="@string/retroAchievementsHardcore_summary"
+        android:title="@string/retroAchievementsHardcore_title" />
+</androidx.preference.PreferenceScreen>
