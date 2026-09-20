@@ -8,6 +8,7 @@ import paulscode.android.mupen64plusae.R;
 
 import paulscode.android.mupen64plusae.cheat.CheatEditorActivity.CheatAddressData;
 import paulscode.android.mupen64plusae.cheat.CheatEditorActivity.CheatOptionData;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 import paulscode.android.mupen64plusae.util.DisplayWrapper;
 
 import android.app.Dialog;
@@ -20,7 +21,6 @@ import androidx.annotation.NonNull;
 import androidx.fragment.app.DialogFragment;
 import androidx.core.content.ContextCompat;
 import androidx.appcompat.app.AlertDialog;
-import androidx.appcompat.app.AlertDialog.Builder;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
@@ -251,7 +251,7 @@ public class EditCheatDialog extends DialogFragment
         }
 
         //Time to create the dialog
-        Builder builder = new Builder(requireActivity());
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(requireActivity());
         builder.setTitle(title);
 
         // Create listener for OK/cancel button clicks
@@ -277,6 +277,7 @@ public class EditCheatDialog extends DialogFragment
         builder.setNegativeButton(android.R.string.cancel, null);
 
         AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(requireActivity()).applyToDialog(dialog));
         DisplayWrapper.setDialogToResizeWithKeyboard(dialog, dialogView);
 
         return dialog;

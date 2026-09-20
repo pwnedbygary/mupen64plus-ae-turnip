@@ -8,7 +8,6 @@ import android.os.Bundle;
 import androidx.annotation.NonNull;
 import androidx.fragment.app.DialogFragment;
 import androidx.appcompat.app.AlertDialog;
-import androidx.appcompat.app.AlertDialog.Builder;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
@@ -19,6 +18,7 @@ import android.widget.EditText;
 import android.widget.TextView;
 
 import paulscode.android.mupen64plusae.R;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -101,7 +101,7 @@ public class ProfileNameEditDialog extends DialogFragment
         editName.setText(mName);
         editComment.setText(comment);
 
-        Builder builder = new Builder(requireActivity());
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(requireActivity());
         builder.setTitle(title);
 
         // Create listener for OK/cancel button clicks
@@ -149,7 +149,9 @@ public class ProfileNameEditDialog extends DialogFragment
             }
         });
 
-        return builder.create();
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(requireActivity()).applyToDialog(dialog));
+        return dialog;
     }
 
     @Override

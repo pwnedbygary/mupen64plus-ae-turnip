@@ -267,8 +267,11 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
     @Override
     public void onCreate(Bundle savedInstanceState) {
         Log.i(TAG, "onCreate");
+
+        // Use the manifest-declared theme (Theme.Mupen64plusaeTheme.Game -> Theme.AppCompat.Black
+        // -> Theme.Mupen64PlusAE) so dialogs inherit the app's themed AlertDialog styling. The
+        // previous stock AppCompat NoActionBar override stripped all of that custom dialog theming.
         super.onCreate(savedInstanceState);
-        super.setTheme( androidx.appcompat.R.style.Theme_AppCompat_NoActionBar );
 
         mAppData = new AppData( this );
 

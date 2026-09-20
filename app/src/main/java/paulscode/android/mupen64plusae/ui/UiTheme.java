@@ -505,7 +505,7 @@ public final class UiTheme {
         }
     }
 
-    private void applyToView(View view) {
+    public void applyToView(View view) {
         if (view == null) return;
 
         // ---- Components that carry the primary accent ----

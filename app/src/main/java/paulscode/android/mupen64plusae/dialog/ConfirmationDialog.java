@@ -7,8 +7,10 @@ import android.os.Bundle;
 
 import androidx.annotation.NonNull;
 import androidx.fragment.app.DialogFragment;
-import androidx.appcompat.app.AlertDialog.Builder;
+import androidx.appcompat.app.AlertDialog;
 import android.util.Log;
+
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 public class ConfirmationDialog extends DialogFragment
 {
@@ -61,14 +63,16 @@ public class ConfirmationDialog extends DialogFragment
             }
         };
 
-        Builder builder = new Builder(requireActivity());
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(requireActivity());
         builder.setTitle(title);
         builder.setMessage(message);
         builder.setCancelable(false);
         builder.setNegativeButton(requireActivity().getString(android.R.string.cancel), internalListener);
         builder.setPositiveButton(requireActivity().getString( android.R.string.ok ), internalListener);
 
-        return builder.create();
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(requireActivity()).applyToDialog(dialog));
+        return dialog;
     }
     
     @Override

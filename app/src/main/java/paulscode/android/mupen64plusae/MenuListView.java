@@ -26,6 +26,8 @@ import android.content.Context;
 import androidx.appcompat.view.menu.MenuBuilder;
 import androidx.core.widget.TextViewCompat;
 
+import paulscode.android.mupen64plusae.ui.UiTheme;
+
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -236,6 +238,8 @@ public class MenuListView extends ExpandableListView
                     indicator.setImageResource( R.drawable.ic_box );
 
                 mMenuViews.put(item.getItemId(), view);
+
+                UiTheme.get(view.getContext()).applyToView(view);
             }
 
             return view;
@@ -319,6 +323,8 @@ public class MenuListView extends ExpandableListView
                 } else {
                     mMenuViews.put(item.getItemId(), view);
                 }
+
+                UiTheme.get(view.getContext()).applyToView(view);
             }
             
             return view;
