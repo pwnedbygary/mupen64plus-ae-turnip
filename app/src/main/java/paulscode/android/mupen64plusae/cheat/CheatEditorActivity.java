@@ -20,7 +20,7 @@
  */
 package paulscode.android.mupen64plusae.cheat;
 
-import android.app.AlertDialog.Builder;
+import androidx.appcompat.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
@@ -57,7 +57,9 @@ import paulscode.android.mupen64plusae.dialog.EditCheatDialog;
 import paulscode.android.mupen64plusae.dialog.EditCheatDialog.OnEditCompleteListener;
 import paulscode.android.mupen64plusae.dialog.MenuDialogFragment;
 import paulscode.android.mupen64plusae.dialog.MenuDialogFragment.OnDialogMenuItemSelectedListener;
+import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
 import paulscode.android.mupen64plusae.persistent.AppData;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 import paulscode.android.mupen64plusae.persistent.GlobalPrefs;
 import paulscode.android.mupen64plusae.task.ExtractCheatsTask;
 import paulscode.android.mupen64plusae.task.ExtractCheatsTask.ExtractCheatListener;
@@ -379,12 +381,14 @@ public class CheatEditorActivity extends AppCompatListActivity implements Extrac
                 }
             }
         };
-        Builder builder = new Builder( this );
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder( this );
         builder.setTitle( R.string.cheatEditor_delete );
         builder.setMessage( R.string.cheatEditor_confirm );
         builder.setPositiveButton( android.R.string.ok, listener );
         builder.setNegativeButton( android.R.string.cancel, listener );
-        builder.create().show();
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(this).applyToDialog(dialog));
+        dialog.show();
     }
  
     @Override

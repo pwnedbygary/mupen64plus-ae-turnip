@@ -20,14 +20,17 @@
  */
 package paulscode.android.mupen64plusae.cheat;
 
-import android.app.AlertDialog;
-import android.app.AlertDialog.Builder;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AlertDialog.Builder;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.AdapterView.OnItemLongClickListener;
+
+import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 public class OptionDialog
 {
@@ -46,7 +49,7 @@ public class OptionDialog
     {
         mListener = listener;
         mOptions = options;
-        mBuilder = new Builder( context ).setTitle( title );
+        mBuilder = ThemedAlertDialog.newBuilder( context ).setTitle( title );
     }
     
     public final void show( int checkedItem )
@@ -69,6 +72,7 @@ public class OptionDialog
         mBuilder.setSingleChoiceItems( mOptions, checkedItem, clickListener );
         AlertDialog dialog = mBuilder.create();
         dialog.getListView().setOnItemLongClickListener( longClickListener );
+        dialog.setOnShowListener(d -> UiTheme.get(dialog.getContext()).applyToDialog(dialog));
         dialog.show();
     }
 }

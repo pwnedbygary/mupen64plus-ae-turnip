@@ -2,13 +2,15 @@ package paulscode.android.mupen64plusae.dialog;
 
 import paulscode.android.mupen64plusae.MenuListView;
 import android.app.Dialog;
-import android.app.AlertDialog.Builder;
 import android.os.Bundle;
 
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
 import androidx.fragment.app.DialogFragment;
 import android.util.Log;
 import android.view.MenuItem;
+
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 public class MenuDialogFragment extends DialogFragment
 {
@@ -73,10 +75,12 @@ public class MenuDialogFragment extends DialogFragment
             Log.e("MenuDialogFragment", "Activity doesn't implement OnDialogMenuItemSelected");
         }
 
-        Builder builder = new Builder(getActivity());
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(getActivity());
         builder.setTitle(title);
         builder.setView(menuList);
 
-        return builder.create();
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(getContext()).applyToDialog(dialog));
+        return dialog;
     }
 }

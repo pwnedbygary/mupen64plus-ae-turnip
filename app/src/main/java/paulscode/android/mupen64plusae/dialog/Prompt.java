@@ -20,7 +20,8 @@
  */
 package paulscode.android.mupen64plusae.dialog;
 
-import android.app.AlertDialog.Builder;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AlertDialog.Builder;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
@@ -42,6 +43,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 
 import paulscode.android.mupen64plusae.R;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -318,7 +320,7 @@ public final class Prompt
         builder.setAdapter( adapter, internalListener );
             
         // Create and launch the dialog
-        builder.create().show();
+        showThemed( context, builder );
     }
     
     /**
@@ -383,8 +385,7 @@ public final class Prompt
         };
         
         // Create and launch the dialog, adding the edit-text widget in the process
-        prefillBuilder( context, title, message, internalListener ).setView( editText ).create()
-                .show();
+        showThemed( context, prefillBuilder( context, title, message, internalListener ).setView( editText ) );
     }
     
     /**
@@ -425,7 +426,7 @@ public final class Prompt
             }
         } );
         
-        prefillBuilder( context, title, null, (dialog, which) -> listener.onDialogClosed( seek.getProgress() + min, which )).setView( layout ).create().show();
+        showThemed( context, prefillBuilder( context, title, null, (dialog, which) -> listener.onDialogClosed( seek.getProgress() + min, which )).setView( layout ) );
     }
     
     /**
@@ -500,7 +501,7 @@ public final class Prompt
             mainLayout.addView(linearLayout);
         }
         
-        prefillBuilder( context, title, null, (dialog, which) -> {
+        showThemed( context, prefillBuilder( context, title, null, (dialog, which) -> {
             //We have to look for the one check radio button
             boolean found = false;
             int index = 0;
@@ -523,7 +524,7 @@ public final class Prompt
             }
 
             listener.onDialogClosed( index, which );
-        }).setView( layout ).create().show();
+        }).setView( layout ) );
     }
     
     /**
@@ -552,7 +553,7 @@ public final class Prompt
         builder.setItems( items, internalListener );
         
         // Create and launch the dialog
-        builder.create().show();
+        showThemed( context, builder );
     }
 
     /**
@@ -598,8 +599,8 @@ public final class Prompt
 
         override.setOnCheckedChangeListener((buttonView, isChecked) -> seek.setEnabled(!isChecked));
 
-        prefillBuilder( context, title, null, (dialog, which) -> listener.onDialogClosed( override.isChecked(),
-                seek.getProgress() + min, which )).setView( layout ).create().show();
+        showThemed( context, prefillBuilder( context, title, null, (dialog, which) -> listener.onDialogClosed( override.isChecked(),
+                seek.getProgress() + min, which )).setView( layout ) );
     }
     
     /**
@@ -617,8 +618,16 @@ public final class Prompt
     private static Builder prefillBuilder( Context context, CharSequence title,
             CharSequence message, OnClickListener listener )
     {
-        return new Builder( context ).setTitle( title ).setMessage( message ).setCancelable( false )
+        return ThemedAlertDialog.newBuilder( context ).setTitle( title ).setMessage( message ).setCancelable( false )
                 .setNegativeButton( context.getString( android.R.string.cancel ), listener )
                 .setPositiveButton( context.getString( android.R.string.ok ), listener );
+    }
+
+    /** Creates, themes and shows a dialog from the given builder. */
+    private static void showThemed( Context context, Builder builder )
+    {
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(context).applyToDialog(dialog));
+        dialog.show();
     }
 }
