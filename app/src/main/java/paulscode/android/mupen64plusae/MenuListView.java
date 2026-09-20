@@ -239,7 +239,9 @@ public class MenuListView extends ExpandableListView
 
                 mMenuViews.put(item.getItemId(), view);
 
-                UiTheme.get(view.getContext()).applyToView(view);
+                UiTheme theme = UiTheme.get(view.getContext());
+                theme.applyToView(view);
+                theme.styleMenuText(text1, text2);
             }
 
             return view;
@@ -324,7 +326,9 @@ public class MenuListView extends ExpandableListView
                     mMenuViews.put(item.getItemId(), view);
                 }
 
-                UiTheme.get(view.getContext()).applyToView(view);
+                UiTheme theme = UiTheme.get(view.getContext());
+                theme.applyToView(view);
+                theme.styleMenuText(text1, text2);
             }
             
             return view;

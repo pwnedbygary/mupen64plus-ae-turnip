@@ -460,6 +460,21 @@ public final class UiTheme {
                 new int[]{mPrimary, mOnSurfaceVariant, mOnSurfaceVariant});
     }
 
+    /**
+     * Assign menu-row text from its role, rather than inferring it from the currently
+     * displayed color. Views already tinted by an older preset no longer match the
+     * original static colors, so exact-color matching can leave them behind when the
+     * preset changes.
+     */
+    public void styleMenuText(TextView title, TextView summary) {
+        if (title != null) {
+            title.setTextColor(mPrimary);
+        }
+        if (summary != null && summary.getVisibility() == android.view.View.VISIBLE) {
+            summary.setTextColor(mOnSurfaceVariant);
+        }
+    }
+
     public ColorStateList buttonColors() {
         return new ColorStateList(
                 new int[][] {
