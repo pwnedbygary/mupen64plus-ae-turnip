@@ -501,10 +501,13 @@ public final class UiTheme {
      * displayed color. Views already tinted by an older preset no longer match the
      * original static colors, so exact-color matching can leave them behind when the
      * preset changes.
+     *
+     * @param submenu true for a child/submenu row, which uses the secondary accent so it
+     *                reads as subordinate to the primary-accented main rows.
      */
-    public void styleMenuText(TextView title, TextView summary) {
+    public void styleMenuText(TextView title, TextView summary, boolean submenu) {
         if (title != null) {
-            title.setTextColor(mPrimary);
+            title.setTextColor(submenu ? mSecondary : mPrimary);
         }
         if (summary != null && summary.getVisibility() == android.view.View.VISIBLE) {
             summary.setTextColor(mOnSurfaceVariant);

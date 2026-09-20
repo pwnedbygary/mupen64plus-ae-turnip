@@ -252,7 +252,7 @@ public class MenuListView extends ExpandableListView
 
                 UiTheme theme = UiTheme.get(view.getContext());
                 theme.applyToView(view);
-                theme.styleMenuText(text1, text2);
+                theme.styleMenuText(text1, text2, true);
             }
 
             return view;
@@ -339,7 +339,7 @@ public class MenuListView extends ExpandableListView
 
                 UiTheme theme = UiTheme.get(view.getContext());
                 theme.applyToView(view);
-                theme.styleMenuText(text1, text2);
+                theme.styleMenuText(text1, text2, false);
             }
             
             return view;
@@ -353,17 +353,28 @@ public class MenuListView extends ExpandableListView
         
         void restyleRowColors( UiTheme theme )
         {
-            for( int i = 0; i < mMenuViews.size(); i++ )
-                restyleRow( theme, mMenuViews.valueAt( i ) );
-            for( int i = 0; i < mMenuViewsExpanded.size(); i++ )
-                restyleRow( theme, mMenuViewsExpanded.valueAt( i ) );
+            // Walk the menu model so each cached row is restyled by its actual role:
+            // groups are main rows (primary accent), submenu entries are secondary.
+            for( int g = 0; g < mListData.size(); g++ )
+            {
+                MenuItem group = mListData.getItem( g );
+                restyleRow( theme, mMenuViews.get( group.getItemId() ), false );
+                restyleRow( theme, mMenuViewsExpanded.get( group.getItemId() ), false );
+
+                SubMenu submenu = group.getSubMenu();
+                if( submenu != null )
+                {
+                    for( int c = 0; c < submenu.size(); c++ )
+                        restyleRow( theme, mMenuViews.get( submenu.getItem( c ).getItemId() ), true );
+                }
+            }
         }
 
-        private void restyleRow( UiTheme theme, View view )
+        private void restyleRow( UiTheme theme, View view, boolean submenu )
         {
             if( view == null )
                 return;
-            theme.styleMenuText( view.findViewById( R.id.text1 ), view.findViewById( R.id.text2 ) );
+            theme.styleMenuText( view.findViewById( R.id.text1 ), view.findViewById( R.id.text2 ), submenu );
         }
 
         View getViewFromMenuId(int menuId)
