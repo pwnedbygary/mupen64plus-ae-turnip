@@ -253,7 +253,7 @@ static char* ra_build_event_json(const rc_client_event_t* event)
       char* title = ra_json_escape(event->achievement->title);
       char* description = ra_json_escape(event->achievement->description);
       if (title != NULL && description != NULL) {
-        asprintf(&json, "{\"type\":\"achievement\",\"id\":%u,\"title\":%s,\"description\":%s,\"points\":%u}",
+        asprintf(&json, "{\"type\":\"achievement\",\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u}",
                  event->achievement->id, title, description, event->achievement->points);
         free(title);
         free(description);
@@ -266,7 +266,7 @@ static char* ra_build_event_json(const rc_client_event_t* event)
       char* api = ra_json_escape(event->server_error->api);
       char* message = ra_json_escape(event->server_error->error_message);
       if (api != NULL && message != NULL) {
-        asprintf(&json, "{\"type\":\"server_error\",\"api\":%s,\"message\":%s,\"result\":%d,\"related_id\":%u}",
+        asprintf(&json, "{\"type\":\"server_error\",\"api\":\"%s\",\"message\":\"%s\",\"result\":%d,\"related_id\":%u}",
                  api, message, event->server_error->result, event->server_error->related_id);
         free(api);
         free(message);
@@ -291,7 +291,7 @@ static char* ra_build_event_json(const rc_client_event_t* event)
         (event->type == RC_CLIENT_EVENT_LEADERBOARD_FAILED) ? "leaderboard_failed" : "leaderboard_submitted";
       char* title = ra_json_escape(event->leaderboard->title);
       if (title != NULL) {
-        asprintf(&json, "{\"type\":\"%s\",\"id\":%u,\"title\":%s}", name, event->leaderboard->id, title);
+        asprintf(&json, "{\"type\":\"%s\",\"id\":%u,\"title\":\"%s\"}", name, event->leaderboard->id, title);
         free(title);
       }
     }
@@ -520,7 +520,7 @@ int ra_glue_get_summary_json(char* buffer, int buffer_size)
   const char* empty = "\"\"";
   char* json = NULL;
   asprintf(&json,
-           "{\"user\":%s,\"game\":%s,"
+           "{\"user\":\"%s\",\"game\":\"%s\","
            "\"total_achievements\":%u,\"unlocked_achievements\":%u,"
            "\"total_points\":%u,\"unlocked_points\":%u}",
            user_name != NULL ? user_name : empty,
@@ -580,7 +580,7 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
 
       const char* comma = (n > 17) ? "," : ""; /* prefix "{\"achievements\":[" is 17 chars */
       int entry_len = snprintf(NULL, 0,
-                               "%s{\"id\":%u,\"title\":%s,\"description\":%s,\"points\":%u,\"unlocked\":%d}",
+                               "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d}",
                                comma,
                                achievement->id, title, description,
                                achievement->points, achievement->unlocked ? 1 : 0);
@@ -599,7 +599,7 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
       }
 
       n += (size_t)snprintf(json + n, capacity - n,
-                            "%s{\"id\":%u,\"title\":%s,\"description\":%s,\"points\":%u,\"unlocked\":%d}",
+                            "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d}",
                             comma,
                             achievement->id, title, description,
                             achievement->points, achievement->unlocked ? 1 : 0);
