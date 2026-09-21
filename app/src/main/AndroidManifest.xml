@@ -94,6 +94,7 @@
         </activity>
         <activity
             android:name="paulscode.android.mupen64plusae.GalleryActivity"
+            android:configChanges="keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize"
             android:exported="false"
             android:label="${appLabel}"
             android:launchMode="singleTask"
@@ -371,6 +372,7 @@
         </activity>
         <activity
             android:name="paulscode.android.mupen64plusae.game.GameActivity"
+            android:configChanges="keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize"
             android:exported="false"
             android:label="${appLabel}"
             android:windowActionBar="false"
