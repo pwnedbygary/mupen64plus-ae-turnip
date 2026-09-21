@@ -43,6 +43,7 @@
 #include "api/m64p_config.h"
 #include "api/m64p_types.h"
 #include "api/m64p_vidext.h"
+#include "api/ra_glue.h"
 #include "api/vidext.h"
 #include "backends/api/audio_out_backend.h"
 #include "backends/api/clock_backend.h"
@@ -807,6 +808,10 @@ m64p_error main_reset(int do_hard_reset)
         soft_reset_device(&g_dev);
     }
 
+    /* RetroAchievements: reset achievement/leaderboard progress.
+     * No-op unless ra_glue_create() has been called from the frontend. */
+    ra_glue_reset();
+
     return M64ERR_SUCCESS;
 }
 
@@ -974,6 +979,10 @@ void new_vi(void)
     pause_loop();
 
     netplay_check_sync(&g_dev.r4300.cp0);
+
+    /* RetroAchievements: evaluate achievement/leaderboard triggers per frame.
+     * No-op unless ra_glue_create() has been called from the frontend. */
+    ra_glue_do_frame();
 }
 
 static void main_switch_pak(int control_id)

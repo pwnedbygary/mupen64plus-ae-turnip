@@ -1,13 +1,15 @@
 package paulscode.android.mupen64plusae.profile;
 
-import android.app.AlertDialog.Builder;
+import androidx.appcompat.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
 import android.view.View;
 import android.widget.CheckBox;
 import paulscode.android.mupen64plusae.R;
+import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
 import paulscode.android.mupen64plusae.input.map.VisibleTouchMap;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 class ButtonsConfigurationDialog implements OnClickListener {
 
@@ -72,12 +74,14 @@ class ButtonsConfigurationDialog implements OnClickListener {
 
     /** Create and show this popup dialog */
     void show() {
-        Builder builder = new Builder(mContext);
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(mContext);
         builder.setTitle(mContext.getString(R.string.menuItem_buttonsConfiguration));
         builder.setView(view);
         builder.setNegativeButton(mContext.getString(android.R.string.cancel), this);
         builder.setPositiveButton(mContext.getString(android.R.string.ok), this);
         builder.setCancelable(true);
-        builder.create().show();
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(mContext).applyToDialog(dialog));
+        dialog.show();
     }
 }

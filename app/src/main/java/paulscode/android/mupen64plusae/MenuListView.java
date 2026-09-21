@@ -26,6 +26,8 @@ import android.content.Context;
 import androidx.appcompat.view.menu.MenuBuilder;
 import androidx.core.widget.TextViewCompat;
 
+import paulscode.android.mupen64plusae.ui.UiTheme;
+
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -114,6 +116,17 @@ public class MenuListView extends ExpandableListView
         return mAdapter;
     }
     
+    /**
+     * Re-apply role-based text colors to every cached row view. Called when the runtime
+     * theme is re-applied (e.g. on activity resume) so rows tinted by an older preset do
+     * not stay stale until they happen to be rebound.
+     */
+    public void restyleRowColors( UiTheme theme )
+    {
+        if( mAdapter != null )
+            mAdapter.restyleRowColors( theme );
+    }
+
     public void reload()
     {
         mAdapter.notifyDataSetChanged();
@@ -236,6 +249,10 @@ public class MenuListView extends ExpandableListView
                     indicator.setImageResource( R.drawable.ic_box );
 
                 mMenuViews.put(item.getItemId(), view);
+
+                UiTheme theme = UiTheme.get(view.getContext());
+                theme.applyToView(view);
+                theme.styleMenuText(text1, text2, true);
             }
 
             return view;
@@ -319,6 +336,10 @@ public class MenuListView extends ExpandableListView
                 } else {
                     mMenuViews.put(item.getItemId(), view);
                 }
+
+                UiTheme theme = UiTheme.get(view.getContext());
+                theme.applyToView(view);
+                theme.styleMenuText(text1, text2, false);
             }
             
             return view;
@@ -330,6 +351,32 @@ public class MenuListView extends ExpandableListView
             return true;
         }
         
+        void restyleRowColors( UiTheme theme )
+        {
+            // Walk the menu model so each cached row is restyled by its actual role:
+            // groups are main rows (primary accent), submenu entries are secondary.
+            for( int g = 0; g < mListData.size(); g++ )
+            {
+                MenuItem group = mListData.getItem( g );
+                restyleRow( theme, mMenuViews.get( group.getItemId() ), false );
+                restyleRow( theme, mMenuViewsExpanded.get( group.getItemId() ), false );
+
+                SubMenu submenu = group.getSubMenu();
+                if( submenu != null )
+                {
+                    for( int c = 0; c < submenu.size(); c++ )
+                        restyleRow( theme, mMenuViews.get( submenu.getItem( c ).getItemId() ), true );
+                }
+            }
+        }
+
+        private void restyleRow( UiTheme theme, View view, boolean submenu )
+        {
+            if( view == null )
+                return;
+            theme.styleMenuText( view.findViewById( R.id.text1 ), view.findViewById( R.id.text2 ), submenu );
+        }
+
         View getViewFromMenuId(int menuId)
         {
             return mMenuViews.get(menuId);

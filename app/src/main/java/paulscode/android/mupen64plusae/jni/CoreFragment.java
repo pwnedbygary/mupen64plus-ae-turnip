@@ -571,8 +571,15 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
 
         if (mCoreService != null)
         {
-            mViewModel.mUseCustomSpeed = !mViewModel.mUseCustomSpeed;
-            int speed = mViewModel.mUseCustomSpeed ? mViewModel.mCustomSpeed : BASELINE_SPEED;
+            boolean engage = !mViewModel.mUseCustomSpeed;
+            int speed = engage ? mViewModel.mCustomSpeed : BASELINE_SPEED;
+
+            // Do not flip the UI state when hardcore denies the fast-forward request.
+            if (blockedByRaHardcoreFastForward(speed)) {
+                return;
+            }
+
+            mViewModel.mUseCustomSpeed = engage;
             mCoreService.setCustomSpeed(speed);
         }
     }
@@ -583,8 +590,20 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
         if (mCoreService != null)
         {
             int speed = pressed ? mViewModel.mCustomSpeed : BASELINE_SPEED;
+            if (blockedByRaHardcoreFastForward(speed)) {
+                return;
+            }
             mCoreService.setCustomSpeed( speed );
         }
+    }
+
+    /**
+     * @return true when hardcore forbids this speed request (fast-forward). The deny toast has
+     * already been shown and the core forced back to baseline by the service.
+     */
+    private boolean blockedByRaHardcoreFastForward(int speed)
+    {
+        return mCoreService != null && mCoreService.blockIfRaHardcoreFastForward(speed);
     }
 
 
@@ -594,14 +613,6 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
 
         if (mCoreService != null)
         {
-            int slot = mCoreService.getSlot();
-
-            try {
-                Notifier.showToast(requireActivity(), R.string.toast_savingSlot, slot);
-            } catch (java.lang.IllegalStateException e) {
-                e.printStackTrace();
-            }
-
             mCoreService.saveSlot();
 
             if(mCoreEventListener != null)
@@ -617,13 +628,6 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
 
         if (mCoreService != null)
         {
-            int slot = mCoreService.getSlot();
-            try {
-                Notifier.showToast( requireActivity(), R.string.toast_loadingSlot, slot );
-            } catch (java.lang.IllegalStateException e) {
-                e.printStackTrace();
-            }
-
             mCoreService.loadSlot();
 
             if(mCoreEventListener != null)
@@ -750,6 +754,15 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
 
             if (mViewModel.mCurrentSaveStateFile.exists()) {
 
+                // If hardcore denies the save, tell the player now instead of asking them to
+                // confirm an overwrite that will not happen (the service shows the deny toast).
+                if (mCoreService != null && mCoreService.blockIfRaHardcore()) {
+                    if (mCoreEventListener != null) {
+                        mCoreEventListener.onSaveLoad();
+                    }
+                    return;
+                }
+
                 String title = activity.getString(R.string.confirm_title);
                 String message = activity.getString(R.string.confirmOverwriteFile_message, filename);
 
@@ -760,8 +773,7 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
                 confirmationDialog.show(fm, SAVE_STATE_FILE_CONFIRM_DIALOG_STATE);
             } else {
                 if (mCoreService != null) {
-                    mCoreService.saveState(mViewModel.mCurrentSaveStateFile.getName());
-                    Notifier.showToast(activity, R.string.toast_savingFile, mViewModel.mCurrentSaveStateFile.getName());
+                    mCoreService.saveState(mViewModel.mCurrentSaveStateFile.getName(), false);
                 }
 
                 if (mCoreEventListener != null) {
@@ -828,12 +840,6 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
     private void loadState( File file )
     {
         Log.i(TAG, "loadState");
-
-        try {
-            Notifier.showToast(requireActivity(), R.string.toast_loadingFile, file.getName());
-        } catch (java.lang.IllegalStateException e) {
-            e.printStackTrace();
-        }
 
         if (mCoreService != null) {
             mCoreService.loadState(file);
@@ -973,7 +979,14 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
     {
         Log.i(TAG, "setCustomSpeed");
 
-        mViewModel.mCustomSpeed = Utility.clamp( value, MIN_SPEED, MAX_SPEED );
+        int clamped = Utility.clamp( value, MIN_SPEED, MAX_SPEED );
+
+        // Do not change the stored speed/state when hardcore denies the fast-forward request.
+        if (blockedByRaHardcoreFastForward(clamped)) {
+            return;
+        }
+
+        mViewModel.mCustomSpeed = clamped;
         mViewModel.mUseCustomSpeed = true;
 
         if(mCoreService != null)
@@ -1026,13 +1039,9 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
 
         if (id == SAVE_STATE_FILE_CONFIRM_DIALOG_ID)
         {
-            if (mCoreService != null) {
-                mCoreService.saveState(mViewModel.mCurrentSaveStateFile.getName());
-            }
-            try {
-                Notifier.showToast(requireActivity(), R.string.toast_overwritingFile, mViewModel.mCurrentSaveStateFile.getName());
-            } catch (java.lang.IllegalStateException e) {
-                e.printStackTrace();
+            // Cancel must not overwrite the existing file; only OK confirms the overwrite.
+            if (which == DialogInterface.BUTTON_POSITIVE && mCoreService != null) {
+                mCoreService.saveState(mViewModel.mCurrentSaveStateFile.getName(), true);
             }
             if(mCoreEventListener != null)
             {

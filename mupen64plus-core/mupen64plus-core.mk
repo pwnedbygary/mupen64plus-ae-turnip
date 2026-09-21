@@ -18,6 +18,9 @@ LOCAL_C_INCLUDES :=                       \
     $(LOCAL_PATH)/$(SUBLIBS)/minizip      \
     $(LOCAL_PATH)/$(SUBLIBS)/xxhash       \
     $(LOCAL_PATH)/$(SRCDIR)               \
+    $(LOCAL_PATH)/rcheevos/include        \
+    $(LOCAL_PATH)/rcheevos/src            \
+    $(LOCAL_PATH)/rcheevos/src/rhash      \
     $(ASM_DEFINE_PATH)/$(TARGET_ARCH_ABI) \
     $(LOCAL_PATH)/../ndkLibs/SDL2_stub    \
 
@@ -31,8 +34,39 @@ LOCAL_SRC_FILES :=                                              \
     $(SRCDIR)/api/common.c                                      \
     $(SRCDIR)/api/config.c                                      \
     $(SRCDIR)/api/debugger.c                                    \
-    $(SRCDIR)/api/frontend.c                                    \
+    $(SRCDIR)/api/frontend.c                                      \
     $(SRCDIR)/api/vidext.c                                      \
+    $(SRCDIR)/api/ra_glue.c                                       \
+    rcheevos/src/rc_client.c                                      \
+    rcheevos/src/rc_util.c                                        \
+    rcheevos/src/rc_compat.c                                      \
+    rcheevos/src/rc_version.c                                       \
+    rcheevos/src/rcheevos/alloc.c                                   \
+    rcheevos/src/rcheevos/condition.c                               \
+    rcheevos/src/rcheevos/condset.c                                 \
+    rcheevos/src/rcheevos/consoleinfo.c                             \
+    rcheevos/src/rcheevos/format.c                                  \
+    rcheevos/src/rcheevos/lboard.c                                  \
+    rcheevos/src/rcheevos/memref.c                                  \
+    rcheevos/src/rcheevos/operand.c                                 \
+    rcheevos/src/rcheevos/rc_validate.c                             \
+    rcheevos/src/rcheevos/richpresence.c                            \
+    rcheevos/src/rcheevos/runtime.c                                 \
+    rcheevos/src/rcheevos/runtime_progress.c                        \
+    rcheevos/src/rcheevos/trigger.c                                 \
+    rcheevos/src/rcheevos/value.c                                   \
+    rcheevos/src/rapi/rc_api_common.c                               \
+    rcheevos/src/rapi/rc_api_editor.c                               \
+    rcheevos/src/rapi/rc_api_info.c                                 \
+    rcheevos/src/rapi/rc_api_runtime.c                              \
+    rcheevos/src/rapi/rc_api_user.c                                 \
+    rcheevos/src/rhash/aes.c                                        \
+    rcheevos/src/rhash/cdreader.c                                   \
+    rcheevos/src/rhash/hash.c                                       \
+    rcheevos/src/rhash/hash_disc.c                                  \
+    rcheevos/src/rhash/hash_encrypted.c                             \
+    rcheevos/src/rhash/hash_rom.c                                   \
+    rcheevos/src/rhash/hash_zip.c                                   \
     $(SRCDIR)/backends/plugins_compat/audio_plugin_compat.c     \
     $(SRCDIR)/backends/plugins_compat/input_plugin_compat.c     \
     $(SRCDIR)/backends/clock_ctime_plus_delta.c                 \

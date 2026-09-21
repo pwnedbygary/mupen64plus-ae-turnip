@@ -20,7 +20,6 @@
  */
 package paulscode.android.mupen64plusae.dialog;
 
-import android.app.AlertDialog.Builder;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -34,6 +33,7 @@ import paulscode.android.mupen64plusae.R;
 
 import paulscode.android.mupen64plusae.ActivityHelper;
 import paulscode.android.mupen64plusae.persistent.AppData;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 import paulscode.android.mupen64plusae.util.DeviceUtil;
 
 public class Popups extends DialogFragment
@@ -77,12 +77,14 @@ public class Popups extends DialogFragment
         final String title = getArguments() != null ? getArguments().getString(STATE_TITLE) : "";
         final String message = getArguments() != null ? getArguments().getString(STATE_MESSAGE) : "";
 
-        AlertDialog.Builder builder = new AlertDialog.Builder(requireActivity());
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(requireActivity());
         builder.setTitle(title);
         builder.setMessage(message);
         builder.setCancelable(false);
 
-        return builder.create();
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(requireContext()).applyToDialog(dialog));
+        return dialog;
     }
 
     public String faq( Context context )
@@ -104,8 +106,10 @@ public class Popups extends DialogFragment
         DialogInterface.OnClickListener shareHandler = (dialog, which) -> ActivityHelper.launchPlainText( context, message,
                 context.getText( R.string.actionShare_title ) );
         
-        new Builder( context ).setTitle( title ).setMessage(message)
-                .setNeutralButton( R.string.actionShare_title, shareHandler ).create().show();
+        AlertDialog dialog = ThemedAlertDialog.newBuilder( context ).setTitle( title ).setMessage(message)
+                .setNeutralButton( R.string.actionShare_title, shareHandler ).create();
+        dialog.setOnShowListener(d -> UiTheme.get(context).applyToDialog(dialog));
+        dialog.show();
     }
 
     public String appVersion(Context context)
@@ -119,6 +123,8 @@ public class Popups extends DialogFragment
     {
         String title = context.getString( R.string.playerMap_title );
         String message = context.getString( R.string.playerMap_needed );
-        new Builder( context ).setTitle( title ).setMessage( message ).create().show();
+        AlertDialog dialog = ThemedAlertDialog.newBuilder( context ).setTitle( title ).setMessage( message ).create();
+        dialog.setOnShowListener(d -> UiTheme.get(context).applyToDialog(dialog));
+        dialog.show();
     }
 }

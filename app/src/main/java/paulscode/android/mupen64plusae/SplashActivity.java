@@ -163,6 +163,7 @@ public class SplashActivity extends AppCompatActivity implements ExtractAssetsLi
         PreferenceManager.setDefaultValues( this, R.xml.preferences_display, false );
         PreferenceManager.setDefaultValues( this, R.xml.preferences_input, false );
         PreferenceManager.setDefaultValues( this, R.xml.preferences_library, false );
+        PreferenceManager.setDefaultValues( this, R.xml.preferences_ra, false );
         PreferenceManager.setDefaultValues( this, R.xml.preferences_touchscreen, false );
 
         // @formatter:on

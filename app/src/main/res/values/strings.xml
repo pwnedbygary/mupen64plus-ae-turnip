@@ -238,6 +238,26 @@
 
     <string name="categoryData_title">Data</string>
     <string name="categoryNetplay_title">Netplay</string>
+    <string name="categoryRetroAchievements_title">RetroAchievements</string>
+
+    <!-- RetroAchievements preferences -->
+    <string name="retroAchievementsEnabled_title">Enable RetroAchievements</string>
+    <string name="retroAchievementsEnabled_summary">Track achievements and leaderboards for supported games</string>
+    <string name="retroAchievementsUsername_title">RetroAchievements username</string>
+    <string name="retroAchievementsUsername_summary">Your retroachievements.org user name</string>
+    <string name="retroAchievementsConnect_title">RetroAchievements</string>
+    <string name="retroAchievementsConnect_summary">Check your sign-in</string>
+    <string name="retroAchievementsConnect_missing">Enter your username and password first</string>
+    <string name="retroAchievementsConnect_ok">Signed in as %1$s</string>
+    <string name="retroAchievementsConnect_error">Sign-in failed: %1$s</string>
+    <string name="retroAchievementsConnect_noRequest">could not start the request</string>
+    <string name="ra_hardcoreBlocked">Hardcore mode: save states and load states are disabled</string>
+    <string name="ra_hardcoreCheatsBlocked">Hardcore mode: cheats are disabled</string>
+    <string name="ra_hardcoreFastForwardBlocked">Hardcore mode: fast-forward is disabled</string>
+    <string name="retroAchievementsPassword_title">Password</string>
+    <string name="retroAchievementsPassword_summary">Your retroachievements.org password; a session token is saved after the first login</string>
+    <string name="retroAchievementsHardcore_title">Hardcore mode</string>
+    <string name="retroAchievementsHardcore_summary">Disables save states, fast-forward and cheats while achievements are active</string>
 
     <!-- Checkbox Preferences -->
     <string name="playShowCheats_title">Enable cheats</string>

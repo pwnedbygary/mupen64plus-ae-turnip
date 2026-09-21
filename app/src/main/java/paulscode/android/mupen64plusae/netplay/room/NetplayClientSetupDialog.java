@@ -20,10 +20,12 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
-import androidx.appcompat.app.AlertDialog.Builder;
 import androidx.fragment.app.DialogFragment;
 
 import paulscode.android.mupen64plusae.R;
+
+import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -170,7 +172,7 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
         EditText manualCode = dialogView.findViewById(R.id.codeEditText);
 
         //Time to create the dialog
-        Builder builder = new Builder(mActivity);
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(mActivity);
         builder.setTitle(getString(R.string.netplayServers_title));
 
         builder.setNegativeButton(null, null);
@@ -178,6 +180,7 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
         builder.setView(dialogView);
 
         AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(mActivity).applyToDialog(dialog));
         DisplayWrapper.setDialogToResizeWithKeyboard(dialog, dialogView);
         dialog.setCanceledOnTouchOutside(false);
         dialog.setCancelable(false);

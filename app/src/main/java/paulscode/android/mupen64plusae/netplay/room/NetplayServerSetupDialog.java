@@ -28,10 +28,12 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
-import androidx.appcompat.app.AlertDialog.Builder;
 import androidx.fragment.app.DialogFragment;
 
 import paulscode.android.mupen64plusae.R;
+
+import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -179,12 +181,13 @@ public class NetplayServerSetupDialog extends DialogFragment
         TextView port2 = dialogView.findViewById(R.id.textPort2);
 
         //Time to create the dialog
-        Builder builder = new Builder(mActivity);
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(mActivity);
         builder.setNegativeButton(null, null);
         builder.setPositiveButton(null, null);
         builder.setView(dialogView);
 
         AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(mActivity).applyToDialog(dialog));
         DisplayWrapper.setDialogToResizeWithKeyboard(dialog, dialogView);
         dialog.setCanceledOnTouchOutside(false);
         dialog.setCancelable(false);

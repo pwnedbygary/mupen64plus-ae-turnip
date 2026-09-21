@@ -6,7 +6,7 @@ import android.content.res.Resources;
 import android.os.Bundle;
 
 import androidx.annotation.NonNull;
-import androidx.appcompat.app.AlertDialog.Builder;
+import androidx.appcompat.app.AlertDialog;
 import androidx.fragment.app.DialogFragment;
 import androidx.preference.PreferenceManager;
 
@@ -17,6 +17,7 @@ import paulscode.android.mupen64plusae.R;
 import java.util.Locale;
 
 import paulscode.android.mupen64plusae.ActivityHelper;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 public class LocaleDialog extends DialogFragment
 {
@@ -95,7 +96,7 @@ public class LocaleDialog extends DialogFragment
         // Locale
         createLocales();
 
-        Builder builder = new Builder(requireActivity());
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(requireActivity());
         builder.setTitle(title);
         builder.setCancelable(false);
         final int currentIndex = ArrayUtils.indexOf( mLocaleCodes, mLocaleCode );
@@ -112,6 +113,8 @@ public class LocaleDialog extends DialogFragment
         });
         builder.setPositiveButton(null, null);
 
-        return builder.create();
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(requireActivity()).applyToDialog(dialog));
+        return dialog;
     }
 }

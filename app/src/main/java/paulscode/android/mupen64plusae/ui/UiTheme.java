@@ -49,6 +49,7 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.navigation.NavigationView;
 
 import paulscode.android.mupen64plusae.GameSidebar;
+import paulscode.android.mupen64plusae.MenuListView;
 import paulscode.android.mupen64plusae.R;
 
 import java.util.Arrays;
@@ -287,6 +288,15 @@ public final class UiTheme {
     private int mSurfaceVariant;
     private int mOnSurfaceVariant;
     private int mError;
+
+    // Palette that tinted the current view hierarchy before the last real change. Views
+    // tinted by it are remapped on the next pass; the static anchors only cover the
+    // default palette.
+    private boolean mPaletteInitialized = false;
+    private boolean mHasPrevPalette = false;
+    private int mPrevPrimary;
+    private int mPrevOnSurface;
+    private int mPrevOnSurfaceVariant;
     private float mGlassOpacity; // 0..1
     private float mContrast;     // 0.5..2.0
     private float mCardGlow;     // 0..1
@@ -306,6 +316,15 @@ public final class UiTheme {
 
     /** Re-read all color slots from preferences. Call after any UI color changes. */
     public synchronized void reload() {
+        // Snapshot the palette currently applied to the view hierarchy before replacing it,
+        // so views already tinted by it can be remapped on the next pass. Only a real change
+        // updates the snapshot: the color picker can trigger back-to-back reloads for a
+        // single edit, and a no-op reload must not overwrite the pre-edit palette.
+        int oldPrimary = mPrimary;
+        int oldOnSurface = mOnSurface;
+        int oldOnSurfaceVariant = mOnSurfaceVariant;
+        boolean hadPalette = mPaletteInitialized;
+
         mPrimary = parseColor(mPrefs.getString(KEY_PRIMARY, "#FF00DFDF"), 0xFF00DFDF);
         mSecondary = parseColor(mPrefs.getString(KEY_SECONDARY, "#FF7CC4C4"), 0xFF7CC4C4);
         mTertiary = parseColor(mPrefs.getString(KEY_TERTIARY, "#FFC8E6E6"), 0xFFC8E6E6);
@@ -322,6 +341,23 @@ public final class UiTheme {
         // Contrast adjustment: push onSurface toward white or black depending on background
         mOnSurface = applyContrast(mOnSurface, mBackground, mContrast);
         mOnSurfaceVariant = applyContrast(mOnSurfaceVariant, mBackground, mContrast);
+
+        if (hadPalette
+                && (oldPrimary != mPrimary
+                    || oldOnSurface != mOnSurface
+                    || oldOnSurfaceVariant != mOnSurfaceVariant)) {
+            mPrevPrimary = oldPrimary;
+            mPrevOnSurface = oldOnSurface;
+            mPrevOnSurfaceVariant = oldOnSurfaceVariant;
+            // When the previous palette collapsed primary and on-surface to the same color,
+            // the role cannot be recovered; treat it as on-surface (the common title role)
+            // and leave the primary slot unmapped.
+            if (mPrevPrimary == mPrevOnSurface) {
+                mPrevPrimary = 0;
+            }
+            mHasPrevPalette = true;
+        }
+        mPaletteInitialized = true;
     }
 
     public static int parseColor(String hex, int fallback) {
@@ -460,6 +496,24 @@ public final class UiTheme {
                 new int[]{mPrimary, mOnSurfaceVariant, mOnSurfaceVariant});
     }
 
+    /**
+     * Assign menu-row text from its role, rather than inferring it from the currently
+     * displayed color. Views already tinted by an older preset no longer match the
+     * original static colors, so exact-color matching can leave them behind when the
+     * preset changes.
+     *
+     * @param submenu true for a child/submenu row, which uses the secondary accent so it
+     *                reads as subordinate to the primary-accented main rows.
+     */
+    public void styleMenuText(TextView title, TextView summary, boolean submenu) {
+        if (title != null) {
+            title.setTextColor(submenu ? mSecondary : mPrimary);
+        }
+        if (summary != null && summary.getVisibility() == android.view.View.VISIBLE) {
+            summary.setTextColor(mOnSurfaceVariant);
+        }
+    }
+
     public ColorStateList buttonColors() {
         return new ColorStateList(
                 new int[][] {
@@ -505,7 +559,7 @@ public final class UiTheme {
         }
     }
 
-    private void applyToView(View view) {
+    public void applyToView(View view) {
         if (view == null) return;
 
         // ---- Components that carry the primary accent ----
@@ -551,7 +605,12 @@ public final class UiTheme {
             nav.setItemTextColor(navItemColors());
             nav.setItemIconTintList(navIconColors());
         } else if (view instanceof GameSidebar) {
+            // Rows tinted by an older preset cannot be remapped by exact color, so
+            // restyle cached rows from their role before walking the hierarchy.
+            ((GameSidebar) view).restyleRowColors(this);
             styleSidebar((GameSidebar) view);
+        } else if (view instanceof MenuListView) {
+            ((MenuListView) view).restyleRowColors(this);
         } else if (view instanceof ImageButton) {
             // Drawer / toolbar icon buttons keep their drawable but tinted with the accent
             try {
@@ -598,13 +657,15 @@ public final class UiTheme {
         if (textView.getTextColors() == null) return;
         int current = textView.getCurrentTextColor();
 
-        // Compare against the static colors that layouts may use directly
-        if (current == 0xFFE6E1E5 || current == 0xFFE6E1E5) {
-            textView.setTextColor(mOnSurface);
-        } else if (current == 0xFFCAC4CC) {
-            textView.setTextColor(mOnSurfaceVariant);
-        } else if (current == 0xFF00DFDF) {
+        // Compare against the static colors layouts may use directly, and against the
+        // palette applied by the previous pass, so repeated theme changes remap views
+        // that were already tinted by an earlier preset.
+        if (current == 0xFF00DFDF || (mHasPrevPalette && mPrevPrimary != 0 && current == mPrevPrimary)) {
             textView.setTextColor(mPrimary);
+        } else if (current == 0xFFE6E1E5 || (mHasPrevPalette && current == mPrevOnSurface)) {
+            textView.setTextColor(mOnSurface);
+        } else if (current == 0xFFCAC4CC || (mHasPrevPalette && current == mPrevOnSurfaceVariant)) {
+            textView.setTextColor(mOnSurfaceVariant);
         }
     }
 

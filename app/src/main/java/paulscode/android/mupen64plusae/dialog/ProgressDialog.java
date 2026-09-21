@@ -3,13 +3,15 @@ package paulscode.android.mupen64plusae.dialog;
 import paulscode.android.mupen64plusae.R;
 
 import android.app.Activity;
-import android.app.AlertDialog;
-import android.app.AlertDialog.Builder;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AlertDialog.Builder;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
 import android.view.View;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 public class ProgressDialog implements OnClickListener
 {
@@ -47,6 +49,7 @@ public class ProgressDialog implements OnClickListener
         // Create main dialog
         Builder builder = getBuilder( activity, title, subtitle, message, cancelable, layout );
         mDialog = builder.create();
+        mDialog.setOnShowListener(d -> UiTheme.get(activity).applyToDialog(mDialog));
         
         // Create canceling dialog
         subtitle = mActivity.getString( R.string.toast_canceling );
@@ -54,6 +57,7 @@ public class ProgressDialog implements OnClickListener
         layout = View.inflate( activity, R.layout.progress_dialog, null );
         builder = getBuilder( activity, title, subtitle, message, false, layout );
         mAbortDialog = builder.create();
+        mAbortDialog.setOnShowListener(d -> UiTheme.get(activity).applyToDialog(mAbortDialog));
     }
     
     public ProgressDialog(ProgressDialog original, Activity activity, CharSequence title,
@@ -120,7 +124,7 @@ public class ProgressDialog implements OnClickListener
         textSubtitle.setText( subtitle );
         textMessage.setText( message );
         
-        Builder builder = new Builder( activity ).setTitle( title ).setCancelable( false )
+        Builder builder = ThemedAlertDialog.newBuilder( activity ).setTitle( title ).setCancelable( false )
                 .setPositiveButton( null, null ).setView( layout );
         if( cancelable )
             builder.setNegativeButton( android.R.string.cancel, this );

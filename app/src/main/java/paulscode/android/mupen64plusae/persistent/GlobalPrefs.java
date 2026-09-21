@@ -400,6 +400,21 @@ public class GlobalPrefs
     /** Server UDP/TCP port number */
     public final int netplayServerUdpTcpPort;
 
+    /** True if the RetroAchievements client should be enabled. */
+    public final boolean isRetroAchievementsEnabled;
+
+    /** RetroAchievements user name, empty if not configured. */
+    public final String retroAchievementsUsername;
+
+    /** RetroAchievements password, used for the first login. Never log or display it. */
+    public final String retroAchievementsPassword;
+
+    /** Session token captured from a successful login; never log or display it. */
+    public final String retroAchievementsToken;
+
+    /** True if hardcore mode is requested for RetroAchievements. */
+    public final boolean isRetroAchievementsHardcore;
+
     // Shared preferences keys and key templates
     static final String KEY_EMULATION_PROFILE_DEFAULT = "emulationProfileDefault";
     static final String KEY_TOUCHSCREEN_PROFILE_DEFAULT = "touchscreenProfileDefault";
@@ -424,6 +439,12 @@ public class GlobalPrefs
     public static final String ROOM_TCP_PORT = "roomTcpPort";
     public static final String SERVER_UDP_TCP_PORT = "serverTcpUdpPort";
 
+    public static final String KEY_RETRO_ACHIEVEMENTS_ENABLED = "retroAchievementsEnabled";
+    public static final String KEY_RETRO_ACHIEVEMENTS_USERNAME = "retroAchievementsUsername";
+    public static final String KEY_RETRO_ACHIEVEMENTS_PASSWORD = "retroAchievementsPassword";
+    public static final String KEY_RETRO_ACHIEVEMENTS_TOKEN = "retroAchievementsToken";
+    public static final String KEY_RETRO_ACHIEVEMENTS_HARDCORE = "retroAchievementsHardcore";
+
     public static final String AUDIO_SAMPLING_TYPE = "audioSamplingType";
     public static final String AUDIO_LOW_PERFORMANCE_MODE = "lowPerformanceMode";
 
@@ -441,6 +462,8 @@ public class GlobalPrefs
     public static final String DEFAULT_TOUCHSCREEN_DPAD_PROFILE_DEFAULT = "Everything";
     static final String DEFAULT_CONTROLLER_PROFILE_DEFAULT = "Android Gamepad";
     public static final String DEFAULT_LOCALE_OVERRIDE = "";
+    public static final boolean DEFAULT_RETRO_ACHIEVEMENTS_ENABLED = false;
+    public static final boolean DEFAULT_RETRO_ACHIEVEMENTS_HARDCORE = false;
     // ... add more as needed
 
     private final SharedPreferences mPreferences;
@@ -503,6 +526,15 @@ public class GlobalPrefs
 
         // Library prefs
         isRecentShown = mPreferences.getBoolean( "showRecentlyPlayed", true );
+
+        // RetroAchievements
+        isRetroAchievementsEnabled = mPreferences.getBoolean(
+                KEY_RETRO_ACHIEVEMENTS_ENABLED, DEFAULT_RETRO_ACHIEVEMENTS_ENABLED );
+        retroAchievementsUsername = mPreferences.getString( KEY_RETRO_ACHIEVEMENTS_USERNAME, "" );
+        retroAchievementsPassword = mPreferences.getString( KEY_RETRO_ACHIEVEMENTS_PASSWORD, "" );
+        retroAchievementsToken = mPreferences.getString( KEY_RETRO_ACHIEVEMENTS_TOKEN, "" );
+        isRetroAchievementsHardcore = mPreferences.getBoolean(
+                KEY_RETRO_ACHIEVEMENTS_HARDCORE, DEFAULT_RETRO_ACHIEVEMENTS_HARDCORE );
         sortByRomName = mPreferences.getString( "sortingMethod", "romName" ).equals("romName");
         isFullNameShown = mPreferences.getBoolean( "showFullNames", true );
         coverArtScale = ( mPreferences.getInt( "libraryArtScale", 100 ) ) / 100.0f;

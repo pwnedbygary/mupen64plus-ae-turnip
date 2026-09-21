@@ -552,7 +552,7 @@ public class GamePrefsActivity extends AppCompatPreferenceActivity implements On
 
                 mDeleteFilesFragment.deleteFiles(foldersToDelete, filters);
             }
-        } else if (id == DOWNLOAD_CONFIRM_DIALOG_ID) {
+        } else if (id == DOWNLOAD_CONFIRM_DIALOG_ID && which == DialogInterface.BUTTON_POSITIVE) {
             Scope driveFileScope = new Scope(Scopes.DRIVE_FILE);
             Scope emailScope = new Scope(Scopes.EMAIL);
 
@@ -563,7 +563,7 @@ public class GamePrefsActivity extends AppCompatPreferenceActivity implements On
             } else {
                 Notifier.showToast( this, R.string.notSignedIn );
             }
-        } else if (id == UPLOAD_CONFIRM_DIALOG_ID) {
+        } else if (id == UPLOAD_CONFIRM_DIALOG_ID && which == DialogInterface.BUTTON_POSITIVE) {
             Scope driveFileScope = new Scope(Scopes.DRIVE_FILE);
             Scope emailScope = new Scope(Scopes.EMAIL);
 

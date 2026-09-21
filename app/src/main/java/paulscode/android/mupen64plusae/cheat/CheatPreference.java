@@ -23,8 +23,9 @@ package paulscode.android.mupen64plusae.cheat;
 import paulscode.android.mupen64plusae.R;
 
 import paulscode.android.mupen64plusae.cheat.OptionDialog.Listener;
-import android.app.AlertDialog;
-import android.app.AlertDialog.Builder;
+import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
+import paulscode.android.mupen64plusae.ui.UiTheme;
+import androidx.appcompat.app.AlertDialog;
 import android.content.Context;
 import android.content.res.TypedArray;
 import androidx.preference.Preference;
@@ -188,7 +189,8 @@ public class CheatPreference extends Preference implements Listener, View.OnLong
     {
         AlertDialog notesDialog;
         // Popup a dialog to display the cheat notes
-        notesDialog = new Builder( mContext ).setTitle( mTitle ).setMessage( mNotes ).create();
+        notesDialog = ThemedAlertDialog.newBuilder( mContext ).setTitle( mTitle ).setMessage( mNotes ).create();
+        notesDialog.setOnShowListener(d -> UiTheme.get(mContext).applyToDialog(notesDialog));
         notesDialog.show();
         return true;
     }
@@ -201,9 +203,10 @@ public class CheatPreference extends Preference implements Listener, View.OnLong
         if( item != 0 )
         {
             AlertDialog optionNoteDialog;
-            optionNoteDialog = new Builder( mContext ).setTitle(
+            optionNoteDialog = ThemedAlertDialog.newBuilder( mContext ).setTitle(
                 mContext.getString( R.string.cheatOption_title ) ).create();
             optionNoteDialog.setMessage( mOptions[item] );
+            optionNoteDialog.setOnShowListener(d -> UiTheme.get(mContext).applyToDialog(optionNoteDialog));
             optionNoteDialog.show();
         }
     }

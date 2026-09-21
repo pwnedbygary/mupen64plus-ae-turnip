@@ -21,7 +21,7 @@
 package paulscode.android.mupen64plusae.profile;
 
 import android.annotation.SuppressLint;
-import android.app.AlertDialog.Builder;
+import androidx.appcompat.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
@@ -50,6 +50,7 @@ import paulscode.android.mupen64plusae.MenuListView;
 import paulscode.android.mupen64plusae.dialog.MenuDialogFragment;
 import paulscode.android.mupen64plusae.dialog.MenuDialogFragment.OnDialogMenuItemSelectedListener;
 import paulscode.android.mupen64plusae.dialog.SeekBarGroup;
+import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
 import paulscode.android.mupen64plusae.game.GameOverlay;
 import paulscode.android.mupen64plusae.input.AbstractController;
 import paulscode.android.mupen64plusae.input.map.TouchMap;
@@ -60,6 +61,7 @@ import paulscode.android.mupen64plusae.persistent.ConfigFile.ConfigSection;
 import paulscode.android.mupen64plusae.persistent.GlobalPrefs;
 import paulscode.android.mupen64plusae.util.DisplayWrapper;
 import paulscode.android.mupen64plusae.util.LocaleContextWrapper;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 public class TouchscreenProfileActivity extends AppCompatActivity implements OnTouchListener, OnDialogMenuItemSelectedListener
 {
@@ -715,13 +717,15 @@ public class TouchscreenProfileActivity extends AppCompatActivity implements OnT
         };
         
         // Create and show the popup dialog
-        Builder builder = new Builder( this );
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder( this );
         builder.setTitle( title );
         builder.setView( view );
         builder.setNegativeButton( getString( android.R.string.cancel ), listener );
         builder.setNeutralButton( getString( R.string.touchscreenProfileActivity_remove ), listener );
         builder.setPositiveButton( getString( android.R.string.ok ), listener );
         builder.setCancelable( false );
-        builder.create().show();
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(this).applyToDialog(dialog));
+        dialog.show();
     }
 }

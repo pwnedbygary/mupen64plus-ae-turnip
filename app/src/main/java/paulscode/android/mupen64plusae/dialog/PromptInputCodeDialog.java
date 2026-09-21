@@ -8,7 +8,6 @@ import android.os.Bundle;
 import androidx.annotation.NonNull;
 import androidx.fragment.app.DialogFragment;
 import androidx.appcompat.app.AlertDialog;
-import androidx.appcompat.app.AlertDialog.Builder;
 import android.util.Log;
 import android.view.View;
 import android.widget.EditText;
@@ -16,6 +15,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 
 import paulscode.android.mupen64plusae.R;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -119,7 +119,7 @@ public class PromptInputCodeDialog extends DialogFragment
         // Notify the client when the user clicks the dialog's positive button
         DialogInterface.OnClickListener clickListener = (dialog, which) -> onInputCommon(providers, getActivity(), 0, 0, which);
 
-        Builder builder = new Builder(getActivity());
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(getActivity());
         builder.setTitle(title);
         builder.setMessage(message);
         builder.setCancelable(false);
@@ -129,6 +129,7 @@ public class PromptInputCodeDialog extends DialogFragment
         builder.setView(view);
         
         final AlertDialog promptInputCodeDialog = builder.create();
+        promptInputCodeDialog.setOnShowListener(d -> UiTheme.get(getActivity()).applyToDialog(promptInputCodeDialog));
 
         OnInputListener inputListener = new OnInputListener()
         {

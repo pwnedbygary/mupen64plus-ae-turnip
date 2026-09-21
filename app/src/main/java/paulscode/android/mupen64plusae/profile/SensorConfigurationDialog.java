@@ -4,7 +4,7 @@ import java.util.Locale;
 
 import paulscode.android.mupen64plusae.R;
 
-import android.app.AlertDialog.Builder;
+import androidx.appcompat.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
@@ -19,6 +19,8 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.Spinner;
 import paulscode.android.mupen64plusae.dialog.Prompt;
+import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 class SensorConfigurationDialog implements OnClickListener {
 
@@ -250,12 +252,14 @@ class SensorConfigurationDialog implements OnClickListener {
 
     /** Create and show this popup dialog */
     void show() {
-        Builder builder = new Builder(mContext);
+        AlertDialog.Builder builder = ThemedAlertDialog.newBuilder(mContext);
         builder.setTitle(mContext.getString(R.string.menuItem_sensorConfiguration));
         builder.setView(view);
         builder.setNegativeButton(mContext.getString(android.R.string.cancel), this);
         builder.setPositiveButton(mContext.getString(android.R.string.ok), this);
         builder.setCancelable(true);
-        builder.create().show();
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> UiTheme.get(mContext).applyToDialog(dialog));
+        dialog.show();
     }
 }

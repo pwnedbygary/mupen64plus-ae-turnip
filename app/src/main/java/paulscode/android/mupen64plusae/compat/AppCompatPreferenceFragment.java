@@ -19,6 +19,7 @@ import androidx.recyclerview.widget.RecyclerView.OnChildAttachStateChangeListene
 
 import paulscode.android.mupen64plusae.R;
 import paulscode.android.mupen64plusae.preference.ColorPickerPreference;
+import paulscode.android.mupen64plusae.ui.UiTheme;
 
 public class AppCompatPreferenceFragment extends PreferenceFragmentCompat
 {
@@ -180,6 +181,10 @@ public class AppCompatPreferenceFragment extends PreferenceFragmentCompat
             @Override
             public void onChildViewAttachedToWindow(@NonNull View childView)
             {
+                // Rows are created lazily, after onResume has already applied the theme, so
+                // theme each row as it attaches instead of waiting for the next resume.
+                UiTheme.get(childView.getContext()).applyToView(childView);
+
                 final LinearLayoutManager layoutManager = (LinearLayoutManager)recyclerView.getLayoutManager();
 
                 //Prevent scrolling past the top
