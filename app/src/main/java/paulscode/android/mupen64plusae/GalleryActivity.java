@@ -537,10 +537,7 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         // Don't call the async version otherwise the scroll position is lost
         refreshGrid();
 
-        if(getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT )
-        {
-            DisplayWrapper.drawBehindSystemBars(this);
-        }
+        applyDrawBehindSystemBars(getResources().getConfiguration().orientation);
 
         CoordinatorLayout coordLayout = findViewById(R.id.coordLayout);
 
@@ -704,7 +701,25 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
     public void onConfigurationChanged( @NonNull Configuration newConfig )
     {
         super.onConfigurationChanged( newConfig );
+        Log.i("GalleryActivity", "onConfigurationChanged: orientation=" + newConfig.orientation);
         mDrawerToggle.onConfigurationChanged( newConfig );
+
+        // The activity is not recreated on configuration changes, so refresh the portrait-only
+        // draw-behind-system-bars behavior here.
+        applyDrawBehindSystemBars(newConfig.orientation);
+    }
+
+    /**
+     * The gallery draws behind the system bars in portrait only. This activity handles
+     * configuration changes itself and is not recreated, so re-apply this on every change.
+     */
+    @SuppressWarnings("deprecation")
+    private void applyDrawBehindSystemBars(int orientation)
+    {
+        boolean enabled = orientation == Configuration.ORIENTATION_PORTRAIT;
+        DisplayWrapper.setDrawBehindSystemBars(this, enabled);
+        Log.i("GalleryActivity", "drawBehindSystemBars=" + enabled
+                + " sysUiVisibility=0x" + Integer.toHexString(getWindow().getDecorView().getSystemUiVisibility()));
     }
 
     public void createSearchMenu()
