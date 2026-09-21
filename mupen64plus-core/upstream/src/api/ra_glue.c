@@ -467,6 +467,21 @@ int ra_glue_get_user_name(char* buffer, int buffer_size)
   return 1;
 }
 
+int ra_glue_get_user_token(char* buffer, int buffer_size)
+{
+  if (s_client == NULL || buffer == NULL || buffer_size <= 0)
+    return 0;
+
+  const rc_client_user_t* user = rc_client_get_user_info(s_client);
+  if (user == NULL || user->token == NULL) {
+    buffer[0] = '\0';
+    return 0;
+  }
+
+  snprintf(buffer, (size_t)buffer_size, "%s", user->token);
+  return 1;
+}
+
 int ra_glue_get_game_name(char* buffer, int buffer_size)
 {
   if (buffer == NULL || buffer_size <= 0) {

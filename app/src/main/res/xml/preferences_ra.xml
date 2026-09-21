@@ -17,11 +17,11 @@
         android:key="retroAchievementsUsername"
         android:summary="@string/retroAchievementsUsername_summary"
         android:title="@string/retroAchievementsUsername_title" />
-    <androidx.preference.EditTextPreference
+    <paulscode.android.mupen64plusae.preference.PasswordPreference
         android:dependency="retroAchievementsEnabled"
-        android:key="retroAchievementsWebApiKey"
-        android:summary="@string/retroAchievementsWebApiKey_summary"
-        android:title="@string/retroAchievementsWebApiKey_title" />
+        android:key="retroAchievementsPassword"
+        android:summary="@string/retroAchievementsPassword_summary"
+        android:title="@string/retroAchievementsPassword_title" />
     <androidx.preference.CheckBoxPreference
         android:defaultValue="false"
         android:dependency="retroAchievementsEnabled"

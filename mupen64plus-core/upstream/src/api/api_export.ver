@@ -79,6 +79,7 @@ ra_glue_is_logged_in;
 ra_glue_is_game_loaded;
 ra_glue_get_load_game_state;
 ra_glue_get_user_name;
+ra_glue_get_user_token;
 ra_glue_get_game_name;
 ra_glue_get_summary_json;
 ra_glue_get_achievements_json;

@@ -406,8 +406,11 @@ public class GlobalPrefs
     /** RetroAchievements user name, empty if not configured. */
     public final String retroAchievementsUsername;
 
-    /** RetroAchievements web API key. Treat as a secret: never log or display it. */
-    public final String retroAchievementsWebApiKey;
+    /** RetroAchievements password, used for the first login. Never log or display it. */
+    public final String retroAchievementsPassword;
+
+    /** Session token captured from a successful login; never log or display it. */
+    public final String retroAchievementsToken;
 
     /** True if hardcore mode is requested for RetroAchievements. */
     public final boolean isRetroAchievementsHardcore;
@@ -438,7 +441,8 @@ public class GlobalPrefs
 
     public static final String KEY_RETRO_ACHIEVEMENTS_ENABLED = "retroAchievementsEnabled";
     public static final String KEY_RETRO_ACHIEVEMENTS_USERNAME = "retroAchievementsUsername";
-    public static final String KEY_RETRO_ACHIEVEMENTS_WEB_API_KEY = "retroAchievementsWebApiKey";
+    public static final String KEY_RETRO_ACHIEVEMENTS_PASSWORD = "retroAchievementsPassword";
+    public static final String KEY_RETRO_ACHIEVEMENTS_TOKEN = "retroAchievementsToken";
     public static final String KEY_RETRO_ACHIEVEMENTS_HARDCORE = "retroAchievementsHardcore";
 
     public static final String AUDIO_SAMPLING_TYPE = "audioSamplingType";
@@ -527,7 +531,8 @@ public class GlobalPrefs
         isRetroAchievementsEnabled = mPreferences.getBoolean(
                 KEY_RETRO_ACHIEVEMENTS_ENABLED, DEFAULT_RETRO_ACHIEVEMENTS_ENABLED );
         retroAchievementsUsername = mPreferences.getString( KEY_RETRO_ACHIEVEMENTS_USERNAME, "" );
-        retroAchievementsWebApiKey = mPreferences.getString( KEY_RETRO_ACHIEVEMENTS_WEB_API_KEY, "" );
+        retroAchievementsPassword = mPreferences.getString( KEY_RETRO_ACHIEVEMENTS_PASSWORD, "" );
+        retroAchievementsToken = mPreferences.getString( KEY_RETRO_ACHIEVEMENTS_TOKEN, "" );
         isRetroAchievementsHardcore = mPreferences.getBoolean(
                 KEY_RETRO_ACHIEVEMENTS_HARDCORE, DEFAULT_RETRO_ACHIEVEMENTS_HARDCORE );
         sortByRomName = mPreferences.getString( "sortingMethod", "romName" ).equals("romName");

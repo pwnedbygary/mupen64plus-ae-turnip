@@ -61,6 +61,10 @@ EXPORT int ra_glue_get_load_game_state(void);
 
 /* State getters (return 1 if filled). */
 EXPORT int ra_glue_get_user_name(char* buffer, int buffer_size);
+
+/* Session token returned by a successful password login, for token-only re-login. */
+EXPORT int ra_glue_get_user_token(char* buffer, int buffer_size);
+
 EXPORT int ra_glue_get_game_name(char* buffer, int buffer_size);
 EXPORT int ra_glue_get_summary_json(char* buffer, int buffer_size);
 EXPORT int ra_glue_get_achievements_json(char* buffer, int buffer_size);

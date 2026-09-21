@@ -49,7 +49,11 @@ public class RetroAchievementsManager {
     /** rc_api_server_response_t status for a transient client-side failure (rcheevos retries). */
     private static final int RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR = -2;
 
-    private static final String USER_AGENT = "Mupen64PlusAE";
+    /**
+     * RetroAchievements negotiates client capabilities (including hardcore unlocks) from the
+     * User-Agent, which must carry a numeric product version.
+     */
+    private static final String USER_AGENT = "Mupen64PlusAE/3.0 (Android)";
     private static final String DEFAULT_CONTENT_TYPE = "application/x-www-form-urlencoded";
 
     /** Large enough for any realistic achievement list / progress blob. */
@@ -212,6 +216,12 @@ public class RetroAchievementsManager {
     @Nullable
     public String getUserName() {
         return readText(mCore::ra_glue_get_user_name);
+    }
+
+    /** Session token captured from a successful login, for token-only re-login. */
+    @Nullable
+    public String getUserToken() {
+        return readText(mCore::ra_glue_get_user_token);
     }
 
     @Nullable

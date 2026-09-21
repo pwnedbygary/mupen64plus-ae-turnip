@@ -123,6 +123,8 @@ public interface CoreLibrary extends Library {
 
     int ra_glue_get_user_name(byte[] buffer, int bufferSize);
 
+    int ra_glue_get_user_token(byte[] buffer, int bufferSize);
+
     int ra_glue_get_game_name(byte[] buffer, int bufferSize);
 
     int ra_glue_get_summary_json(byte[] buffer, int bufferSize);

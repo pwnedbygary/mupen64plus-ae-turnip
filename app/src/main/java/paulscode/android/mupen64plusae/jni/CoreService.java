@@ -66,6 +66,8 @@ import paulscode.android.mupen64plusae.game.GameActivity;
 import paulscode.android.mupen64plusae.game.GameDataManager;
 import paulscode.android.mupen64plusae.persistent.AppData;
 import paulscode.android.mupen64plusae.persistent.GamePrefs;
+import androidx.preference.PreferenceManager;
+
 import paulscode.android.mupen64plusae.persistent.GlobalPrefs;
 import paulscode.android.mupen64plusae.task.SyncToGoogleDriveService;
 import paulscode.android.mupen64plusae.util.CountryCode;
@@ -1188,12 +1190,18 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         ra.addListener(this);
         ra.setHardcore(mGlobalPrefs.isRetroAchievementsHardcore);
 
-        if (TextUtils.isEmpty(mGlobalPrefs.retroAchievementsUsername)
-                || TextUtils.isEmpty(mGlobalPrefs.retroAchievementsWebApiKey)) {
-            Log.w(TAG, "RetroAchievements enabled but username/web API key missing");
-        } else {
+        // Password first: rc_client's token login expects the token returned by a login,
+        // not the website's Web API key (which is only valid for the web API).
+        if (TextUtils.isEmpty(mGlobalPrefs.retroAchievementsUsername)) {
+            Log.w(TAG, "RetroAchievements enabled but username missing");
+        } else if (!TextUtils.isEmpty(mGlobalPrefs.retroAchievementsPassword)) {
+            ra.login(mGlobalPrefs.retroAchievementsUsername,
+                    mGlobalPrefs.retroAchievementsPassword);
+        } else if (!TextUtils.isEmpty(mGlobalPrefs.retroAchievementsToken)) {
             ra.loginWithToken(mGlobalPrefs.retroAchievementsUsername,
-                    mGlobalPrefs.retroAchievementsWebApiKey);
+                    mGlobalPrefs.retroAchievementsToken);
+        } else {
+            Log.w(TAG, "RetroAchievements enabled but no password or stored session token");
         }
 
         // Safe before login completes: the client waits for the session.
@@ -1254,8 +1262,18 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             return;
         }
 
-        // Once the game session is up, restore any locally saved progress.
         RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
+
+        // Capture the session token so future sessions can log in without the password.
+        String token = ra.getUserToken();
+        if (!TextUtils.isEmpty(token)) {
+            PreferenceManager.getDefaultSharedPreferences(this)
+                    .edit()
+                    .putString(GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_TOKEN, token)
+                    .apply();
+        }
+
+        // Once the game session is up, restore any locally saved progress.
         if (!mRaProgressRestored && mRaGameMd5 != null && ra.isGameLoaded()) {
             mRaProgressRestored = true;
             byte[] progress = loadRaProgress();
