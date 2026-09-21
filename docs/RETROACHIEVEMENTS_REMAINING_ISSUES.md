@@ -6,7 +6,8 @@ persisted), hardcore gates for save/load state, slots, GameShark and cheats (den
 and denied actions no longer announce first.
 
 This file lists what is still open. Evidence labels: OBSERVED = read from current source;
-DERIVED = inferred from code paths.
+DERIVED = inferred from code paths. No open code issues remain on this branch; what follows are
+deferred token-handling items and device-verification gaps.
 
 ## Fixed on this branch
 - Cancel on confirmation dialogs no longer performs the action: `CoreFragment`
@@ -19,36 +20,12 @@ DERIVED = inferred from code paths.
 - Fast-forward is blocked under hardcore: `CoreService.setCustomSpeed()` rejects speeds above
   baseline (forcing baseline) and the UI does not flip its speed state; new toast
   `ra_hardcoreFastForwardBlocked`.
-
-## Functional bugs
-
-### 1. TOCTOU wording mismatch on the overwrite announcement — LOW (cosmetic)
-- OBSERVED: the fragment decides to prompt from its own `exists()` check
-  (`CoreFragment.java:755`); the service re-checks `exists()` to choose the announcement
-  wording (`CoreService.java:418-420`).
-- Impact: if the file appears/disappears between the checks, the wording may not match the
-  dialog. Save behaviour is unchanged.
-- Direction: pass the overwrite decision into the service instead of re-checking.
-
-## Cleanups
-
-### 2. `getLoadGameState()` / `LOAD_STATE_*` have no callers outside the manager — LOW
-- OBSERVED: no references outside `RetroAchievementsManager.java` (grep across `app/src/main`).
-  `LOAD_STATE_ABORTED` is documented as never returned (rc_client detaches the load state in
-  the same operation that records the abort).
-- Direction: remove, or add the intended consumer (e.g., a UI status indicator).
-
-### 3. `LOAD_STATE_*` javadoc parenthetical is incomplete — INFO
-- OBSERVED: an unknown-game abort assigns `client->game` before `rc_client_load_error`
-  (`mupen64plus-core/rcheevos/src/rc_client.c:2618-2625`), so `getLoadGameState()` reports
-  `DONE`, not `NONE`, after that abort.
-- Direction: correct the parenthetical in the javadoc.
-
-### 4. `LoginPreference.onDetached()` constructs the RA client even if never used — LOW
-- OBSERVED: `onDetached()` calls `RetroAchievementsManager.getInstance().removeListener(this)`
-  unconditionally (`LoginPreference.java:139-146`), which creates the singleton and loads the
-  native library on settings-screen exit even when Connect was never tapped.
-- Direction: static accessor with a null check before removing.
+- Announcement TOCTOU removed: `CoreService.saveState(filename, overwriting)` takes the
+  overwrite decision from the UI instead of re-checking `exists()`.
+- Dead `LOAD_STATE_*` constants and `getLoadGameState()` removed (no callers; ABORTED is not
+  observable through it). The load-state/ABORTED note now lives on `loadGame()`.
+- `LoginPreference.onDetached()` uses `RetroAchievementsManager.peekInstance()` so it never
+  constructs the client (or loads the native library) just to detach.
 
 ## Deferred items from commit `8f14880ef` (login/token handling)
 Reference: that commit's message lists these as nonblocking:

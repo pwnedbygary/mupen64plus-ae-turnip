@@ -142,7 +142,13 @@ public class LoginPreference extends Preference implements RetroAchievementsMana
 
         // The result can arrive after this row's screen is gone; stop listening so a destroyed
         // activity is never touched and this instance is not retained by the process-wide client.
-        RetroAchievementsManager.getInstance().removeListener( this );
+        // peekInstance() avoids constructing the client (and loading the native library) just to
+        // detach when Connect was never used.
+        RetroAchievementsManager ra = RetroAchievementsManager.peekInstance();
+        if( ra != null )
+        {
+            ra.removeListener( this );
+        }
     }
 
     private void show( Context context, String message )

@@ -96,6 +96,16 @@ public class RetroAchievementsManager {
         return instance;
     }
 
+    /**
+     * @return the singleton if it has already been created, otherwise null. Unlike
+     * {@link #getInstance()} this never constructs the manager (and never loads the native
+     * library), so teardown paths can clean up without side effects.
+     */
+    @Nullable
+    public static RetroAchievementsManager peekInstance() {
+        return sInstance;
+    }
+
     private final CoreLibrary mCore = Native.load("mupen64plus-core", CoreLibrary.class);
     private final ExecutorService mHttpExecutor = Executors.newFixedThreadPool(2);
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
@@ -189,7 +199,13 @@ public class RetroAchievementsManager {
         return mInitialized && mCore.ra_glue_logout() != 0;
     }
 
-    /** @return true if the async load-game request was started. */
+    /**
+     * @return true if the async load-game request was started.
+     *
+     * Note: rc_client does not expose a terminal ABORTED state through its getters — it detaches
+     * the load state in the same operation that records the abort (rc_client.c,
+     * rc_client_load_error) — so load failures must be taken from the async result callback.
+     */
     public boolean loadGame(String md5) {
         if (!initialize()) {
             return false;
@@ -203,30 +219,6 @@ public class RetroAchievementsManager {
 
     public boolean isGameLoaded() {
         return mInitialized && mCore.ra_glue_is_game_loaded() != 0;
-    }
-
-    /**
-     * rc_client load-game states. Note: {@link #LOAD_STATE_ABORTED} is part of the native enum but
-     * is NOT observable through {@link #getLoadGameState()} — rc_client detaches the load state in
-     * the same operation that records the abort (rc_client.c, rc_client_get_load_game_state /
-     * rc_client_load_error), so callers see {@link #LOAD_STATE_NONE} (or DONE if a previous game is
-     * still loaded). A terminal failure must therefore be taken from the async result.
-     */
-    public static final int LOAD_STATE_NONE = 0;   // no load-game request active / detached on error
-    public static final int LOAD_STATE_AWAIT_LOGIN = 1;      // awaiting login to complete
-    public static final int LOAD_STATE_IDENTIFYING_GAME = 2; // identifying the game by md5
-    public static final int LOAD_STATE_FETCHING_GAME_DATA = 3;   // fetching achievements from server
-    public static final int LOAD_STATE_STARTING_SESSION = 4;     // starting the play session
-    public static final int LOAD_STATE_DONE = 5;      // session established, game loaded
-    public static final int LOAD_STATE_ABORTED = 6;   // native enum value; never returned here
-
-    /**
-     * @return rc_client load-game state as exposed by rc_client_get_load_game_state(): one of
-     * {@link #LOAD_STATE_NONE} … {@link #LOAD_STATE_DONE}. A terminal failure is not reported here
-     * (the client detaches the load state), so callers must use the async result for that.
-     */
-    public int getLoadGameState() {
-        return mInitialized ? mCore.ra_glue_get_load_game_state() : LOAD_STATE_NONE;
     }
 
     @Nullable

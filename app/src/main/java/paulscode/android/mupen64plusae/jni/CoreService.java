@@ -408,15 +408,17 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         return false;
     }
 
-    void saveState(String filename)
+    void saveState(String filename, boolean overwriting)
     {
         if (blockIfRaHardcore()) {
             return;
         }
         File currentSaveStateFile = new File( mGamePrefs.getUserSaveDir() + "/" + filename );
         // Announce only the action that will actually happen; hardcore denials already returned.
+        // The overwrite decision comes from the UI that showed the confirmation dialog, so the
+        // announcement cannot disagree with it and there is no second exists() check.
         Notifier.showToast(getApplicationContext(),
-                currentSaveStateFile.exists() ? R.string.toast_overwritingFile : R.string.toast_savingFile,
+                overwriting ? R.string.toast_overwritingFile : R.string.toast_savingFile,
                 filename);
         mCoreInterface.emuSaveFile( currentSaveStateFile.getAbsolutePath() );
     }
