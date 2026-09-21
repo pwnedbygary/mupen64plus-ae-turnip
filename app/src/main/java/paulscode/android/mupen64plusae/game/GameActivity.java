@@ -374,39 +374,14 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         // Handle events from the side bar
         mGameSidebar.setActionHandler(this, R.menu.game_drawer);
 
-        mDisplayResolutionData = new DisplayResolutionData(mGlobalPrefs, this, mDrawerLayout, mGamePrefs.displayScaling);
-
-        // Set parameters for shader view
-        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) mGameSurface.getLayoutParams();
-        params.width = Math.round ( mDisplayResolutionData.getSurfaceResolutionWidth() * ( mGamePrefs.videoSurfaceZoom / 100.f ) );
-        params.height = Math.round ( mDisplayResolutionData.getSurfaceResolutionHeight() * ( mGamePrefs.videoSurfaceZoom / 100.f ) );
-        params.gravity = Gravity.CENTER_HORIZONTAL;
-
-        if(getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT )
-        {
-            params.gravity |= Gravity.TOP;
-        }
-        else
-        {
-            // We need to be center vertical for center vertical in case the screen height in landscape
-            // is less than the game render height
-            params.gravity |= Gravity.CENTER_VERTICAL;
-        }
-        mGameSurface.setLayoutParams( params );
-
-        mGameSurface.getHolder().setFixedSize(mDisplayResolutionData.getResolutionWidth(mGamePrefs.verticalRenderResolution)*mGlobalPrefs.shaderScaleFactor,
-                mDisplayResolutionData.getResolutionHeight(mGamePrefs.verticalRenderResolution)*mGlobalPrefs.shaderScaleFactor);
+        updateGameSurfaceLayout();
 
         mDrawerLayout.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
             int oldWidth = oldRight - oldLeft;
             int oldHeight = oldBottom - oldTop;
             if( v.getWidth() != oldWidth || v.getHeight() != oldHeight )
             {
-                DisplayResolutionData resolutionData = new DisplayResolutionData(mGlobalPrefs, this, mDrawerLayout, mGamePrefs.displayScaling);
-                FrameLayout.LayoutParams newParams = (FrameLayout.LayoutParams) mGameSurface.getLayoutParams();
-                newParams.width = Math.round ( resolutionData.getSurfaceResolutionWidth() * ( mGamePrefs.videoSurfaceZoom / 100.f ) );
-                newParams.height = Math.round ( resolutionData.getSurfaceResolutionHeight() * ( mGamePrefs.videoSurfaceZoom / 100.f ) );
-                mGameSurface.setLayoutParams( newParams );
+                updateGameSurfaceLayout();
             }
         });
 
@@ -514,6 +489,51 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
         mNetplayClientDialog = (NetplayClientSetupDialog) fm.findFragmentByTag(STATE_NETPLAY_CLIENT_DIALOG);
         mNetplayServerDialog = (NetplayServerSetupDialog) fm.findFragmentByTag(STATE_NETPLAY_SERVER_DIALOG);
+    }
+
+    @Override
+    public void onConfigurationChanged(@NonNull Configuration newConfig)
+    {
+        super.onConfigurationChanged(newConfig);
+        Log.i(TAG, "onConfigurationChanged: orientation=" + newConfig.orientation);
+
+        // This activity handles orientation changes itself (android:configChanges) and is not
+        // recreated, so re-apply the orientation-dependent surface layout.
+        updateGameSurfaceLayout();
+    }
+
+    /**
+     * Recomputes the shader surface's layout from the current view size and orientation.
+     * Called at startup, when the drawer layout resizes, and on configuration changes.
+     */
+    private void updateGameSurfaceLayout()
+    {
+        if (mGameSurface == null || mDrawerLayout == null || mGlobalPrefs == null || mGamePrefs == null) {
+            return;
+        }
+
+        mDisplayResolutionData = new DisplayResolutionData(mGlobalPrefs, this, mDrawerLayout, mGamePrefs.displayScaling);
+
+        // Set parameters for shader view
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) mGameSurface.getLayoutParams();
+        params.width = Math.round ( mDisplayResolutionData.getSurfaceResolutionWidth() * ( mGamePrefs.videoSurfaceZoom / 100.f ) );
+        params.height = Math.round ( mDisplayResolutionData.getSurfaceResolutionHeight() * ( mGamePrefs.videoSurfaceZoom / 100.f ) );
+        params.gravity = Gravity.CENTER_HORIZONTAL;
+
+        if(getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT )
+        {
+            params.gravity |= Gravity.TOP;
+        }
+        else
+        {
+            // We need to be center vertical for center vertical in case the screen height in landscape
+            // is less than the game render height
+            params.gravity |= Gravity.CENTER_VERTICAL;
+        }
+        mGameSurface.setLayoutParams( params );
+
+        mGameSurface.getHolder().setFixedSize(mDisplayResolutionData.getResolutionWidth(mGamePrefs.verticalRenderResolution)*mGlobalPrefs.shaderScaleFactor,
+                mDisplayResolutionData.getResolutionHeight(mGamePrefs.verticalRenderResolution)*mGlobalPrefs.shaderScaleFactor);
     }
 
     @Override
