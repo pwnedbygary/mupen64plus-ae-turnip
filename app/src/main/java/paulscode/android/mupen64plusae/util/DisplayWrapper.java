@@ -202,14 +202,31 @@ public class DisplayWrapper {
 
     @SuppressWarnings({"deprecation", "RedundantSuppression", "unused"})
     public static void drawBehindSystemBars(Activity activity) {
+        setDrawBehindSystemBars(activity, true);
+    }
+
+    /**
+     * Enables or disables drawing behind the system bars while preserving any other system UI
+     * visibility flags already set on the decor view. Activities that handle configuration
+     * changes themselves use this to refresh the flags when the orientation changes.
+     */
+    @SuppressWarnings({"deprecation", "RedundantSuppression"})
+    public static void setDrawBehindSystemBars(Activity activity, boolean enabled) {
         // TODO: This is buggy in Android 11, the same functionality can't be obtained when in free form window mode
         /*
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             activity.getWindow().setDecorFitsSystemWindows(false);
         } else */{
-            activity.getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            final int layoutFlags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                     | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+
+            View decorView = activity.getWindow().getDecorView();
+            if (enabled) {
+                decorView.setSystemUiVisibility(decorView.getSystemUiVisibility() | layoutFlags);
+            } else {
+                decorView.setSystemUiVisibility(decorView.getSystemUiVisibility() & ~layoutFlags);
+            }
         }
     }
 }
