@@ -334,7 +334,9 @@ int ra_glue_create(void)
 
   s_client = client;
   rc_client_set_event_handler(s_client, ra_glue_event_handler);
-  rc_client_set_host(s_client, "api.retroachievements.org");
+  /* Keep the rcheevos default host (https://retroachievements.org). Passing a bare
+   * hostname makes rc_api_update_host() prepend "http://", which is blocked by the
+   * app's cleartext policy and is not a valid API endpoint. */
   return 1;
 }
 
