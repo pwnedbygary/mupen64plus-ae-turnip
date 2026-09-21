@@ -195,6 +195,12 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
     private static final String STATE_CURRENT_FPS = "STATE_CURRENT_FPS";
     private int currentFps = -1;
 
+    /** Delay before applying the requested orientation if no frame has been rendered yet. */
+    private static final long ORIENTATION_FALLBACK_DELAY_MS = 10000;
+    /** True once setRequestedOrientation has been called for this activity instance. */
+    private boolean mOrientationApplied = false;
+    private final Runnable mApplyOrientationFallback = () -> applyRequestedOrientation("fallback");
+
     private static final String STATE_NETPLAY_CLIENT_DIALOG = "STATE_NETPLAY_CLIENT_DIALOG";
     private NetplayClientSetupDialog mNetplayClientDialog = null;
 
@@ -516,6 +522,12 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
     @Override
     public void onFpsChanged(int newValue)
     {
+        // The first rendered frame means the native core has finished starting up, so a
+        // configuration change from the requested orientation can no longer interrupt it.
+        if (newValue > 0) {
+            applyRequestedOrientation("first frame");
+        }
+
         if(mGlobalPrefs.isFpsEnabled && mFpsOverlay != null && mCoreFragment != null)
         {
             float shaderFps = mGameSurface.getFps();
@@ -654,6 +666,7 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         if(mHandler != null)
         {
             mHandler.removeCallbacks(mPeriodicChecker);
+            mHandler.removeCallbacks(mApplyOrientationFallback);
         }
 
         if (mOverlay != null) {
@@ -1040,10 +1053,34 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
     @Override
     public void onGameStarted()
     {
-        // Set the screen orientation
-        if (mGlobalPrefs.displayOrientation != -1) {
-            setRequestedOrientation( mGlobalPrefs.displayOrientation );
+        // Loading has finished, but the native core is still attaching plugins and starting
+        // up, so do not force an orientation change here. The orientation is applied on the
+        // first rendered frame; this is the fallback in case no frame ever arrives (e.g.
+        // the emulator is paused before it renders).
+        if (mGlobalPrefs.displayOrientation != -1 && mHandler != null) {
+            mHandler.postDelayed(mApplyOrientationFallback, ORIENTATION_FALLBACK_DELAY_MS);
         }
+    }
+
+    /**
+     * Applies the user-configured screen orientation. Deferred until the first rendered frame
+     * (or a fallback timeout) so the resulting configuration change cannot tear down the
+     * activity while the native core is still starting up.
+     */
+    private void applyRequestedOrientation(String reason)
+    {
+        if (mOrientationApplied || mGlobalPrefs == null || mGlobalPrefs.displayOrientation == -1) {
+            return;
+        }
+
+        mOrientationApplied = true;
+
+        if (mHandler != null) {
+            mHandler.removeCallbacks(mApplyOrientationFallback);
+        }
+
+        Log.i(TAG, "Applying requested orientation " + mGlobalPrefs.displayOrientation + " (" + reason + ")");
+        setRequestedOrientation( mGlobalPrefs.displayOrientation );
     }
 
     @Override
