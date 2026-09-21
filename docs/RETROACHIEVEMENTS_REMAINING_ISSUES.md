@@ -1,29 +1,23 @@
 # RetroAchievements — remaining issues
 
-Status: branch `feat/retroachievements`, tip `cb504d624` (announcement-order fix; pushed).
+Status: branch `feat/retroachievements` (pushed).
 Confirmed working on device: Connect sign-in ("Signed in as pwnedbygary", session token
 persisted), hardcore gates for save/load state, slots, GameShark and cheats (deny toast),
 and denied actions no longer announce first.
 
-This file lists what is still open. None of these items were fixed in `81ac3fb74` or
-`cb504d624`. Evidence labels: OBSERVED = read from current source; DERIVED = inferred from
-code paths.
+This file lists what is still open. Evidence labels: OBSERVED = read from current source;
+DERIVED = inferred from code paths.
+
+## Fixed on this branch
+- Cancel on confirmation dialogs no longer performs the action: `CoreFragment`
+  (`SAVE_STATE_FILE_CONFIRM_DIALOG_ID`) and `GamePrefsActivity` (`DOWNLOAD_CONFIRM_DIALOG_ID`,
+  `UPLOAD_CONFIRM_DIALOG_ID`) now require `which == DialogInterface.BUTTON_POSITIVE`. The Drive
+  download/upload confirmations previously ran on Cancel too.
+- Hardcore denials no longer announce "Saving/Loading …" before being denied (`cb504d624`).
 
 ## Functional bugs
 
-### 1. Cancel on the overwrite-confirmation dialog still overwrites the file — HIGH
-- OBSERVED: `ConfirmationDialog.java:70-71` attaches the same `internalListener` to both the
-  Cancel (negative) and OK (positive) buttons, and the listener forwards `which` unchanged
-  (`ConfirmationDialog.java:55-64`). `CoreFragment.onPromptDialogClosed` for
-  `SAVE_STATE_FILE_CONFIRM_DIALOG_ID` ignores `which` and calls `mCoreService.saveState(...)`
-  (`CoreFragment.java:1001-1012`, save call at 1008). `onCancel` also routes to the same
-  handler with `BUTTON_NEGATIVE` (`ConfirmationDialog.java:78-89`).
-- Impact: saving a state to an existing name and then tapping Cancel overwrites the file.
-- Direction: only save when `which == DialogInterface.BUTTON_POSITIVE`; decide separately what
-  the cancel branch should do about `onSaveLoad()`.
-- Pre-existing, unrelated to the RA work.
-
-### 2. Overwrite confirmation appears before the hardcore denial — MEDIUM (UX)
+### 1. Overwrite confirmation appears before the hardcore denial — MEDIUM (UX)
 - OBSERVED: `CoreFragment.saveState()` shows the confirm dialog whenever the target file
   exists (`CoreFragment.java:722-746`, check at 736) with no hardcore knowledge; the hardcore
   deny happens later in `CoreService.saveState()` (`CoreService.java:406-410`).
@@ -35,7 +29,7 @@ code paths.
   stay correct during session bootstrap.
 - Pre-existing.
 
-### 3. "Fast-forward" is promised by the hardcore summary but not gated — MEDIUM
+### 2. "Fast-forward" is promised by the hardcore summary but not gated — MEDIUM
 - OBSERVED: `strings.xml:259` — "Disables save states, fast-forward and cheats while
   achievements are active". `CoreFragment.fastForward()` calls `setCustomSpeed()`
   (`CoreFragment.java:580-587`; also speed menu at 940-959) with no hardcore check.
@@ -45,7 +39,7 @@ code paths.
 - Direction: gate fast-forward under hardcore, or soften the summary.
 - Pre-existing.
 
-### 4. TOCTOU wording mismatch on the overwrite announcement — LOW (cosmetic)
+### 3. TOCTOU wording mismatch on the overwrite announcement — LOW (cosmetic)
 - OBSERVED: the fragment decides to prompt from its own `exists()` check
   (`CoreFragment.java:736`); the service re-checks `exists()` to choose the announcement
   wording (`CoreService.java:413-415`).
@@ -55,19 +49,19 @@ code paths.
 
 ## Cleanups
 
-### 5. `getLoadGameState()` / `LOAD_STATE_*` have no callers outside the manager — LOW
+### 4. `getLoadGameState()` / `LOAD_STATE_*` have no callers outside the manager — LOW
 - OBSERVED: no references outside `RetroAchievementsManager.java` (grep across `app/src/main`).
   `LOAD_STATE_ABORTED` is documented as never returned (rc_client detaches the load state in
   the same operation that records the abort).
 - Direction: remove, or add the intended consumer (e.g., a UI status indicator).
 
-### 6. `LOAD_STATE_*` javadoc parenthetical is incomplete — INFO
+### 5. `LOAD_STATE_*` javadoc parenthetical is incomplete — INFO
 - OBSERVED: an unknown-game abort assigns `client->game` before `rc_client_load_error`
   (`mupen64plus-core/rcheevos/src/rc_client.c:2618-2625`), so `getLoadGameState()` reports
   `DONE`, not `NONE`, after that abort.
 - Direction: correct the parenthetical in the javadoc.
 
-### 7. `LoginPreference.onDetached()` constructs the RA client even if never used — LOW
+### 6. `LoginPreference.onDetached()` constructs the RA client even if never used — LOW
 - OBSERVED: `onDetached()` calls `RetroAchievementsManager.getInstance().removeListener(this)`
   unconditionally (`LoginPreference.java:139-146`), which creates the singleton and loads the
   native library on settings-screen exit even when Connect was never tapped.

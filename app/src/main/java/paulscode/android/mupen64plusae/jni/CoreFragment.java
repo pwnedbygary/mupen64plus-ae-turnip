@@ -1004,7 +1004,8 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
 
         if (id == SAVE_STATE_FILE_CONFIRM_DIALOG_ID)
         {
-            if (mCoreService != null) {
+            // Cancel must not overwrite the existing file; only OK confirms the overwrite.
+            if (which == DialogInterface.BUTTON_POSITIVE && mCoreService != null) {
                 mCoreService.saveState(mViewModel.mCurrentSaveStateFile.getName());
             }
             if(mCoreEventListener != null)
