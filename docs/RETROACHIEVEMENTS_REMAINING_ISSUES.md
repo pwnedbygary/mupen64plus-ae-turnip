@@ -1,13 +1,13 @@
 # RetroAchievements — remaining issues
 
-Status: branch `feat/retroachievements` (pushed).
+Status: merged to `master` via PR #10 (`af7dd84f0`).
 Confirmed working on device: Connect sign-in ("Signed in as pwnedbygary", session token
 persisted), hardcore gates for save/load state, slots, GameShark and cheats (deny toast),
 and denied actions no longer announce first.
 
 This file lists what is still open. Evidence labels: OBSERVED = read from current source;
-DERIVED = inferred from code paths. No open code issues remain on this branch; what follows are
-deferred token-handling items and device-verification gaps.
+DERIVED = inferred from code paths. No open code issues remain; what follows are device
+verification results, deferred token-handling items and the remaining device-verification gaps.
 
 ## Fixed on this branch
 - Cancel on confirmation dialogs no longer performs the action: `CoreFragment`
@@ -27,6 +27,17 @@ deferred token-handling items and device-verification gaps.
 - `LoginPreference.onDetached()` uses `RetroAchievementsManager.peekInstance()` so it never
   constructs the client (or loads the native library) just to detach.
 
+## Device verification (build `3.0.337 af7dd84f`, Retroid Pocket 6, 2026-09-21)
+- Install + launch clean, no crashes; RA session active for Mario Tennis (achievement event).
+- Hardcore slot load denied with only the deny toast — no "Loading slot 0…" announcement
+  (the original ordering bug).
+- Fast-forward toggle under hardcore shows `ra_hardcoreFastForwardBlocked` and the menu stays at
+  "Speed 100 %" (UI state not flipped).
+- Allowed path: "Save to file…" creates a user save and announces "Saving <name>…" once.
+- Cancel on the overwrite confirmation left the existing file byte-identical
+  (sha256 `d444cc902ee7d21b68ddd59ba968fd5de9167754358f8a36a658309c10efb854` before and after).
+- Existing-file save under hardcore shows only the deny toast — the overwrite dialog is skipped.
+
 ## Deferred items from commit `8f14880ef` (login/token handling)
 Reference: that commit's message lists these as nonblocking:
 - Password outranks the stored token; offer to clear the password after a successful token capture.
@@ -41,8 +52,6 @@ Reference: that commit's message lists these as nonblocking:
   forever. Code-verified only.
 - Dialog teardown guard: tap Connect, then immediately Back/rotate before the result arrives;
   confirm no crash and no orphan dialog. Code-verified only.
-- Allowed-path announcements after moving them into `CoreService`: confirm "Saving/Loading
-  slot #" and file save/load announcements still appear exactly once when the action proceeds.
 
 ## Device data note
 - The old `retroAchievementsWebApiKey` value remains in the device's SharedPreferences
