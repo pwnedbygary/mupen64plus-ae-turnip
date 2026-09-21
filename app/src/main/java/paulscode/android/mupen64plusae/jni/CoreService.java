@@ -41,6 +41,7 @@ import android.os.Message;
 import android.os.Process;
 import android.os.Vibrator;
 import android.text.TextUtils;
+import android.util.Base64;
 import android.util.Log;
 import android.util.SparseArray;
 import android.view.Surface;
@@ -74,7 +75,8 @@ import paulscode.android.mupen64plusae.util.PixelBuffer;
 import paulscode.android.mupen64plusae.util.RomHeader;
 
 @SuppressWarnings({"unused", "RedundantSuppression"})
-public class CoreService extends Service implements CoreInterface.OnFpsChangedListener, RaphnetControllerHandler.DeviceReadyListener {
+public class CoreService extends Service implements CoreInterface.OnFpsChangedListener,
+        RaphnetControllerHandler.DeviceReadyListener, RetroAchievementsManager.Listener {
 
     interface CoreServiceListener
     {
@@ -150,6 +152,11 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     private boolean mIsPaused = false;
     private String mArtPath = null;
     private String mRomMd5 = null;
+
+    // RetroAchievements client state for the current game (null when disabled/inactive).
+    // Written on the main thread, read on the service handler thread.
+    private volatile String mRaGameMd5 = null;
+    private volatile boolean mRaProgressRestored = false;
     private String mRomCrc = null;
     private String mRomHeaderName = null;
     private byte mRomCountryCode = 0;
@@ -760,6 +767,11 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                     mCoreInterface.emuStart();
                 }
 
+                // Emulation has stopped; persist RetroAchievements progress before teardown.
+                if (mRaGameMd5 != null) {
+                    saveRaProgress();
+                }
+
                 if (mNetplayInitSuccess) {
                     mCoreInterface.closeNetplay();
                 }
@@ -1085,6 +1097,8 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             mGameDataManager = new GameDataManager(mGlobalPrefs, mGamePrefs, mGlobalPrefs.maxAutoSaves);
             mGameDataManager.makeDirs();
 
+            startRetroAchievements();
+
             if (mGamePrefs.getEnabledCheats() != null && mGamePrefs.getEnabledCheats().size() != 0) {
                 String countryString = String.format("%02x", mRomCountryCode).substring(0, 2);
                 String regularExpression = "^" + mRomCrc.replace( ' ', '-') + "-C:" + countryString + ".*";
@@ -1142,7 +1156,113 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             destroySurface();
         }
 
+        stopRetroAchievements();
+
         forceExit();
+    }
+
+    // ------------------------------------------------------------------
+    // RetroAchievements
+    // ------------------------------------------------------------------
+
+    private static final String RA_PROGRESS_PREFS = "ra_progress";
+
+    /**
+     * Start the RetroAchievements client for this game when the user has it enabled.
+     * Runs in the emulation process, where the native ra_glue client is driven by
+     * new_vi()/main_reset().
+     */
+    private void startRetroAchievements() {
+        if (!mGlobalPrefs.isRetroAchievementsEnabled || TextUtils.isEmpty(mRomMd5)) {
+            return;
+        }
+
+        RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
+        if (!ra.initialize()) {
+            Log.e(TAG, "RetroAchievements init failed: " + ra.getLastError());
+            return;
+        }
+
+        mRaGameMd5 = mRomMd5;
+        mRaProgressRestored = false;
+        ra.addListener(this);
+        ra.setHardcore(mGlobalPrefs.isRetroAchievementsHardcore);
+
+        if (TextUtils.isEmpty(mGlobalPrefs.retroAchievementsUsername)
+                || TextUtils.isEmpty(mGlobalPrefs.retroAchievementsWebApiKey)) {
+            Log.w(TAG, "RetroAchievements enabled but username/web API key missing");
+        } else {
+            ra.loginWithToken(mGlobalPrefs.retroAchievementsUsername,
+                    mGlobalPrefs.retroAchievementsWebApiKey);
+        }
+
+        // Safe before login completes: the client waits for the session.
+        ra.loadGame(mRomMd5);
+    }
+
+    /** Persist progress and stop the RA client. Idempotent. */
+    private void stopRetroAchievements() {
+        if (mRaGameMd5 == null) {
+            return;
+        }
+        RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
+        saveRaProgress();
+        ra.removeListener(this);
+        ra.shutdown();
+        mRaGameMd5 = null;
+        mRaProgressRestored = false;
+    }
+
+    private void saveRaProgress() {
+        // Never save before the session's stored progress has been restored, or the
+        // pre-restore blob would overwrite it (shutdown timing race).
+        if (mRaGameMd5 == null || !mRaProgressRestored) {
+            return;
+        }
+        byte[] blob = RetroAchievementsManager.getInstance().serializeProgress();
+        if (blob == null || blob.length == 0) {
+            return;
+        }
+        // Synchronous commit: the emulation process is killed shortly after this.
+        getSharedPreferences(RA_PROGRESS_PREFS, MODE_PRIVATE).edit()
+                .putString(mRaGameMd5, Base64.encodeToString(blob, Base64.NO_WRAP))
+                .commit();
+    }
+
+    private byte[] loadRaProgress() {
+        String encoded = getSharedPreferences(RA_PROGRESS_PREFS, MODE_PRIVATE)
+                .getString(mRaGameMd5, null);
+        if (encoded == null) {
+            return null;
+        }
+        try {
+            return Base64.decode(encoded, Base64.NO_WRAP);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    @Override
+    public void onRaEvent(String type, String json) {
+        Log.i(TAG, "RetroAchievements event: " + type);
+    }
+
+    @Override
+    public void onRaAsyncResult(int result, String errorMessage) {
+        if (result != RetroAchievementsManager.RESULT_OK) {
+            Log.w(TAG, "RetroAchievements async error: " + errorMessage);
+            return;
+        }
+
+        // Once the game session is up, restore any locally saved progress.
+        RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
+        if (!mRaProgressRestored && mRaGameMd5 != null && ra.isGameLoaded()) {
+            mRaProgressRestored = true;
+            byte[] progress = loadRaProgress();
+            if (progress != null) {
+                ra.deserializeProgress(progress);
+            }
+        }
     }
 
     public void forceExit()
