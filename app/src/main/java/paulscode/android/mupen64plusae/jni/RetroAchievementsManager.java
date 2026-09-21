@@ -206,11 +206,27 @@ public class RetroAchievementsManager {
     }
 
     /**
-     * rc_client load-game state: 0 none, 1 await login, 2 identifying game,
-     * 3 fetching game data, 4 starting session, 5 done, 6 aborted.
+     * rc_client load-game states. Note: {@link #LOAD_STATE_ABORTED} is part of the native enum but
+     * is NOT observable through {@link #getLoadGameState()} — rc_client detaches the load state in
+     * the same operation that records the abort (rc_client.c, rc_client_get_load_game_state /
+     * rc_client_load_error), so callers see {@link #LOAD_STATE_NONE} (or DONE if a previous game is
+     * still loaded). A terminal failure must therefore be taken from the async result.
+     */
+    public static final int LOAD_STATE_NONE = 0;   // no load-game request active / detached on error
+    public static final int LOAD_STATE_AWAIT_LOGIN = 1;      // awaiting login to complete
+    public static final int LOAD_STATE_IDENTIFYING_GAME = 2; // identifying the game by md5
+    public static final int LOAD_STATE_FETCHING_GAME_DATA = 3;   // fetching achievements from server
+    public static final int LOAD_STATE_STARTING_SESSION = 4;     // starting the play session
+    public static final int LOAD_STATE_DONE = 5;      // session established, game loaded
+    public static final int LOAD_STATE_ABORTED = 6;   // native enum value; never returned here
+
+    /**
+     * @return rc_client load-game state as exposed by rc_client_get_load_game_state(): one of
+     * {@link #LOAD_STATE_NONE} … {@link #LOAD_STATE_DONE}. A terminal failure is not reported here
+     * (the client detaches the load state), so callers must use the async result for that.
      */
     public int getLoadGameState() {
-        return mInitialized ? mCore.ra_glue_get_load_game_state() : 0;
+        return mInitialized ? mCore.ra_glue_get_load_game_state() : LOAD_STATE_NONE;
     }
 
     @Nullable

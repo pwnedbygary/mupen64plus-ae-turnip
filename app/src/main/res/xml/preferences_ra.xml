@@ -22,6 +22,12 @@
         android:key="retroAchievementsPassword"
         android:summary="@string/retroAchievementsPassword_summary"
         android:title="@string/retroAchievementsPassword_title" />
+    <paulscode.android.mupen64plusae.preference.LoginPreference
+        android:dependency="retroAchievementsEnabled"
+        android:key="retroAchievementsConnect"
+        android:persistent="false"
+        android:summary="@string/retroAchievementsConnect_summary"
+        android:title="@string/retroAchievementsConnect_title" />
     <androidx.preference.CheckBoxPreference
         android:defaultValue="false"
         android:dependency="retroAchievementsEnabled"
