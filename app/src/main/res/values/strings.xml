@@ -253,6 +253,7 @@
     <string name="retroAchievementsConnect_noRequest">could not start the request</string>
     <string name="ra_hardcoreBlocked">Hardcore mode: save states and load states are disabled</string>
     <string name="ra_hardcoreCheatsBlocked">Hardcore mode: cheats are disabled</string>
+    <string name="ra_hardcoreFastForwardBlocked">Hardcore mode: fast-forward is disabled</string>
     <string name="retroAchievementsPassword_title">Password</string>
     <string name="retroAchievementsPassword_summary">Your retroachievements.org password; a session token is saved after the first login</string>
     <string name="retroAchievementsHardcore_title">Hardcore mode</string>

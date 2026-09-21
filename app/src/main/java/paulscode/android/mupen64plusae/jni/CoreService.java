@@ -394,8 +394,12 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         return true;
     }
 
-    /** Blocks an action that hardcore mode forbids, notifying the player. @return true if blocked. */
-    private boolean blockIfRaHardcore()
+    /**
+     * Blocks an action that hardcore mode forbids, notifying the player. Package-private so the UI
+     * can ask before prompting for an action the service would deny.
+     * @return true if blocked.
+     */
+    boolean blockIfRaHardcore()
     {
         if (isRaHardcore()) {
             Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreBlocked);
@@ -509,8 +513,28 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         mCoreInterface.emuScreenshot();
     }
 
+    /**
+     * Blocks a speed request that hardcore mode forbids (fast-forward), notifying the player and
+     * forcing the core back to baseline. Package-private so the UI can ask before changing its
+     * speed state.
+     * @return true if blocked.
+     */
+    boolean blockIfRaHardcoreFastForward(int speed)
+    {
+        // Slowing back to baseline stays allowed so an already-fast session can come into compliance.
+        if (isRaHardcore() && speed > CoreFragment.BASELINE_SPEED) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreFastForwardBlocked);
+            mCoreInterface.emuSetSpeed( CoreFragment.BASELINE_SPEED );
+            return true;
+        }
+        return false;
+    }
+
     void setCustomSpeed(int value)
     {
+        if (blockIfRaHardcoreFastForward(value)) {
+            return;
+        }
         mCoreInterface.emuSetSpeed( value );
     }
 
