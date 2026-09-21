@@ -594,14 +594,6 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
 
         if (mCoreService != null)
         {
-            int slot = mCoreService.getSlot();
-
-            try {
-                Notifier.showToast(requireActivity(), R.string.toast_savingSlot, slot);
-            } catch (java.lang.IllegalStateException e) {
-                e.printStackTrace();
-            }
-
             mCoreService.saveSlot();
 
             if(mCoreEventListener != null)
@@ -617,13 +609,6 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
 
         if (mCoreService != null)
         {
-            int slot = mCoreService.getSlot();
-            try {
-                Notifier.showToast( requireActivity(), R.string.toast_loadingSlot, slot );
-            } catch (java.lang.IllegalStateException e) {
-                e.printStackTrace();
-            }
-
             mCoreService.loadSlot();
 
             if(mCoreEventListener != null)
@@ -761,7 +746,6 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
             } else {
                 if (mCoreService != null) {
                     mCoreService.saveState(mViewModel.mCurrentSaveStateFile.getName());
-                    Notifier.showToast(activity, R.string.toast_savingFile, mViewModel.mCurrentSaveStateFile.getName());
                 }
 
                 if (mCoreEventListener != null) {
@@ -828,12 +812,6 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
     private void loadState( File file )
     {
         Log.i(TAG, "loadState");
-
-        try {
-            Notifier.showToast(requireActivity(), R.string.toast_loadingFile, file.getName());
-        } catch (java.lang.IllegalStateException e) {
-            e.printStackTrace();
-        }
 
         if (mCoreService != null) {
             mCoreService.loadState(file);
@@ -1028,11 +1006,6 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
         {
             if (mCoreService != null) {
                 mCoreService.saveState(mViewModel.mCurrentSaveStateFile.getName());
-            }
-            try {
-                Notifier.showToast(requireActivity(), R.string.toast_overwritingFile, mViewModel.mCurrentSaveStateFile.getName());
-            } catch (java.lang.IllegalStateException e) {
-                e.printStackTrace();
             }
             if(mCoreEventListener != null)
             {

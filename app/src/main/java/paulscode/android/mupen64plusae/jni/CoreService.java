@@ -409,6 +409,10 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             return;
         }
         File currentSaveStateFile = new File( mGamePrefs.getUserSaveDir() + "/" + filename );
+        // Announce only the action that will actually happen; hardcore denials already returned.
+        Notifier.showToast(getApplicationContext(),
+                currentSaveStateFile.exists() ? R.string.toast_overwritingFile : R.string.toast_savingFile,
+                filename);
         mCoreInterface.emuSaveFile( currentSaveStateFile.getAbsolutePath() );
     }
 
@@ -477,6 +481,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         if (blockIfRaHardcore()) {
             return;
         }
+        Notifier.showToast(getApplicationContext(), R.string.toast_savingSlot, getSlot());
         mCoreInterface.emuSaveSlot();
     }
 
@@ -485,6 +490,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         if (blockIfRaHardcore()) {
             return;
         }
+        Notifier.showToast(getApplicationContext(), R.string.toast_loadingSlot, getSlot());
         mCoreInterface.emuLoadSlot();
     }
 
@@ -493,6 +499,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         if (blockIfRaHardcore()) {
             return;
         }
+        Notifier.showToast(getApplicationContext(), R.string.toast_loadingFile, file.getName());
         mCoreInterface.emuLoadFile( file.getAbsolutePath() );
     }
 
