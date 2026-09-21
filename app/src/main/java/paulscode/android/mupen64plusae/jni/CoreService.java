@@ -216,6 +216,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                 }
 
                 if (quitMessage) {
+                    Log.w(TAG, "SERVICE_QUIT received; forcing exit");
 
                     //Stop the service immediately
                     forceExit();

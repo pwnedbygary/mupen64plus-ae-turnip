@@ -230,26 +230,35 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         Intent intent = new Intent(CoreService.SERVICE_EVENT);
         if (extras != null) {
 
-            // You can also include some extra data.
-            intent.putExtra(CoreService.SERVICE_QUIT, true);
-            sendBroadcast(intent);
+            final String givenRomPath = extras.getString( ActivityHelper.Keys.ROM_PATH );
 
-            int currentAttempt = 0;
-            while (ActivityHelper.isServiceRunning(this, ActivityHelper.coreServiceProcessName) &&
-                    currentAttempt++ < 100) {
-                Log.i("GalleryActivity", "Waiting on pevious instance to exit");
+            // Only stop a previous instance when this intent is actually going to launch
+            // a game. Intents with unrelated extras (or a configuration-change recreation)
+            // must never kill a running emulation session.
+            if (!TextUtils.isEmpty(givenRomPath)) {
+                // You can also include some extra data.
+                intent.putExtra(CoreService.SERVICE_QUIT, true);
+                Log.i("GalleryActivity", "Sending SERVICE_QUIT to stop previous core");
+                sendBroadcast(intent);
 
-                // Sleep for 10 ms to prevent a tight loop
-                try {
-                    Thread.sleep(10);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
+                int currentAttempt = 0;
+                while (ActivityHelper.isServiceRunning(this, ActivityHelper.coreServiceProcessName) &&
+                        currentAttempt++ < 100) {
+                    Log.i("GalleryActivity", "Waiting on pevious instance to exit");
+
+                    // Sleep for 10 ms to prevent a tight loop
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
                 }
+            } else {
+                Log.i("GalleryActivity", "loadGameFromExtras: no ROM path, not stopping previous core");
             }
 
             if (!extras.getBoolean(KEY_IS_LEANBACK)) {
                 Log.i("GalleryActivity", "Loading ROM from other app");
-                final String givenRomPath = extras.getString( ActivityHelper.Keys.ROM_PATH );
 
                 if( !TextUtils.isEmpty( givenRomPath ) ) {
                     getIntent().replaceExtras((Bundle)null);
@@ -574,13 +583,20 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
             }
         });
 
-        // Get the ROM path if it was passed from another activity/app
+        // Get the ROM path if it was passed from another activity/app.
+        // Only handle it on a fresh create: a configuration-change recreation re-runs
+        // onCreate with the same intent, and re-processing it would re-broadcast
+        // SERVICE_QUIT/SERVICE_RESUME while the core may still be running.
         if (getIntent() != null)
         {
             boolean launchedFromHistory = (getIntent().getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
-            if (!launchedFromHistory) {
+            if (savedInstanceState == null && !launchedFromHistory) {
                 final Bundle extras = getIntent().getExtras();
+                Log.i("GalleryActivity", "onCreate: handling launch intent, extras=" + (extras != null));
                 loadGameFromExtras(extras);
+            }
+            else if (savedInstanceState != null) {
+                Log.i("GalleryActivity", "onCreate: recreation, skipping launch intent");
             }
         }
 
