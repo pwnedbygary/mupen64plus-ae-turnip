@@ -103,11 +103,11 @@ jobs:
 
       - name: Verify release identity and signing continuity
         run: |
-          curl --fail --location --retry 3 https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/download/v336/Mupen64PlusAE-release.apk --output "$RUNNER_TEMP/original-v336.apk"
-          bash tools/verify-release-apk.sh app/build/outputs/apk/release/Mupen64PlusAE-release.apk "$RUNNER_TEMP/original-v336.apk"
+          curl --fail --location --retry 3 https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/download/v337/Mupen64PlusAE-release.apk --output "$RUNNER_TEMP/previous-release.apk"
+          bash tools/verify-release-apk.sh app/build/outputs/apk/release/Mupen64PlusAE-release.apk "$RUNNER_TEMP/previous-release.apk"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: app/build/outputs/apk/release/*.apk
-          body_path: docs/RELEASE_V337.md
+          body_path: docs/RELEASE_V338.md

@@ -2,7 +2,7 @@
 # Verify release identity, original signing continuity, and absent DD tracing.
 set -euo pipefail
 if [[ $# -ne 2 ]]; then
-  echo "Usage: $0 candidate.apk original-v336.apk" >&2
+  echo "Usage: $0 candidate.apk previous-release.apk" >&2
   exit 2
 fi
 sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -13,7 +13,7 @@ original="$2"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 "$tools/aapt" dump badging "$candidate" > "$work/badging.txt"
-grep -Eq "^package: name='org\.mupen64plusae\.turnip\.pwnedbygary' versionCode='337' versionName='3\.0\.337 " "$work/badging.txt"
+grep -Eq "^package: name='org\.mupen64plusae\.turnip\.pwnedbygary' versionCode='338' versionName='3\.0\.338 " "$work/badging.txt"
 if grep -q '^application-debuggable' "$work/badging.txt"; then
   echo "Refusing a debuggable release APK" >&2
   exit 1
@@ -29,5 +29,5 @@ if grep -E 'DDSTART[0-9]|M64P_DD_STARTUP_DIAGNOSTICS|SetDdStartupDiagnostics' "$
   echo "Investigation tracing remains in the release libraries" >&2
   exit 1
 fi
-echo "PASS: v337 release identity, original v336 signer, and no DD trace markers"
+echo "PASS: v338 release identity, previous release signer, and no DD trace markers"
 sha256sum "$candidate"

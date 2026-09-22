@@ -14,13 +14,32 @@
 
 ---
 
-## What's New in v337
+## What's New in v338
 
-- **Native F-Zero X Expansion Kit support** — preserves cartridge-first combo boot and the DD CPU/DMA and RSP fixes from the working development build. Native N64DD loading and custom-machine saving were confirmed on the cleaned CI candidate.
+- **RetroAchievements support** — vendored rcheevos with native glue and a JNA bridge, a settings screen, password sign-in with session-token capture, and hardcore mode enforced across save states, slots, GameShark and cheats.
+- **Gallery, orientation and theme fixes** — orientation changes are handled in place, the gallery keeps its draw-behind-system-bars behaviour across rotation, stale service broadcasts after gallery recreation are fixed (issue #1), the theme quick-switch crash from stacked `activity.recreate()` is fixed, and every dialog and popup now follows the app theme.
+- **Large ROM support** — ROMs larger than 64 MB are accepted, fixing the B3313 new-save crash (issue #3).
+- **Per-game GPU driver control** — corrected per-game driver labelling plus a per-game "force stock driver" option.
+- **New neon branding** — the launcher icon, splash screen, notification icon, Android TV banner and web listing icons all use the neon "M" logo, and the launcher icon is now round with transparent corners on every code path.
+- **Consistent release version** — version code **338**, with version name **3.0.338** plus the build commit hash.
+
+[Download v338](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/tag/v338) · [Full release notes](docs/RELEASE_V338.md)
+
+## Screenshots
+
+| Library | Navigation drawer |
+| :---: | :---: |
+| ![Library](docs/images/gallery.png) | ![Navigation drawer](docs/images/drawer.png) |
+
+| Theme accents | Color presets |
+| :---: | :---: |
+| ![Theme accents](docs/images/theme-accents.png) | ![Color presets](docs/images/theme-presets.png) |
+
+## N64DD and Expansion Kit support
+
+- **Native F-Zero X Expansion Kit support** — preserves cartridge-first combo boot and the DD CPU/DMA and RSP fixes from the development build. The working configuration was demonstrated on the development build rather than re-confirmed since: native disk save and reopen, and writable-cart persistence, still need a device re-test, so keep backups.
 - **F-Zero X EK Cart Hack works and saves** — the WritableROM fix allows the hack to save changes to its embedded Expansion Kit data, which would otherwise be treated as read-only cartridge ROM. This is separate from native N64DD support and works with N64DD disabled.
-- **Cleaned release build** — removes DD/RSP investigation tracing, snapshots, and diagnostic CPU hooks while retaining normal error reporting.
 - **Per-game N64DD activation** — DD-specific behavior remains limited to games with N64DD explicitly enabled. WritableROM support for cartridge hacks remains independently controlled.
-- **Consistent release version** — version code **337**, with version name **3.0.337** plus the build commit hash.
 
 ### Confirmed English Expansion Kit configuration
 
@@ -31,9 +50,7 @@
 
 This configuration applies to the English translation; it is not a claim of compatibility with every cartridge, disk, or IPL combination.
 
-**Installation and saves:** the signed release keeps the existing release package and signing identity, so it can update the earlier signed release without uninstalling. It does not replace the separate `.debug` beta or automatically transfer its private saves. Keep backups: full-restart persistence, custom-track saves, and writable-cart persistence have not been re-tested on the cleaned binary. Device acceptance covered the CI debug candidate, not a separate test of the signed release APK.
-
-[Download v337](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/tag/v337) · [Full release notes](docs/RELEASE_V337.md)
+**Installation and saves:** the signed release keeps the existing release package and signing identity, so it can update the earlier signed release without uninstalling. It does not replace the separate `.debug` beta or automatically transfer its private saves. Keep backups: full-restart persistence, custom-track saves, and writable-cart persistence have not been re-tested on the current binary. Device acceptance for v338 covered the signed release build on a Retroid Pocket 6 (Android 13): install, launch, launcher icon, splash and permission screen, and the notification icon were verified; the N64DD and Expansion Kit paths were not re-tested on this build.
 
 ### How the EK Cart Hack saves with WritableROM
 
@@ -48,9 +65,9 @@ Ordinary cartridge ROM is read-only. Without special handling, those writes do n
 
 This is what lets the Cart Hack **work and save**, despite placing writable Expansion Kit data inside what would normally be read-only ROM space. It is separate from native N64DD disk saving and from emulator save states.
 
-**Backup advice:** keep the `.cart_ram` and `.cart_ram.idx` files together, along with the game's other save files. Exit emulation normally before copying them so buffered writes are closed; this mechanism is not a guarantee against data loss from a crash or force-stop. The v337 re-test limitations noted above still apply.
+**Backup advice:** keep the `.cart_ram` and `.cart_ram.idx` files together, along with the game's other save files. Exit emulation normally before copying them so buffered writes are closed; this mechanism is not a guarantee against data loss from a crash or force-stop. The re-test limitations noted above still apply.
 
-### UI and driver highlights
+## UI and driver highlights
 
 - **Overhauled Glassmorphic & Neon UI**:
   - Multi-pass **Neon Light-Pipe Glow** with Gaussian falloff and white-hot filament center highlights.
@@ -81,6 +98,7 @@ This is what lets the Cart Hack **work and save**, despite placing writable Expa
 - **Driver benchmark mode** — toggleable timed benchmark that measures average FPS to compare Turnip against system drivers.
 - **ParaLLEl-RDP** Vulkan renderer with upscaling, texture filtering, and modern RDP accuracy.
 - **All classic plugins**: GLideN64, glide64mk2, GLN64, Rice, Angrylion, plus HLE/cxd4/parallel RSPs.
+- **RetroAchievements** — sign in from the app and track achievements while you play, with hardcore mode enforced on save states, slots, cheats, GameShark and fast-forward.
 - **Netplay & Cloud Sync**: Local and room-based netplay, Google Drive cloud backup, touchscreen/controller profiles, and 7z/zip ROM support.
 - **In-app update checker** — checks for new releases directly from GitHub and notifies you when an update is available.
 
@@ -95,11 +113,18 @@ The custom driver applies to the **Parallel** plugin (the Vulkan renderer). If t
 
 ---
 
+## Compatibility
+
+- Android 6.0 and newer (`minSdk 23`), built for Android 14 (`targetSdk 34`) and device-tested on Android 13
+- `arm64-v8a` is the primary target; `armeabi-v7a`, `x86` and `x86_64` are packaged as well
+
+---
+
 ## Downloads
 
 | Build Type | Link |
 | :--- | :--- |
-| **Latest Signed Release — v337** | [Download v337](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/tag/v337) |
+| **Latest Signed Release — v338** | [Download v338](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/tag/v338) |
 | **Nightly CI Builds** | [![Build Status][Build]][Actions] |
 
 [Actions]: https://github.com/pwnedbygary/mupen64plus-ae-turnip/actions/workflows/build.yml

@@ -36,6 +36,8 @@ build/
 .gradle
 *.launch
 *.pydevproject
+__pycache__/
+*.pyc
 local.properties
 gradle.properties
 app/.directory
