@@ -1,3 +1,67 @@
+# 2026-09-22 — v338 replacement preparation
+
+At the user's request, the Wave Race compatibility patch is reconciled onto
+published v338/master at ded55f412a778f15d839786776e223935afe7d0b.
+README and release notes describe the narrow change and its verification limits.
+The focused Wave Race host suite and DD startup regression suite pass on this
+tree. These are synthetic checks, not automatic-default device acceptance.
+Preserve the previous tag target under archive/v338-original-ded55f41, rebuild
+through the signed GitHub workflow, and verify the replacement APK's source
+hash, version, signer, and bundled database entry before declaring delivery.
+Save/reopen remains unverified; manual Count per Op 3 gameplay is confirmed.
+No ROM or private device logs are included. Version code remains 338 per the
+requested replacement release; existing v338 users may need a manual install.
+
+# 2026-09-22 — Wave Race translation defaults reconciled with latest master
+
+This branch starts at GitHub master `bb6716bdc`, preserving all pushed
+master changes, including RetroAchievements, gallery/orientation fixes,
+large-ROM support, per-game GPU-driver changes, theming and the launcher icon.
+The only other live remote branch at reconciliation was the archived DD
+checkpoint, already an ancestor of master; no archived investigation code was
+reintroduced. Imported workspace history and private captures are excluded.
+Publication target: `fix/wave-race-shindou-english-patch`. Master and release
+tags are not changed.
+
+The user measured the extracted cartridge copied from their device:
+MD5 `EFDE606C824DAACF715928B914AC26E0`, 8,202,240 bytes, native big-endian
+marker `80 37 12 40`, header CRC `57AF88CE EDE723DA`. The bundled Android
+database now inherits original Shindou metadata via RefMD5, including
+CountPerOp=3, two players, 4KB EEPROM, Mempak and rumble. Its extracted asset
+revision increases from 13 to 14 so an installed app refreshes the database
+even at the same version code. Existing MD5-first/CRC-fallback semantics,
+explicit timing overrides, save identity, DD and writable-cart policies remain.
+
+See [Wave Race evidence and acceptance](WAVE_RACE_LOGO_STALL.md) for full
+fingerprints and reported patch provenance. The patch page lists Zoinkity
+translation v1.1 while the filename says English v1.2; the record intentionally
+does not assert a patch version. The user-pulled installed APK reports package
+`org.mupen64plusae.turnip.pwnedbygary`, version `3.0.337 bb6716bd`, code 337,
+SHA-256 `bae8138b1232802d635ad10f931a2b3500b797a18bb5336f27a2463fb8a91e6a`.
+That label is not proof of source/diff or signer, and that hash is not the
+documented public v337 release APK.
+
+Fresh validation on this latest-master-based branch:
+
+- `CC=clang NODE=<installed Node 20 executable> bash tools/test-wave-race.sh`
+  passed: actual native DB parser/open-ROM lookup with synthetic headers and
+  injected MD5; actual Java database/extraction classes with Android stubs;
+  translation/original timing 3, unknown timing 2, explicit overrides 1..5,
+  CRC fallback, metadata inheritance, asset 13 → 14 refresh at unchanged app
+  version, no repeat extraction at 14, and missing-file repair. Splash gate
+  and save identity assertions are explicitly source-contract checks.
+- `CC=clang CXX=clang++ bash tools/test-dd-startup.sh` passed: DD policy,
+  dynarec boundary, legacy/corrected Parallel RSP DMA and core RSP DMA.
+
+No new APK has been built or device-tested as part of this reconciliation.
+A branch push triggers the existing debug CI workflow; that debug package
+is distinct from the installed release package and is not a save-preserving
+release update. Do not uninstall or clear app data to bypass signing issues.
+Automatic-default dynarec title/menu/race and actual installed database refresh
+still require device acceptance on a compatible update with recorded APK
+hash/version/signer/source. Keep manual Count per Op 3 until then.
+Save/reopen acceptance remains a separate outstanding check.
+
 # 2026-09-17 — v337 release cleanup
 
 The user confirmed native EK works with the USA cartridge, English USA-region

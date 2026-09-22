@@ -16,6 +16,8 @@
 
 ## What's New in v338
 
+- **Wave Race Shindou English translation compatibility** — the verified translation now inherits the original Shindou ROM-database defaults, including Count per Op **3**, and existing installations refresh their bundled database. Explicit per-game overrides remain unchanged. Gameplay at the manual setting of 3 is device-confirmed; automatic-default behavior and save/reopen still need device verification.
+
 - **RetroAchievements support** — vendored rcheevos with native glue and a JNA bridge, a settings screen, password sign-in with session-token capture, and hardcore mode enforced across save states, slots, GameShark and cheats.
 - **Gallery, orientation and theme fixes** — orientation changes are handled in place, the gallery keeps its draw-behind-system-bars behaviour across rotation, stale service broadcasts after gallery recreation are fixed (issue #1), the theme quick-switch crash from stacked `activity.recreate()` is fixed, and every dialog and popup now follows the app theme.
 - **Large ROM support** — ROMs larger than 64 MB are accepted, fixing the B3313 new-save crash (issue #3).
