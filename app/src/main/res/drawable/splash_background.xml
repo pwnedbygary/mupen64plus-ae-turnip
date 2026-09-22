@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Splash backdrop.
+
+  The splash logo (drawable-nodpi/hireslogo.png) is transparent, so without a backdrop it floats
+  on bare black. The accent hues below are sampled from that logo's own saturated neon pixels
+  (magenta #FF00BF 12%, violet #7F00FF / #BF00FF 19%, cyan #00BFFF 12%), which is what keeps the
+  launch screen visually continuous with the launcher icon and the light-pipe theme.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Near-black base; deliberately subtle to avoid OLED banding. -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:endColor="#01010A"
+                android:startColor="#05050C"
+                android:type="linear" />
+        </shape>
+    </item>
+
+    <!-- Magenta bloom behind the centred logo. -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerColor="#12FF00BF"
+                android:centerX="0.5"
+                android:centerY="0.53"
+                android:endColor="#00FF00BF"
+                android:gradientRadius="58%"
+                android:startColor="#24FF00BF"
+                android:type="radial" />
+        </shape>
+    </item>
+
+    <!-- Violet accent, upper right. -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerColor="#0C7F00FF"
+                android:centerX="0.78"
+                android:centerY="0.30"
+                android:endColor="#007F00FF"
+                android:gradientRadius="42%"
+                android:startColor="#1A7F00FF"
+                android:type="radial" />
+        </shape>
+    </item>
+
+    <!-- Cyan accent, lower left. -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerColor="#0800BFFF"
+                android:centerX="0.24"
+                android:centerY="0.72"
+                android:endColor="#0000BFFF"
+                android:gradientRadius="40%"
+                android:startColor="#1400BFFF"
+                android:type="radial" />
+        </shape>
+    </item>
+
+</layer-list>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tight bloom behind the splash logo; used as the background of the ImageView that holds it,
+     so it centres on the logo instead of on the whole screen. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:centerColor="#0E7F00FF"
+        android:endColor="#007F00FF"
+        android:gradientRadius="45%"
+        android:startColor="#1EFF00BF"
+        android:type="radial" />
+</shape>

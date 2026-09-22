@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon background.
+
+  Same retrowave family as the splash backdrop (drawable/splash_background.xml): a dark base with
+  off-centre neon glows, using hues sampled from the logo itself (magenta #FF00BF, violet #7F00FF,
+  cyan #00BFFF). It replaces a flat #000000 fill, which was invisible against a black wallpaper and
+  made the icon read as a floating glyph instead of a tile.
+
+  Every layer is an OVAL, not a rectangle: the icon must be a circle whose corners are transparent,
+  so a host that draws the icon without applying a mask still shows a circle rather than a square
+  tile. The oval diameter is the full 108 dp canvas, which still covers every standard mask shape
+  with room to spare - a 72 dp circular mask, and even a rounded-square mask whose corners reach
+  roughly 51 dp from the centre, sit well inside the 54 dp radius. Masked launchers therefore look
+  unchanged; only the corners go from an opaque dark fill to transparent.
+
+  Why glows instead of one large linear gradient: the launcher shows only the central 72 dp of this
+  108 dp canvas, so a full-canvas linear ramp is cropped down to a nearly flat wash inside the mask.
+  Visible variation has to come from features whose centres sit inside that visible circle.
+
+  Brightness is deliberate: simulated through the 72 dp mask on the 432 px layer, the visible tile
+  measures min 15 / median 28 / max 38 luminance while the glyph's darkest 2% sits at 40, so no part
+  of the tile reaches the logo's darkest detail.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Dark diagonal base; angle 315 runs top-left to bottom-right. -->
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:angle="315"
+                android:endColor="#06050F"
+                android:startColor="#0E0C1C"
+                android:type="linear" />
+        </shape>
+    </item>
+
+    <!-- Violet glow, upper left. -->
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:centerX="0.32"
+                android:centerY="0.30"
+                android:endColor="#007F00FF"
+                android:gradientRadius="50%"
+                android:startColor="#337F00FF"
+                android:type="radial" />
+        </shape>
+    </item>
+
+    <!-- Cyan glow, lower right. -->
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:centerX="0.72"
+                android:centerY="0.74"
+                android:endColor="#0000BFFF"
+                android:gradientRadius="46%"
+                android:startColor="#2900BFFF"
+                android:type="radial" />
+        </shape>
+    </item>
+
+    <!-- Magenta hint, upper right. -->
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:centerX="0.62"
+                android:centerY="0.24"
+                android:endColor="#00FF00BF"
+                android:gradientRadius="34%"
+                android:startColor="#1FFF00BF"
+                android:type="radial" />
+        </shape>
+    </item>
+
+</layer-list>

@@ -211,7 +211,7 @@ public class SplashActivity extends AppCompatActivity implements ExtractAssetsLi
         if ( mGlobalPrefs.isBigScreenMode )
         {
             final ImageView splash = findViewById( R.id.mainImage );
-            splash.setImageResource( R.drawable.publisherlogo);
+            splash.setImageResource( R.drawable.hireslogo);
         }
 
         if (mAppData.isAndroidTv && AppData.IS_OREO && mAppData.getChannelId() == -1)

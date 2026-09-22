@@ -4,6 +4,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
+    android:background="@drawable/splash_background"
     tools:ignore="UseCompoundDrawables" >
     
     <TextView
@@ -23,6 +24,7 @@
         android:layout_height="match_parent"
         android:layout_gravity="center"
         android:contentDescription="@string/app_name"
-        android:src="@drawable/publisherlogo" />
+        android:background="@drawable/splash_logo_glow"
+        android:src="@drawable/hireslogo" />
     
 </LinearLayout>
