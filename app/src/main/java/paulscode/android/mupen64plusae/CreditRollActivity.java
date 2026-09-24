@@ -29,6 +29,7 @@ import android.text.TextUtils;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 
 import paulscode.android.mupen64plusae.util.LocaleContextWrapper;
@@ -169,6 +170,16 @@ public class CreditRollActivity extends AppCompatActivity
     {
         super.onCreate( savedInstanceState );
 
+        // onBackPressed() is deprecated; route the back gesture through the dispatcher.
+        getOnBackPressedDispatcher().addCallback( this, new OnBackPressedCallback( true )
+        {
+            @Override
+            public void handleOnBackPressed()
+            {
+                exit();
+            }
+        } );
+
         setContentView( R.layout.credit_roll_activity );
 
         mStage = findViewById( R.id.creditRollStage );
@@ -260,12 +271,6 @@ public class CreditRollActivity extends AppCompatActivity
 
         exit();
         return true;
-    }
-
-    @Override
-    public void onBackPressed()
-    {
-        exit();
     }
 
     /**

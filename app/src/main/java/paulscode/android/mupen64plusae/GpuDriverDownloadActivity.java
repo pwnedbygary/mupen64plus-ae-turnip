@@ -21,6 +21,7 @@ import android.widget.ArrayAdapter;
 import android.widget.ListView;
 import android.widget.TextView;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.io.File;
@@ -83,6 +84,24 @@ public class GpuDriverDownloadActivity extends AppCompatActivity
     {
         super.onCreate(savedInstanceState);
 
+        // onBackPressed() is deprecated; route the back gesture through the dispatcher.
+        getOnBackPressedDispatcher().addCallback( this, new OnBackPressedCallback( true )
+        {
+            @Override
+            public void handleOnBackPressed()
+            {
+                if (mCurrentSource != null) {
+                    mCurrentSource = null;
+                    showSources();
+                } else {
+                    // Fall through to the system default (finish the activity)
+                    setEnabled( false );
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled( true );
+                }
+            }
+        } );
+
         setContentView(R.layout.activity_gpu_driver_download);
 
         mListView = findViewById(R.id.driverList);
@@ -129,17 +148,6 @@ public class GpuDriverDownloadActivity extends AppCompatActivity
     {
         mExecutor.shutdownNow();
         super.onDestroy();
-    }
-
-    @Override
-    public void onBackPressed()
-    {
-        if (mCurrentSource != null) {
-            mCurrentSource = null;
-            showSources();
-        } else {
-            super.onBackPressed();
-        }
     }
 
     private void showSources()

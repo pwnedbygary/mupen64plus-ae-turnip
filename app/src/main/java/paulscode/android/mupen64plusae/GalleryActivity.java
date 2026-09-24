@@ -46,6 +46,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
@@ -347,6 +348,31 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         Log.i("GalleryActivity", "onCreate");
 
         super.onCreate( savedInstanceState );
+
+        // onBackPressed() is deprecated; route the back gesture through the dispatcher.
+        getOnBackPressedDispatcher().addCallback( this, new OnBackPressedCallback( true )
+        {
+            @Override
+            public void handleOnBackPressed()
+            {
+                if( mDrawerLayout.isDrawerOpen( GravityCompat.START ) )
+                {
+                    mDrawerLayout.closeDrawer( GravityCompat.START );
+                }
+                else if( mSearchView != null && !TextUtils.isEmpty( mSearchQuery ) )
+                {
+                    mSearchQuery = "";
+                    mSearchView.setQuery( mSearchQuery, true );
+                }
+                else
+                {
+                    // Fall through to the system default (finish the activity)
+                    setEnabled( false );
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled( true );
+                }
+            }
+        } );
 
         if( savedInstanceState != null )
         {
@@ -1136,23 +1162,6 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
             item.md5, item.crc, item.headerName, item.countryCode.getValue(),
             item.artPath, item.goodName, item.displayName, false, false, false );
         return true;
-    }
-
-    @Override
-    public void onBackPressed()
-    {
-        if( mDrawerLayout.isDrawerOpen( GravityCompat.START ) )
-        {
-            mDrawerLayout.closeDrawer( GravityCompat.START );
-        }
-        else if(mSearchView != null && !TextUtils.isEmpty(mSearchQuery)) {
-            mSearchQuery = "";
-            mSearchView.setQuery( mSearchQuery, true );
-        }
-        else
-        {
-            super.onBackPressed();
-        }
     }
 
     private void refreshRoms(final String searchUri, boolean searchZips, boolean downloadArt, boolean clearGallery, boolean searchSubdirectories,

@@ -34,6 +34,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Vibrator;
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
 import androidx.fragment.app.FragmentManager;
 import androidx.core.view.GravityCompat;
@@ -284,6 +285,19 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         // -> Theme.Mupen64PlusAE) so dialogs inherit the app's themed AlertDialog styling. The
         // previous stock AppCompat NoActionBar override stripped all of that custom dialog theming.
         super.onCreate(savedInstanceState);
+
+        // onBackPressed() is deprecated; inject the back key into the emulated
+        // input (consuming it, as before) via the back dispatcher.
+        getOnBackPressedDispatcher().addCallback( this, new OnBackPressedCallback( true )
+        {
+            @Override
+            public void handleOnBackPressed()
+            {
+                KeyEvent event = new KeyEvent( KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK );
+                event.setSource( InputDevice.SOURCE_KEYBOARD );
+                onKey( mOverlay, KeyEvent.KEYCODE_BACK, event );
+            }
+        } );
 
         mAppData = new AppData( this );
 
@@ -1182,14 +1196,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
         setResult(RESULT_OK, null);
         finish();
-    }
-
-    @Override
-    public void onBackPressed()
-    {
-        KeyEvent event = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK);
-        event.setSource(InputDevice.SOURCE_KEYBOARD);
-        onKey(mOverlay, KeyEvent.KEYCODE_BACK, event);
     }
 
     /**
