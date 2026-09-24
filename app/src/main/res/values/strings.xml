@@ -100,6 +100,17 @@
     <string name="menuItem_ConfirmationClearShaderCache">Are you sure you would like to clear the shader cache?</string>
     <string name="menuItem_localeOverride">Language</string>
 
+    <!-- CreditRollActivity -->
+    <string name="creditRoll_title">Credits</string>
+    <string name="creditRoll_thankYou">Thank You</string>
+    <string name="creditRoll_viewOnGitHub">View on GitHub</string>
+    <string name="creditRoll_blurb_pwnedbygary">Author and maintainer of the Mupen64Plus-AE Turnip fork. Carries the project forward — current releases, Wave Race &amp; translation fixes, branding, and N64DD support.</string>
+    <string name="creditRoll_blurb_fzurita">Original author of Mupen64FZ, the Fire TV variant of Mupen64AE on which this fork is built.</string>
+    <string name="creditRoll_blurb_littleguy77">Original lead developer of Mupen64AE.</string>
+    <string name="creditRoll_blurb_ecsv">Original Mupen64AE co-author; netplay and networking work.</string>
+    <string name="creditRoll_blurb_paulscode">Original Mupen64AE (paulscode).</string>
+    <string name="creditRoll_blurb_casualjames">Original Mupen64AE co-author.</string>
+
     <!-- ManageProfilesActivity -->
     <string name="menuItem_new">New</string>
     <string name="menuItem_hideBuiltins">Hide built-ins</string>

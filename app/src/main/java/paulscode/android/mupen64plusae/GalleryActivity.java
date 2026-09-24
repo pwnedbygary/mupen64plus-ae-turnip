@@ -907,7 +907,7 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
             pop.show(fm, STATE_HARDWARE_INFO_POPUP);
             return true;
         } else if (item.getItemId() == R.id.menuItem_credits) {
-            ActivityHelper.launchUri(GalleryActivity.this, R.string.uri_credits);
+            startActivity(new Intent(GalleryActivity.this, CreditRollActivity.class));
             return true;
         } else if (item.getItemId() == R.id.menuItem_localeOverride) {
             final CharSequence title = getText( R.string.menuItem_localeOverride );
