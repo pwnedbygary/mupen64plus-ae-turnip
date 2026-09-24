@@ -525,13 +525,15 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
             return;
         }
 
+        mDisplayResolutionData = new DisplayResolutionData(mGlobalPrefs, this, mDrawerLayout, mGamePrefs.displayScaling);
+
         // The drawer has no size before first layout; keep the match_parent surface
         // from XML until a real size is known (the layout listener re-runs this).
+        // Note: the resolution data above must still be constructed on every call,
+        // because onStart() reads it to start the core even before first layout.
         if (mDrawerLayout.getWidth() <= 0 || mDrawerLayout.getHeight() <= 0) {
             return;
         }
-
-        mDisplayResolutionData = new DisplayResolutionData(mGlobalPrefs, this, mDrawerLayout, mGamePrefs.displayScaling);
 
         // Set parameters for shader view
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) mGameSurface.getLayoutParams();
