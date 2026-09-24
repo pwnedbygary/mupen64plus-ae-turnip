@@ -123,7 +123,7 @@
     <string name="profile_manage_profiles">Manage profiles</string>
 
     <!-- Popup Dialogs -->
-    <string name="popup_faq">Mupen64Plus AE is developed and maintained by volunteers.<small>\n\nTo fix graphical glitches, try changing the <i>video plugin</i>.\n\nTo fix lag, try changing the <i>video frameskip</i> setting or the <i>video plugin</i>.\n\nFor unplayable ROMS, try unzipping the ROM first or trying a different version of the ROM.\n\nFor touchscreen control issues, try changing the <i>button scale</i> or <i>button layout</i>.\n\nFor other issues, or if you\'re still stuck, please click the <i>FAQ</i> button below.  For non-game-specific bugs, click the <i>Report bug</i> button below.  We respond to the vast majority of posts within 24 hours.  Honest.\n\n</small>Thank you for helping us improve the app!</string>
+    <string name="popup_faq">M64P Turnip is developed and maintained by volunteers.<small>\n\nTo fix graphical glitches, try changing the <i>video plugin</i>.\n\nTo fix lag, try changing the <i>video frameskip</i> setting or the <i>video plugin</i>.\n\nFor unplayable ROMS, try unzipping the ROM first or trying a different version of the ROM.\n\nFor touchscreen control issues, try changing the <i>button scale</i> or <i>button layout</i>.\n\nFor other issues, or if you\'re still stuck, please click the <i>FAQ</i> button below.  For non-game-specific bugs, click the <i>Report bug</i> button below.  We respond to the vast majority of posts within 24 hours.  Honest.\n\n</small>Thank you for helping us improve the app!</string>
     <string name="popup_version">Version: %1$s\nVersion code: %2$d</string>
 
     <!-- Lists -->
@@ -870,7 +870,7 @@
 
 
     <!-- Corrupt Installation Warning -->
-    <string name="invalidInstall_message">Mupen64 Plus AE is not installed properly. Please try reinstalling the app.</string>
+    <string name="invalidInstall_message">M64P Turnip is not installed properly. Please try reinstalling the app.</string>
 
     <!-- Text Editor Hints (start lower-case) -->
     <string name="hintFileSave">filename</string>
@@ -883,8 +883,8 @@
     <string name="assetExtractor_error">Error</string>
     <string name="assetExtractor_failed_permissions">This app cannot proceed without these permissions</string>
     <string name="assetExtractor_permissions_title">Permissions</string>
-    <string name="assetExtractor_permissions_rationale">Mupen64Plus AE needs to be able to: \nRead your storage to read ROM files, save states, and configuration.\nWrite to your storage to write configuration and save data.</string>
-    <string name="assetExtractor_permissions_rationale_notifications">Mupen64Plus AE needs to be able to show notifications to display status of current foreground services.</string>
+    <string name="assetExtractor_permissions_rationale">M64P Turnip needs to be able to: \nRead your storage to read ROM files, save states, and configuration.\nWrite to your storage to write configuration and save data.</string>
+    <string name="assetExtractor_permissions_rationale_notifications">M64P Turnip needs to be able to show notifications to display status of current foreground services.</string>
 
 
     <!-- Cheats Configuration -->

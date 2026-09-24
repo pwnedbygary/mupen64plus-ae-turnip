@@ -2,7 +2,9 @@
 <resources>
 
     <!-- Proper names, trademarks, etc. -->
-    <string name="app_name" translatable="false">M64Plus FZ</string>
+    <string name="app_name" translatable="false">M64P Turnip</string>
+    <!-- Stable Google Drive folder name; kept across app renames so existing backups stay reachable -->
+    <string name="driveFolder" translatable="false">M64Plus FZ</string>
     <string name="app_version" translatable="false">3.0.335 beta</string>
 
     <!-- Web links, email addresses, etc. -->
