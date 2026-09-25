@@ -46,6 +46,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
@@ -347,6 +348,31 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         Log.i("GalleryActivity", "onCreate");
 
         super.onCreate( savedInstanceState );
+
+        // onBackPressed() is deprecated; route the back gesture through the dispatcher.
+        getOnBackPressedDispatcher().addCallback( this, new OnBackPressedCallback( true )
+        {
+            @Override
+            public void handleOnBackPressed()
+            {
+                if( mDrawerLayout.isDrawerOpen( GravityCompat.START ) )
+                {
+                    mDrawerLayout.closeDrawer( GravityCompat.START );
+                }
+                else if( mSearchView != null && !TextUtils.isEmpty( mSearchQuery ) )
+                {
+                    mSearchQuery = "";
+                    mSearchView.setQuery( mSearchQuery, true );
+                }
+                else
+                {
+                    // Fall through to the system default (finish the activity)
+                    setEnabled( false );
+                    getOnBackPressedDispatcher().onBackPressed();
+                    setEnabled( true );
+                }
+            }
+        } );
 
         if( savedInstanceState != null )
         {
@@ -907,7 +933,7 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
             pop.show(fm, STATE_HARDWARE_INFO_POPUP);
             return true;
         } else if (item.getItemId() == R.id.menuItem_credits) {
-            ActivityHelper.launchUri(GalleryActivity.this, R.string.uri_credits);
+            startActivity(new Intent(GalleryActivity.this, CreditRollActivity.class));
             return true;
         } else if (item.getItemId() == R.id.menuItem_localeOverride) {
             final CharSequence title = getText( R.string.menuItem_localeOverride );
@@ -1138,23 +1164,6 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         return true;
     }
 
-    @Override
-    public void onBackPressed()
-    {
-        if( mDrawerLayout.isDrawerOpen( GravityCompat.START ) )
-        {
-            mDrawerLayout.closeDrawer( GravityCompat.START );
-        }
-        else if(mSearchView != null && !TextUtils.isEmpty(mSearchQuery)) {
-            mSearchQuery = "";
-            mSearchView.setQuery( mSearchQuery, true );
-        }
-        else
-        {
-            super.onBackPressed();
-        }
-    }
-
     private void refreshRoms(final String searchUri, boolean searchZips, boolean downloadArt, boolean clearGallery, boolean searchSubdirectories,
                              boolean searchSingleFile)
     {
@@ -1264,41 +1273,10 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
                 .ceil( width * 1.0 / ( galleryMaxWidth + galleryHalfSpacing * 2 ) );
         galleryWidth = width / galleryColumns - galleryHalfSpacing * 2;
 
-        // Programmatically calculate the maximum number of text lines required for the longest game title
-        float density = getResources().getDisplayMetrics().density;
-        int boxPad = Math.round(12f * density);
-        int availableTextWidth = Math.max(1, galleryWidth - 2 * boxPad - Math.round(8f * density));
-
-        android.text.TextPaint textPaint = new android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        textPaint.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
-        textPaint.setLetterSpacing(0.01f);
-        textPaint.setTextSize(TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP, 13.0f * mGlobalPrefs.coverArtScale, getResources().getDisplayMetrics()));
-
-        int calculatedMaxLines = 1;
-        for (GalleryItem item : items) {
-            if (item != null && !item.isHeading) {
-                String title = item.toString();
-                if (!TextUtils.isEmpty(title)) {
-                    android.text.StaticLayout layout;
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                        layout = android.text.StaticLayout.Builder.obtain(title, 0, title.length(), textPaint, availableTextWidth)
-                                .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
-                                .setIncludePad(false)
-                                .build();
-                    } else {
-                        layout = new android.text.StaticLayout(title, textPaint, availableTextWidth,
-                                android.text.Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, false);
-                    }
-                    int lines = layout.getLineCount();
-                    if (lines > calculatedMaxLines) {
-                        calculatedMaxLines = lines;
-                    }
-                }
-            }
-        }
-        // Support the full line count required by the longest title (minimum 2 for balance)
-        maxTitleLines = Math.max(2, calculatedMaxLines);
+        // Compact, uniform title boxes (two lines): sizing every card to the longest
+        // title in the library left tall, mostly-empty boxes under short titles.
+        // Rows stay aligned via the grid layout; longer titles ellipsize.
+        maxTitleLines = 2;
 
         layoutManager.setSpanCount( galleryColumns );
 

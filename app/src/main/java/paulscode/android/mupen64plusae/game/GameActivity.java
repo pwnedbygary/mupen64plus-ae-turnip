@@ -25,6 +25,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.drawable.BitmapDrawable;
 import android.hardware.SensorManager;
@@ -34,6 +35,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Vibrator;
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
 import androidx.fragment.app.FragmentManager;
 import androidx.core.view.GravityCompat;
@@ -52,6 +54,7 @@ import android.view.MotionEvent;
 import android.view.PointerIcon;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager.LayoutParams;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
@@ -84,11 +87,14 @@ import paulscode.android.mupen64plusae.netplay.room.NetplayClientSetupDialog;
 import paulscode.android.mupen64plusae.netplay.room.NetplayServerSetupDialog;
 import paulscode.android.mupen64plusae.jni.CoreTypes;
 import paulscode.android.mupen64plusae.persistent.AppData;
+import paulscode.android.mupen64plusae.persistent.ConfigFile;
 import paulscode.android.mupen64plusae.persistent.GamePrefs;
 import paulscode.android.mupen64plusae.persistent.GlobalPrefs;
 import paulscode.android.mupen64plusae.jni.CoreTypes.PakType;
 import paulscode.android.mupen64plusae.profile.ControllerProfile;
+import paulscode.android.mupen64plusae.profile.ManageTouchscreenProfilesActivity;
 import paulscode.android.mupen64plusae.util.CountryCode;
+import paulscode.android.mupen64plusae.util.DeviceUtil;
 import paulscode.android.mupen64plusae.util.DisplayResolutionData;
 import paulscode.android.mupen64plusae.util.DisplayWrapper;
 import paulscode.android.mupen64plusae.util.FileUtil;
@@ -183,6 +189,9 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
     private static final String STATE_DRAWER_OPEN = "STATE_DRAWER_OPEN";
     private boolean mDrawerOpenState = false;
+    // Set when the touchscreen profile editor was opened from the in-game menu,
+    // so onResume can pick up layout edits without restarting the game.
+    private boolean mTouchscreenEdited = false;
 
     private static final String STATE_CORE_FRAGMENT = "STATE_CORE_FRAGMENT";
     private CoreFragment mCoreFragment = null;
@@ -279,6 +288,19 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         // previous stock AppCompat NoActionBar override stripped all of that custom dialog theming.
         super.onCreate(savedInstanceState);
 
+        // onBackPressed() is deprecated; inject the back key into the emulated
+        // input (consuming it, as before) via the back dispatcher.
+        getOnBackPressedDispatcher().addCallback( this, new OnBackPressedCallback( true )
+        {
+            @Override
+            public void handleOnBackPressed()
+            {
+                KeyEvent event = new KeyEvent( KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK );
+                event.setSource( InputDevice.SOURCE_KEYBOARD );
+                onKey( mOverlay, KeyEvent.KEYCODE_BACK, event );
+            }
+        } );
+
         mAppData = new AppData( this );
 
         // Initialize the objects and data files interfacing to the emulator core
@@ -345,8 +367,11 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         // Keep screen from going to sleep
         window.setFlags( LayoutParams.FLAG_KEEP_SCREEN_ON, LayoutParams.FLAG_KEEP_SCREEN_ON );
 
-        // Lay out content and get the views
-        this.setContentView( R.layout.game_activity);
+        // Lay out content and get the views. The requested orientation is applied in place at the
+        // first frame, so the activity is never recreated to pick up the other orientation's layout:
+        // choose the layout for the orientation the game will run in.
+        final boolean landscapeLayout = usesLandscapeLayout();
+        this.setContentView( landscapeLayout ? R.layout.game_activity_landscape : R.layout.game_activity );
 
         mGameSurface = this.findViewById(R.id.shaderSurface);
 
@@ -354,6 +379,11 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         mFpsOverlay = findViewById(R.id.fpsOverlay);
         mDrawerLayout = findViewById(R.id.drawerLayout);
         mGameSidebar = findViewById(R.id.gameSidebar);
+
+        if (landscapeLayout) {
+            // The sidebar's padding comes only from this listener; padding set elsewhere undoes it.
+            mGameSidebar.setOnApplyWindowInsetsListener(this::applySidebarInsets);
+        }
 
         // Don't darken the game screen when the drawer is open
         mDrawerLayout.setScrimColor(0x0);
@@ -443,17 +473,7 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         });
 
         // Initialize the screen elements
-        if( mGamePrefs.isTouchscreenEnabled )
-        {
-            // The touch map and overlay are needed to display frame rate and/or controls
-            mTouchscreenMap = new VisibleTouchMap( this.getResources() );
-            mTouchscreenMap.load( mGlobalPrefs.isCustomTouchscreenSkin ? null : this,
-                    mGlobalPrefs.touchscreenSkinPath, mGamePrefs.touchscreenProfile,
-                    mGlobalPrefs.isTouchscreenAnimated, mGlobalPrefs.touchscreenScale, mGlobalPrefs.touchscreenTransparency );
-
-            mOverlay.initialize(mTouchscreenMap, !mGamePrefs.isTouchscreenHidden,
-                    mGamePrefs.isAnalogHiddenWhenSensor, mGlobalPrefs.isTouchscreenAnimated);
-        }
+        loadTouchscreenAssets();
 
         if (mGlobalPrefs.isFpsEnabled) {
             mFpsOverlay.load(mGlobalPrefs.isCustomTouchscreenSkin ? null : this, getResources(), mGlobalPrefs.touchscreenSkinPath, mGlobalPrefs.fpsXPosition,
@@ -494,6 +514,42 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         mNetplayServerDialog = (NetplayServerSetupDialog) fm.findFragmentByTag(STATE_NETPLAY_SERVER_DIALOG);
     }
 
+    /**
+     * True if the landscape layout should be used: a fixed orientation preference decides,
+     * otherwise (Auto) the current orientation does.
+     */
+    private boolean usesLandscapeLayout()
+    {
+        switch (mGlobalPrefs.displayOrientation) {
+            case ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE:
+            case ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE:
+            case ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE:
+            case ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE:
+                return true;
+            case ActivityInfo.SCREEN_ORIENTATION_PORTRAIT:
+            case ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT:
+            case ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT:
+            case ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT:
+                return false;
+            default:
+                return getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
+        }
+    }
+
+    /**
+     * The landscape layout's DrawerLayout does not fit system windows, so the game can draw under
+     * the cutout and system bars. Give the drawer the start, top and bottom insets that a
+     * DrawerLayout fitting system windows would give a start drawer.
+     */
+    @SuppressWarnings({"deprecation", "RedundantSuppression"})
+    private WindowInsets applySidebarInsets(View view, WindowInsets insets)
+    {
+        final boolean rtl = view.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL;
+        view.setPadding( rtl ? 0 : insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                rtl ? insets.getSystemWindowInsetRight() : 0, insets.getSystemWindowInsetBottom() );
+        return insets;
+    }
+
     @Override
     public void onConfigurationChanged(@NonNull Configuration newConfig)
     {
@@ -516,6 +572,14 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         }
 
         mDisplayResolutionData = new DisplayResolutionData(mGlobalPrefs, this, mDrawerLayout, mGamePrefs.displayScaling);
+
+        // The drawer has no size before first layout; keep the match_parent surface
+        // from XML until a real size is known (the layout listener re-runs this).
+        // Note: the resolution data above must still be constructed on every call,
+        // because onStart() reads it to start the core even before first layout.
+        if (mDrawerLayout.getWidth() <= 0 || mDrawerLayout.getHeight() <= 0) {
+            return;
+        }
 
         // Set parameters for shader view
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) mGameSurface.getLayoutParams();
@@ -631,6 +695,55 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
             mDrawerLayout.requestFocus();
             ReloadAllMenus();
         }
+
+        // Apply touchscreen layout edits made in the profile editor (opened from
+        // onGameSidebarAction) without restarting the game. The reload is
+        // in-place, so TouchController keeps referencing the same map object.
+        if( mTouchscreenEdited )
+        {
+            mTouchscreenEdited = false;
+            reloadTouchscreenProfile();
+        }
+    }
+
+    private void loadTouchscreenAssets()
+    {
+        if( mGamePrefs == null || !mGamePrefs.isTouchscreenEnabled || mOverlay == null )
+            return;
+
+        // The touch map and overlay are needed to display frame rate and/or controls
+        if( mTouchscreenMap == null )
+            mTouchscreenMap = new VisibleTouchMap( this.getResources() );
+        mTouchscreenMap.load( mGlobalPrefs.isCustomTouchscreenSkin ? null : this,
+                mGlobalPrefs.touchscreenSkinPath, mGamePrefs.touchscreenProfile,
+                mGlobalPrefs.isTouchscreenAnimated, mGlobalPrefs.touchscreenScale, mGlobalPrefs.touchscreenTransparency );
+
+        mOverlay.initialize(mTouchscreenMap, !mGamePrefs.isTouchscreenHidden,
+                mGamePrefs.isAnalogHiddenWhenSensor, mGlobalPrefs.isTouchscreenAnimated);
+
+        // Recompute button geometry for the current overlay size after a reload
+        if( mOverlay.getWidth() > 0 && mOverlay.getHeight() > 0 )
+            mTouchscreenMap.resize( mOverlay.getWidth(), mOverlay.getHeight(),
+                    DeviceUtil.getDisplayMetrics( mOverlay ) );
+        mOverlay.postInvalidate();
+    }
+
+    private void reloadTouchscreenProfile()
+    {
+        if( mGamePrefs == null || mGamePrefs.touchscreenProfile == null || mGlobalPrefs == null )
+            return;
+
+        // The profile editor runs in a separate activity with its own cached
+        // config, so re-read this profile's section fresh from disk: both the
+        // Profile object and the shared ConfigFile cache values in memory.
+        ConfigFile config = new ConfigFile( mGlobalPrefs.touchscreenProfiles_cfg );
+        if( !mGamePrefs.touchscreenProfile.readFrom( config ) )
+        {
+            // The profile section is gone (e.g. the active custom profile was
+            // deleted in Manage); keep rendering the last-good in-memory data.
+            Log.w( TAG, "Touchscreen profile section missing after edit; keeping last-good layout" );
+        }
+        loadTouchscreenAssets();
     }
 
     @Override
@@ -879,6 +992,10 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
                 this.getSystemService(Context.INPUT_METHOD_SERVICE);
             if (imeManager != null)
                 imeManager.showInputMethodPicker();
+        } else if (menuItem.getItemId() ==  R.id.menuItem_touchscreen) {
+            // Open the touchscreen layout editor; onResume picks up the edits
+            mTouchscreenEdited = true;
+            startActivity( new Intent( this, ManageTouchscreenProfilesActivity.class ) );
         } else if (menuItem.getItemId() ==  R.id.menuItem_reset) {
             mCoreFragment.restart();
         }
@@ -1127,14 +1244,6 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
         setResult(RESULT_OK, null);
         finish();
-    }
-
-    @Override
-    public void onBackPressed()
-    {
-        KeyEvent event = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK);
-        event.setSource(InputDevice.SOURCE_KEYBOARD);
-        onKey(mOverlay, KeyEvent.KEYCODE_BACK, event);
     }
 
     /**
