@@ -4857,3 +4857,63 @@ publish, delete the temporary device ROMs staged in
 `/sdcard/Android/data/<pkg>/files/roms/` and record that the fixed debug build
 remains installed. Reporter confirmation of the exact title remains the final
 acceptance signal; do not close issue #3 on this record alone.
+
+## macOS builds: awk fallback for the generated asm_defines headers (2026-09-25)
+
+**Scope and baseline.** Branch `fix/macos-awk-fallback` from `master` `47ac317b1`; only
+`mupen64plus-core/mupen64plus-core.mk` changes (plus this section). Independent of PR #16.
+
+**Observed defect.** OBSERVED on a Mac (macOS 27, Apple Silicon, `/usr/bin/awk` "version 20200816",
+no gawk): `./gradlew :app:assembleDebug` fails in `:mupen64plus-core:buildNdkBuildDebug[arm64-v8a]`
+with `gawk: command not found` followed by `linkage_arm64.S:46:10: fatal error: 'asm_defines_gas.h'
+file not found`. `mupen64plus-core.mk` used `AWK_CMD := gawk` on every non-Windows host (`awk` only for
+`HOST_OS == windows`); NDK r26 ships no awk and defines no `HOST_AWK`. The 2026-09-24 failure log
+(`configure_stderr.txt`) is kept outside the repository.
+
+**Change.** Windows keeps `awk`; other hosts use gawk when `command -v gawk` finds it and `awk`
+otherwise, so Linux with gawk is unchanged (DERIVED for CI: `build.yml` builds on ubuntu-latest without
+installing gawk, and the hardcoded-gawk build passes there). The "Generating asm_defines…" info line
+now names the awk used. Why BSD awk is safe here: `gen_asm_defines.awk` is POSIX-only (a `BEGIN`
+block, one ERE, `print > file`), and every `@ASM_DEFINE` record is emitted framed by newlines
+(`asm_defines.c:40-75`), so NUL bytes elsewhere in the binary object cannot hide one.
+
+**Independent reviews.** Plan review (read-only subagent `47230af1`): the make snippet verified
+under the NDK's make 4.3 and macOS make 3.81 (darwin/linux/cygwin without gawk → awk, a gawk on PATH →
+gawk, windows → awk) and BSD awk output byte-identical to an independent extraction for all four ABIs;
+NEEDS CHANGES on the verification plan only (stale generated headers would mask the negative control;
+the chosen-awk line is in AGP's per-ABI logs, not the Gradle console; the configure logs can be stale,
+so only logs newer than a per-run marker count; run the host suites) → PASS on v2.
+
+**Checks actually run.** Each build: `./gradlew --stop`, the 8 generated headers and 4
+`asm_defines.o` moved out of `mupen64plus-core/upstream/src/asm_defines/<abi>/` first, a marker file
+touched, `command -v gawk` logged; only logs and headers newer than the marker count. JDK 17, NDK
+26.1.10909125. The first negative-control attempt failed at the Gradle wrapper download, before any build
+step, because the sandbox had switched `GRADLE_USER_HOME` to an empty cache; corporate TLS inspection
+blocks that download (see PR #16's handoff), so the runs point at the older cache holding the
+checksum-verified Gradle 8.4, and the negative control below is the rerun.
+- Negative control, unchanged `master`, no gawk: BUILD FAILED; arm64 `build_stderr_mupen64plus-core.txt`
+  shows `gawk: command not found` and the missing `asm_defines_gas.h`; the object compiled, no headers.
+- Change applied, no gawk: BUILD SUCCESSFUL; all four ABIs' `build_stdout_mupen64plus-core.txt` say
+  "… with awk", 0 `gawk: command not found`, 0 missing-header errors; the 8 headers were recreated and
+  equal an extraction of the `@ASM_DEFINE` records from the freshly compiled objects (35 per ABI).
+- Change applied, a `gawk` shim (→ `/usr/bin/awk`) first on PATH: BUILD SUCCESSFUL; all four logs say
+  "… with gawk"; headers recreated and identical (selection logic only).
+- Host suites (`bash tools/test-dd-*.sh`, Apple clang 17): `test-dd-arm64-syntax` (compiles against the
+  generated arm64 header) and `test-dd-rsp-mac` (14/14) pass. `test-dd-core-imem-dma`,
+  `test-dd-dynarec-boundary` (Apple ld rejects `--gc-sections`), `test-dd-dma-transfer` (`-Werror`
+  unused parameters in `SSE2NEON.h`), `test-dd-policy`, `test-dd-startup` (SDK `libSystem.B.tbd`
+  "malformed" for this linker) and `test-dd-root-stacks` (59 pass, 14 fail: 13 from BSD `wc -l`
+  padding counts, 1 from a bounded wait for a detached worker's `launcher.log`, timing-dependent) fail
+  identically on an untouched `master` worktree — pre-existing macOS host-side issues, none of which
+  uses this makefile.
+- `git diff --check`: clean. Evidence (logs, header checks) stays outside the repository.
+
+**Limitations.** The awk selection is not visible in CI logs; a passing Linux CI build shows only that
+Linux did not regress. A failing `$(shell …)` still does not stop make, so stale generated headers could
+mask a generation failure; checking `.SHELLSTATUS` would be a possible later hardening. The macOS
+host-suite failures above are unchanged.
+
+**Next instructions.** After PASS on the exact snapshot, stage `mupen64plus-core/mupen64plus-core.mk`
+and this file explicitly, commit, push non-force and open a PR. PR #16 also appends a section at the end
+of this file: if a later merge conflicts here, merge `master` into the branch (no rebase, no force push),
+keep both sections and get a delta re-review.

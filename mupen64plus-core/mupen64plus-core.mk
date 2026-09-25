@@ -191,12 +191,11 @@ else ifeq ($(TARGET_ARCH_ABI), x86_64)
     TARGET := -target x86_64-none-linux-android23
 endif
 
-# Use gawk in linux
-AWK_CMD := gawk
-
-# Use awk in windows
 ifeq ($(HOST_OS),windows)
     AWK_CMD := awk
+else
+    # gen_asm_defines.awk only needs POSIX awk; hosts without gawk (e.g. macOS) use awk.
+    AWK_CMD := $(if $(shell command -v gawk 2>/dev/null),gawk,awk)
 endif
 
 # Create folders if they don't exist
@@ -211,7 +210,7 @@ endif
 
 $(info Compiling asm_defines.c)
 $(shell $(LLVM_TOOLCHAIN_PREFIX)/clang $(TARGET) -c $(ASM_DEFINE_PATH)/asm_defines.c $(LOCAL_CFLAGS) -fno-lto -Wno-error=implicit-function-declaration -I$(LOCAL_PATH)/upstream/src $(ASM_DEFINES_INCLUDE) -Wno-attributes -o $(ASM_DEFINE_PATH)/$(TARGET_ARCH_ABI)/asm_defines.o)
-$(info Generating asm_defines_nasm.h and asm_defines_gas.h)
+$(info Generating asm_defines_nasm.h and asm_defines_gas.h with $(AWK_CMD))
 $(shell $(AWK_CMD) -v dest_dir="$(ASM_DEFINE_PATH)/$(TARGET_ARCH_ABI)" -f $(LOCAL_PATH)/upstream/tools/gen_asm_defines.awk $(ASM_DEFINE_PATH)/$(TARGET_ARCH_ABI)/asm_defines.o)
 
 include $(BUILD_SHARED_LIBRARY)
