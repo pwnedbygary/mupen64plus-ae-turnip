@@ -66,17 +66,15 @@ public class DisplayResolutionData {
 
         // Assume we are are in portrait mode if height is greater than the width
         boolean screenPortrait = dimensions.y > (float)dimensions.x;
-        if ((scaling == GlobalPrefs.DisplayScaling.STRETCH || scaling == GlobalPrefs.DisplayScaling.STRETCH_169)
+        if (scaling == GlobalPrefs.DisplayScaling.STRETCH && !screenPortrait
                 && dimensions.x > 0 && dimensions.y > 0)
         {
-            // Stretch modes fill the entire window, exactly as the setting promises
-            // ("Fill screen, no black bars"). Fitting a fixed aspect instead (the old
-            // behavior: min-dimension times aspect in portrait, 16:9-fit clamping in
-            // landscape) always leaves bars on non-4:3 and wider-than-16:9 displays.
+            // Stretch fills the whole landscape view ("Fill screen, no black bars"). Only the view
+            // size follows the parent: the render size is fixed when the core starts, usually
+            // before the first layout, and the surface buffer must keep matching it, so the aspect
+            // stays derived from the display.
             videoSurfaceWidthOriginal = dimensions.x;
             videoSurfaceHeightOriginal = dimensions.y;
-            aspect = (float) Math.min(dimensions.x, dimensions.y) / Math.max(dimensions.x, dimensions.y);
-            videoRenderWidthNative = Math.round( fullscreenMinDimension/aspect );
         }
         else if(screenPortrait)
         {

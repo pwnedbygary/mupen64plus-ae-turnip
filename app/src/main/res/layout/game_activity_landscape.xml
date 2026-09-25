@@ -33,18 +33,13 @@
             android:background="@drawable/overlay_color"/>
     </FrameLayout>
 
-    <!-- navigation drawer -->
+    <!-- navigation drawer: GameActivity applies its window insets -->
 
-    <RelativeLayout
-        android:layout_width="280dip"
+    <paulscode.android.mupen64plusae.GameSidebar
+        android:id="@+id/gameSidebar"
+        android:layout_width="280dp"
         android:layout_height="match_parent"
-        android:layout_gravity="start" >
-
-        <paulscode.android.mupen64plusae.GameSidebar
-            android:id="@+id/gameSidebar"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:fillViewport="true" />
-    </RelativeLayout>
+        android:layout_gravity="start"
+        style="@style/MupenTheme_Dark_Sidebar" />
 
 </androidx.drawerlayout.widget.DrawerLayout>

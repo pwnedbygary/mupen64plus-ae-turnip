@@ -25,6 +25,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.drawable.BitmapDrawable;
 import android.hardware.SensorManager;
@@ -53,6 +54,7 @@ import android.view.MotionEvent;
 import android.view.PointerIcon;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager.LayoutParams;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
@@ -365,8 +367,11 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         // Keep screen from going to sleep
         window.setFlags( LayoutParams.FLAG_KEEP_SCREEN_ON, LayoutParams.FLAG_KEEP_SCREEN_ON );
 
-        // Lay out content and get the views
-        this.setContentView( R.layout.game_activity);
+        // Lay out content and get the views. The requested orientation is applied in place at the
+        // first frame, so the activity is never recreated to pick up the other orientation's layout:
+        // choose the layout for the orientation the game will run in.
+        final boolean landscapeLayout = usesLandscapeLayout();
+        this.setContentView( landscapeLayout ? R.layout.game_activity_landscape : R.layout.game_activity );
 
         mGameSurface = this.findViewById(R.id.shaderSurface);
 
@@ -374,6 +379,11 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
         mFpsOverlay = findViewById(R.id.fpsOverlay);
         mDrawerLayout = findViewById(R.id.drawerLayout);
         mGameSidebar = findViewById(R.id.gameSidebar);
+
+        if (landscapeLayout) {
+            // The sidebar's padding comes only from this listener; padding set elsewhere undoes it.
+            mGameSidebar.setOnApplyWindowInsetsListener(this::applySidebarInsets);
+        }
 
         // Don't darken the game screen when the drawer is open
         mDrawerLayout.setScrimColor(0x0);
@@ -502,6 +512,42 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
         mNetplayClientDialog = (NetplayClientSetupDialog) fm.findFragmentByTag(STATE_NETPLAY_CLIENT_DIALOG);
         mNetplayServerDialog = (NetplayServerSetupDialog) fm.findFragmentByTag(STATE_NETPLAY_SERVER_DIALOG);
+    }
+
+    /**
+     * True if the landscape layout should be used: a fixed orientation preference decides,
+     * otherwise (Auto) the current orientation does.
+     */
+    private boolean usesLandscapeLayout()
+    {
+        switch (mGlobalPrefs.displayOrientation) {
+            case ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE:
+            case ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE:
+            case ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE:
+            case ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE:
+                return true;
+            case ActivityInfo.SCREEN_ORIENTATION_PORTRAIT:
+            case ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT:
+            case ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT:
+            case ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT:
+                return false;
+            default:
+                return getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
+        }
+    }
+
+    /**
+     * The landscape layout's DrawerLayout does not fit system windows, so the game can draw under
+     * the cutout and system bars. Give the drawer the start, top and bottom insets that a
+     * DrawerLayout fitting system windows would give a start drawer.
+     */
+    @SuppressWarnings({"deprecation", "RedundantSuppression"})
+    private WindowInsets applySidebarInsets(View view, WindowInsets insets)
+    {
+        final boolean rtl = view.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL;
+        view.setPadding( rtl ? 0 : insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                rtl ? insets.getSystemWindowInsetRight() : 0, insets.getSystemWindowInsetBottom() );
+        return insets;
     }
 
     @Override
