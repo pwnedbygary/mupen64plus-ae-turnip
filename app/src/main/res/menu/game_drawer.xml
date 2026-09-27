@@ -70,6 +70,9 @@
         android:id="@+id/menuItem_setIme"
         android:title="@string/menuItem_setIme"/>
     <item
+        android:id="@+id/menuItem_touchscreen"
+        android:title="@string/menuItem_touchscreenProfiles"/>
+    <item
         android:id="@+id/menuItem_reset"
         android:title="@string/inputMapActivity_reset"/>
 

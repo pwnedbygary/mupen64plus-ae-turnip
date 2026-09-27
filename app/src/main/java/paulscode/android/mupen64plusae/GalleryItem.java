@@ -328,9 +328,9 @@ public class GalleryItem
                         view.setLongClickable( true );
                         tv1.setPadding( 0, 0, 0, 0 );
                         tv1.setGravity(Gravity.CENTER);
-                        int titleLines = (activity != null && activity.maxTitleLines > 0) ? activity.maxTitleLines : 3;
+                        int titleLines = (activity != null && activity.maxTitleLines > 0) ? activity.maxTitleLines : 2;
                         tv1.setTextSize( TypedValue.COMPLEX_UNIT_DIP, 13.0f*item.scale );
-                        tv1.setMaxLines( Math.max(titleLines, 6) );
+                        tv1.setMaxLines( titleLines );
                         tv1.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
                         tv1.setLetterSpacing(0.01f);
                         tv1.setTextColor(paulscode.android.mupen64plusae.ui.UiTheme.get(tempActivity).onSurface());
