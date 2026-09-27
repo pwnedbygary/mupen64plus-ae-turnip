@@ -4857,3 +4857,160 @@ publish, delete the temporary device ROMs staged in
 `/sdcard/Android/data/<pkg>/files/roms/` and record that the fixed debug build
 remains installed. Reporter confirmation of the exact title remains the final
 acceptance signal; do not close issue #3 on this record alone.
+
+## Issue #14 in-game scaling — landscape layout and Stretch/16:9 sizing (2026-09-24)
+
+**Scope and baseline.** Branch `fix/fullscreen-gallery-branding` @ `6183ef2b7`, five commits
+ahead of `master` `47ac317b1` (help links `08e39b6ac`, credit roll `7cc9fed4e`, fill/gallery/
+branding/in-game touch editor entry `b95bf4668`, `onBackPressed` migration `b2a547103`, `onStart`
+NPE fix `6183ef2b7`; their review records are in the commit messages, none has a handoff section).
+Target: GitHub issue #14 ("Games Don't use the full screen") and the user's report that the touch
+controls are misplaced and overlap. User decisions: in landscape, Original = centered 4:3 at full
+height, Stretch = the entire screen, Stretch 16:9 = centered true 16:9 (side bars on phones wider
+than 16:9); controls should look like the touchscreen editor; the layout is chosen from the
+orientation preference at game start (orientation Auto + mid-game rotation stays as in v338);
+an integer-scale mode goes on a new branch from `master` after this branch merges.
+
+**Environment (this Mac; no repo change).** Temurin JDK 17.0.20.1, SDK 34 / build-tools 34.0.0,
+NDK 26.1.10909125, CMake 3.22.1, Gradle wrapper 8.4 (wrapper jar 2.10). Cursor points
+`GRADLE_USER_HOME` at its sandbox cache. Corporate TLS inspection re-signs `services.gradle.org`
+and the JDK trust store rejects it (PKIX), so `gradle-8.4-all.zip` was fetched with curl and
+placed in the wrapper dists directory after its SHA-256 matched the published
+`f2b9ed0f…dd419`. `mupen64plus-core.mk:195` hardcodes `gawk` on non-Windows hosts and macOS has
+none: a session-only `/tmp` shim to `/usr/bin/awk` was used, and the generated
+`asm_defines_gas.h`/`asm_defines_nasm.h` matched an independent Python extraction from each ABI's
+`asm_defines.o` (35 records × 4 ABIs). The ~965 `fcntl(): Bad file descriptor` lines are GNU make
+warnings; the build succeeds with them. No debug keystore existed on this Mac, so the debug APK is
+signed by a new key (certificate SHA-256 `32156abc…f36f`) and cannot update a `.debug` install
+built elsewhere.
+
+**Device.** nubia NX769J, Android 16 (API 36), 1116×2480 panel, density 408 (override), gesture
+navigation, 90 px display cutout (top edge in portrait). The release app (`3.0.338 47ac317b`) was
+not touched; the debug build is installed beside it. OEM logging is off (`log.tag=S`, 0 readable
+logcat bytes), so geometry comes from `dumpsys activity top`, screenshots and `dumpsys
+SurfaceFlinger`, and the crash check is "GameActivity on top, emulation process alive". Test content:
+the bundled GPL homebrew `m64p_test_rom.v64` ("Mupen64Plus Demo by Marshallh (GPL)") launched through
+the `SplashActivity` VIEW intent from the portrait gallery, orientation preference at its default
+(Landscape). Session changes on the phone: screen timeout 60000 → 600000 (restored at the end);
+auto-rotate/user rotation briefly changed for a control attempt and restored (the gallery stayed
+portrait — saved screenshot `control-gallery.png`, 1116×2480 — so that control was inconclusive; the
+window manager's `SCREEN_ORIENTATION_NOSENSOR` reading at that moment is console output only).
+
+**Observed defect (baseline APK `d434f8b5…02c1`, unchanged branch head).** OBSERVED: in landscape
+the game hierarchy was the portrait layout. `DrawerLayout` 0,0-2480,1116; content `FrameLayout`
+90,99-2480,1065 (the DrawerLayout's `fitsSystemWindows` margins: cutout 90, hidden status bar 99,
+hidden gesture bar 51); `GameSurface` sized from the DrawerLayout (2480×1116 Stretch, 1488×1116
+Original), centered in the smaller container and clipped to it; FPS 3/7 + controls 4/7
+`LinearLayout` split, so the controls were squeezed into a 2390×552 overlay (B over C-left, L/Z/R
+mid-screen). Stretch screenshot bars: left 90, top 99, bottom 51, right 0 — the issue #14 pattern.
+Stretch 16:9 had Stretch's size (per `b95bf4668`) but the picture's right edge was at x≈2027, leaving a
+~450 px black strip; DERIVED (plan reviewer): an 853×480 render in a 1067×480 buffer.
+
+**Root causes.** (1) `GameActivity.onCreate` resolved `R.layout.game_activity` from the configuration
+at creation (portrait gallery → portrait layout). The requested orientation is applied at the first
+frame (`b0332b952`, PR #7) and handled in place since `435990c01` (PR #8, v338 `configChanges`), so
+`layout-land/game_activity.xml` (no `fitsSystemWindows`, full-size overlays) was never inflated.
+PR #8's device test started in landscape (RP6, preference Portrait), so this case was not exercised.
+(2) The core render size is fixed at `startCore` in `onStart`, usually before the first layout, and
+the shader draws a viewport of that size (`Shader.java:229`), while the SurfaceView buffer is set
+later by `setFixedSize`; `b95bf4668` recomputed the aspect from the laid-out parent for Stretch and
+Stretch 16:9, so render and buffer sizes diverge (the 16:9 strip; Stretch too whenever the parent's
+aspect differs from the display's). (3) `b95bf4668` also made Stretch 16:9 fill the parent and
+applied the fill in portrait (distorting portrait Stretch and Stretch 16:9).
+
+**Changes.**
+- `app/src/main/res/layout-land/game_activity.xml` → `app/src/main/res/layout/game_activity_landscape.xml`
+  (rename); its drawer is now the portrait layout's `GameSidebar` element (`MupenTheme_Dark_Sidebar`)
+  without `fitsSystemWindows`.
+- `GameActivity.java`: `usesLandscapeLayout()` chooses the layout from `displayOrientation`
+  (landscape family 0/6/8/11, portrait family 1/7/9/12, otherwise the current configuration);
+  `applySidebarInsets()` pads the drawer with the start/top/bottom system-window insets (mirrored for
+  RTL), as a `fitsSystemWindows` DrawerLayout does for a start drawer.
+- `DisplayResolutionData.java`: the fill branch is Stretch-only and landscape-only and no longer
+  recomputes the aspect from the parent; Stretch 16:9 uses the 16:9 fit again; portrait matches `master`.
+
+Frozen hashes (SHA-256): `GameActivity.java` `2c6cc8f7…943a`, `DisplayResolutionData.java`
+`f28626f6…882e`, `res/layout/game_activity_landscape.xml` `8ffff2c3…8178`; deleted
+`res/layout-land/game_activity.xml` at `6183ef2b7` `792e404a…2b19`.
+
+**Independent reviews.** Plan review (read-only subagent `5f869f26`): root causes (1) and (2)
+confirmed against the dumps, DrawerLayout 1.1.1 bytecode and git history; NEEDS CHANGES for
+verification and documentation only (the editor reference uses the "Everything" profile, the game the
+default "Analog"; portrait regression at HEAD; drawer far-side padding; RP6 with preference Portrait;
+immersive mode off; objective buffer evidence; portrait-looking loading screen). Plan v2 delta: PASS
+(the sidebar listener reproduces the v338 padding, the insets reach the sidebar on API 23–29 and 30+,
+nothing else pads it; keep the deprecated inset getters behind `@SuppressWarnings`).
+
+**Checks actually run.**
+- `./gradlew :app:assembleDebug --console=plain`: baseline BUILD SUCCESSFUL in 7m51s; candidate
+  BUILD SUCCESSFUL in 19s (incremental), no warnings in the changed files. Candidate APK
+  `1ceb6713…26be` contains `res/layout/game_activity.xml` and `res/layout/game_activity_landscape.xml`
+  and no `layout-land` game layout.
+- Phone, candidate APK, Stretch: OBSERVED `FrameLayout`, `GameSurface`, `FpsOverlay` and `GameOverlay`
+  all 0,0-2480,1116; drawer's first row at 90,99 (as in v338); screenshot picture 0..2479 × 0..1115,
+  no bars; SurfaceFlinger game layer source crop 480×1067 in native portrait coordinates (a 1067×480
+  buffer) composed over the whole panel; GameActivity on top, emulation process alive. The user
+  confirmed the stretching looks right on the phone.
+- Phone, candidate APK (installed `base.apk` hash re-checked equal to `1ceb6713…26be`), game started from
+  the portrait gallery, OBSERVED:
+  - Original: `GameSurface` 496,0-1984,1116; black bars 496/496; buffer 640×480.
+  - Stretch 16:9: `GameSurface` 248,0-2232,1116; the picture fills the surface (x 248..2231); black bars
+    248/248; buffer 853×480 — no strip.
+  - Controls ("Everything" profile and auto-hide off, set only for this capture): L, D-pad and Z bounding
+    boxes within 1 px of the editor reference; right-hand cluster: 0.41% of sampled pixels differ by more
+    than 48 in any channel (every second pixel of x 1984–2479), and the final reviewer's independent
+    recomputation placed all seven right-hand controls within 1 px. The analog stick
+    is (+21, −6) px from the reference: in-game it sits at the saved profile position (5%, 97%; DERIVED
+    x≈105, y≈732), the reference shows about (4%, 98%) while both the built-in profile and the saved
+    "Everything v2" copy say 5/97 — probably an unsaved drag in the editor (UNKNOWN).
+  - Reverse Landscape (preference 8): in the first attempt the phone stayed at `ROTATION_90` although
+    the activity requested `SCREEN_ORIENTATION_REVERSE_LANDSCAPE` (cause not established; HYPOTHESIS:
+    the OEM rotation policy with auto-rotate on). In the second attempt, with auto-rotate briefly off, the
+    display was at `ROTATION_270` (cutout on the right), the drawer's first row was at 0,99-714,726 (no
+    far-side padding) and the game stayed full screen. The auto-rotate state of each attempt is from the
+    session commands (console output only, not saved).
+  - Preference Portrait: portrait layout (`FrameLayout` 0,99-1116,2429, controls split below);
+    `GameSurface` 0,0-1116,837 / 0,0-1116,502 / 0,0-1116,628 (Original / Stretch / 16:9) with buffers
+    640×480 / 1067×480 / 853×480. DERIVED: these are `origin/master`'s portrait sizes, since the portrait
+    code path is textually identical (no `master` build was run in portrait).
+  - Immersive mode off (landscape, Stretch): window frame [90,0][2480,1116]; `DrawerLayout` and
+    `GameSurface` 2390×1065; buffer 1067×480; drawer padding 0,0.
+  - Back opened the drawer (first row 90,99); Touchscreen opened `ManageTouchscreenProfilesActivity`;
+    Back returned to `GameActivity` with the same emulation process (pid 5738) and unchanged full-screen
+    geometry. Console output only, not saved: a final Back closed the drawer, and `dumpsys dropbox` listed
+    0 crash/ANR entries for the debug package.
+  - Restored afterwards: the debug app's test preference keys removed (saved `phone-prefs-final-after.xml`
+    equals the first captured preferences); screen timeout 60000, auto-rotate on and user rotation 0
+    (console output only). The fix build stays installed as the debug app with the test ROM in its files.
+- RP6 (`49016109`, Android 13): SKIPPED by user decision. Its debug app (`3.0.338 b2a54710`) is signed by
+  another machine's debug key (certificate SHA-256 `311f4e35…2bfc`); this Mac's key is `32156abc…f36f`,
+  so installing would need an uninstall, which AGENTS.md forbids. Nothing on the RP6 was changed (read-only
+  queries and an APK pull for the signer check). The RP6 starts games in landscape, so it did not show the
+  wrong-layout defect.
+- `git diff --check`: clean.
+
+**Limitations.** Orientation Auto plus rotating mid-game keeps the start layout (unchanged since v338).
+Until the first frame applies the orientation, the landscape layout is shown in portrait while loading.
+With immersive mode off, the system pads the content for the visible navigation bar and keeps the window
+off the cutout (as before v338). Stretch draws under the camera cutout (immersive mode uses
+`LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES`); the Original and 16:9 bars cover it. With preference
+Portrait, landscape-first devices such as the RP6 now get the portrait layout (`master` kept the landscape
+layout after rotating to portrait), and it is shown in landscape until the first frame; this is not
+verified on a device (RP6 checks skipped). In multi-window or freeform mode a fixed orientation
+preference still decides the layout, so a portrait-shaped window can get the landscape layout. Default
+touch layouts are unchanged. Working-tree builds keep the HEAD hash in `versionName`; builds are
+identified by APK hash.
+
+Device evidence (screenshots, view/window/SurfaceFlinger dumps) stays outside the repository.
+
+**Next instructions.** After PASS on the exact snapshot, stage these five paths explicitly:
+`app/src/main/res/layout-land/game_activity.xml` (deletion), `app/src/main/res/layout/game_activity_landscape.xml`,
+`app/src/main/java/paulscode/android/mupen64plusae/game/GameActivity.java`,
+`app/src/main/java/paulscode/android/mupen64plusae/util/DisplayResolutionData.java` and this file; commit
+with the verdict and hashes; push non-force. Opening the pull request for issue #14 is the user's call;
+ask the reporter to confirm before closing the issue. RP6 verification needs a build signed with that
+device's debug key. Follow-ups: optionally size the surface buffer from the actual SurfaceTexture size;
+fall back to the current configuration in `usesLandscapeLayout()` in multi-window mode; drop the unused
+`android:orientation` on the landscape layout's `FrameLayout` and `videoRenderWidthNative` (used only in
+the log line);
+integer-scale mode on a new branch from `master` after this branch merges.

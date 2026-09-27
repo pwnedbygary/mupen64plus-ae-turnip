@@ -66,7 +66,17 @@ public class DisplayResolutionData {
 
         // Assume we are are in portrait mode if height is greater than the width
         boolean screenPortrait = dimensions.y > (float)dimensions.x;
-        if(screenPortrait)
+        if (scaling == GlobalPrefs.DisplayScaling.STRETCH && !screenPortrait
+                && dimensions.x > 0 && dimensions.y > 0)
+        {
+            // Stretch fills the whole landscape view ("Fill screen, no black bars"). Only the view
+            // size follows the parent: the render size is fixed when the core starts, usually
+            // before the first layout, and the surface buffer must keep matching it, so the aspect
+            // stays derived from the display.
+            videoSurfaceWidthOriginal = dimensions.x;
+            videoSurfaceHeightOriginal = dimensions.y;
+        }
+        else if(screenPortrait)
         {
             videoSurfaceWidthOriginal = minDimension;
             videoSurfaceHeightOriginal = Math.round( minDimension*aspect );
