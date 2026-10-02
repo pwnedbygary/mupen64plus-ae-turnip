@@ -33,6 +33,8 @@
 #include <netinet/ip.h>
 #endif
 
+#define NETPLAY_MAX_PENDING_EVENTS 255
+
 static int l_canFF;
 static int l_netplay_controller;
 static int l_netplay_control[4];
@@ -187,6 +189,23 @@ static uint8_t buffer_size(uint8_t control_id)
     return counter;
 }
 
+static int netplay_packet_has_data(const UDPpacket* packet, size_t offset, size_t size)
+{
+    return packet->len >= 0 && offset <= (size_t) packet->len
+        && size <= (size_t) packet->len - offset;
+}
+
+static uint8_t netplay_validate_plugin(uint8_t plugin)
+{
+    if (plugin != PLUGIN_NONE && plugin != PLUGIN_MEMPAK && plugin != PLUGIN_RUMBLE_PAK
+     && plugin != PLUGIN_TRANSFER_PAK && plugin != PLUGIN_RAW)
+    {
+        return PLUGIN_NONE;
+    }
+
+    return plugin;
+}
+
 static void netplay_request_input(uint8_t control_id)
 {
     UDPpacket *packet = SDLNet_AllocPacket(12);
@@ -243,10 +262,27 @@ static void netplay_process()
     uint8_t plugin, player, current_status;
     while (SDLNet_UDP_Recv(l_udpSocket, packet) == 1)
     {
+        if (!netplay_packet_has_data(packet, 0, 5))
+        {
+            DebugMessage(M64MSG_ERROR, "Netplay: received truncated message from server");
+            continue;
+        }
+
         switch (packet->data[0])
         {
             case UDP_RECEIVE_KEY_INFO:
                 player = packet->data[1];
+                if (player >= 4)
+                {
+                    DebugMessage(M64MSG_ERROR, "Netplay: received invalid player from server");
+                    break;
+                }
+                if (packet->data[4] >
+                    ((size_t) packet->len - 5) / 9)
+                {
+                    DebugMessage(M64MSG_ERROR, "Netplay: received truncated input data from server");
+                    break;
+                }
                 //current_status is a status update from the server
                 //it will let us know if another player has disconnected, or the games have desynced
                 current_status = packet->data[2];
@@ -276,13 +312,24 @@ static void netplay_process()
                         continue;
                     }
 
+                    if (buffer_size(player) >= NETPLAY_MAX_PENDING_EVENTS)
+                    {
+                        DebugMessage(M64MSG_ERROR, "Netplay: received too many pending input events");
+                        break;
+                    }
+
                     keys = SDLNet_Read32(&packet->data[curr]);
                     curr += 4;
-                    plugin = packet->data[curr];
+                    plugin = netplay_validate_plugin(packet->data[curr]);
                     curr += 1;
 
                     //insert new event at beginning of linked list
                     struct netplay_event* new_event = (struct netplay_event*)malloc(sizeof(struct netplay_event));
+                    if (new_event == NULL)
+                    {
+                        DebugMessage(M64MSG_ERROR, "Netplay: could not allocate input event");
+                        break;
+                    }
                     new_event->count = count;
                     new_event->buttons = keys;
                     new_event->plugin = plugin;
@@ -592,7 +639,7 @@ void netplay_read_registration(struct controller_input_compat* cin_compats)
         else
         {
             Controls[i].Present = 1;
-            Controls[i].Plugin = input_data[curr];
+            Controls[i].Plugin = netplay_validate_plugin(input_data[curr]);
             l_plugin[i] = Controls[i].Plugin;
             ++curr;
             Controls[i].RawData = input_data[curr];
