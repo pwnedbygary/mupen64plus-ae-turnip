@@ -28,10 +28,8 @@ public class RaHardcoreRulesTest {
     }
 
     @Test
-    public void framelimiterMayOnlyReturnToConfiguredSetting() {
-        assertTrue(RaHardcoreRules.isFramelimiterToggleAllowed(false, true));
-        assertTrue(RaHardcoreRules.isFramelimiterToggleAllowed(true, false));
-        assertFalse(RaHardcoreRules.isFramelimiterToggleAllowed(true, true));
-        assertFalse(RaHardcoreRules.isFramelimiterToggleAllowed(false, false));
+    public void framelimiterMayOnlyBeSwitchedOn() {
+        assertTrue(RaHardcoreRules.isFramelimiterToggleAllowed(false));
+        assertFalse(RaHardcoreRules.isFramelimiterToggleAllowed(true));
     }
 }

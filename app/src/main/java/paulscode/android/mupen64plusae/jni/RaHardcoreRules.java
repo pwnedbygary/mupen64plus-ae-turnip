@@ -17,15 +17,14 @@ final class RaHardcoreRules {
     }
 
     /**
-     * Only a switch back to the {@code configured} setting is allowed; a session without netplay
-     * starts with that setting. With the audio volume at 0 the dummy audio plugin does not pace
-     * the game, so turning the limiter off would run it uncapped.
+     * Switching the limiter on is always allowed; switching it off is not. A hardcore session
+     * starts with it on: with audio sync only the audio output paces the game, and the dummy
+     * audio plugin used at volume 0 does not pace it at all.
      *
      * @param currentlyEnabled whether the frame limiter is on now, before the switch
-     * @param configured whether the frame limiter is on in the settings
      * @return true if hardcore mode allows switching the frame limiter.
      */
-    static boolean isFramelimiterToggleAllowed(boolean currentlyEnabled, boolean configured) {
-        return currentlyEnabled != configured;
+    static boolean isFramelimiterToggleAllowed(boolean currentlyEnabled) {
+        return !currentlyEnabled;
     }
 }

@@ -165,6 +165,10 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     // get_load_game_state(), so this latch is the reliable terminal signal. Written on the main
     // thread from onRaAsyncResult, read on the service handler thread by isRaHardcore().
     private volatile boolean mRaSessionFailed = false;
+
+    // Set by the first start command. A later one comes from a new GameActivity for the game that
+    // is already running, so it must not log in again, clear mRaSessionFailed or re-arm hardcore.
+    private boolean mRaStartAttempted = false;
     private String mRomCrc = null;
     private String mRomHeaderName = null;
     private byte mRomCountryCode = 0;
@@ -458,8 +462,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     {
         if (!mUsingNetplay) {
             boolean state = mCoreInterface.emuGetFramelimiter();
-            if (!RaHardcoreRules.isFramelimiterToggleAllowed(state, mGlobalPrefs.isFramelimiterEnabled)
-                    && blockIfRaHardcoreSpeedControl()) {
+            if (!RaHardcoreRules.isFramelimiterToggleAllowed(state) && blockIfRaHardcoreSpeedControl()) {
                 return;
             }
             mCoreInterface.emuSetFramelimiter( !state );
@@ -855,7 +858,9 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                     mCoreInterface.emuSetFramelimiter(true);
                     mCoreInterface.usingNetplay(true);
                 } else {
-                    mCoreInterface.emuSetFramelimiter(mGlobalPrefs.isFramelimiterEnabled);
+                    // Hardcore keeps the core limiter on: audio sync paces the game only through
+                    // its audio output.
+                    mCoreInterface.emuSetFramelimiter(mGlobalPrefs.isFramelimiterEnabled || isRaHardcore());
 
                     for (GamePrefs.CheatSelection selection : mGamePrefs.getEnabledCheats())
                     {
@@ -1302,11 +1307,17 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     private static final String RA_PROGRESS_PREFS = "ra_progress";
 
     /**
-     * Start the RetroAchievements client for this game when the user has it enabled.
+     * Start the RetroAchievements client for this game when the user has it enabled. Only the
+     * first call does anything (see mRaStartAttempted).
      * Runs in the emulation process, where the native ra_glue client is driven by
      * new_vi()/main_reset().
      */
     private void startRetroAchievements() {
+        if (mRaStartAttempted) {
+            return;
+        }
+        mRaStartAttempted = true;
+
         if (!mGlobalPrefs.isRetroAchievementsEnabled || TextUtils.isEmpty(mRomMd5)) {
             return;
         }
@@ -1321,7 +1332,12 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         mRaProgressRestored = false;
         mRaSessionFailed = false;
         ra.addListener(this);
-        ra.setHardcore(mGlobalPrefs.isRetroAchievementsHardcore);
+
+        // Netplay catch-up changes the core speed, which hardcore does not allow.
+        if (mGlobalPrefs.isRetroAchievementsHardcore && mUsingNetplay) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_netplayHardcoreOff);
+        }
+        ra.setHardcore(mGlobalPrefs.isRetroAchievementsHardcore && !mUsingNetplay);
 
         // Password first: rc_client's token login expects the token returned by a login,
         // not the website's Web API key (which is only valid for the web API).

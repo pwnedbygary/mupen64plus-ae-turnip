@@ -266,6 +266,7 @@
     <string name="ra_hardcoreBlocked">Hardcore mode: save states and load states are disabled</string>
     <string name="ra_hardcoreCheatsBlocked">Hardcore mode: cheats are disabled</string>
     <string name="ra_hardcoreSpeedBlocked">Hardcore mode: speed controls are disabled</string>
+    <string name="ra_netplayHardcoreOff">Netplay: hardcore mode is off for this session</string>
     <string name="achievements_unavailable">No achievements are loaded. This game may have none, the sign-in may have failed, or loading may not be finished yet.</string>
     <string name="achievements_empty">This game has no achievements</string>
     <string name="achievements_summaryHardcore">Hardcore: %1$d of %2$d unlocked</string>
@@ -285,7 +286,7 @@
     <string name="retroAchievementsPassword_title">Password</string>
     <string name="retroAchievementsPassword_summary">Your retroachievements.org password; a session token is saved after the first login</string>
     <string name="retroAchievementsHardcore_title">Hardcore mode</string>
-    <string name="retroAchievementsHardcore_summary">Disables save states, cheats, fast-forward, slow motion, frame advance and the audio sync toggle while achievements are active</string>
+    <string name="retroAchievementsHardcore_summary">Disables save states, cheats, fast-forward, slow motion, frame advance and audio sync while achievements are active. Netplay runs in softcore.</string>
 
     <!-- Checkbox Preferences -->
     <string name="playShowCheats_title">Enable cheats</string>

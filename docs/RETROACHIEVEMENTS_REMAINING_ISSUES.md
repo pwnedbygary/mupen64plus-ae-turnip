@@ -86,20 +86,48 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   fast-forward (the old rule refused only speeds above 100%). `CoreService.blockIfRaHardcoreSpeed`
   replaces `blockIfRaHardcoreFastForward`. A request for 100% is never refused, so a session that
   is off normal speed can always return to it.
-- OBSERVED: under hardcore, frame advance is refused, and the frame limiter toggle ("Sync audio" /
-  "Desync audio") may only switch back to the setting the session started with
+- OBSERVED: under hardcore, frame advance is refused. Emulation starts with the core frame limiter
+  on when hardcore is active (`CoreService`: `isFramelimiterEnabled || isRaHardcore()`), and the
+  limiter toggle ("Sync audio" / "Desync audio") may switch it on but never off
   (`RaHardcoreRules.isFramelimiterToggleAllowed`).
-- DERIVED: with the audio volume at 0 the dummy audio plugin is used (`AppData.java:175-177`) and
-  the limiter starts on (`GlobalPrefs.java:724-727`). The dummy plugin does no pacing
-  (`dummy_audio.c:54-57`), and the real plugin paces only while the limiter is off
-  (`plugin.cpp:348,378-379`), so turning the limiter off at volume 0 would run the game uncapped.
+- DERIVED: so audio sync never paces a session while hardcore is enforced, because
+  `isRaHardcore()` can only turn from true to false after the first start command (see "Hardcore
+  session start"). In `2b2e75976` the toggle could return to the setting the session started
+  with, and with audio sync on (the default, `GlobalPrefs.java:724-727`) that was limiter off.
+  With the audio volume at 0 the dummy audio plugin is used (`AppData.java:175-177`) and does no
+  pacing (`dummy_audio.c:54-57`). The real plugin paces only while the limiter is off
+  (`plugin.cpp:348,378-379`), and only through the audio the game sends (`AiLenChanged`,
+  `plugin.cpp:330-379`). Keeping the limiter on covers both cases. Whether a quiet game actually
+  ran fast under audio sync was never tested.
 - OBSERVED: toast `ra_hardcoreFastForwardBlocked` is now `ra_hardcoreSpeedBlocked` ("Hardcore mode:
   speed controls are disabled"). The older entries above keep the old name because they record
   what was tested at the time.
-- OBSERVED (host JVM): `RaHardcoreRulesTest` failed against the old speed rule (99% allowed) and
-  against a limiter rule that refused every switch; it passes now.
-- Not yet verified on device: hardcore refuses fast speed, slow speed, frame advance and switching
-  the limiter away from its starting setting; softcore still allows all of them.
+- OBSERVED (host JVM): `RaHardcoreRulesTest` failed against the old speed rule (99% allowed),
+  against a limiter rule that refused every switch, and against the previous limiter rule at the
+  default audio-sync setting (switching on was refused); it passes now.
+- Not yet verified on device: hardcore starts with the limiter on and refuses fast speed, slow
+  speed, frame advance and switching the limiter off; softcore still allows all of them.
+
+### Hardcore session start
+- OBSERVED: `startRetroAchievements()` returns at once on every start command after the
+  service's first (`mRaStartAttempted`), before the settings check, `initialize()`,
+  `setHardcore`, login and `loadGame`.
+- DERIVED: a new `GameActivity` for the running game (notification intent,
+  `CoreService.java:1139-1158`, or resume broadcast, `:231-234`, after the old activity was
+  destroyed) starts the service again, via `GameActivity.onStart` (`GameActivity.java:660-666`),
+  `CoreFragment.startCore` (`CoreFragment.java:395-404`) and `ActivityHelper.startCoreService`
+  (`ActivityHelper.java:485-486`). That start no longer logs in again, reloads the game, clears
+  `mRaSessionFailed` or calls `setHardcore`. In `2b2e75976` that path could re-arm hardcore on a
+  live session after speed changes or cheats made while enforcement was released. A session
+  whose login failed now stays released, without achievements, until the game is closed.
+- OBSERVED: a netplay session runs achievements in softcore (`setHardcore(... && !mUsingNetplay)`)
+  and shows "Netplay: hardcore mode is off for this session" when hardcore is on in Settings.
+  Netplay catch-up turns the core speed limiter off and back on (`netplay.c:353,357`) with no
+  hardcore check.
+- Not yet verified on device. Re-arm test: turn on "Don't keep activities", start a hardcore
+  session offline so login fails, fast-forward, press Home, reconnect, tap the notification, then
+  check that save states and speed controls stay allowed and no new login is attempted. Netplay
+  test: with hardcore on, the message shows and the achievement list says "Softcore".
 
 ### In-game achievement list
 - OBSERVED: with RetroAchievements enabled in Settings, the in-game menu has an "Achievements" item
@@ -136,24 +164,6 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   matches the loaded game in hardcore and in softcore; the warning row shows for this client.
 
 ### Open items (not fixed here)
-- DERIVED: hardcore can re-arm on a core that is already running. `onStartCommand`
-  (`CoreService.java:1200`) calls `startRetroAchievements()` (`:1234`) every time, and that clears
-  `mRaSessionFailed` (`:1322`). A new `GameActivity` (notification intent `:1134-1151`, resume
-  broadcast `:227-230`) starts the service again (`CoreFragment.java:395-398,452`,
-  `ActivityHelper.java:485`), but only the first emulation job runs (`CoreService.java:1466`).
-  After a terminal login failure has released enforcement, a speed or limiter change made while
-  released survives a re-login that re-arms hardcore, and the new activity shows "Speed 100 %".
-  A refused speed request snaps the core back to 100% and the limiter can be switched back, but
-  nothing does this automatically. The same path also re-runs login and load-game on a live
-  session and can re-arm hardcore with cheats applied while released, so it needs its own fix.
-  Device test: turn on "Don't keep activities", start a hardcore session offline so login fails,
-  fast-forward, press Home, reconnect, tap the notification, then check whether save states are
-  denied while the game is still fast.
-- DERIVED: netplay catch-up turns the core speed limiter off and back on (`netplay.c:353,357`)
-  with no hardcore check, and `startRetroAchievements()` does not skip netplay sessions.
-- HYPOTHESIS (untested, predates this change): with audio sync on, the real audio plugin paces the
-  game only when the game sends audio (`AiLenChanged`, `plugin.cpp:330-379`), so a game that goes
-  quiet could run unpaced.
 - OBSERVED: the achievement list has display limits. rcheevos labels each set's buckets ("<set
   title> - Locked", `rc_client.c:4176-4201`), but `ra_glue_get_achievements_json` passes on no
   labels, so achievements from a bonus set have no heading. Nothing marks an achievement as
