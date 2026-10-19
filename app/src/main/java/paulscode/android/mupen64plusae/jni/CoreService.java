@@ -458,6 +458,10 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     {
         if (!mUsingNetplay) {
             boolean state = mCoreInterface.emuGetFramelimiter();
+            if (!RaHardcoreRules.isFramelimiterToggleAllowed(state, mGlobalPrefs.isFramelimiterEnabled)
+                    && blockIfRaHardcoreSpeedControl()) {
+                return;
+            }
             mCoreInterface.emuSetFramelimiter( !state );
         }
     }
@@ -516,17 +520,30 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     }
 
     /**
-     * Blocks a speed request that hardcore mode forbids (fast-forward), notifying the player and
-     * forcing the core back to baseline. Package-private so the UI can ask before changing its
-     * speed state.
+     * Blocks a speed request that hardcore mode forbids (anything but normal speed), notifying the
+     * player and forcing the core back to baseline. Package-private so the UI can ask before
+     * changing its speed state.
      * @return true if blocked.
      */
-    boolean blockIfRaHardcoreFastForward(int speed)
+    boolean blockIfRaHardcoreSpeed(int speed)
     {
-        // Slowing back to baseline stays allowed so an already-fast session can come into compliance.
-        if (isRaHardcore() && speed > CoreFragment.BASELINE_SPEED) {
-            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreFastForwardBlocked);
+        if (!RaHardcoreRules.isSpeedAllowed(speed) && isRaHardcore()) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreSpeedBlocked);
             mCoreInterface.emuSetSpeed( CoreFragment.BASELINE_SPEED );
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Blocks a speed control that hardcore mode forbids (frame limiter toggle, frame advance),
+     * notifying the player.
+     * @return true if blocked.
+     */
+    private boolean blockIfRaHardcoreSpeedControl()
+    {
+        if (isRaHardcore()) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreSpeedBlocked);
             return true;
         }
         return false;
@@ -534,7 +551,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void setCustomSpeed(int value)
     {
-        if (blockIfRaHardcoreFastForward(value)) {
+        if (blockIfRaHardcoreSpeed(value)) {
             return;
         }
         mCoreInterface.emuSetSpeed( value );
@@ -550,6 +567,9 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void advanceFrame()
     {
+        if (blockIfRaHardcoreSpeedControl()) {
+            return;
+        }
         mCoreInterface.emuAdvanceFrame();
     }
 

@@ -5,9 +5,11 @@ Confirmed working on device: Connect sign-in ("Signed in as pwnedbygary", sessio
 persisted), hardcore gates for save/load state, slots, GameShark and cheats (deny toast),
 and denied actions no longer announce first.
 
-This file lists what is still open. Evidence labels: OBSERVED = read from current source;
-DERIVED = inferred from code paths. No open code issues remain; what follows are device
-verification results, deferred token-handling items and the remaining device-verification gaps.
+This file lists what is still open. Evidence labels: OBSERVED = read from current source, or
+seen in a named run such as "OBSERVED (host JVM)"; DERIVED = inferred from code paths;
+REFERENCE = read from RetroAchievements server source; HYPOTHESIS = plausible but untested.
+Issue #15 has its own section at the end; the rest are device verification results, deferred
+token-handling items and the remaining device-verification gaps.
 
 ## Fixed on this branch
 - Cancel on confirmation dialogs no longer performs the action: `CoreFragment`
@@ -57,3 +59,61 @@ Reference: that commit's message lists these as nonblocking:
 - The old `retroAchievementsWebApiKey` value remains in the device's SharedPreferences
   (inert — no reader in the tree). Removing it would require clearing app data (loses saves),
   so leave it unless a safe one-key cleanup is added.
+
+## Issue #15 (branch `fix/ra-hardcore-speed-achievements`)
+Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays open).
+
+### Hardcore unlocks: server side, not fixable in app code
+- REFERENCE (RAWeb `ac7bf9b84d98`, `master` on 2026-10-19):
+  `app/Connect/Actions/AwardAchievementAction.php:121-123` clears the hardcore flag unless
+  `allowsHardcoreUnlocks()`, which is true only for Full, Warned and CasualPending
+  (`app/Enums/ClientSupportLevel.php:38-41`). `app/Platform/Services/UserAgentService.php:329-331`
+  returns Unknown when the emulator name is not recognized.
+  `app/Connect/Actions/GetAchievementSetsAction.php:532-536` titles its warning achievement
+  "Warning: Unknown Emulator" for Unknown clients, and the client-warning achievement ID is
+  `101000001` (`app/Models/Achievement.php:129`).
+- OBSERVED: the app sends `USER_AGENT = "Mupen64PlusAE/3.0 (Android)"`
+  (`RetroAchievementsManager.java:56`), and `CoreService.onRaEvent` logs only the event type.
+- DERIVED: the server's warning payload is never shown to the player, and hardcore unlocks are
+  recorded as softcore until RetroAchievements approves this client. Not yet verified on device:
+  that award requests reach the server and come back as softcore.
+
+### Speed lock under hardcore
+- OBSERVED: `RaHardcoreRules.isSpeedAllowed` allows only 100%, so slow motion is refused as well as
+  fast-forward (the old rule refused only speeds above 100%). `CoreService.blockIfRaHardcoreSpeed`
+  replaces `blockIfRaHardcoreFastForward`. A request for 100% is never refused, so a session that
+  is off normal speed can always return to it.
+- OBSERVED: under hardcore, frame advance is refused, and the frame limiter toggle ("Sync audio" /
+  "Desync audio") may only switch back to the setting the session started with
+  (`RaHardcoreRules.isFramelimiterToggleAllowed`).
+- DERIVED: with the audio volume at 0 the dummy audio plugin is used (`AppData.java:175-177`) and
+  the limiter starts on (`GlobalPrefs.java:724-727`). The dummy plugin does no pacing
+  (`dummy_audio.c:54-57`), and the real plugin paces only while the limiter is off
+  (`plugin.cpp:348,378-379`), so turning the limiter off at volume 0 would run the game uncapped.
+- OBSERVED: toast `ra_hardcoreFastForwardBlocked` is now `ra_hardcoreSpeedBlocked` ("Hardcore mode:
+  speed controls are disabled"). The older entries above keep the old name because they record
+  what was tested at the time.
+- OBSERVED (host JVM): `RaHardcoreRulesTest` failed against the old speed rule (99% allowed) and
+  against a limiter rule that refused every switch; it passes now.
+- Not yet verified on device: hardcore refuses fast speed, slow speed, frame advance and switching
+  the limiter away from its starting setting; softcore still allows all of them.
+
+### Open items (not fixed here)
+- DERIVED: hardcore can re-arm on a core that is already running. `onStartCommand`
+  (`CoreService.java:1200`) calls `startRetroAchievements()` (`:1234`) every time, and that clears
+  `mRaSessionFailed` (`:1322`). A new `GameActivity` (notification intent `:1134-1151`, resume
+  broadcast `:227-230`) starts the service again (`CoreFragment.java:395-398,452`,
+  `ActivityHelper.java:485`), but only the first emulation job runs (`CoreService.java:1466`).
+  After a terminal login failure has released enforcement, a speed or limiter change made while
+  released survives a re-login that re-arms hardcore, and the new activity shows "Speed 100 %".
+  A refused speed request snaps the core back to 100% and the limiter can be switched back, but
+  nothing does this automatically. The same path also re-runs login and load-game on a live
+  session and can re-arm hardcore with cheats applied while released, so it needs its own fix.
+  Device test: turn on "Don't keep activities", start a hardcore session offline so login fails,
+  fast-forward, press Home, reconnect, tap the notification, then check whether save states are
+  denied while the game is still fast.
+- DERIVED: netplay catch-up turns the core speed limiter off and back on (`netplay.c:353,357`)
+  with no hardcore check, and `startRetroAchievements()` does not skip netplay sessions.
+- HYPOTHESIS (untested, predates this change): with audio sync on, the real audio plugin paces the
+  game only when the game sends audio (`AiLenChanged`, `plugin.cpp:330-379`), so a game that goes
+  quiet could run unpaced.

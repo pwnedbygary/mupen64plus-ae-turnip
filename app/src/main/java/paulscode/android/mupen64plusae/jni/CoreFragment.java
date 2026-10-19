@@ -574,8 +574,8 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
             boolean engage = !mViewModel.mUseCustomSpeed;
             int speed = engage ? mViewModel.mCustomSpeed : BASELINE_SPEED;
 
-            // Do not flip the UI state when hardcore denies the fast-forward request.
-            if (blockedByRaHardcoreFastForward(speed)) {
+            // Do not flip the UI state when hardcore denies the speed request.
+            if (blockedByRaHardcoreSpeed(speed)) {
                 return;
             }
 
@@ -590,7 +590,7 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
         if (mCoreService != null)
         {
             int speed = pressed ? mViewModel.mCustomSpeed : BASELINE_SPEED;
-            if (blockedByRaHardcoreFastForward(speed)) {
+            if (blockedByRaHardcoreSpeed(speed)) {
                 return;
             }
             mCoreService.setCustomSpeed( speed );
@@ -598,12 +598,12 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
     }
 
     /**
-     * @return true when hardcore forbids this speed request (fast-forward). The deny toast has
-     * already been shown and the core forced back to baseline by the service.
+     * @return true when hardcore forbids this speed request (anything but normal speed). The deny
+     * toast has already been shown and the core forced back to baseline by the service.
      */
-    private boolean blockedByRaHardcoreFastForward(int speed)
+    private boolean blockedByRaHardcoreSpeed(int speed)
     {
-        return mCoreService != null && mCoreService.blockIfRaHardcoreFastForward(speed);
+        return mCoreService != null && mCoreService.blockIfRaHardcoreSpeed(speed);
     }
 
 
@@ -981,8 +981,8 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
 
         int clamped = Utility.clamp( value, MIN_SPEED, MAX_SPEED );
 
-        // Do not change the stored speed/state when hardcore denies the fast-forward request.
-        if (blockedByRaHardcoreFastForward(clamped)) {
+        // Do not change the stored speed/state when hardcore denies the speed request.
+        if (blockedByRaHardcoreSpeed(clamped)) {
             return;
         }
 

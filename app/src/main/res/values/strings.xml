@@ -264,11 +264,11 @@
     <string name="retroAchievementsConnect_noRequest">could not start the request</string>
     <string name="ra_hardcoreBlocked">Hardcore mode: save states and load states are disabled</string>
     <string name="ra_hardcoreCheatsBlocked">Hardcore mode: cheats are disabled</string>
-    <string name="ra_hardcoreFastForwardBlocked">Hardcore mode: fast-forward is disabled</string>
+    <string name="ra_hardcoreSpeedBlocked">Hardcore mode: speed controls are disabled</string>
     <string name="retroAchievementsPassword_title">Password</string>
     <string name="retroAchievementsPassword_summary">Your retroachievements.org password; a session token is saved after the first login</string>
     <string name="retroAchievementsHardcore_title">Hardcore mode</string>
-    <string name="retroAchievementsHardcore_summary">Disables save states, fast-forward and cheats while achievements are active</string>
+    <string name="retroAchievementsHardcore_summary">Disables save states, cheats, fast-forward, slow motion, frame advance and the audio sync toggle while achievements are active</string>
 
     <!-- Checkbox Preferences -->
     <string name="playShowCheats_title">Enable cheats</string>
