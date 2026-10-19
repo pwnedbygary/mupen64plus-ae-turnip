@@ -284,7 +284,7 @@
         <item quantity="other">Locked, %1$d points</item>
     </plurals>
     <string name="retroAchievementsPassword_title">Password</string>
-    <string name="retroAchievementsPassword_summary">Your retroachievements.org password; a session token is saved after the first login</string>
+    <string name="retroAchievementsPassword_summary">Your retroachievements.org password. Once a sign-in has saved a session token, games use that token and need the password only if the server rejects it.</string>
     <string name="retroAchievementsHardcore_title">Hardcore mode</string>
     <string name="retroAchievementsHardcore_summary">Disables save states, cheats, fast-forward, slow motion, frame advance and audio sync while achievements are active. Netplay runs in softcore.</string>
 

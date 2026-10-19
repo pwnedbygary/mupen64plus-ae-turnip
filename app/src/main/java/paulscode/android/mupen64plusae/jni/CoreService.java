@@ -169,6 +169,11 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     // Set by the first start command. A later one comes from a new GameActivity for the game that
     // is already running, so it must not log in again, clear mRaSessionFailed or re-arm hardcore.
     private boolean mRaStartAttempted = false;
+
+    // The credential of the login in flight, NONE when no login is in flight. rc_client results
+    // carry no request ID, so the session makes one request at a time: login, a password login
+    // after a rejected token, then loadGame. Main thread only.
+    private RaSignInRules.Credential mRaLoginCredential = RaSignInRules.Credential.NONE;
     private String mRomCrc = null;
     private String mRomHeaderName = null;
     private byte mRomCountryCode = 0;
@@ -1339,31 +1344,28 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         }
         ra.setHardcore(mGlobalPrefs.isRetroAchievementsHardcore && !mUsingNetplay);
 
-        // Password first: rc_client's token login expects the token returned by a login,
-        // not the website's Web API key (which is only valid for the web API).
-        // A request that cannot even start, or missing credentials, is a terminal failure: no
-        // session can be established, so hardcore enforcement must release rather than block.
-        if (TextUtils.isEmpty(mGlobalPrefs.retroAchievementsUsername)) {
-            Log.w(TAG, "RetroAchievements enabled but username missing");
+        // Missing credentials, or a request call that returns false (refused, or finished before
+        // the call returned), are a terminal failure: hardcore enforcement must release rather
+        // than block, and onRaAsyncResult ignores any result that still arrives.
+        mRaLoginCredential = RaSignInRules.firstCredential(mGlobalPrefs.retroAchievementsUsername,
+                mGlobalPrefs.retroAchievementsPassword, mGlobalPrefs.retroAchievementsToken);
+        if (mRaLoginCredential == RaSignInRules.Credential.NONE) {
+            Log.w(TAG, "RetroAchievements enabled but the username, or both password and session token, are missing");
             mRaSessionFailed = true;
-        } else if (!TextUtils.isEmpty(mGlobalPrefs.retroAchievementsPassword)) {
-            if (!ra.login(mGlobalPrefs.retroAchievementsUsername,
-                    mGlobalPrefs.retroAchievementsPassword)) {
-                mRaSessionFailed = true;
-            }
-        } else if (!TextUtils.isEmpty(mGlobalPrefs.retroAchievementsToken)) {
-            if (!ra.loginWithToken(mGlobalPrefs.retroAchievementsUsername,
-                    mGlobalPrefs.retroAchievementsToken)) {
-                mRaSessionFailed = true;
-            }
-        } else {
-            Log.w(TAG, "RetroAchievements enabled but no password or stored session token");
-            mRaSessionFailed = true;
+            return;
         }
+        beginRaLogin(ra);
+    }
 
-        // Safe before login completes: the client waits for the session.
-        if (!ra.loadGame(mRomMd5)) {
-            Log.w(TAG, "RetroAchievements load-game request did not start");
+    /** Starts the login with mRaLoginCredential; its result arrives in onRaAsyncResult. */
+    private void beginRaLogin(RetroAchievementsManager ra) {
+        String username = mGlobalPrefs.retroAchievementsUsername;
+        boolean started = mRaLoginCredential == RaSignInRules.Credential.TOKEN
+                ? ra.loginWithToken(username, mGlobalPrefs.retroAchievementsToken)
+                : ra.login(username, mGlobalPrefs.retroAchievementsPassword);
+        if (!started) {
+            Log.w(TAG, "RetroAchievements login request did not start");
+            mRaLoginCredential = RaSignInRules.Credential.NONE;
             mRaSessionFailed = true;
         }
     }
@@ -1417,24 +1419,26 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     @Override
     public void onRaAsyncResult(int result, String errorMessage) {
-        if (result != RetroAchievementsManager.RESULT_OK) {
-            // Login or load-game failed terminally (bad credentials, offline, unsupported game).
-            // Latch it so hardcore enforcement releases instead of blocking saves for a session
-            // that can never be established.
-            mRaSessionFailed = true;
-            Log.w(TAG, "RetroAchievements async error: " + errorMessage);
+        // The session is over after a terminal failure. A result can still arrive for a request
+        // whose call returned false, and it must not start another request.
+        if (mRaSessionFailed) {
             return;
         }
 
         RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
 
-        // Capture the session token so future sessions can log in without the password.
-        String token = ra.getUserToken();
-        if (!TextUtils.isEmpty(token)) {
-            PreferenceManager.getDefaultSharedPreferences(this)
-                    .edit()
-                    .putString(GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_TOKEN, token)
-                    .apply();
+        if (mRaLoginCredential != RaSignInRules.Credential.NONE) {
+            onRaLoginResult(ra, result, errorMessage);
+            return;
+        }
+
+        if (result != RetroAchievementsManager.RESULT_OK) {
+            // Load-game failed terminally (offline, unsupported game). Latch it so hardcore
+            // enforcement releases instead of blocking saves for a session that can never be
+            // established.
+            mRaSessionFailed = true;
+            Log.w(TAG, "RetroAchievements load-game error: " + errorMessage);
+            return;
         }
 
         // Once the game session is up, restore any locally saved progress.
@@ -1444,6 +1448,35 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             if (progress != null) {
                 ra.deserializeProgress(progress);
             }
+        }
+    }
+
+    private void onRaLoginResult(RetroAchievementsManager ra, int result, String errorMessage) {
+        if (result != RetroAchievementsManager.RESULT_OK) {
+            Log.w(TAG, "RetroAchievements " + mRaLoginCredential + " login error: " + errorMessage);
+            mRaLoginCredential = RaSignInRules.nextCredential(mRaLoginCredential, result,
+                    mGlobalPrefs.retroAchievementsPassword);
+            if (mRaLoginCredential == RaSignInRules.Credential.NONE) {
+                mRaSessionFailed = true;
+            } else {
+                beginRaLogin(ra);
+            }
+            return;
+        }
+        mRaLoginCredential = RaSignInRules.Credential.NONE;
+
+        // Synchronous commit: the emulation process can be killed before an apply() is written.
+        String token = ra.getUserToken();
+        if (!TextUtils.isEmpty(token) && !token.equals(mGlobalPrefs.retroAchievementsToken)) {
+            PreferenceManager.getDefaultSharedPreferences(this)
+                    .edit()
+                    .putString(GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_TOKEN, token)
+                    .commit();
+        }
+
+        if (!ra.loadGame(mRaGameMd5)) {
+            Log.w(TAG, "RetroAchievements load-game request did not start");
+            mRaSessionFailed = true;
         }
     }
 

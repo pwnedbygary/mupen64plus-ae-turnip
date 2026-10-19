@@ -41,17 +41,17 @@ token-handling items and the remaining device-verification gaps.
 - Existing-file save under hardcore shows only the deny toast — the overwrite dialog is skipped.
 
 ## Deferred items from commit `8f14880ef` (login/token handling)
-Reference: that commit's message lists these as nonblocking:
-- Password outranks the stored token; offer to clear the password after a successful token capture.
-- Token write in `CoreService.onRaAsyncResult` uses `apply()` (async) rather than `commit()`.
+Reference: that commit's message lists these as nonblocking. The issue #15 section ("Sign-in
+order") addresses three of them. The saved token now goes before the password, which stays in
+Settings as the fallback for a rejected token (so there is no offer to clear it). The token is
+written with `commit()`. The missing token fallback after a failed password login is covered by
+the same order: a saved token is always tried before the password. Still open:
 - HTTP User-Agent version is hardcoded (`RetroAchievementsManager.java:56`).
-- No token fallback when the password login fails (`loginWithToken` is only tried when the
-  password is empty).
 
 ## Verification gaps (not bugs; close with device tests)
-- Terminal-failure release policy: with hardcore active and a broken login (bad password or
-  offline), confirm saves are released once the async failure arrives instead of being blocked
-  forever. Code-verified only.
+- Terminal-failure release policy: with hardcore active and a broken login (offline, or a bad
+  password with no valid saved token: a saved token is tried first), confirm saves are released
+  once the async failure arrives instead of being blocked forever. Code-verified only.
 - Dialog teardown guard: tap Connect, then immediately Back/rotate before the result arrives;
   confirm no crash and no orphan dialog. Code-verified only.
 
@@ -93,7 +93,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - DERIVED: so audio sync never paces a session while hardcore is enforced, because
   `isRaHardcore()` can only turn from true to false after the first start command (see "Hardcore
   session start"). In `2b2e75976` the toggle could return to the setting the session started
-  with, and with audio sync on (the default, `GlobalPrefs.java:724-727`) that was limiter off.
+  with, and with audio sync on (the default, `GlobalPrefs.java:727-730`) that was limiter off.
   With the audio volume at 0 the dummy audio plugin is used (`AppData.java:175-177`) and does no
   pacing (`dummy_audio.c:54-57`). The real plugin paces only while the limiter is off
   (`plugin.cpp:348,378-379`), and only through the audio the game sends (`AiLenChanged`,
@@ -113,7 +113,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   service's first (`mRaStartAttempted`), before the settings check, `initialize()`,
   `setHardcore`, login and `loadGame`.
 - DERIVED: a new `GameActivity` for the running game (notification intent,
-  `CoreService.java:1139-1158`, or resume broadcast, `:231-234`, after the old activity was
+  `CoreService.java:1144-1163`, or resume broadcast, `:236-239`, after the old activity was
   destroyed) starts the service again, via `GameActivity.onStart` (`GameActivity.java:660-666`),
   `CoreFragment.startCore` (`CoreFragment.java:395-404`) and `ActivityHelper.startCoreService`
   (`ActivityHelper.java:485-486`). That start no longer logs in again, reloads the game, clears
@@ -128,6 +128,54 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   session offline so login fails, fast-forward, press Home, reconnect, tap the notification, then
   check that save states and speed controls stay allowed and no new login is attempted. Netplay
   test: with hardcore on, the message shows and the achievement list says "Softcore".
+
+### Sign-in order
+- OBSERVED: a game session signs in with the saved session token first and uses the password
+  only when no token is saved or the server rejects the token (`RaSignInRules.firstCredential`
+  and `nextCredential`, called from `CoreService.startRetroAchievements` and
+  `CoreService.onRaLoginResult`). In `fd6b452f1` the password went first and the token was tried
+  only when no password was saved, with no fallback either way. The password stays in Settings.
+- REFERENCE (RAWeb `ac7bf9b84d98`, `app/Connect/Actions/LoginAction.php`): a token that does not
+  match the user gets `invalid_credentials` (lines 105-107, response built at 159-169; banned
+  accounts get the same at 117-118). An expired token gets `expired_token`, and the server
+  replaces it (121-131). Both come back as HTTP 401, because the `Status` value becomes the HTTP
+  status (`app/Connect/Support/BaseApiAction.php:35-39`). An account with an unverified e-mail
+  address gets 403 `access_denied` (`BaseApiAction.php:75-83`), with a password too (91-92,
+  113-114).
+- OBSERVED: rcheevos reads the login response's `Code` field (`rc_api_user.c:57-59`,
+  `rc_api_common.c:404-409`) and turns `invalid_credentials` and `expired_token` into
+  `RC_INVALID_CREDENTIALS` (-34) and `RC_EXPIRED_TOKEN` (-35) (`rc_api_common.c:304-319`,
+  `rc_error.h:47-48`). The login parser returns that code (`rc_api_user.c:72-74`), the login
+  callback gets it unchanged (`rc_client_server_error_message`, `rc_client.c:497-516`; callback
+  `:698-708`), and `ra_glue_async_cb` passes it to Java (`ra_glue.c:162-173`). A failed HTTP
+  request becomes `RC_NO_RESPONSE` (`RetroAchievementsManager.java:339-344`,
+  `rc_api_common.c:360-365`). Only -34 and -35 are retried with the password.
+- OBSERVED: `loadGame` is requested only after a login succeeds. rc_client results carry no
+  request ID (`ra_glue_async_cb`, `ra_glue.c:162-173`), so the session makes one request at a
+  time and `mRaLoginCredential` tells which login a result belongs to. A request call that returns
+  false ends the session at once, as before. It returns false when `ra_glue`'s own checks refuse
+  without a callback (`ra_glue.c:398-399,408-409,427-428`), when rc_client refuses, which it also
+  reports through the callback (login `rc_client.c:766-775,800-813,833-846`; load
+  `:2444-2461,2927-2948`), and when the request finishes before the call returns (login
+  `:786-792`, load `:2900`). `onRaAsyncResult` ignores any result that arrives after that.
+- DERIVED: in that last case a successful login is dropped, and the session runs without
+  achievements and with enforcement released. It needs the main thread to stall for a whole HTTP
+  round trip (responses arrive on the HTTP thread, `RetroAchievementsManager.java:346`), so it
+  should be rare. In `fd6b452f1` the same case latched the failure but still loaded the game, so
+  achievements would run with enforcement released.
+- DERIVED: the password login starts from the token login's result, which is posted to the main
+  thread after rc_client has cleared its login state (`rc_client.c:700-708`), so rc_client does
+  not refuse it as "Login already in progress" (`:757-760`).
+- OBSERVED: the token from a successful login is written with `commit()`, and only when it differs
+  from the saved one; `saveRaProgress` already used `commit()`. `forceExit` kills the emulation
+  process (`CoreService.java:1483-1486`).
+- DERIVED: `apply()` only starts a background write (Android `SharedPreferences.Editor.apply`
+  reference), so a token saved with it could be lost when that process is killed.
+- OBSERVED (host JVM): `RaSignInRulesTest` failed against the old order (password first, no
+  fallback) in `savedTokenGoesFirst` and `rejectedTokenIsRetriedWithPassword`; it passes now.
+- Not yet verified on device: a valid token with a wrong password signs in; a wrong token with the
+  right password signs in and saves a new token; with neither a valid token nor the right
+  password, enforcement releases.
 
 ### In-game achievement list
 - OBSERVED: with RetroAchievements enabled in Settings, the in-game menu has an "Achievements" item
@@ -172,3 +220,9 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   cut to one line (`list_item_two_text_icon.xml:36-38`). The "No achievements are loaded" message
   also appears when the list fails to parse or does not fit the 128 KB text buffer
   (`RetroAchievementsManager.java:60,394-396`, `ra_glue.c:619`).
+- DERIVED (predates this branch): `RetroAchievementsManager.onServerCall` runs each request with
+  `execute()` (`RetroAchievementsManager.java:309`) and catches only `IOException` (`:339`). Any
+  other exception on the HTTP thread reaches Android's default uncaught-exception handler, which
+  always kills the process (AOSP `android-14.0.0_r1`, `RuntimeInit.java:125-177,235`,
+  `KillApplicationHandler`). The app sets no handler of its own. During a game this closes the
+  emulation process; during Connect in Settings it closes the app. Not seen on a device.
