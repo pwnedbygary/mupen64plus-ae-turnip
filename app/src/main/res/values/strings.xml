@@ -35,6 +35,7 @@
     <string name="menuItem_fileLoadAutoSave">Load from auto save…</string>
     <string name="menuItem_screenshot">Screenshot</string>
     <string name="menuItem_setSpeed">Game speed</string>
+    <string name="menuItem_achievements">Achievements</string>
     <string name="menuItem_enableFramelimiter">Sync audio</string>
     <string name="menuItem_disableFramelimiter">Desync audio</string>
     <string name="menuItem_player_one">Player 1</string>
@@ -265,6 +266,22 @@
     <string name="ra_hardcoreBlocked">Hardcore mode: save states and load states are disabled</string>
     <string name="ra_hardcoreCheatsBlocked">Hardcore mode: cheats are disabled</string>
     <string name="ra_hardcoreSpeedBlocked">Hardcore mode: speed controls are disabled</string>
+    <string name="achievements_unavailable">No achievements are loaded. This game may have none, the sign-in may have failed, or loading may not be finished yet.</string>
+    <string name="achievements_empty">This game has no achievements</string>
+    <string name="achievements_summaryHardcore">Hardcore: %1$d of %2$d unlocked</string>
+    <string name="achievements_summarySoftcore">Softcore: %1$d of %2$d unlocked</string>
+    <plurals name="achievements_summaryPoints">
+        <item quantity="one">%1$d of %2$d point</item>
+        <item quantity="other">%1$d of %2$d points</item>
+    </plurals>
+    <plurals name="achievements_unlocked">
+        <item quantity="one">Unlocked, %1$d point</item>
+        <item quantity="other">Unlocked, %1$d points</item>
+    </plurals>
+    <plurals name="achievements_locked">
+        <item quantity="one">Locked, %1$d point</item>
+        <item quantity="other">Locked, %1$d points</item>
+    </plurals>
     <string name="retroAchievementsPassword_title">Password</string>
     <string name="retroAchievementsPassword_summary">Your retroachievements.org password; a session token is saved after the first login</string>
     <string name="retroAchievementsHardcore_title">Hardcore mode</string>

@@ -14,6 +14,9 @@
         android:id="@+id/menuItem_set_speed"
         android:title="@string/menuItem_setSpeed"/>
     <item
+        android:id="@+id/menuItem_achievements"
+        android:title="@string/menuItem_achievements"/>
+    <item
         android:id="@+id/menuItem_screenshot"
         android:icon="@drawable/ic_picture"
         android:title="@string/menuItem_screenshot"/>

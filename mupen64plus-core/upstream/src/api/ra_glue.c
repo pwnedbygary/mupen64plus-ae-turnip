@@ -520,11 +520,12 @@ int ra_glue_get_summary_json(char* buffer, int buffer_size)
   const char* empty = "\"\"";
   char* json = NULL;
   asprintf(&json,
-           "{\"user\":\"%s\",\"game\":\"%s\","
+           "{\"user\":\"%s\",\"game\":\"%s\",\"hardcore\":%d,"
            "\"total_achievements\":%u,\"unlocked_achievements\":%u,"
            "\"total_points\":%u,\"unlocked_points\":%u}",
            user_name != NULL ? user_name : empty,
            game_name != NULL ? game_name : empty,
+           rc_client_get_hardcore_enabled(s_client) ? 1 : 0,
            summary.num_core_achievements, summary.num_unlocked_achievements,
            summary.points_core, summary.points_unlocked);
   free(user_name);
@@ -553,6 +554,10 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
                                      RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
   if (list == NULL)
     return 0;
+
+  /* The unlock bit rc_client_get_user_game_summary counts, so the list matches the summary. */
+  const uint8_t unlock_bit = rc_client_get_hardcore_enabled(s_client) ?
+    RC_CLIENT_ACHIEVEMENT_UNLOCKED_HARDCORE : RC_CLIENT_ACHIEVEMENT_UNLOCKED_SOFTCORE;
 
   size_t capacity = 4096;
   char* json = malloc(capacity);
@@ -583,7 +588,7 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
                                "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d}",
                                comma,
                                achievement->id, title, description,
-                               achievement->points, achievement->unlocked ? 1 : 0);
+                               achievement->points, (achievement->unlocked & unlock_bit) ? 1 : 0);
 
       if (n + (size_t)entry_len + 2 >= capacity) {
         capacity = (capacity + (size_t)entry_len + 256) * 2;
@@ -602,7 +607,7 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
                             "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d}",
                             comma,
                             achievement->id, title, description,
-                            achievement->points, achievement->unlocked ? 1 : 0);
+                            achievement->points, (achievement->unlocked & unlock_bit) ? 1 : 0);
 
       free(title);
       free(description);

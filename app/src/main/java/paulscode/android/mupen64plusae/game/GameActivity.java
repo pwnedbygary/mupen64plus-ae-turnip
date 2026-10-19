@@ -70,6 +70,7 @@ import paulscode.android.mupen64plusae.DrawerDrawable;
 import paulscode.android.mupen64plusae.GameSidebar;
 import paulscode.android.mupen64plusae.GameSidebar.GameSidebarActionHandler;
 import paulscode.android.mupen64plusae.cheat.CheatUtils;
+import paulscode.android.mupen64plusae.dialog.AchievementsDialog;
 import paulscode.android.mupen64plusae.dialog.ConfirmationDialog.PromptConfirmListener;
 import paulscode.android.mupen64plusae.dialog.Prompt;
 import paulscode.android.mupen64plusae.input.PeripheralController;
@@ -406,6 +407,9 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
         // Handle events from the side bar
         mGameSidebar.setActionHandler(this, R.menu.game_drawer);
+
+        if (!mGlobalPrefs.isRetroAchievementsEnabled)
+            mGameSidebar.getMenu().removeItem(R.id.menuItem_achievements);
 
         updateGameSurfaceLayout();
 
@@ -947,6 +951,8 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
             mGameSidebar.reload();
         } else if (menuItem.getItemId() ==  R.id.menuItem_set_speed ) {
             mCoreFragment.setCustomSpeedFromPrompt();
+        } else if (menuItem.getItemId() ==  R.id.menuItem_achievements) {
+            AchievementsDialog.show(this);
         } else if (menuItem.getItemId() ==  R.id.menuItem_screenshot) {
             mGameSurface.takeScreenshot(mGlobalPrefs.screenshotsDir, mRomGoodName);
         } else if (menuItem.getItemId() ==  R.id.menuItem_set_slot) {

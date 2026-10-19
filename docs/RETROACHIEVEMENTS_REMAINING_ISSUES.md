@@ -74,9 +74,12 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `101000001` (`app/Models/Achievement.php:129`).
 - OBSERVED: the app sends `USER_AGENT = "Mupen64PlusAE/3.0 (Android)"`
   (`RetroAchievementsManager.java:56`), and `CoreService.onRaEvent` logs only the event type.
-- DERIVED: the server's warning payload is never shown to the player, and hardcore unlocks are
-  recorded as softcore until RetroAchievements approves this client. Not yet verified on device:
-  that award requests reach the server and come back as softcore.
+- DERIVED: nothing announces the server's warning achievement during play (it shows only in the
+  in-game achievement list below), and hardcore unlocks are recorded as softcore until
+  RetroAchievements approves this client. The server's separate `Warning` text (RAWeb
+  `ac7bf9b84d98`, `GetAchievementSetsAction.php:557`) is never shown, because rcheevos does not read
+  that field. Not yet verified on device: that award requests reach the server and come back as
+  softcore.
 
 ### Speed lock under hardcore
 - OBSERVED: `RaHardcoreRules.isSpeedAllowed` allows only 100%, so slow motion is refused as well as
@@ -98,6 +101,40 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - Not yet verified on device: hardcore refuses fast speed, slow speed, frame advance and switching
   the limiter away from its starting setting; softcore still allows all of them.
 
+### In-game achievement list
+- OBSERVED: with RetroAchievements enabled in Settings, the in-game menu has an "Achievements" item
+  (`game_drawer.xml`; `GameActivity` removes it otherwise). It opens `AchievementsDialog`, a
+  read-only list titled with the game name: a summary row ("Hardcore: 5 of 20 unlocked" and the
+  points), the server's warning achievement if there is one, then one row per achievement with its
+  title, description, points and whether it is unlocked. The only button is OK; nothing in the
+  dialog unlocks, submits or edits. If no game is loaded, the dialog shows one line instead.
+- OBSERVED: `ra_glue_get_achievements_json` used to mark an achievement unlocked when either unlock
+  bit was set, so under hardcore a softcore-only unlock showed as unlocked although the summary
+  did not count it. It now tests the bit for the current mode, the same bit
+  `rc_client_get_user_game_summary` counts (`rc_client.c:946-964`). The achievement `state` is not
+  used: a DISABLED achievement keeps that state even when unlocked (`rc_client.c:1458-1485`).
+- OBSERVED: the summary JSON has a new `"hardcore"` field from `rc_client_get_hardcore_enabled`.
+  `ra_glue_get_hardcore()` returns the requested flag, which `ra_glue.c:41` calls a best-effort
+  diagnostic.
+- REFERENCE (RAWeb `ac7bf9b84d98`): `GetAchievementSetsAction.php:493-552` puts the client warning
+  achievement first in the first set, and its comment says it unlocks itself a few seconds after
+  loading. For this client its description is "Hardcore unlocks cannot be earned using this
+  emulator." (`:540`). rcheevos leaves IDs from `101000001` up out of the summary
+  (`rc_client.c:954`), so the dialog shows them as warning rows, not achievements, and leaves them
+  out of its totals.
+- OBSERVED: `rc_client_get_user_game_summary` counts only the game's main achievement set
+  (`rc_client.c:1031`), but `rc_client_create_achievement_list` lists every active set
+  (`rc_client.c:4397-4428`). So the dialog counts its totals from its own rows and reads only the
+  mode and the game title from the summary JSON. For a game that also loads a bonus set, the
+  totals still match the rows.
+- OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes.
+  `ra_glue.c` was recompiled for all four ABIs with no compiler warnings (the ndk-build stderr logs
+  are empty). The packaged `libmupen64plus-core.so` (all four ABIs) has the new summary format and
+  still exports both JSON functions. There is no JVM test for the dialog: local unit tests get
+  Android's stubbed `org.json`.
+- Not yet verified on device: the item shows only with RetroAchievements enabled; the dialog
+  matches the loaded game in hardcore and in softcore; the warning row shows for this client.
+
 ### Open items (not fixed here)
 - DERIVED: hardcore can re-arm on a core that is already running. `onStartCommand`
   (`CoreService.java:1200`) calls `startRetroAchievements()` (`:1234`) every time, and that clears
@@ -117,3 +154,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - HYPOTHESIS (untested, predates this change): with audio sync on, the real audio plugin paces the
   game only when the game sends audio (`AiLenChanged`, `plugin.cpp:330-379`), so a game that goes
   quiet could run unpaced.
+- OBSERVED: the achievement list has display limits. rcheevos labels each set's buckets ("<set
+  title> - Locked", `rc_client.c:4176-4201`), but `ra_glue_get_achievements_json` passes on no
+  labels, so achievements from a bonus set have no heading. Nothing marks an achievement as
+  unsupported (rcheevos bucket "Unsupported", `rc_client.c:4166`): it shows as locked, or as
+  unlocked if the player already earned it in this mode (`rc_client.c:1686-1689`). Long titles are
+  cut to one line (`list_item_two_text_icon.xml:36-38`). The "No achievements are loaded" message
+  also appears when the list fails to parse or does not fit the 128 KB text buffer
+  (`RetroAchievementsManager.java:60,394-396`, `ra_glue.c:619`).
