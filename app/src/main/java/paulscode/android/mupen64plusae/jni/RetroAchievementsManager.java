@@ -67,6 +67,12 @@ public class RetroAchievementsManager {
     /** rc_client async result code passed to {@link Listener#onRaAsyncResult}: RC_OK == 0; non-zero is an error. */
     public static final int RESULT_OK = 0;
 
+    /**
+     * Achievement IDs from this one up belong to the server's client warning, not to the game.
+     * Must match RC_CLIENT_ACHIEVEMENT_WARNING_ID in rcheevos/src/rc_client.c.
+     */
+    public static final long WARNING_ACHIEVEMENT_ID = 101000001L;
+
     public interface Listener {
         /**
          * A native rcheevos event. {@code type} is the parsed event type

@@ -27,9 +27,6 @@ public final class AchievementsDialog {
 
     private static final String TAG = "AchievementsDialog";
 
-    /** Must match RC_CLIENT_ACHIEVEMENT_WARNING_ID in rcheevos/src/rc_client.c. */
-    private static final long WARNING_ACHIEVEMENT_ID = 101000001L;
-
     private AchievementsDialog() {}
 
     private static final class Row {
@@ -91,7 +88,7 @@ public final class AchievementsDialog {
             String title = achievement.getString("title");
             String description = achievement.getString("description");
 
-            if (achievement.getLong("id") >= WARNING_ACHIEVEMENT_ID) {
+            if (achievement.getLong("id") >= RetroAchievementsManager.WARNING_ACHIEVEMENT_ID) {
                 warningRows.add(new Row(title, description, View.GONE));
                 continue;
             }

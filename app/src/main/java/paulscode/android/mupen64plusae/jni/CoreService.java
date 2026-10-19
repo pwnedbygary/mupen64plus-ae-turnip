@@ -45,11 +45,15 @@ import android.util.Base64;
 import android.util.Log;
 import android.util.SparseArray;
 import android.view.Surface;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
+
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import paulscode.android.mupen64plusae.R;
 
@@ -1351,7 +1355,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                 mGlobalPrefs.retroAchievementsPassword, mGlobalPrefs.retroAchievementsToken);
         if (mRaLoginCredential == RaSignInRules.Credential.NONE) {
             Log.w(TAG, "RetroAchievements enabled but the username, or both password and session token, are missing");
-            mRaSessionFailed = true;
+            failRaSession(getString(R.string.ra_noSignIn));
             return;
         }
         beginRaLogin(ra);
@@ -1366,7 +1370,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         if (!started) {
             Log.w(TAG, "RetroAchievements login request did not start");
             mRaLoginCredential = RaSignInRules.Credential.NONE;
-            mRaSessionFailed = true;
+            failRaSession(getString(R.string.retroAchievementsConnect_noRequest));
         }
     }
 
@@ -1414,7 +1418,25 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     @Override
     public void onRaEvent(String type, String json) {
-        Log.i(TAG, "RetroAchievements event: " + type);
+        Log.i(TAG, "RetroAchievements event: " + json);
+        if (!"achievement".equals(type)) {
+            return;
+        }
+        try {
+            JSONObject achievement = new JSONObject(json);
+            String title = achievement.getString("title");
+            // The server's client warning arrives as the unlock of a pseudo-achievement.
+            if (achievement.getLong("id") >= RetroAchievementsManager.WARNING_ACHIEVEMENT_ID) {
+                showRaNotice(getString(R.string.ra_serverWarning, title,
+                        achievement.getString("description")));
+            } else {
+                int points = achievement.getInt("points");
+                showRaNotice(getResources().getQuantityString(R.plurals.ra_achievementUnlocked,
+                        points, title, points));
+            }
+        } catch (JSONException e) {
+            Log.w(TAG, "Malformed RetroAchievements achievement event: " + json);
+        }
     }
 
     @Override
@@ -1436,18 +1458,21 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             // Load-game failed terminally (offline, unsupported game). Latch it so hardcore
             // enforcement releases instead of blocking saves for a session that can never be
             // established.
-            mRaSessionFailed = true;
             Log.w(TAG, "RetroAchievements load-game error: " + errorMessage);
+            failRaSession(raFailureReason(result, errorMessage));
             return;
         }
 
-        // Once the game session is up, restore any locally saved progress.
+        // Once the game session is up, restore any locally saved progress and say which mode the
+        // session runs in.
         if (!mRaProgressRestored && mRaGameMd5 != null && ra.isGameLoaded()) {
             mRaProgressRestored = true;
             byte[] progress = loadRaProgress();
             if (progress != null) {
                 ra.deserializeProgress(progress);
             }
+            showRaNotice(getString(isRaHardcore()
+                    ? R.string.ra_sessionHardcore : R.string.ra_sessionSoftcore));
         }
     }
 
@@ -1457,7 +1482,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             mRaLoginCredential = RaSignInRules.nextCredential(mRaLoginCredential, result,
                     mGlobalPrefs.retroAchievementsPassword);
             if (mRaLoginCredential == RaSignInRules.Credential.NONE) {
-                mRaSessionFailed = true;
+                failRaSession(raFailureReason(result, errorMessage));
             } else {
                 beginRaLogin(ra);
             }
@@ -1476,8 +1501,26 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
         if (!ra.loadGame(mRaGameMd5)) {
             Log.w(TAG, "RetroAchievements load-game request did not start");
-            mRaSessionFailed = true;
+            failRaSession(getString(R.string.retroAchievementsConnect_noRequest));
         }
+    }
+
+    /**
+     * Ends achievements for this session after a terminal failure, which also releases hardcore
+     * enforcement (see isRaHardcore()), and says why on screen.
+     */
+    private void failRaSession(String reason) {
+        mRaSessionFailed = true;
+        showRaNotice(getString(R.string.ra_sessionOff, reason));
+    }
+
+    private static String raFailureReason(int result, String errorMessage) {
+        return TextUtils.isEmpty(errorMessage) ? String.valueOf(result) : errorMessage;
+    }
+
+    // A long toast: achievement titles and server messages take more than two seconds to read.
+    private void showRaNotice(String notice) {
+        Toast.makeText(getApplicationContext(), notice, Toast.LENGTH_LONG).show();
     }
 
     public void forceExit()

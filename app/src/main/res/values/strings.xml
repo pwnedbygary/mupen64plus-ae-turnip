@@ -267,6 +267,15 @@
     <string name="ra_hardcoreCheatsBlocked">Hardcore mode: cheats are disabled</string>
     <string name="ra_hardcoreSpeedBlocked">Hardcore mode: speed controls are disabled</string>
     <string name="ra_netplayHardcoreOff">Netplay: hardcore mode is off for this session</string>
+    <string name="ra_sessionHardcore">RetroAchievements: hardcore mode</string>
+    <string name="ra_sessionSoftcore">RetroAchievements: softcore mode</string>
+    <string name="ra_sessionOff">RetroAchievements is off for this session: %1$s</string>
+    <string name="ra_noSignIn">no sign-in is saved in Settings</string>
+    <string name="ra_serverWarning">%1$s. %2$s</string>
+    <plurals name="ra_achievementUnlocked">
+        <item quantity="one">Achievement unlocked: %1$s (%2$d point)</item>
+        <item quantity="other">Achievement unlocked: %1$s (%2$d points)</item>
+    </plurals>
     <string name="achievements_unavailable">No achievements are loaded. This game may have none, the sign-in may have failed, or loading may not be finished yet.</string>
     <string name="achievements_empty">This game has no achievements</string>
     <string name="achievements_summaryHardcore">Hardcore: %1$d of %2$d unlocked</string>
