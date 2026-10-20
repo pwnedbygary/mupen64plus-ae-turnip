@@ -7,9 +7,13 @@
  * mem_base_u32(g_mem_base, MM_RDRAM_DRAM + address), which is correct in
  * both full and compressed memory base modes.
  *
- * All client API entry points used here are internally mutex-protected
- * by rcheevos, so it is safe to call them from the emu thread (do_frame,
- * idle) and from Java worker threads (dispatch, getters).
+ * ra_glue_do_frame and ra_glue_idle run on the emu thread, dispatch on the
+ * Java HTTP threads, and the rest mostly on the main thread (ra_glue_reset
+ * too: the app resets the core there). rcheevos does not lock every read:
+ * its plain getters (user, game and subset info; game-loaded, load and
+ * hardcore state) take no mutex, and other calls, rc_client_do_frame among
+ * them, check for a game outside it. So the game must not be unloaded, nor
+ * the client logged out or destroyed, while another thread can use them.
  */
 
 #include "ra_glue.h"

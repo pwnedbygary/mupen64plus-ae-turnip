@@ -36,8 +36,9 @@ import java.util.concurrent.Executors;
  *    thread;
  *  - expose login / load-game / progress / hardcore operations to the UI.
  *
- * The native client is internally mutex-protected, so its API may be called
- * from the emu thread and from Java threads. All ra_glue_* entry points are
+ * rcheevos does not lock every call, so the client must not be shut down or
+ * logged out, nor its game replaced by loadGame(), while another thread can
+ * still use them (see the top of ra_glue.c). All ra_glue_* entry points are
  * exported by the core .so (see api_export.ver).
  *
  * This class is a process-wide singleton: rcheevos must outlive individual
@@ -304,7 +305,10 @@ public class RetroAchievementsManager {
         return mCore.ra_glue_deserialize_progress(progress, progress.length) != 0;
     }
 
-    /** For paused emulation; emulator thread only, as rcheevos may read emulated memory here. */
+    /**
+     * For paused emulation, on the emulator thread only, as rcheevos may read emulated memory
+     * here. Nothing calls it yet: while paused, that thread stays in the core's pause loop.
+     */
     public void idle() {
         if (mInitialized) {
             mCore.ra_glue_idle();

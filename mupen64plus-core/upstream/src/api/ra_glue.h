@@ -38,7 +38,8 @@ EXPORT void ra_glue_shutdown(void);
  */
 EXPORT void ra_glue_set_java_bridge(uintptr_t server_call, uintptr_t event, uintptr_t async_result);
 
-/* Emulation loop hooks (called from the emu thread). */
+/* Emulation hooks: do_frame and idle run on the emu thread; reset runs on
+ * the thread that resets the core (the app's main thread). */
 EXPORT void ra_glue_do_frame(void);
 EXPORT void ra_glue_idle(void);
 EXPORT void ra_glue_reset(void);
