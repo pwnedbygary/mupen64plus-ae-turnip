@@ -44,9 +44,11 @@ public final class AchievementsDialog {
     public static void show(Activity activity) {
         String title = null;
         List<Row> rows = null;
+        int message = R.string.achievements_unavailable;
 
         RetroAchievementsManager manager = RetroAchievementsManager.peekInstance();
         if (manager != null && manager.isInitialized() && manager.isGameLoaded()) {
+            message = R.string.achievements_unreadable;
             String summaryJson = manager.getSummaryJson();
             String achievementsJson = manager.getAchievementsJson();
             if (summaryJson != null && achievementsJson != null) {
@@ -65,7 +67,7 @@ public final class AchievementsDialog {
                 .setTitle(TextUtils.isEmpty(title) ? activity.getString(R.string.menuItem_achievements) : title)
                 .setPositiveButton(android.R.string.ok, null);
         if (rows == null) {
-            builder.setMessage(R.string.achievements_unavailable);
+            builder.setMessage(message);
         } else {
             builder.setAdapter(Prompt.createAdapter(activity, rows, AchievementsDialog::populateRow), null);
         }
@@ -79,9 +81,11 @@ public final class AchievementsDialog {
             throws JSONException {
         List<Row> warningRows = new ArrayList<>();
         List<Row> achievementRows = new ArrayList<>();
+        int totalAchievements = 0;
         int unlockedAchievements = 0;
         int totalPoints = 0;
         int unlockedPoints = 0;
+        String set = "";
 
         for (int i = 0; i < achievements.length(); i++) {
             JSONObject achievement = achievements.getJSONObject(i);
@@ -93,15 +97,26 @@ public final class AchievementsDialog {
                 continue;
             }
 
+            // "set" is empty unless more than one set is active, and rcheevos lists each set's
+            // achievements together.
+            String achievementSet = achievement.getString("set");
+            if (!achievementSet.isEmpty() && !achievementSet.equals(set)) {
+                achievementRows.add(new Row(achievementSet, null, View.GONE));
+            }
+            set = achievementSet;
+
             boolean unlocked = achievement.getInt("unlocked") != 0;
             int points = achievement.getInt("points");
+            totalAchievements++;
             totalPoints += points;
             if (unlocked) {
                 unlockedAchievements++;
                 unlockedPoints += points;
             }
-            String status = context.getResources().getQuantityString(
-                    unlocked ? R.plurals.achievements_unlocked : R.plurals.achievements_locked, points, points);
+            int statusText = unlocked ? R.plurals.achievements_unlocked
+                    : achievement.getInt("unsupported") != 0 ? R.plurals.achievements_unsupported
+                    : R.plurals.achievements_locked;
+            String status = context.getResources().getQuantityString(statusText, points, points);
             // INVISIBLE, not GONE, keeps a locked row's text aligned with the unlocked rows.
             achievementRows.add(new Row(title,
                     TextUtils.isEmpty(description) ? status : description + "\n" + status,
@@ -109,18 +124,18 @@ public final class AchievementsDialog {
         }
 
         // The summary JSON counts only the game's main achievement set, but the list has every set
-        // the game loaded, so the totals are counted from the rows.
+        // the game loaded, so the totals are counted from the list.
         List<Row> rows = new ArrayList<>();
         int summaryText = summary.getInt("hardcore") != 0 ?
                 R.string.achievements_summaryHardcore : R.string.achievements_summarySoftcore;
         rows.add(new Row(
-                context.getString(summaryText, unlockedAchievements, achievementRows.size()),
+                context.getString(summaryText, unlockedAchievements, totalAchievements),
                 context.getResources().getQuantityString(R.plurals.achievements_summaryPoints, totalPoints,
                         unlockedPoints, totalPoints),
                 View.GONE));
         rows.addAll(warningRows);
 
-        if (achievementRows.isEmpty()) {
+        if (totalAchievements == 0) {
             rows.add(new Row(context.getString(R.string.achievements_empty), null, View.GONE));
         }
         rows.addAll(achievementRows);
@@ -128,6 +143,9 @@ public final class AchievementsDialog {
     }
 
     private static void populateRow(Row row, int position, TextView text1, TextView text2, ImageView icon) {
+        // The shared row layout keeps text1 on one scrolling line; long titles wrap here instead.
+        text1.setSingleLine(false);
+        text1.setEllipsize(null);
         text1.setText(row.title);
         text2.setText(row.detail);
         text2.setVisibility(TextUtils.isEmpty(row.detail) ? View.GONE : View.VISIBLE);

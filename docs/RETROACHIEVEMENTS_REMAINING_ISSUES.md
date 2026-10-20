@@ -150,7 +150,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `rc_error.h:47-48`). The login parser returns that code (`rc_api_user.c:72-74`), the login
   callback gets it unchanged (`rc_client_server_error_message`, `rc_client.c:497-516`; callback
   `:698-708`), and `ra_glue_async_cb` passes it to Java (`ra_glue.c:162-173`). A failed HTTP
-  request becomes `RC_NO_RESPONSE` (`RetroAchievementsManager.java:345-350`,
+  request becomes `RC_NO_RESPONSE` (`RetroAchievementsManager.java:347-352`,
   `rc_api_common.c:360-365`). Only -34 and -35 are retried with the password.
 - OBSERVED: `loadGame` is requested only after a login succeeds. rc_client results carry no
   request ID (`ra_glue_async_cb`, `ra_glue.c:162-173`), so the session makes one request at a
@@ -162,7 +162,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `:786-792`, load `:2900`). `onRaAsyncResult` ignores any result that arrives after that.
 - DERIVED: in that last case a successful login is dropped, and the session runs without
   achievements and with enforcement released. It needs the main thread to stall for a whole HTTP
-  round trip (responses arrive on the HTTP thread, `RetroAchievementsManager.java:352`), so it
+  round trip (responses arrive on the HTTP thread, `RetroAchievementsManager.java:354`), so it
   should be rare. In `fd6b452f1` the same case latched the failure but still loaded the game, so
   achievements would run with enforcement released.
 - DERIVED: the password login starts from the token login's result, which is posted to the main
@@ -226,8 +226,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   (`game_drawer.xml`; `GameActivity` removes it otherwise). It opens `AchievementsDialog`, a
   read-only list titled with the game name: a summary row ("Hardcore: 5 of 20 unlocked" and the
   points), the server's warning achievement if there is one, then one row per achievement with its
-  title, description, points and whether it is unlocked. The only button is OK; nothing in the
-  dialog unlocks, submits or edits. If no game is loaded, the dialog shows one line instead.
+  title, description, points and status ("Unlocked", "Locked" or "Unsupported"). When the game has
+  more than one active achievement set, each set's rows start with a heading row showing the set's
+  title. The only button is OK; nothing in the dialog unlocks, submits or edits. If no game is
+  loaded, the dialog shows one line instead.
 - OBSERVED: `ra_glue_get_achievements_json` used to mark an achievement unlocked when either unlock
   bit was set, so under hardcore a softcore-only unlock showed as unlocked although the summary
   did not count it. It now tests the bit for the current mode, the same bit
@@ -244,36 +246,74 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   out of its totals.
 - OBSERVED: `rc_client_get_user_game_summary` counts only the game's main achievement set
   (`rc_client.c:1031`), but `rc_client_create_achievement_list` lists every active set
-  (`rc_client.c:4397-4428`). So the dialog counts its totals from its own rows and reads only the
-  mode and the game title from the summary JSON. For a game that also loads a bonus set, the
-  totals still match the rows.
+  (`rc_client.c:4397-4431`). So the dialog counts its totals from the achievements in the list and
+  reads only the mode and the game title from the summary JSON. For a game that also loads a bonus
+  set, the totals cover every set. Set headings and warning rows are not counted.
+- OBSERVED: each achievement in the list JSON also has `"unsupported"` and `"set"`, taken from the
+  rcheevos bucket it is listed in (`ra_glue.c:573-578`). `"unsupported"` is 1 in the "Unsupported"
+  bucket. rcheevos puts an achievement there when its logic cannot be parsed
+  (`rc_client.c:2113-2116,2126-2129`), or when its logic uses an address that the memory read
+  callback refuses (`rc_client.c:1293-1314`). It tries every address once when the game loads
+  (`rc_client.c:1346-1370`, called at `:1861`). During play, a failed read does the same for its
+  address, unless the read followed a pointer (`rc_client.c:5864-5876,5895-5896,5937-5938`). The
+  bucket never changes afterwards (`rc_client.c:4100-4101`). `ra_glue_read_memory` refuses an
+  address while `g_mem_base` is NULL, or outside `0x80000000`-`0x80FFFFFF` (`ra_glue.c:94-102`);
+  the first open item below explains why that refuses every N64 address. The dialog shows an
+  unsupported achievement as "Unsupported", or as "Unlocked" if the player already earned it in
+  this mode (`rc_client.c:1686-1689`). `"set"` is the set's title from `rc_client_get_subset_info`
+  when the game has more than one active set, and empty otherwise, because rcheevos sets a
+  bucket's `subset_id` only then (`rc_client.c:4297-4301,4420`).
+- OBSERVED: with the lock-state grouping the glue requests (`ra_glue.c:552-554`), rcheevos lists
+  all of one set's buckets before the next set's (`rc_client.c:4397-4431`), and the dialog adds a
+  heading row whenever the set title changes. DERIVED: two sets with the same title in a row would
+  share one heading.
+- OBSERVED: long titles wrap. The shared row layout keeps the title on one scrolling line
+  (`list_item_two_text_icon.xml:36-38`) and other dialogs use it, so `AchievementsDialog` turns that
+  off for its own rows.
+- OBSERVED: the glue returns 0 both when it fails and when the list does not fit the buffer
+  (`ra_glue.c:555-556,633-637`). The list used to be read into a fixed 128 KB buffer, so a longer
+  list showed "No achievements are loaded". `RetroAchievementsManager.readText` now grows the
+  buffer fourfold up to 2 MB for the list (`ACHIEVEMENTS_BUFFER_MAX`). "No achievements are loaded"
+  now shows only when no game is loaded; a loaded game whose list cannot be read (over 2 MB, or
+  JSON the dialog cannot parse) shows "Could not read this game's achievement list."
+- OBSERVED (host JVM): `RetroAchievementsManagerTest` uses a fake getter that, like the glue's JSON
+  getters, writes nothing and returns 0 when the text and its terminating NUL do not fit. Its 1 MB
+  case (`textLargerThanTheFirstBufferIsRead`) failed against the single 128 KB read and passes now.
 - OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes.
   `ra_glue.c` was recompiled for all four ABIs with no compiler warnings (the ndk-build stderr logs
-  are empty). The packaged `libmupen64plus-core.so` (all four ABIs) has the new summary format and
-  still exports both JSON functions. There is no JVM test for the dialog: local unit tests get
-  Android's stubbed `org.json`.
+  are empty). The packaged `libmupen64plus-core.so` (all four ABIs) has the summary format with
+  `"hardcore"` and the list format with `"unsupported"` and `"set"`, and still exports both JSON
+  functions. There is no JVM test for the dialog: local unit tests get Android's stubbed
+  `org.json`.
 - Not yet verified on device: the item shows only with RetroAchievements enabled; the dialog
-  matches the loaded game in hardcore and in softcore; the warning row shows for this client.
+  matches the loaded game in hardcore and in softcore; the warning row shows for this client; a
+  game with a bonus set shows set headings; long titles wrap.
 
 ### Open items (not fixed here)
+- DERIVED (predates this branch; not seen on a device): every N64 achievement whose logic reads
+  memory is disabled when the game loads and listed as "Unsupported", in hardcore and in softcore.
+  rcheevos switches off a disabled achievement's trigger (`rc_client.c:1304-1308`), so it cannot
+  unlock. rcheevos addresses N64 RAM as `0x000000`-`0x7FFFFF`; `0x80000000` is only the matching
+  real address (`rc_consoles.h:121-123`; `consoleinfo.c:731-735,1153-1154`). The load check
+  disables every achievement that uses an address above the last region or one the read callback
+  refuses (`rc_client.c:1348-1350,1361-1366`), and `ra_glue_read_memory` refuses every address
+  below `0x80000000` (`ra_glue.c:97-98`). The comments at `ra_glue.c:4-8,84-88` say rcheevos
+  passes `0x80000000`-based addresses. REFERENCE (RAWeb `ac7bf9b84d98`): the server's warning
+  achievement reads no memory (`CreateWarningAchievementAction.php:16`, `1=1.300.`), so it still
+  unlocks. HYPOTHESIS: that unlock was the achievement event in the 2026-09-21 device notes. This
+  would stop unlocks in both modes, separately from the server rule under "Hardcore unlocks:
+  server side".
 - OBSERVED: challenge and progress indicators are not shown, although section A of the compliance
   page requires them (see On-screen notices). rcheevos raises challenge-indicator and
   progress-indicator events (`rc_client.h:814-818`), but `ra_build_event_json` has no case for them
-  and drops them (`ra_glue.c:300`), and the achievements JSON carries no measured progress
-  (`rc_client.h:560-561`). REFERENCE (RetroAchievements docs): a Trigger flag exists "so a challenge
-  indicator can be shown on the screen" (`developer-docs/flags/trigger.html`, revision `9a5f33c`),
-  and a Measured flag "adds a progress bar to the achievement overlay"
-  (`developer-docs/flags/measured.html`, revision `6226ebf`).
-- OBSERVED: the achievement list has display limits. rcheevos labels each set's buckets ("<set
-  title> - Locked", `rc_client.c:4176-4201`), but `ra_glue_get_achievements_json` passes on no
-  labels, so achievements from a bonus set have no heading. Nothing marks an achievement as
-  unsupported (rcheevos bucket "Unsupported", `rc_client.c:4166`): it shows as locked, or as
-  unlocked if the player already earned it in this mode (`rc_client.c:1686-1689`). Long titles are
-  cut to one line (`list_item_two_text_icon.xml:36-38`). The "No achievements are loaded" message
-  also appears when the list fails to parse or does not fit the 128 KB text buffer
-  (`RetroAchievementsManager.java:60,400-402`, `ra_glue.c:619`).
+  and drops them (`ra_glue.c:300`). The achievements JSON has no measured progress
+  (`ra_glue.c:595-596,617-618`), although rcheevos provides it (`rc_client.h:560-561`). REFERENCE
+  (RetroAchievements docs): a Trigger flag exists "so a challenge indicator can be shown on the
+  screen" (`developer-docs/flags/trigger.html`, revision `9a5f33c`), and a Measured flag "adds a
+  progress bar to the achievement overlay" (`developer-docs/flags/measured.html`, revision
+  `6226ebf`).
 - DERIVED (predates this branch): `RetroAchievementsManager.onServerCall` runs each request with
-  `execute()` (`RetroAchievementsManager.java:315`) and catches only `IOException` (`:345`). Any
+  `execute()` (`RetroAchievementsManager.java:317`) and catches only `IOException` (`:347`). Any
   other exception on the HTTP thread reaches Android's default uncaught-exception handler, which
   always kills the process (AOSP `android-14.0.0_r1`, `RuntimeInit.java:125-177,235`,
   `KillApplicationHandler`). The app sets no handler of its own. During a game this closes the

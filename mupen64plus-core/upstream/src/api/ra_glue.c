@@ -570,6 +570,13 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
 
   for (uint32_t b = 0; b < list->num_buckets; ++b) {
     const rc_client_achievement_bucket_t* bucket = &list->buckets[b];
+    /* rcheevos sets subset_id only when more than one set is active. */
+    const rc_client_subset_t* subset = (bucket->subset_id != 0) ?
+      rc_client_get_subset_info(s_client, bucket->subset_id) : NULL;
+    char* escaped_set = ra_json_escape(subset != NULL ? subset->title : "");
+    const char* set_title = (escaped_set != NULL) ? escaped_set : "";
+    const int unsupported = (bucket->bucket_type == RC_CLIENT_ACHIEVEMENT_BUCKET_UNSUPPORTED) ? 1 : 0;
+
     for (uint32_t i = 0; i < bucket->num_achievements; ++i) {
       const rc_client_achievement_t* achievement = bucket->achievements[i];
       if (achievement == NULL)
@@ -585,10 +592,12 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
 
       const char* comma = (n > 17) ? "," : ""; /* prefix "{\"achievements\":[" is 17 chars */
       int entry_len = snprintf(NULL, 0,
-                               "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d}",
+                               "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d,"
+                               "\"unsupported\":%d,\"set\":\"%s\"}",
                                comma,
                                achievement->id, title, description,
-                               achievement->points, (achievement->unlocked & unlock_bit) ? 1 : 0);
+                               achievement->points, (achievement->unlocked & unlock_bit) ? 1 : 0,
+                               unsupported, set_title);
 
       if (n + (size_t)entry_len + 2 >= capacity) {
         capacity = (capacity + (size_t)entry_len + 256) * 2;
@@ -596,6 +605,7 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
         if (grown == NULL) {
           free(title);
           free(description);
+          free(escaped_set);
           free(json);
           rc_client_destroy_achievement_list(list);
           return 0;
@@ -604,14 +614,18 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
       }
 
       n += (size_t)snprintf(json + n, capacity - n,
-                            "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d}",
+                            "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d,"
+                            "\"unsupported\":%d,\"set\":\"%s\"}",
                             comma,
                             achievement->id, title, description,
-                            achievement->points, (achievement->unlocked & unlock_bit) ? 1 : 0);
+                            achievement->points, (achievement->unlocked & unlock_bit) ? 1 : 0,
+                            unsupported, set_title);
 
       free(title);
       free(description);
     }
+
+    free(escaped_set);
   }
 
   n += (size_t)sprintf(json + n, "]}");

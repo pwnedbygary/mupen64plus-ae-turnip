@@ -56,8 +56,10 @@ public class RetroAchievementsManager {
     private static final String USER_AGENT = "Mupen64PlusAE/3.0 (Android)";
     private static final String DEFAULT_CONTENT_TYPE = "application/x-www-form-urlencoded";
 
-    /** Large enough for any realistic achievement list / progress blob. */
+    /** Size of the first buffer for text read from the glue. */
     private static final int TEXT_BUFFER_SIZE = 128 * 1024;
+    /** The achievement list covers every set the game loaded, so it may grow the buffer to this. */
+    private static final int ACHIEVEMENTS_BUFFER_MAX = 2 * 1024 * 1024;
     private static final int PROGRESS_BUFFER_SIZE = 64 * 1024;
     private static final int PROGRESS_BUFFER_MAX = 1024 * 1024;
 
@@ -250,7 +252,7 @@ public class RetroAchievementsManager {
 
     @Nullable
     public String getAchievementsJson() {
-        return readText(mCore::ra_glue_get_achievements_json);
+        return readText(mCore::ra_glue_get_achievements_json, ACHIEVEMENTS_BUFFER_MAX);
     }
 
     @Nullable
@@ -390,21 +392,33 @@ public class RetroAchievementsManager {
 
     // ---- helpers ---------------------------------------------------------
 
-    private interface TextGetter {
+    interface TextGetter {
         int get(byte[] buffer, int bufferSize);
     }
 
     @Nullable
-    private String readText(TextGetter getter) {
-        byte[] buffer = new byte[TEXT_BUFFER_SIZE];
-        if (getter.get(buffer, buffer.length) == 0) {
-            return null;
+    private static String readText(TextGetter getter) {
+        return readText(getter, TEXT_BUFFER_SIZE);
+    }
+
+    /**
+     * The glue's JSON getters return 0 both when they fail and when the text does not fit, so the
+     * buffer grows fourfold up to {@code maxSize} before the text counts as unavailable. The other
+     * getters cut the text to the buffer instead.
+     */
+    @Nullable
+    static String readText(TextGetter getter, int maxSize) {
+        for (int size = TEXT_BUFFER_SIZE; size <= maxSize; size *= 4) {
+            byte[] buffer = new byte[size];
+            if (getter.get(buffer, buffer.length) != 0) {
+                int length = 0;
+                while (length < buffer.length && buffer[length] != 0) {
+                    ++length;
+                }
+                return new String(buffer, 0, length, StandardCharsets.UTF_8);
+            }
         }
-        int length = 0;
-        while (length < buffer.length && buffer[length] != 0) {
-            ++length;
-        }
-        return new String(buffer, 0, length, StandardCharsets.UTF_8);
+        return null;
     }
 
     private static byte[] readAll(@Nullable InputStream input) throws IOException {
