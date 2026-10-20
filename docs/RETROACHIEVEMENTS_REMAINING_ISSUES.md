@@ -9,6 +9,8 @@ This file lists what is still open. Evidence labels: OBSERVED = read from curren
 seen in a named run such as "OBSERVED (host JVM)"; DERIVED = inferred from code paths;
 REFERENCE = read from a pinned outside source (RetroAchievements server or client source or
 documentation, AOSP, or libretro); HYPOTHESIS = plausible but untested.
+Mode names: this file uses rcheevos's name, softcore, for the mode that RetroAchievements and the
+app's text now call casual.
 Issue #15 has its own section at the end; the rest are device verification results, deferred
 token-handling items and the remaining device-verification gaps.
 
@@ -257,7 +259,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - Not yet verified on device. Re-arm test: turn on "Don't keep activities", start a hardcore
   session offline so login fails, fast-forward, press Home, reconnect, tap the notification, then
   check that save states and speed controls stay allowed and no new login is attempted. Netplay
-  test: with hardcore on, the message shows and the achievement list says "Softcore".
+  test: with hardcore on, the message shows and the achievement list says "Casual".
 
 ### Sign-in order
 - OBSERVED: a game session signs in with the saved session token first and uses the password
@@ -314,11 +316,16 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   informational message saying what mode they're in" when the game starts. Section A requires
   Measured and Trigger flags to be "visible in the achievement list as well as displayed during
   gameplay"; the app shows neither yet (see Open items). The page does not mention unlock notices;
-  they were requested for this branch, not taken from the page. Since this revision the page calls
-  the other mode "Casual"; the app still says "softcore".
+  they were requested for this branch, not taken from the page. This revision ("chore: rebrand
+  'Softcore' to 'Casual'") renamed the other mode; the page mostly writes "casual mode".
+- OBSERVED: the app's text follows that name: the mode notice ("RetroAchievements: casual mode"),
+  the achievement list's summary row ("Casual: 5 of 20 unlocked"), the hardcore setting's summary
+  ("Netplay runs in casual mode.") and the README. In `b67587935` they said softcore. The string
+  resources were renamed with them (`ra_sessionCasual`, `achievements_summaryCasual`); no other
+  locale has them.
 - OBSERVED: `CoreService` shows a long toast (`showRaNotice`) in each of these cases:
   - when the game's achievements finish loading: "RetroAchievements: hardcore mode" or
-    "RetroAchievements: softcore mode", from `isRaHardcore()`;
+    "RetroAchievements: casual mode", from `isRaHardcore()`;
   - when an achievement unlocks: "Achievement unlocked: <title> (<n> points)", or "(1 point)";
   - when the server's client warning unlocks (IDs from 101000001,
     `RetroAchievementsManager.WARNING_ACHIEVEMENT_ID`, now shared with `AchievementsDialog`): its

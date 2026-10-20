@@ -1472,7 +1472,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                 ra.deserializeProgress(progress);
             }
             showRaNotice(getString(isRaHardcore()
-                    ? R.string.ra_sessionHardcore : R.string.ra_sessionSoftcore));
+                    ? R.string.ra_sessionHardcore : R.string.ra_sessionCasual));
         }
     }
 

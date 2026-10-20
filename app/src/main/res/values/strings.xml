@@ -268,7 +268,7 @@
     <string name="ra_hardcoreSpeedBlocked">Hardcore mode: speed controls are disabled</string>
     <string name="ra_netplayHardcoreOff">Netplay: hardcore mode is off for this session</string>
     <string name="ra_sessionHardcore">RetroAchievements: hardcore mode</string>
-    <string name="ra_sessionSoftcore">RetroAchievements: softcore mode</string>
+    <string name="ra_sessionCasual">RetroAchievements: casual mode</string>
     <string name="ra_sessionOff">RetroAchievements is off for this session: %1$s</string>
     <string name="ra_noSignIn">no sign-in is saved in Settings</string>
     <string name="ra_serverWarning">%1$s. %2$s</string>
@@ -280,7 +280,7 @@
     <string name="achievements_unreadable">Could not read this game\'s achievement list.</string>
     <string name="achievements_empty">This game has no achievements</string>
     <string name="achievements_summaryHardcore">Hardcore: %1$d of %2$d unlocked</string>
-    <string name="achievements_summarySoftcore">Softcore: %1$d of %2$d unlocked</string>
+    <string name="achievements_summaryCasual">Casual: %1$d of %2$d unlocked</string>
     <plurals name="achievements_summaryPoints">
         <item quantity="one">%1$d of %2$d point</item>
         <item quantity="other">%1$d of %2$d points</item>
@@ -300,7 +300,7 @@
     <string name="retroAchievementsPassword_title">Password</string>
     <string name="retroAchievementsPassword_summary">Your retroachievements.org password. Once a sign-in has saved a session token, games use that token and need the password only if the server rejects it.</string>
     <string name="retroAchievementsHardcore_title">Hardcore mode</string>
-    <string name="retroAchievementsHardcore_summary">Disables save states, cheats, fast-forward, slow motion, frame advance and audio sync while achievements are active. Netplay runs in softcore.</string>
+    <string name="retroAchievementsHardcore_summary">Disables save states, cheats, fast-forward, slow motion, frame advance and audio sync while achievements are active. Netplay runs in casual mode.</string>
 
     <!-- Checkbox Preferences -->
     <string name="playShowCheats_title">Enable cheats</string>

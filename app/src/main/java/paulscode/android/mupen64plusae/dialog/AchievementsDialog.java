@@ -127,7 +127,7 @@ public final class AchievementsDialog {
         // the game loaded, so the totals are counted from the list.
         List<Row> rows = new ArrayList<>();
         int summaryText = summary.getInt("hardcore") != 0 ?
-                R.string.achievements_summaryHardcore : R.string.achievements_summarySoftcore;
+                R.string.achievements_summaryHardcore : R.string.achievements_summaryCasual;
         rows.add(new Row(
                 context.getString(summaryText, unlockedAchievements, totalAchievements),
                 context.getResources().getQuantityString(R.plurals.achievements_summaryPoints, totalPoints,
