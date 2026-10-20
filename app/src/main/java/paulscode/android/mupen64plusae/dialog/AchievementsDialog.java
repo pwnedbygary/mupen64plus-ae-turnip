@@ -117,6 +117,13 @@ public final class AchievementsDialog {
                     : achievement.getInt("unsupported") != 0 ? R.plurals.achievements_unsupported
                     : R.plurals.achievements_locked;
             String status = context.getResources().getQuantityString(statusText, points, points);
+            String progress = achievement.getString("progress");
+            if (!progress.isEmpty()) {
+                status = context.getString(R.string.achievements_progress, status, progress);
+            }
+            if (achievement.getInt("challenge") != 0) {
+                status = context.getString(R.string.achievements_challengeActive, status);
+            }
             // INVISIBLE, not GONE, keeps a locked row's text aligned with the unlocked rows.
             achievementRows.add(new Row(title,
                     TextUtils.isEmpty(description) ? status : description + "\n" + status,

@@ -1427,7 +1427,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     @Override
     public void onRaEvent(String type, String json) {
-        Log.i(TAG, "RetroAchievements event: " + json);
+        if (!"progress_update".equals(type)) Log.i(TAG, "RetroAchievements event: " + json);
         try {
             if ("achievement".equals(type)) {
                 showRaUnlockNotice(new JSONObject(json));

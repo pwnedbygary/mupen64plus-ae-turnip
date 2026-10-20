@@ -3,10 +3,10 @@
  *
  * A fake server answers the requests rcheevos sends (sign-in, the game's
  * achievement sets, session start, unlock, leaderboard entry) with responses
- * in the format the vendored rcheevos parses (src/rapi). The game has one
- * achievement that is true when the N64 RAM byte at rcheevos address
- * ACHIEVEMENT_ADDRESS is 1, and one leaderboard that starts and submits in
- * the frame the byte at LEADERBOARD_ADDRESS becomes 1. Once the emulator runs
+ * in the format the vendored rcheevos parses (src/rapi). The game's first
+ * achievement is true when the N64 RAM byte at rcheevos address
+ * ACHIEVEMENT_ADDRESS is 1, and its leaderboard starts and submits in the
+ * frame the byte at LEADERBOARD_ADDRESS becomes 1. Once the emulator runs
  * frames, the achievement must be active, and it must unlock when its byte
  * changes from 0 to 1 (rcheevos lets an achievement trigger only after a
  * frame in which it was false).
@@ -25,6 +25,14 @@
  * "disconnected" on the next frame, and "reconnected" on the frame after a
  * retry succeeds. rcheevos schedules retries on its clock, which the fixture
  * replaces, so the runs need no waiting.
+ *
+ * The last run checks the indicators. The game's second achievement has a
+ * Trigger condition that stays false, so it is primed, and its challenge
+ * indicator shown, while its other condition (the byte at CHALLENGE_ADDRESS
+ * is 1) holds. Its third achievement measures the byte at MEASURED_ADDRESS
+ * against MEASURED_TARGET: rcheevos shows the progress when that value
+ * changes and hides it two seconds after the last change. The events and
+ * the achievement list must carry the challenge state and the progress text.
  *
  * ra_glue.c and memory.c are included from the production sources, and
  * tools/test-ra-session.sh links the rcheevos sources the core builds.
@@ -74,6 +82,12 @@ static int g_failures;
 #define ACHIEVEMENT_ADDRESS 0x10
 #define LEADERBOARD_ID 7701
 #define LEADERBOARD_ADDRESS 0x20
+#define CHALLENGE_ID 5502
+#define CHALLENGE_ADDRESS 0x30
+#define CHALLENGE_TRIGGER_ADDRESS 0x31
+#define MEASURED_ID 5503
+#define MEASURED_ADDRESS 0x32
+#define MEASURED_TARGET 10
 #define GAME_HASH "0123456789abcdef0123456789abcdef"
 #define MAX_REQUESTS 16
 #define REFUSAL "refused by the test server"
@@ -109,6 +123,8 @@ static int g_server_errors;
 static char g_server_error[512];
 static int g_disconnected_events;
 static int g_reconnected_events;
+static int g_indicator_events;
+static char g_indicator_event[256];
 static rc_clock_t g_now;
 
 static void fake_server_call(int request_id, const char* url, const char* post_data,
@@ -140,6 +156,10 @@ static void fake_event(const char* json)
         ++g_disconnected_events;
     } else if (strcmp(json, "{\"type\":\"reconnected\"}") == 0) {
         ++g_reconnected_events;
+    } else if (strstr(json, "\"type\":\"challenge_") != NULL
+               || strstr(json, "\"type\":\"progress_") != NULL) {
+        ++g_indicator_events;
+        snprintf(g_indicator_event, sizeof(g_indicator_event), "%s", json);
     }
 }
 
@@ -186,10 +206,11 @@ static int has_param(const char* post_data, const char* param)
 
 static void answer_requests(void)
 {
-    char game_sets[2048];
+    char game_sets[4096];
     char award_param[32];
+    int length;
 
-    snprintf(game_sets, sizeof(game_sets),
+    length = snprintf(game_sets, sizeof(game_sets),
         "{\"Success\":true,\"GameId\":1001,\"Title\":\"Test Game\",\"ConsoleId\":%d,"
         "\"ImageIconUrl\":\"https://media.retroachievements.org/Images/000001.png\","
         "\"RichPresencePatch\":\"\","
@@ -197,14 +218,23 @@ static void answer_requests(void)
         "\"ImageIconUrl\":\"https://media.retroachievements.org/Images/000001.png\","
         "\"Achievements\":[{\"ID\":%d,\"Title\":\"Byte\",\"Description\":\"Set the byte\","
         "\"Flags\":%d,\"Points\":5,\"MemAddr\":\"0xH%06x=1\",\"Author\":\"tester\","
-        "\"BadgeName\":\"00001\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"}],"
+        "\"BadgeName\":\"00001\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"},"
+        "{\"ID\":%d,\"Title\":\"Challenge\",\"Description\":\"Hold the byte\","
+        "\"Flags\":%d,\"Points\":5,\"MemAddr\":\"0xH%06x=1_T:0xH%06x=1\",\"Author\":\"tester\","
+        "\"BadgeName\":\"00002\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"},"
+        "{\"ID\":%d,\"Title\":\"Measured\",\"Description\":\"Count to the target\","
+        "\"Flags\":%d,\"Points\":5,\"MemAddr\":\"M:0xH%06x=%d\",\"Author\":\"tester\","
+        "\"BadgeName\":\"00003\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"}],"
         "\"Leaderboards\":[{\"ID\":%d,\"Title\":\"Fastest byte\","
         "\"Description\":\"Set the other byte\","
         "\"Mem\":\"STA:0xH%06x=1::CAN:0xH%06x=2::SUB:0xH%06x=1::VAL:0xH%06x\","
         "\"Format\":\"VALUE\",\"LowerIsBetter\":false,\"Hidden\":false}]}]}",
         RC_CONSOLE_NINTENDO_64, ACHIEVEMENT_ID, RC_ACHIEVEMENT_CATEGORY_CORE, ACHIEVEMENT_ADDRESS,
+        CHALLENGE_ID, RC_ACHIEVEMENT_CATEGORY_CORE, CHALLENGE_ADDRESS, CHALLENGE_TRIGGER_ADDRESS,
+        MEASURED_ID, RC_ACHIEVEMENT_CATEGORY_CORE, MEASURED_ADDRESS, MEASURED_TARGET,
         LEADERBOARD_ID, LEADERBOARD_ADDRESS, LEADERBOARD_ADDRESS, LEADERBOARD_ADDRESS,
         LEADERBOARD_ADDRESS + 1);
+    CHECK(length > 0 && length < (int)sizeof(game_sets));
     snprintf(award_param, sizeof(award_param), "a=%d", ACHIEVEMENT_ID);
 
     /* Answering a request can send the next one, which this loop answers too. */
@@ -253,6 +283,9 @@ static void* create_memory(uint8_t** rdram)
     (*rdram)[ACHIEVEMENT_ADDRESS] = 0;
     (*rdram)[LEADERBOARD_ADDRESS] = 0;
     (*rdram)[LEADERBOARD_ADDRESS + 1] = 42;
+    (*rdram)[CHALLENGE_ADDRESS] = 0;
+    (*rdram)[CHALLENGE_TRIGGER_ADDRESS] = 0;
+    (*rdram)[MEASURED_ADDRESS] = 0;
     g_mem_base = base;
     return base;
 }
@@ -276,6 +309,8 @@ static void* start_session(int memory_before_load, int hardcore, uint8_t** rdram
     g_server_error[0] = '\0';
     g_disconnected_events = 0;
     g_reconnected_events = 0;
+    g_indicator_events = 0;
+    g_indicator_event[0] = '\0';
     g_now = 1000000;
     g_mem_base = NULL;
     if (memory_before_load) {
@@ -419,6 +454,88 @@ static void run_unreachable_server(void)
     end_session(base, "unlock retried while the server is unreachable", failures_before);
 }
 
+/* Checks that the achievement list's entry for the achievement contains the field text. */
+static int list_entry_has(int id, const char* field)
+{
+    static char list[65536];
+    char start[32];
+    char entry[1024];
+    const char* found;
+    size_t length;
+
+    if (!ra_glue_get_achievements_json(list, (int)sizeof(list))) {
+        return 0;
+    }
+    snprintf(start, sizeof(start), "{\"id\":%d,", id);
+    found = strstr(list, start);
+    if (found == NULL) {
+        return 0;
+    }
+    length = strcspn(found, "}");
+    if (length >= sizeof(entry)) {
+        return 0;
+    }
+    memcpy(entry, found, length);
+    entry[length] = '\0';
+    return strstr(entry, field) != NULL;
+}
+
+/* Runs one frame, which must raise exactly the indicator event given. */
+static void check_indicator_frame(const char* expected)
+{
+    const int events_before = g_indicator_events;
+
+    ra_glue_do_frame();
+    CHECK(g_indicator_events == events_before + 1);
+    CHECK(strcmp(g_indicator_event, expected) == 0);
+}
+
+static void run_indicators(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base = start_session(1, 0, &rdram);
+    const int requests = g_num_requests;
+    char expected[160];
+
+    CHECK(list_entry_has(CHALLENGE_ID, "\"challenge\":0"));
+    CHECK(list_entry_has(MEASURED_ID, "\"progress\":\"\""));
+
+    rdram[CHALLENGE_ADDRESS] = 1;
+    snprintf(expected, sizeof(expected),
+             "{\"type\":\"challenge_show\",\"id\":%d,\"title\":\"Challenge\"}", CHALLENGE_ID);
+    check_indicator_frame(expected);
+    CHECK(list_entry_has(CHALLENGE_ID, "\"challenge\":1"));
+
+    rdram[CHALLENGE_ADDRESS] = 0;
+    snprintf(expected, sizeof(expected),
+             "{\"type\":\"challenge_hide\",\"id\":%d,\"title\":\"Challenge\"}", CHALLENGE_ID);
+    check_indicator_frame(expected);
+    CHECK(list_entry_has(CHALLENGE_ID, "\"challenge\":0"));
+
+    rdram[MEASURED_ADDRESS] = 3;
+    snprintf(expected, sizeof(expected),
+             "{\"type\":\"progress_show\",\"id\":%d,\"title\":\"Measured\",\"progress\":\"3/%d\"}",
+             MEASURED_ID, MEASURED_TARGET);
+    check_indicator_frame(expected);
+
+    rdram[MEASURED_ADDRESS] = 4;
+    snprintf(expected, sizeof(expected),
+             "{\"type\":\"progress_update\",\"id\":%d,\"title\":\"Measured\",\"progress\":\"4/%d\"}",
+             MEASURED_ID, MEASURED_TARGET);
+    check_indicator_frame(expected);
+    snprintf(expected, sizeof(expected), "\"progress\":\"4/%d\"", MEASURED_TARGET);
+    CHECK(list_entry_has(MEASURED_ID, expected));
+
+    g_now += 2000;
+    check_indicator_frame("{\"type\":\"progress_hide\"}");
+
+    /* Neither achievement unlocked, so nothing was sent. */
+    CHECK(g_num_requests == requests);
+
+    end_session(base, "challenge and progress indicators", failures_before);
+}
+
 int main(void)
 {
     run_unlock(1, "memory created before the game loads");
@@ -426,6 +543,7 @@ int main(void)
     run_refused_unlock();
     run_refused_leaderboard_entry();
     run_unreachable_server();
+    run_indicators();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);

@@ -92,6 +92,7 @@ import paulscode.android.mupen64plusae.persistent.ConfigFile;
 import paulscode.android.mupen64plusae.persistent.GamePrefs;
 import paulscode.android.mupen64plusae.persistent.GlobalPrefs;
 import paulscode.android.mupen64plusae.jni.CoreTypes.PakType;
+import paulscode.android.mupen64plusae.jni.RetroAchievementsManager;
 import paulscode.android.mupen64plusae.profile.ControllerProfile;
 import paulscode.android.mupen64plusae.profile.ManageTouchscreenProfilesActivity;
 import paulscode.android.mupen64plusae.util.CountryCode;
@@ -152,6 +153,7 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
     // Activity and views
     private GameOverlay mOverlay;
     private FpsOverlay mFpsOverlay;
+    private RaIndicatorOverlay mRaIndicatorOverlay;
     private DrawerLayout mDrawerLayout;
     private GameSidebar mGameSidebar;
     private GameSurface mGameSurface;
@@ -378,6 +380,7 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
         mOverlay = findViewById(R.id.gameOverlay);
         mFpsOverlay = findViewById(R.id.fpsOverlay);
+        mRaIndicatorOverlay = findViewById(R.id.raIndicatorOverlay);
         mDrawerLayout = findViewById(R.id.drawerLayout);
         mGameSidebar = findViewById(R.id.gameSidebar);
 
@@ -410,6 +413,8 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
         if (!mGlobalPrefs.isRetroAchievementsEnabled)
             mGameSidebar.getMenu().removeItem(R.id.menuItem_achievements);
+        else
+            mRaIndicatorOverlay.start(RetroAchievementsManager.getInstance());
 
         updateGameSurfaceLayout();
 
@@ -808,6 +813,10 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
 
         if (mOverlay != null) {
             mOverlay.onDestroy();
+        }
+
+        if (mRaIndicatorOverlay != null) {
+            mRaIndicatorOverlay.stop();
         }
     }
 

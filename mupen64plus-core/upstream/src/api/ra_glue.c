@@ -279,6 +279,40 @@ static char* ra_build_event_json(const rc_client_event_t* event, rc_client_t* cl
     }
     break;
 
+  case RC_CLIENT_EVENT_ACHIEVEMENT_CHALLENGE_INDICATOR_SHOW:
+  case RC_CLIENT_EVENT_ACHIEVEMENT_CHALLENGE_INDICATOR_HIDE:
+    if (event->achievement != NULL) {
+      const char* name = (event->type == RC_CLIENT_EVENT_ACHIEVEMENT_CHALLENGE_INDICATOR_SHOW) ?
+        "challenge_show" : "challenge_hide";
+      char* title = ra_json_escape(event->achievement->title);
+      if (title != NULL) {
+        asprintf(&json, "{\"type\":\"%s\",\"id\":%u,\"title\":\"%s\"}", name, event->achievement->id, title);
+        free(title);
+      }
+    }
+    break;
+
+  case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_SHOW:
+  case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_UPDATE:
+    if (event->achievement != NULL) {
+      const char* name = (event->type == RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_SHOW) ?
+        "progress_show" : "progress_update";
+      char* title = ra_json_escape(event->achievement->title);
+      char* progress = ra_json_escape(event->achievement->measured_progress);
+      if (title != NULL && progress != NULL) {
+        asprintf(&json, "{\"type\":\"%s\",\"id\":%u,\"title\":\"%s\",\"progress\":\"%s\"}",
+                 name, event->achievement->id, title, progress);
+      }
+      free(title);
+      free(progress);
+    }
+    break;
+
+  /* rcheevos raises this without an achievement when the indicator times out. */
+  case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_HIDE:
+    asprintf(&json, "{\"type\":\"progress_hide\"}");
+    break;
+
   case RC_CLIENT_EVENT_SERVER_ERROR:
     if (event->server_error != NULL) {
       char* api = ra_json_escape(event->server_error->api);
@@ -616,20 +650,24 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
 
       char* title = ra_json_escape(achievement->title);
       char* description = ra_json_escape(achievement->description);
-      if (title == NULL || description == NULL) {
+      char* progress = ra_json_escape(achievement->measured_progress);
+      if (title == NULL || description == NULL || progress == NULL) {
         free(title);
         free(description);
+        free(progress);
         continue;
       }
+      /* rcheevos refreshed the bucket for this list: an active challenge is a primed trigger. */
+      const int challenge = (achievement->bucket == RC_CLIENT_ACHIEVEMENT_BUCKET_ACTIVE_CHALLENGE) ? 1 : 0;
 
       const char* comma = (n > 17) ? "," : ""; /* prefix "{\"achievements\":[" is 17 chars */
       int entry_len = snprintf(NULL, 0,
                                "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d,"
-                               "\"unsupported\":%d,\"set\":\"%s\"}",
+                               "\"unsupported\":%d,\"set\":\"%s\",\"progress\":\"%s\",\"challenge\":%d}",
                                comma,
                                achievement->id, title, description,
                                achievement->points, (achievement->unlocked & unlock_bit) ? 1 : 0,
-                               unsupported, set_title);
+                               unsupported, set_title, progress, challenge);
 
       if (n + (size_t)entry_len + 2 >= capacity) {
         capacity = (capacity + (size_t)entry_len + 256) * 2;
@@ -637,6 +675,7 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
         if (grown == NULL) {
           free(title);
           free(description);
+          free(progress);
           free(escaped_set);
           free(json);
           rc_client_destroy_achievement_list(list);
@@ -647,14 +686,15 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
 
       n += (size_t)snprintf(json + n, capacity - n,
                             "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d,"
-                            "\"unsupported\":%d,\"set\":\"%s\"}",
+                            "\"unsupported\":%d,\"set\":\"%s\",\"progress\":\"%s\",\"challenge\":%d}",
                             comma,
                             achievement->id, title, description,
                             achievement->points, (achievement->unlocked & unlock_bit) ? 1 : 0,
-                            unsupported, set_title);
+                            unsupported, set_title, progress, challenge);
 
       free(title);
       free(description);
+      free(progress);
     }
 
     free(escaped_set);
