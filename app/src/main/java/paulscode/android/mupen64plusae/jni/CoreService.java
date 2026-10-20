@@ -1327,13 +1327,22 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         }
         mRaStartAttempted = true;
 
-        if (!mGlobalPrefs.isRetroAchievementsEnabled || TextUtils.isEmpty(mRomMd5)) {
+        if (!mGlobalPrefs.isRetroAchievementsEnabled) {
+            return;
+        }
+
+        // These two failures come before the session is set up, so hardcore was never enforced;
+        // failRaSession only tells the player why achievements are off.
+        if (TextUtils.isEmpty(mRomMd5)) {
+            Log.w(TAG, "RetroAchievements enabled but the game has no MD5");
+            failRaSession(getString(R.string.ra_noGameMd5));
             return;
         }
 
         RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
         if (!ra.initialize()) {
             Log.e(TAG, "RetroAchievements init failed: " + ra.getLastError());
+            failRaSession(getString(R.string.ra_clientNotStarted));
             return;
         }
 

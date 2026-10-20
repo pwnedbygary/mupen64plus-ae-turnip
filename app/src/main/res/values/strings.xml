@@ -271,6 +271,8 @@
     <string name="ra_sessionCasual">RetroAchievements: casual mode</string>
     <string name="ra_sessionOff">RetroAchievements is off for this session: %1$s</string>
     <string name="ra_noSignIn">no sign-in is saved in Settings</string>
+    <string name="ra_noGameMd5">the game\'s MD5 is not known</string>
+    <string name="ra_clientNotStarted">the achievements client could not start</string>
     <string name="ra_serverWarning">%1$s. %2$s</string>
     <plurals name="ra_achievementUnlocked">
         <item quantity="one">Achievement unlocked: %1$s (%2$d point)</item>

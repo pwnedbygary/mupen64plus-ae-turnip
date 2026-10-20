@@ -123,8 +123,8 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   responses on its HTTP thread (`RetroAchievementsManager.java:321,358`). `g_mem_base` is NULL
   until `CoreStartup` (`main.c:111`; `frontend.c:105`), which the service runs on its handler
   thread (`CoreService.java:775`) after other start-up work, while the sign-in starts from
-  `onStartCommand` (`CoreService.java:1248,1361`) and the game loads as soon as it succeeds
-  (`CoreService.java:1502`); nothing orders the two. `CoreShutdown` frees that memory on the
+  `onStartCommand` (`CoreService.java:1248,1370`) and the game loads as soon as it succeeds
+  (`CoreService.java:1511`); nothing orders the two. `CoreShutdown` frees that memory on the
   handler thread (`CoreService.java:947`; `CoreInterface.java:738-740`; `frontend.c:135-136`).
 - DERIVED: with the new callback alone (background reads still on), a session whose sign-in and
   game load finished before the core started would have every memory-reading achievement
@@ -201,17 +201,17 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   replaces it (`ra_glue.c:432-433`), on logout (`rc_client.c:887-888,894`), and on a reset whose
   media belongs to another game (`rc_client.c:6643-6652`). The app reaches none of these during a
   session: it loads one game per session, after the first successful sign-in
-  (`CoreService.java:1502`); nothing calls `RetroAchievementsManager.logout()`
+  (`CoreService.java:1511`); nothing calls `RetroAchievementsManager.logout()`
   (`RetroAchievementsManager.java:207-209`); and the glue never changes media, so the hash of the
   loaded game maps to that game (`rc_client.c:2329,2334-2335`; an unknown game keeps both at 0:
   `:2320,2427,2620-2622`). The client is destroyed by `ra_glue_shutdown` from
-  `CoreService.onDestroy` (`CoreService.java:1307,1385`), on the main thread like every caller of
-  the getters (`AchievementsDialog.java:50-53`; `CoreService.java:1468,1494`), and
+  `CoreService.onDestroy` (`CoreService.java:1307,1394`), on the main thread like every caller of
+  the getters (`AchievementsDialog.java:50-53`; `CoreService.java:1477,1503`), and
   `ra_glue_shutdown` waits for a server response that an HTTP thread is handling
   (`ra_glue.c:352-358`). On a normal exit the service saves progress on its own thread after
-  `emuStart` returns, and only then stops itself (`CoreService.java:915,918-921,981,1533-1546`);
+  `emuStart` returns, and only then stops itself (`CoreService.java:915,918-921,981,1542-1555`);
   its other exits call `forceExit`, which kills the process right after asking the service to
-  stop (`CoreService.java:1526-1530`).
+  stop (`CoreService.java:1535-1539`).
 
 ### Speed lock under hardcore
 - OBSERVED: `RaHardcoreRules.isSpeedAllowed` allows only 100%, so slow motion is refused as well as
@@ -300,7 +300,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   not refuse it as "Login already in progress" (`:757-760`).
 - OBSERVED: the token from a successful login is written with `commit()`, and only when it differs
   from the saved one; `saveRaProgress` already used `commit()`. `forceExit` kills the emulation
-  process (`CoreService.java:1526-1529`).
+  process (`CoreService.java:1535-1538`).
 - DERIVED: `apply()` only starts a background write (Android `SharedPreferences.Editor.apply`
   reference), so a token saved with it could be lost when that process is killed.
 - OBSERVED (host JVM): `RaSignInRulesTest` failed against the old order (password first, no
@@ -333,7 +333,19 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
     both of the toast's lines (see the line limit below);
   - when the session ends with a terminal failure (`failRaSession`): "RetroAchievements is off for
     this session: <reason>", where the reason is rcheevos' error text (for example "Unknown
-    game"), "could not start the request" or "no sign-in is saved in Settings".
+    game"), "could not start the request", "no sign-in is saved in Settings", "the game's MD5 is
+    not known" or "the achievements client could not start". Offline, rcheevos' text is the app's
+    own "RA network error: <message>" (`RetroAchievementsManager.java:354`), which rcheevos
+    passes on as the error message (`rc_api_common.c:360-365`).
+- OBSERVED: two start-up exits that ended achievements without a notice now call `failRaSession`:
+  a game started without an MD5 (`CoreService.java:1336-1340`) and a failed
+  `RetroAchievementsManager.initialize()` (`:1343-1347`). Both come before `mRaGameMd5` is set
+  (`:1349`), so `isRaHardcore()` was already false and hardcore was never enforced; only the
+  notice is new. The service reads the MD5 from its start intent (`CoreService.java:1233`); the
+  gallery computes it when it scans a game (`CacheRomInfoService.java:490,534`). `initialize()`
+  fails only when `rc_client_create` cannot allocate the client
+  (`RetroAchievementsManager.java:151-154`; `ra_glue.c:327-331`; `rc_client.c:169-171`). Neither
+  failure has been seen on a device.
 - DERIVED: the mode toast shows what the app enforces. rcheevos changes its own hardcore setting
   only when the media changes (`rc_client.c:3221-3227`), and `ra_glue` never changes media, so
   `isRaHardcore()` matches rc_client's mode when the load completes.
@@ -462,9 +474,5 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `CoreService.onRaEvent` only logs. DERIVED: the player has already seen "Achievement unlocked"
   for that achievement, because the unlock event is raised right after the award request is sent
   (`rc_client.c:6185-6210`).
-- OBSERVED: two early exits in `startRetroAchievements` show no notice: an empty ROM MD5
-  (`CoreService.java:1330`) and a failed `initialize()` (`:1335-1338`). DERIVED: both return before
-  `mRaGameMd5` is set, so `isRaHardcore()` is false and hardcore is not enforced, and no mode notice
-  appears either.
 - Not audited on this branch: the rest of the compliance page, for example offline queueing of
   unlocks (section A) and the resume and save-state rules (section B).
