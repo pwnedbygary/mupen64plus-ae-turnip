@@ -100,7 +100,7 @@ This is what lets the Cart Hack **work and save**, despite placing writable Expa
 - **Driver benchmark mode** — toggleable timed benchmark that measures average FPS to compare Turnip against system drivers.
 - **ParaLLEl-RDP** Vulkan renderer with upscaling, texture filtering, and modern RDP accuracy.
 - **All classic plugins**: GLideN64, glide64mk2, GLN64, Rice, Angrylion, plus HLE/cxd4/parallel RSPs.
-- **RetroAchievements** — sign in from the app, see unlocks and the session's mode on screen while you play and open the game's achievement list from the in-game menu, with hardcore mode enforced on save states, slots, cheats, GameShark and game speed (normal speed only: no fast-forward, slow motion, frame advance or audio sync; netplay runs in casual mode).
+- **RetroAchievements** — sign in from the app, see unlocks, server problems and the session's mode on screen while you play and open the game's achievement list from the in-game menu, with hardcore mode enforced on save states, slots, cheats, GameShark and game speed (normal speed only: no fast-forward, slow motion, frame advance or audio sync; netplay runs in casual mode).
 - **Netplay & Cloud Sync**: Local and room-based netplay, Google Drive cloud backup, touchscreen/controller profiles, and 7z/zip ROM support.
 - **In-app update checker** — checks for new releases directly from GitHub and notifies you when an update is available.
 

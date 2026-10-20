@@ -79,9 +79,9 @@ public class RetroAchievementsManager {
     public interface Listener {
         /**
          * A native rcheevos event. {@code type} is the parsed event type
-         * (achievement, server_error, reset, game_completed,
-         * leaderboard_started, leaderboard_failed, leaderboard_submitted),
-         * {@code json} is the raw event payload.
+         * (achievement, server_error, disconnected, reconnected, reset,
+         * game_completed, leaderboard_started, leaderboard_failed,
+         * leaderboard_submitted), {@code json} is the raw event payload.
          */
         void onRaEvent(String type, String json);
 

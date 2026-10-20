@@ -1428,23 +1428,45 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     @Override
     public void onRaEvent(String type, String json) {
         Log.i(TAG, "RetroAchievements event: " + json);
-        if (!"achievement".equals(type)) {
-            return;
-        }
         try {
-            JSONObject achievement = new JSONObject(json);
-            String title = achievement.getString("title");
-            // The server's client warning arrives as the unlock of a pseudo-achievement.
-            if (achievement.getLong("id") >= RetroAchievementsManager.WARNING_ACHIEVEMENT_ID) {
-                showRaNotice(getString(R.string.ra_serverWarning, title,
-                        achievement.getString("description")));
-            } else {
-                int points = achievement.getInt("points");
-                showRaNotice(getResources().getQuantityString(R.plurals.ra_achievementUnlocked,
-                        points, title, points));
+            if ("achievement".equals(type)) {
+                showRaUnlockNotice(new JSONObject(json));
+            } else if ("server_error".equals(type)) {
+                showRaServerErrorNotice(new JSONObject(json));
+            } else if ("disconnected".equals(type)) {
+                showRaNotice(getString(R.string.ra_disconnected));
+            } else if ("reconnected".equals(type)) {
+                showRaNotice(getString(R.string.ra_reconnected));
             }
         } catch (JSONException e) {
-            Log.w(TAG, "Malformed RetroAchievements achievement event: " + json);
+            Log.w(TAG, "Malformed RetroAchievements " + type + " event: " + json);
+        }
+    }
+
+    private void showRaUnlockNotice(JSONObject achievement) throws JSONException {
+        String title = achievement.getString("title");
+        // The server's client warning arrives as the unlock of a pseudo-achievement.
+        if (achievement.getLong("id") >= RetroAchievementsManager.WARNING_ACHIEVEMENT_ID) {
+            showRaNotice(getString(R.string.ra_serverWarning, title,
+                    achievement.getString("description")));
+        } else {
+            int points = achievement.getInt("points");
+            showRaNotice(getResources().getQuantityString(R.plurals.ra_achievementUnlocked,
+                    points, title, points));
+        }
+    }
+
+    private void showRaServerErrorNotice(JSONObject error) throws JSONException {
+        // rcheevos names the request: "award_achievement" or "submit_lboard_entry" (rc_client.c).
+        String api = error.getString("api");
+        String title = error.getString("title");
+        String reason = raFailureReason(error.getInt("result"), error.getString("message"));
+        if (!TextUtils.isEmpty(title) && "award_achievement".equals(api)) {
+            showRaNotice(getString(R.string.ra_unlockNotRecorded, title, reason));
+        } else if (!TextUtils.isEmpty(title) && "submit_lboard_entry".equals(api)) {
+            showRaNotice(getString(R.string.ra_leaderboardEntryNotRecorded, title, reason));
+        } else {
+            showRaNotice(getString(R.string.ra_serverError, reason));
         }
     }
 

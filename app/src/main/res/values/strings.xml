@@ -278,6 +278,11 @@
         <item quantity="one">Achievement unlocked: %1$s (%2$d point)</item>
         <item quantity="other">Achievement unlocked: %1$s (%2$d points)</item>
     </plurals>
+    <string name="ra_unlockNotRecorded">RetroAchievements did not record the unlock of %1$s: %2$s</string>
+    <string name="ra_leaderboardEntryNotRecorded">RetroAchievements did not record the leaderboard entry for %1$s: %2$s</string>
+    <string name="ra_serverError">RetroAchievements server error: %1$s</string>
+    <string name="ra_disconnected">RetroAchievements: sending failed. Keep playing while it retries.</string>
+    <string name="ra_reconnected">RetroAchievements: connection restored</string>
     <string name="achievements_unavailable">No achievements are loaded. This game may have none, the sign-in may have failed, or loading may not be finished yet.</string>
     <string name="achievements_unreadable">Could not read this game\'s achievement list.</string>
     <string name="achievements_empty">This game has no achievements</string>

@@ -241,7 +241,27 @@ void ra_glue_dispatch_server_response(int request_id, const char* body, int body
   pthread_mutex_unlock(&s_pending_lock);
 }
 
-static char* ra_build_event_json(const rc_client_event_t* event)
+/* Title of the achievement or leaderboard a server error is about, or "". */
+static const char* ra_server_error_title(rc_client_t* client, const rc_client_server_error_t* error)
+{
+  if (error->api == NULL)
+    return "";
+
+  if (strcmp(error->api, "award_achievement") == 0) {
+    const rc_client_achievement_t* achievement = rc_client_get_achievement_info(client, error->related_id);
+    if (achievement != NULL && achievement->title != NULL)
+      return achievement->title;
+  }
+  else if (strcmp(error->api, "submit_lboard_entry") == 0) {
+    const rc_client_leaderboard_t* leaderboard = rc_client_get_leaderboard_info(client, error->related_id);
+    if (leaderboard != NULL && leaderboard->title != NULL)
+      return leaderboard->title;
+  }
+
+  return "";
+}
+
+static char* ra_build_event_json(const rc_client_event_t* event, rc_client_t* client)
 {
   char* json = NULL;
 
@@ -263,13 +283,24 @@ static char* ra_build_event_json(const rc_client_event_t* event)
     if (event->server_error != NULL) {
       char* api = ra_json_escape(event->server_error->api);
       char* message = ra_json_escape(event->server_error->error_message);
-      if (api != NULL && message != NULL) {
-        asprintf(&json, "{\"type\":\"server_error\",\"api\":\"%s\",\"message\":\"%s\",\"result\":%d,\"related_id\":%u}",
-                 api, message, event->server_error->result, event->server_error->related_id);
-        free(api);
-        free(message);
+      char* title = ra_json_escape(ra_server_error_title(client, event->server_error));
+      if (api != NULL && message != NULL && title != NULL) {
+        asprintf(&json, "{\"type\":\"server_error\",\"api\":\"%s\",\"message\":\"%s\",\"result\":%d,"
+                 "\"related_id\":%u,\"title\":\"%s\"}",
+                 api, message, event->server_error->result, event->server_error->related_id, title);
       }
+      free(api);
+      free(message);
+      free(title);
     }
+    break;
+
+  case RC_CLIENT_EVENT_DISCONNECTED:
+    asprintf(&json, "{\"type\":\"disconnected\"}");
+    break;
+
+  case RC_CLIENT_EVENT_RECONNECTED:
+    asprintf(&json, "{\"type\":\"reconnected\"}");
     break;
 
   case RC_CLIENT_EVENT_RESET:
@@ -304,11 +335,10 @@ static char* ra_build_event_json(const rc_client_event_t* event)
 
 static void ra_glue_event_handler(const rc_client_event_t* event, rc_client_t* client)
 {
-  (void)client;
   if (event == NULL || s_java_event == NULL)
     return;
 
-  char* json = ra_build_event_json(event);
+  char* json = ra_build_event_json(event, client);
   if (json != NULL) {
     s_java_event(json);
     free(json);
