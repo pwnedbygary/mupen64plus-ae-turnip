@@ -1,15 +1,15 @@
 /*
  * ra_glue.c - RetroAchievements (rcheevos) integration glue.
  *
- * Wraps the vendored rcheevos v12.5.0 client. The N64 achievement
- * memory references use full console addresses (0x80000000 + offset);
- * mupen's internal memory map places RDRAM at offset 0, so reads are
- * resolved with mem_base_u32(g_mem_base, offset), which is correct in
+ * Wraps the vendored rcheevos v12.5.0 client. rcheevos addresses N64
+ * RDRAM from 0 (0x000000-0x7FFFFF), not from its 0x80000000 real
+ * address, so reads are resolved with
+ * mem_base_u32(g_mem_base, MM_RDRAM_DRAM + address), which is correct in
  * both full and compressed memory base modes.
  *
  * All client API entry points used here are internally mutex-protected
- * by rcheevos, so it is safe to call them from the emu thread (do_frame)
- * and from Java worker threads (idle, dispatch, getters).
+ * by rcheevos, so it is safe to call them from the emu thread (do_frame,
+ * idle) and from Java worker threads (dispatch, getters).
  */
 
 #include "ra_glue.h"
@@ -26,7 +26,6 @@
 #include "rc_api_request.h"
 
 #define RA_GLUE_MAX_PENDING 16
-#define RA_GLUE_N64_RAM_BASE 0x80000000u
 
 /* C -> Java trampolined functions (JNA Function pointers). */
 typedef void (*ra_java_server_call_t)(int request_id, const char* url, const char* post_data, const char* content_type);
@@ -82,10 +81,9 @@ const char* ra_glue_get_last_error(void)
 
 /*
  * rcheevos memory read callback.
- * rcheevos passes full N64 memory-mapped addresses (0x80000000+).
- * mupen maps RDRAM at MM address 0, so the buffer offset is
- * address - 0x80000000; mem_base_u32() resolves that in both
- * full and compressed memory base modes.
+ * rcheevos passes the addresses of its N64 memory map (consoleinfo.c),
+ * where 0 is the first byte of RDRAM, and disables every achievement
+ * that directly reads an address this callback refuses.
  */
 static uint32_t ra_glue_read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client)
 {
@@ -94,17 +92,13 @@ static uint32_t ra_glue_read_memory(uint32_t address, uint8_t* buffer, uint32_t 
   if (g_mem_base == NULL || num_bytes == 0)
     return 0;
 
-  if (address < RA_GLUE_N64_RAM_BASE)
+  if (address >= RDRAM_16MB_SIZE)
     return 0;
 
-  uint32_t offset = address - RA_GLUE_N64_RAM_BASE;
-  if (offset >= RDRAM_16MB_SIZE)
-    return 0;
+  if (num_bytes > RDRAM_16MB_SIZE - address)
+    num_bytes = RDRAM_16MB_SIZE - address;
 
-  if (num_bytes > RDRAM_16MB_SIZE - offset)
-    num_bytes = RDRAM_16MB_SIZE - offset;
-
-  uint32_t* mem = mem_base_u32(g_mem_base, offset);
+  uint32_t* mem = mem_base_u32(g_mem_base, MM_RDRAM_DRAM + address);
   if (mem == NULL)
     return 0;
 
@@ -334,6 +328,10 @@ int ra_glue_create(void)
 
   s_client = client;
   rc_client_set_event_handler(s_client, ra_glue_event_handler);
+  /* Read memory only in ra_glue_do_frame() and ra_glue_idle(), which must run on
+   * the emulator thread: g_mem_base is NULL until CoreStartup and is freed by
+   * CoreShutdown there. The game then finishes loading on the next frame. */
+  rc_client_set_allow_background_memory_reads(s_client, 0);
   /* Keep the rcheevos default host (https://retroachievements.org). Passing a bare
    * hostname makes rc_api_update_host() prepend "http://", which is blocked by the
    * app's cleartext policy and is not a valid API endpoint. */

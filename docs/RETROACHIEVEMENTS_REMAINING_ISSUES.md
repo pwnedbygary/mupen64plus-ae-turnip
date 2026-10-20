@@ -7,8 +7,8 @@ and denied actions no longer announce first.
 
 This file lists what is still open. Evidence labels: OBSERVED = read from current source, or
 seen in a named run such as "OBSERVED (host JVM)"; DERIVED = inferred from code paths;
-REFERENCE = read from RetroAchievements server source or documentation, or from AOSP source;
-HYPOTHESIS = plausible but untested.
+REFERENCE = read from a pinned outside source (RetroAchievements server or client source or
+documentation, AOSP, or libretro); HYPOTHESIS = plausible but untested.
 Issue #15 has its own section at the end; the rest are device verification results, deferred
 token-handling items and the remaining device-verification gaps.
 
@@ -83,6 +83,93 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   that field. Not yet verified on device: that award requests reach the server and come back as
   softcore.
 
+### Memory reads
+- OBSERVED: rcheevos addresses N64 RAM as `0x000000`-`0x7FFFFF`; `0x80000000` is only the matching
+  real address (`rc_consoles.h:121-123`; `consoleinfo.c:731-735,1153-1154`). rcheevos passes the
+  address unchanged to the read callback (`rc_client.c:1363,5890,5914-5929`; `rc_peek_value`,
+  `memref.c:648-677`). When the game loads, an achievement that uses an address past the last
+  region, or one the callback refuses, is disabled (`rc_client.c:1348-1350,1361-1366`). Its
+  trigger is switched off (`rc_client.c:1304-1308`) and then always evaluates as inactive
+  (`trigger.c:169-171`), only active achievements enter the runtime (`rc_client.c:1411-1412`), and
+  the hardcore toggle and reset skip it (`rc_client.c:1457-1470,4865-4866`).
+- OBSERVED: until this change, `ra_glue_read_memory` refused every address below `0x80000000` and
+  subtracted that base before reading (`ra_glue.c:97-100` at `29a0dfb48`; added in `4df6051aa`).
+  Its comments (`ra_glue.c:4-8,84-88` at `29a0dfb48`) said rcheevos passes `0x80000000`-based
+  addresses.
+- DERIVED: so every achievement whose logic reads memory was disabled when the game loaded, in
+  hardcore and in softcore, and the in-game list showed it as "Unsupported", or as "Unlocked" if the
+  server already had it in this mode (`rc_client.c:1808-1811`). Leaderboards that read memory were
+  disabled the same way (`rc_client.c:1316-1344`). This stopped softcore unlocks too, separately
+  from the server rule under "Hardcore unlocks: server side".
+- REFERENCE (RAWeb `ac7bf9b84d98`, `app/Connect/Actions/CreateWarningAchievementAction.php:16`):
+  the server's warning achievement is `1=1.300.`, which reads no memory. DERIVED: it was the only
+  kind of achievement that could still unlock. HYPOTHESIS: it was the achievement event in the
+  2026-09-21 device notes.
+- OBSERVED: the callback now treats the address as an offset into RDRAM. It refuses an address
+  only while `g_mem_base` is NULL or at 16 MB and above, and reads from
+  `mem_base_u32(g_mem_base, MM_RDRAM_DRAM + address)` (`ra_glue.c:82-107`).
+- REFERENCE: in RetroArch, address X is byte X of the core's RDRAM. Its Mupen64Plus-Next core
+  (mupen64plus-libretro-nx `develop` `12edd2c74a51`, `libretro/libretro.c:2108-2112,2120-2124`)
+  exposes `g_dev.rdram.dram` as system RAM with no memory map, and rcheevos `v12.5.0`
+  `src/rc_libretro.c:653-725,727-744` maps each N64 region onto system RAM at its offset from the
+  first region.
+- OBSERVED: here `rdram->dram` is `mem_base_u32(base, MM_RDRAM_DRAM)` (`device.c:187`;
+  `rdram.c:132`). DERIVED: so for address X the callback now reads the byte RetroArch reads.
+- OBSERVED: rcheevos checks a loaded game's addresses when the last load response arrives, on the
+  thread that delivers it, unless background memory reads are off (`rc_client.c:1982-1983`,
+  `:1997-2001`, `:2414-2418`); they are on by default (`rc_client.c:175`). The app delivers
+  responses on its HTTP thread (`RetroAchievementsManager.java:317,354`). `g_mem_base` is NULL
+  until `CoreStartup` (`main.c:111`; `frontend.c:105`), which the service runs on its handler
+  thread (`CoreService.java:775`) after other start-up work, while the sign-in starts from
+  `onStartCommand` (`CoreService.java:1248,1361`) and the game loads as soon as it succeeds
+  (`CoreService.java:1502`); nothing orders the two. `CoreShutdown` frees that memory on the
+  handler thread (`CoreService.java:947`; `CoreInterface.java:738-740`; `frontend.c:135-136`).
+- DERIVED: with the new callback alone (background reads still on), a session whose sign-in and
+  game load finished before the core started would have every memory-reading achievement
+  disabled, and a response handled while the core shut down could read freed memory. Before this
+  change the timing did not matter: the previous callback returned without reading memory for
+  every address rcheevos passes (`ra_glue.c:97-98` at `29a0dfb48`; rcheevos passes none above
+  `0x7FFFFF`: `rc_client.c:1362-1364,5886-5887,5909-5910,5991-5992`), so every session lost
+  those achievements anyway, as above, and no response could read freed memory. HYPOTHESIS: an
+  early finish would be rare, and likelier when the core is slow to start (a Raphnet adapter, or
+  game data copied from external storage).
+- OBSERVED: `ra_glue_create` now turns background memory reads off (`ra_glue.c:331-334`). rcheevos
+  then queues the rest of the game load, which applies the server's unlocks, checks the addresses
+  and reports the result (`rc_client.c:1787-1923`, queued at `:1936-1950`), and runs it from
+  `rc_client_idle` (`:6507-6531`), which `rc_client_do_frame` calls at its end even before a game
+  is loaded (`:6490`). The emulator calls `ra_glue_do_frame` from `new_vi` (`main.c:985`) on the
+  handler thread, between `CoreStartup` and `CoreShutdown`. The load result now comes from that
+  thread too, and the Java side still posts it to the main thread
+  (`RetroAchievementsManager.java:380-382`). DERIVED: rich presence, which rcheevos reads for each
+  ping (`rc_client.c:5745-5752`), is read there as well.
+- OBSERVED: `ra_glue_idle` would run the same queued work (`ra_glue.c:370-374`), and rcheevos
+  expects it to be called while emulation is paused (`rc_client.h:882-883`). Nothing calls its
+  Java wrapper, `RetroAchievementsManager.idle()`. The comments now keep it on the emulator thread
+  with `ra_glue_do_frame` (`ra_glue.c:10-12,331-333`; `RetroAchievementsManager.java:307`).
+- OBSERVED (host C test): `tools/test-ra-memory.sh` builds the production `ra_glue.c` and
+  `memory.c` and reads five addresses in each region of rcheevos's N64 map, one byte and, where
+  they fit, four bytes at a time, in the full and the compressed memory base modes. It expects the
+  bytes stored at `mem_base_u32(base, MM_RDRAM_DRAM)`, at the offset that the region's real address
+  gives (a KSEG0 address: physical = real - `0x80000000`), and checks that no read goes past the
+  16 MB RDRAM area. Against the previous callback all 54 reads failed; all pass now, with GCC
+  16.2.1 and with clang 23.1.1.
+- OBSERVED (host C test): `tools/test-ra-session.sh` links the production `ra_glue.c` and
+  `memory.c` with the rcheevos sources the core builds, and answers rcheevos's requests from a fake
+  server. The game's one achievement reads the RAM byte at address `0x10`. The test checks that the
+  achievement is active after two frames, and that it unlocks and an unlock request is sent when
+  the byte goes from 0 to 1. It runs once with the core's memory created before the game loads and
+  once after. Both runs pass now, with GCC 16.2.1 and with clang 23.1.1. With the previous callback
+  both fail; with the new callback but background reads on, the second fails: the achievement is
+  not active and nothing unlocks.
+- OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes, and
+  `ra_glue.c` was recompiled for all four ABIs with empty ndk-build stderr logs. In the linked arm64
+  and x86_64 libraries, `ra_glue_read_memory` compares the address only with 16 MB and passes it to
+  `mem_base_u32` unchanged, and `ra_glue_create` turns background memory reads off.
+- Not yet verified on device: the list no longer shows every achievement as "Unsupported"; an
+  achievement that reads memory unlocks in softcore; under hardcore the server still records it as
+  softcore until RetroAchievements approves this client; the mode notice appears once the game
+  runs, also after a slow start.
+
 ### Speed lock under hardcore
 - OBSERVED: `RaHardcoreRules.isSpeedAllowed` allows only 100%, so slow motion is refused as well as
   fast-forward (the old rule refused only speeds above 100%). `CoreService.blockIfRaHardcoreSpeed`
@@ -149,14 +236,14 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `RC_INVALID_CREDENTIALS` (-34) and `RC_EXPIRED_TOKEN` (-35) (`rc_api_common.c:304-319`,
   `rc_error.h:47-48`). The login parser returns that code (`rc_api_user.c:72-74`), the login
   callback gets it unchanged (`rc_client_server_error_message`, `rc_client.c:497-516`; callback
-  `:698-708`), and `ra_glue_async_cb` passes it to Java (`ra_glue.c:162-173`). A failed HTTP
+  `:698-708`), and `ra_glue_async_cb` passes it to Java (`ra_glue.c:156-167`). A failed HTTP
   request becomes `RC_NO_RESPONSE` (`RetroAchievementsManager.java:347-352`,
   `rc_api_common.c:360-365`). Only -34 and -35 are retried with the password.
 - OBSERVED: `loadGame` is requested only after a login succeeds. rc_client results carry no
-  request ID (`ra_glue_async_cb`, `ra_glue.c:162-173`), so the session makes one request at a
+  request ID (`ra_glue_async_cb`, `ra_glue.c:156-167`), so the session makes one request at a
   time and `mRaLoginCredential` tells which login a result belongs to. A request call that returns
   false ends the session at once, as before. It returns false when `ra_glue`'s own checks refuse
-  without a callback (`ra_glue.c:398-399,408-409,427-428`), when rc_client refuses, which it also
+  without a callback (`ra_glue.c:396-397,406-407,425-426`), when rc_client refuses, which it also
   reports through the callback (login `rc_client.c:766-775,800-813,833-846`; load
   `:2444-2461,2927-2948`), and when the request finishes before the call returns (login
   `:786-792`, load `:2900`). `onRaAsyncResult` ignores any result that arrives after that.
@@ -236,7 +323,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `rc_client_get_user_game_summary` counts (`rc_client.c:946-964`). The achievement `state` is not
   used: a DISABLED achievement keeps that state even when unlocked (`rc_client.c:1458-1485`).
 - OBSERVED: the summary JSON has a new `"hardcore"` field from `rc_client_get_hardcore_enabled`.
-  `ra_glue_get_hardcore()` returns the requested flag, which `ra_glue.c:41` calls a best-effort
+  `ra_glue_get_hardcore()` returns the requested flag, which `ra_glue.c:40` calls a best-effort
   diagnostic.
 - REFERENCE (RAWeb `ac7bf9b84d98`): `GetAchievementSetsAction.php:493-552` puts the client warning
   achievement first in the first set, and its comment says it unlocks itself a few seconds after
@@ -250,20 +337,21 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   reads only the mode and the game title from the summary JSON. For a game that also loads a bonus
   set, the totals cover every set. Set headings and warning rows are not counted.
 - OBSERVED: each achievement in the list JSON also has `"unsupported"` and `"set"`, taken from the
-  rcheevos bucket it is listed in (`ra_glue.c:573-578`). `"unsupported"` is 1 in the "Unsupported"
+  rcheevos bucket it is listed in (`ra_glue.c:571-576`). `"unsupported"` is 1 in the "Unsupported"
   bucket. rcheevos puts an achievement there when its logic cannot be parsed
-  (`rc_client.c:2113-2116,2126-2129`), or when its logic uses an address that the memory read
-  callback refuses (`rc_client.c:1293-1314`). It tries every address once when the game loads
-  (`rc_client.c:1346-1370`, called at `:1861`). During play, a failed read does the same for its
-  address, unless the read followed a pointer (`rc_client.c:5864-5876,5895-5896,5937-5938`). The
-  bucket never changes afterwards (`rc_client.c:4100-4101`). `ra_glue_read_memory` refuses an
-  address while `g_mem_base` is NULL, or outside `0x80000000`-`0x80FFFFFF` (`ra_glue.c:94-102`);
-  the first open item below explains why that refuses every N64 address. The dialog shows an
-  unsupported achievement as "Unsupported", or as "Unlocked" if the player already earned it in
-  this mode (`rc_client.c:1686-1689`). `"set"` is the set's title from `rc_client_get_subset_info`
-  when the game has more than one active set, and empty otherwise, because rcheevos sets a
-  bucket's `subset_id` only then (`rc_client.c:4297-4301,4420`).
-- OBSERVED: with the lock-state grouping the glue requests (`ra_glue.c:552-554`), rcheevos lists
+  (`rc_client.c:2113-2116,2126-2129`), or when its logic uses a bad address
+  (`rc_client.c:1293-1314`). When the game loads, rcheevos checks every address once: an address
+  past the last region of the console's memory map is bad without a read, and so is one the memory
+  read callback refuses (`rc_client.c:1346-1370`, called at `:1861`). During play, a failed read
+  makes its address bad, unless the read followed a pointer
+  (`rc_client.c:5864-5876,5895-5896,5937-5938`). The bucket never changes afterwards
+  (`rc_client.c:4100-4101`). `ra_glue_read_memory` refuses an address only while `g_mem_base` is
+  NULL, or at 16 MB and above (`ra_glue.c:92-96`); "Memory reads" describes what it refused before.
+  The dialog shows an unsupported achievement as "Unsupported", or as "Unlocked" if the player
+  already earned it in this mode (`rc_client.c:1686-1689`). `"set"` is the set's title from
+  `rc_client_get_subset_info` when the game has more than one active set, and empty otherwise,
+  because rcheevos sets a bucket's `subset_id` only then (`rc_client.c:4297-4301,4420`).
+- OBSERVED: with the lock-state grouping the glue requests (`ra_glue.c:550-552`), rcheevos lists
   all of one set's buckets before the next set's (`rc_client.c:4397-4431`), and the dialog adds a
   heading row whenever the set title changes. DERIVED: two sets with the same title in a row would
   share one heading.
@@ -271,7 +359,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   (`list_item_two_text_icon.xml:36-38`) and other dialogs use it, so `AchievementsDialog` turns that
   off for its own rows.
 - OBSERVED: the glue returns 0 both when it fails and when the list does not fit the buffer
-  (`ra_glue.c:555-556,633-637`). The list used to be read into a fixed 128 KB buffer, so a longer
+  (`ra_glue.c:553-554,631-635`). The list used to be read into a fixed 128 KB buffer, so a longer
   list showed "No achievements are loaded". `RetroAchievementsManager.readText` now grows the
   buffer fourfold up to 2 MB for the list (`ACHIEVEMENTS_BUFFER_MAX`). "No achievements are loaded"
   now shows only when no game is loaded; a loaded game whose list cannot be read (over 2 MB, or
@@ -290,24 +378,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   game with a bonus set shows set headings; long titles wrap.
 
 ### Open items (not fixed here)
-- DERIVED (predates this branch; not seen on a device): every N64 achievement whose logic reads
-  memory is disabled when the game loads and listed as "Unsupported", in hardcore and in softcore.
-  rcheevos switches off a disabled achievement's trigger (`rc_client.c:1304-1308`), so it cannot
-  unlock. rcheevos addresses N64 RAM as `0x000000`-`0x7FFFFF`; `0x80000000` is only the matching
-  real address (`rc_consoles.h:121-123`; `consoleinfo.c:731-735,1153-1154`). The load check
-  disables every achievement that uses an address above the last region or one the read callback
-  refuses (`rc_client.c:1348-1350,1361-1366`), and `ra_glue_read_memory` refuses every address
-  below `0x80000000` (`ra_glue.c:97-98`). The comments at `ra_glue.c:4-8,84-88` say rcheevos
-  passes `0x80000000`-based addresses. REFERENCE (RAWeb `ac7bf9b84d98`): the server's warning
-  achievement reads no memory (`CreateWarningAchievementAction.php:16`, `1=1.300.`), so it still
-  unlocks. HYPOTHESIS: that unlock was the achievement event in the 2026-09-21 device notes. This
-  would stop unlocks in both modes, separately from the server rule under "Hardcore unlocks:
-  server side".
 - OBSERVED: challenge and progress indicators are not shown, although section A of the compliance
   page requires them (see On-screen notices). rcheevos raises challenge-indicator and
   progress-indicator events (`rc_client.h:814-818`), but `ra_build_event_json` has no case for them
-  and drops them (`ra_glue.c:300`). The achievements JSON has no measured progress
-  (`ra_glue.c:595-596,617-618`), although rcheevos provides it (`rc_client.h:560-561`). REFERENCE
+  and drops them (`ra_glue.c:294`). The achievements JSON has no measured progress
+  (`ra_glue.c:593-594,615-616`), although rcheevos provides it (`rc_client.h:560-561`). REFERENCE
   (RetroAchievements docs): a Trigger flag exists "so a challenge indicator can be shown on the
   screen" (`developer-docs/flags/trigger.html`, revision `9a5f33c`), and a Measured flag "adds a
   progress bar to the achievement overlay" (`developer-docs/flags/measured.html`, revision
@@ -330,7 +405,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   list still shows every unlock.
 - OBSERVED: server errors are only logged. When the server answers an unlock with an error that is
   not retried, rcheevos raises a server-error event (`rc_client.c:4669-4674`; leaderboard
-  submissions likewise, `:5375`), which `ra_build_event_json` passes on (`ra_glue.c:265-270`) but
+  submissions likewise, `:5375`), which `ra_build_event_json` passes on (`ra_glue.c:259-264`) but
   `CoreService.onRaEvent` only logs. DERIVED: the player has already seen "Achievement unlocked"
   for that achievement, because the unlock event is raised right after the award request is sent
   (`rc_client.c:6185-6210`).

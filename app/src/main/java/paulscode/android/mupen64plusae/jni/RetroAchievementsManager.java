@@ -304,7 +304,7 @@ public class RetroAchievementsManager {
         return mCore.ra_glue_deserialize_progress(progress, progress.length) != 0;
     }
 
-    /** Call periodically while emulation is paused so achievements still tick. */
+    /** For paused emulation; emulator thread only, as rcheevos may read emulated memory here. */
     public void idle() {
         if (mInitialized) {
             mCore.ra_glue_idle();
