@@ -396,6 +396,16 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     }
 
     /**
+     * Shows a toast from the emulation thread. Before Android 11 a toast shows through the looper
+     * of the thread that made it, and this thread's looper is busy until emulation ends.
+     */
+    private void showToastFromEmulationThread(int messageId)
+    {
+        new Handler(Looper.getMainLooper()).post(() ->
+                Notifier.showToast(getApplicationContext(), messageId));
+    }
+
+    /**
      * RetroAchievements requires a session resumed from a save state to run in casual mode. Runs on
      * the emulation thread before the auto save loads and emulation starts: rcheevos activates the
      * game's achievements only in the emulator's frames, so it gets the change first.
@@ -404,10 +414,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     {
         if (isRaHardcore()) {
             RetroAchievementsManager.getInstance().setHardcore(false);
-            // Before Android 11 a toast shows through the looper of the thread that made it, and
-            // this thread's looper is busy until emulation ends.
-            new Handler(Looper.getMainLooper()).post(() ->
-                    Notifier.showToast(getApplicationContext(), R.string.ra_resumeHardcoreOff));
+            showToastFromEmulationThread(R.string.ra_resumeHardcoreOff);
         }
     }
 
@@ -576,7 +583,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void advanceFrame()
     {
-        if (blockIfRaHardcoreSpeedControl()) {
+        if (mUsingNetplay || blockIfRaHardcoreSpeedControl()) {
             return;
         }
         mCoreInterface.emuAdvanceFrame();
@@ -879,7 +886,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                     for (GamePrefs.CheatSelection selection : mGamePrefs.getEnabledCheats())
                     {
                         if (isRaHardcore()) {
-                            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreCheatsBlocked);
+                            showToastFromEmulationThread(R.string.ra_hardcoreCheatsBlocked);
                             break;
                         }
                         if (selection.getIndex() < mCheats.size()) {
