@@ -14,7 +14,9 @@
  * game-loaded, load and hardcore state) take no mutex, and other calls,
  * rc_client_do_frame among them, check for a game outside it. So the game
  * must not be unloaded, nor the client logged out or destroyed, while
- * another thread can use them.
+ * another thread can use them. Frames, idle work and restoring a state's
+ * progress also change the achievements outside rcheevos's mutex, so the
+ * achievement list is built and read under s_frame_lock.
  */
 
 #include "ra_glue.h"
@@ -53,6 +55,10 @@ typedef void (*ra_java_async_result_t)(int result, const char* error_message);
  */
 static rc_client_t* s_client = NULL;
 static pthread_mutex_t s_pending_lock = PTHREAD_MUTEX_INITIALIZER;
+/* Held while rcheevos runs a frame or its idle work, or restores a state's progress, which change
+ * achievements outside rcheevos's mutex, and while the achievement list is built and read. Taken
+ * before any other lock, and nothing that runs under it builds the list. */
+static pthread_mutex_t s_frame_lock = PTHREAD_MUTEX_INITIALIZER;
 static int s_next_request_id = 1;
 static atomic_int s_hardcore = 0;
 static char s_last_error[512];
@@ -506,16 +512,20 @@ static void ra_apply_pending_progress(void);
 void ra_glue_do_frame(void)
 {
   if (s_client != NULL) {
+    pthread_mutex_lock(&s_frame_lock);
     rc_client_do_frame(s_client);
     ra_apply_pending_progress();
+    pthread_mutex_unlock(&s_frame_lock);
   }
 }
 
 void ra_glue_idle(void)
 {
   if (s_client != NULL) {
+    pthread_mutex_lock(&s_frame_lock);
     rc_client_idle(s_client);
     ra_apply_pending_progress();
+    pthread_mutex_unlock(&s_frame_lock);
   }
 }
 
@@ -691,7 +701,7 @@ int ra_glue_get_summary_json(char* buffer, int buffer_size)
   return 1;
 }
 
-int ra_glue_get_achievements_json(char* buffer, int buffer_size)
+static int ra_write_achievements_json(char* buffer, int buffer_size)
 {
   if (s_client == NULL || buffer == NULL || buffer_size <= 0)
     return 0;
@@ -793,6 +803,15 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
   free(json);
   rc_client_destroy_achievement_list(list);
   return 1;
+}
+
+int ra_glue_get_achievements_json(char* buffer, int buffer_size)
+{
+  /* The rows point at rcheevos's live achievements, which the lock's other holders change. */
+  pthread_mutex_lock(&s_frame_lock);
+  const int written = ra_write_achievements_json(buffer, buffer_size);
+  pthread_mutex_unlock(&s_frame_lock);
+  return written;
 }
 
 int ra_glue_serialize_progress(uint8_t* buffer, int buffer_size)
@@ -1051,7 +1070,9 @@ void ra_glue_state_loaded(const char* state_path, const uint32_t* rdram, size_t 
 
   progress = ra_read_progress(state_path, rdram, rdram_size, &progress_size);
   if (rc_client_is_game_loaded(s_client)) {
+    pthread_mutex_lock(&s_frame_lock);
     ra_restore_progress(progress, progress_size);
+    pthread_mutex_unlock(&s_frame_lock);
     free(progress);
   } else {
     s_pending_progress = progress;

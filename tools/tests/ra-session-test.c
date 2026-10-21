@@ -59,6 +59,17 @@
  * value's update, and the value it submits, and a cancelled attempt its
  * failure; both, and the end of the session, must hide the value.
  *
+ * The tenth and eleventh runs give the game a fifth achievement, at an address
+ * past the end of rcheevos's N64 memory map, which the game's load disables.
+ * rcheevos checks the addresses outside its mutex, in the frame or, while
+ * emulation is paused, the idle work that finishes the load. A log hook holds
+ * the emulator thread there while another thread asks for the achievement
+ * list: the list must wait until that frame or idle work has ended, then show
+ * the achievement as unsupported. The twelfth run holds the emulator thread
+ * when a state load restores progress that primes the challenge again, as
+ * rcheevos raises the restored state's events outside its mutex too: the list
+ * must wait until the restore has ended.
+ *
  * The last runs check the progress kept with save states. The game's fourth
  * achievement unlocks after PROGRESS_HITS frames with the byte at
  * PROGRESS_ADDRESS at 1, so its hit count shows when it unlocks. Loading a
@@ -137,6 +148,9 @@ static int g_failures;
 #define PROGRESS_ID 5504
 #define PROGRESS_ADDRESS 0x40
 #define PROGRESS_HITS 5
+/* Past the end of rcheevos's N64 memory map (0x7FFFFF), so the game's load disables it. */
+#define BAD_ADDRESS_ID 5505
+#define BAD_ADDRESS 0x800010
 #define GAME_HASH "0123456789abcdef0123456789abcdef"
 #define MAX_REQUESTS 16
 #define REFUSAL "refused by the test server"
@@ -176,6 +190,10 @@ static int g_num_results;
 static int g_unavailable_awards;
 static int g_refuse_award;
 static int g_refuse_entry;
+/* Whether the game has a fifth achievement, at BAD_ADDRESS. */
+static int g_bad_address;
+/* Whether fake_event holds the emulator thread when the challenge indicator shows. */
+static int g_hold_on_challenge;
 static int g_server_errors;
 static char g_server_error[512];
 static int g_disconnected_events;
@@ -213,11 +231,16 @@ static void fake_server_call(int request_id, const char* url, const char* post_d
     }
 }
 
+static void hold_for_list(void);
+
 static void fake_event(const char* json)
 {
     char id[32];
     char progress_id[32];
 
+    if (g_hold_on_challenge && strstr(json, "\"type\":\"challenge_show\"") != NULL) {
+        hold_for_list();
+    }
     snprintf(id, sizeof(id), "\"id\":%d,", ACHIEVEMENT_ID);
     snprintf(progress_id, sizeof(progress_id), "\"id\":%d,", PROGRESS_ID);
     if (strstr(json, "\"type\":\"achievement\"") != NULL && strstr(json, id) != NULL) {
@@ -290,10 +313,18 @@ static int has_param(const char* post_data, const char* param)
 static void answer_requests(void)
 {
     char game_sets[4096];
+    char bad_achievement[512] = "";
     char award_param[32];
     char timer_param[32];
     int length;
 
+    if (g_bad_address) {
+        snprintf(bad_achievement, sizeof(bad_achievement),
+            ",{\"ID\":%d,\"Title\":\"Far byte\",\"Description\":\"Set a byte past the RAM\","
+            "\"Flags\":%d,\"Points\":5,\"MemAddr\":\"0xH%06x=1\",\"Author\":\"tester\","
+            "\"BadgeName\":\"00005\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"}",
+            BAD_ADDRESS_ID, RC_ACHIEVEMENT_CATEGORY_CORE, BAD_ADDRESS);
+    }
     length = snprintf(game_sets, sizeof(game_sets),
         "{\"Success\":true,\"GameId\":1001,\"Title\":\"Test Game\",\"ConsoleId\":%d,"
         "\"ImageIconUrl\":\"https://media.retroachievements.org/Images/000001.png\","
@@ -311,7 +342,7 @@ static void answer_requests(void)
         "\"BadgeName\":\"00003\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"},"
         "{\"ID\":%d,\"Title\":\"Hits\",\"Description\":\"Hold the byte for a while\","
         "\"Flags\":%d,\"Points\":5,\"MemAddr\":\"0xH%06x=1.%d.\",\"Author\":\"tester\","
-        "\"BadgeName\":\"00004\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"}],"
+        "\"BadgeName\":\"00004\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"}%s],"
         "\"Leaderboards\":[{\"ID\":%d,\"Title\":\"Fastest byte\","
         "\"Description\":\"Set the other byte\","
         "\"Mem\":\"STA:0xH%06x=1::CAN:0xH%06x=2::SUB:0xH%06x=1::VAL:0xH%06x\","
@@ -322,7 +353,7 @@ static void answer_requests(void)
         RC_CONSOLE_NINTENDO_64, ACHIEVEMENT_ID, RC_ACHIEVEMENT_CATEGORY_CORE, ACHIEVEMENT_ADDRESS,
         CHALLENGE_ID, RC_ACHIEVEMENT_CATEGORY_CORE, CHALLENGE_ADDRESS, CHALLENGE_TRIGGER_ADDRESS,
         MEASURED_ID, RC_ACHIEVEMENT_CATEGORY_CORE, MEASURED_ADDRESS, MEASURED_TARGET,
-        PROGRESS_ID, RC_ACHIEVEMENT_CATEGORY_CORE, PROGRESS_ADDRESS, PROGRESS_HITS,
+        PROGRESS_ID, RC_ACHIEVEMENT_CATEGORY_CORE, PROGRESS_ADDRESS, PROGRESS_HITS, bad_achievement,
         LEADERBOARD_ID, LEADERBOARD_ADDRESS, LEADERBOARD_ADDRESS, LEADERBOARD_ADDRESS,
         LEADERBOARD_ADDRESS + 1, TIMER_ID, TIMER_START_ADDRESS, TIMER_CANCEL_ADDRESS,
         TIMER_SUBMIT_ADDRESS, TIMER_VALUE_ADDRESS);
@@ -910,6 +941,117 @@ static void run_leaderboard_attempts(void)
     end_session(base, "leaderboard attempts in hardcore", failures_before);
 }
 
+/* For the list runs: the emulator thread is held where rcheevos has just changed achievements
+ * outside its mutex, while another thread asks for the achievement list. During the hold the
+ * threads use only relaxed atomics, so ThreadSanitizer sees no ordering between them but the
+ * glue's; g_frame_done, set after the held work, orders the rest. */
+static atomic_int g_held;
+static atomic_int g_hold_ended;
+static atomic_int g_frame_done;
+static atomic_int g_list_built;
+static atomic_int g_list_during_hold;
+
+static int relaxed(atomic_int* flag)
+{
+    return atomic_load_explicit(flag, memory_order_relaxed);
+}
+
+static void set_relaxed(atomic_int* flag, int value)
+{
+    atomic_store_explicit(flag, value, memory_order_relaxed);
+}
+
+static void reset_hold(void)
+{
+    set_relaxed(&g_held, 0);
+    set_relaxed(&g_hold_ended, 0);
+    set_relaxed(&g_frame_done, 0);
+    set_relaxed(&g_list_built, 0);
+    set_relaxed(&g_list_during_hold, 0);
+}
+
+/* Holds the emulator thread once per run until the list is built, for at most 500 ms; with the
+ * glue's lock the list waits, so the hold lasts 500 ms. A run passes without the lock if the list
+ * thread stalls for longer, as when ThreadSanitizer stalls it to print its first report. */
+static void hold_for_list(void)
+{
+    struct timespec start;
+    struct timespec now;
+
+    if (relaxed(&g_held)) {
+        return;
+    }
+    set_relaxed(&g_held, 1);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    do {
+        sched_yield();
+        clock_gettime(CLOCK_MONOTONIC, &now);
+    } while (!relaxed(&g_list_built)
+             && (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000 < 500);
+    set_relaxed(&g_hold_ended, 1);
+}
+
+/* rcheevos logs this while it checks the addresses of a game that is loading. */
+static void hold_validation(const char* message, const rc_client_t* client)
+{
+    (void)client;
+    if (strstr(message, "Disabled achievement") != NULL) {
+        hold_for_list();
+    }
+}
+
+static void* build_list_during_hold(void* unused)
+{
+    char* list = malloc(65536);
+
+    (void)unused;
+    while (!relaxed(&g_held) && !atomic_load_explicit(&g_frame_done, memory_order_acquire)) {
+        sched_yield();
+    }
+    if (list != NULL && relaxed(&g_held) && ra_glue_get_achievements_json(list, 65536)) {
+        set_relaxed(&g_list_during_hold, !relaxed(&g_hold_ended));
+        set_relaxed(&g_list_built, 1);
+    }
+    free(list);
+    return NULL;
+}
+
+/* The achievement list asked for while the game finishes loading, in a frame or, while emulation
+ * is paused, in idle work: rcheevos checks the game's addresses there outside its mutex, so the
+ * list must wait until that work has ended. */
+static void run_list_while_loading(int paused, const char* name)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base;
+    pthread_t list_thread;
+
+    g_mem_base = NULL;
+    base = create_memory(&rdram);
+    g_bad_address = 1;
+    begin_session(0);
+    rc_client_enable_logging(s_client, RC_CLIENT_LOG_LEVEL_WARN, hold_validation);
+    reset_hold();
+    pthread_create(&list_thread, NULL, build_list_during_hold, NULL);
+    if (paused) {
+        ra_glue_idle();
+    } else {
+        ra_glue_do_frame();
+    }
+    atomic_store_explicit(&g_frame_done, 1, memory_order_release);
+    pthread_join(list_thread, NULL);
+    answer_requests();
+
+    CHECK(g_num_results == 2 && g_results[1] == RC_OK);
+    CHECK(relaxed(&g_held));
+    CHECK(relaxed(&g_list_built));
+    CHECK(!relaxed(&g_list_during_hold));
+    CHECK(list_entry_has(BAD_ADDRESS_ID, "\"unsupported\":1"));
+
+    g_bad_address = 0;
+    end_session(base, name, failures_before);
+}
+
 static void state_file(char* out, size_t size, const char* name)
 {
     snprintf(out, size, "%s/%s", g_state_dir, name);
@@ -926,6 +1068,43 @@ static int file_exists(const char* path)
     struct stat info;
 
     return stat(path, &info) == 0;
+}
+
+/* The achievement list asked for while a state load restores progress that primes the challenge
+ * again: rcheevos raises the restored state's events, which rewrite the achievements, outside its
+ * mutex, so the list must wait until the restore has ended. */
+static void run_list_while_restoring(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base = start_session(1, 0, 0, &rdram);
+    char state[128];
+    pthread_t list_thread;
+
+    state_file(state, sizeof(state), "challenge.st0");
+    rdram[CHALLENGE_ADDRESS] = 1;
+    ra_glue_do_frame();
+    ra_glue_state_saved(state, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    rdram[CHALLENGE_ADDRESS] = 0;
+    ra_glue_do_frame();
+    CHECK(list_entry_has(CHALLENGE_ID, "\"challenge\":0"));
+
+    /* The core has put the state's RAM back before it reports the load. */
+    rdram[CHALLENGE_ADDRESS] = 1;
+    reset_hold();
+    g_hold_on_challenge = 1;
+    pthread_create(&list_thread, NULL, build_list_during_hold, NULL);
+    ra_glue_state_loaded(state, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    atomic_store_explicit(&g_frame_done, 1, memory_order_release);
+    pthread_join(list_thread, NULL);
+    g_hold_on_challenge = 0;
+
+    CHECK(relaxed(&g_held));
+    CHECK(relaxed(&g_list_built));
+    CHECK(!relaxed(&g_list_during_hold));
+    CHECK(list_entry_has(CHALLENGE_ID, "\"challenge\":1"));
+    end_session(base, "achievement list asked for while a state load restores progress",
+                failures_before);
 }
 
 /* Loading a state restores the hit count saved with it, and starts the count
@@ -1153,7 +1332,7 @@ static void run_save_without_achievements(void)
 static void remove_state_dir(void)
 {
     static const char* const names[] = { "progress.st0", "resume.sav", "earlier.st2", "later.st3",
-                                         "off.st1", "first.st4", "bare.st5" };
+                                         "off.st1", "first.st4", "bare.st5", "challenge.st0" };
     char path[160];
     size_t i;
 
@@ -1182,6 +1361,9 @@ int main(void)
     run_paused();
     run_shutdown_during_retry();
     run_leaderboard_attempts();
+    run_list_while_loading(0, "achievement list asked for while a frame loads the game");
+    run_list_while_loading(1, "achievement list asked for while idle work loads the game");
+    run_list_while_restoring();
     run_progress_with_states();
     run_progress_while_loading(0, "hit count of a state loaded while the game loads");
     run_progress_while_loading(1, "no hit count after a reset while the game loads");

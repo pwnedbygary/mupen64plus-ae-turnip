@@ -78,12 +78,16 @@ EXPORT int ra_glue_get_user_token(char* buffer, int buffer_size);
 
 EXPORT int ra_glue_get_game_name(char* buffer, int buffer_size);
 EXPORT int ra_glue_get_summary_json(char* buffer, int buffer_size);
+/* Waits for a frame, idle work or a state's progress restore that is running,
+ * so it must not be called from a callback the glue makes during one. */
 EXPORT int ra_glue_get_achievements_json(char* buffer, int buffer_size);
 
 /* The loaded game's progress as one blob. The app does not use these: it keeps
  * progress with each save state (ra_glue_state_saved).
  * serialize: returns bytes written (> 0), or -1 on failure / buffer too small.
- * deserialize: returns 1 on success, 0 on failure. */
+ * deserialize: returns 1 on success, 0 on failure. Unlike ra_glue_state_loaded
+ * it does not take the lock the achievement list waits for, so it must not run
+ * while another thread can build the list. */
 EXPORT int ra_glue_serialize_progress(uint8_t* buffer, int buffer_size);
 EXPORT int ra_glue_deserialize_progress(const uint8_t* buffer, int buffer_size);
 
