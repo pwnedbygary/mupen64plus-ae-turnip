@@ -959,6 +959,7 @@ static void pause_loop(void)
         {
             SDL_Delay(10);
             main_check_inputs();
+            ra_glue_idle();  // RetroAchievements: retries, a game load, the ping timer
         }
     }
 }

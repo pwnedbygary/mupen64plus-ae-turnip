@@ -398,7 +398,7 @@ int ra_glue_create(void)
   rc_client_set_event_handler(s_client, ra_glue_event_handler);
   /* Read memory only in ra_glue_do_frame() and ra_glue_idle(), which must run on
    * the emulator thread: g_mem_base is NULL until CoreStartup and is freed by
-   * CoreShutdown there. The game then finishes loading on the next frame. */
+   * CoreShutdown there. A game load then finishes in the next of those calls. */
   rc_client_set_allow_background_memory_reads(s_client, 0);
   /* Keep the rcheevos default host (https://retroachievements.org). Passing a bare
    * hostname makes rc_api_update_host() prepend "http://", which is blocked by the

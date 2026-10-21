@@ -305,16 +305,6 @@ public class RetroAchievementsManager {
         return mCore.ra_glue_deserialize_progress(progress, progress.length) != 0;
     }
 
-    /**
-     * For paused emulation, on the emulator thread only, as rcheevos may read emulated memory
-     * here. Nothing calls it yet: while paused, that thread stays in the core's pause loop.
-     */
-    public void idle() {
-        if (mInitialized) {
-            mCore.ra_glue_idle();
-        }
-    }
-
     // ---- native -> Java bridge ------------------------------------------
 
     private void onServerCall(int requestId, String url, String postData, String contentType) {

@@ -2,9 +2,9 @@
  * Host fixture for RetroAchievements sessions run through the glue.
  *
  * A fake server answers the requests rcheevos sends (sign-in, the game's
- * achievement sets, session start, unlock, leaderboard entry) with responses
- * in the format the vendored rcheevos parses (src/rapi). The game's first
- * achievement is true when the N64 RAM byte at rcheevos address
+ * achievement sets, session start, unlock, leaderboard entry, ping) with
+ * responses in the format the vendored rcheevos parses (src/rapi). The
+ * game's first achievement is true when the N64 RAM byte at rcheevos address
  * ACHIEVEMENT_ADDRESS is 1, and its leaderboard starts and submits in the
  * frame the byte at LEADERBOARD_ADDRESS becomes 1. Once the emulator runs
  * frames, the achievement must be active, and it must unlock when its byte
@@ -26,13 +26,24 @@
  * retry succeeds. rcheevos schedules retries on its clock, which the fixture
  * replaces, so the runs need no waiting.
  *
- * The last run checks the indicators. The game's second achievement has a
+ * The next run checks the indicators. The game's second achievement has a
  * Trigger condition that stays false, so it is primed, and its challenge
  * indicator shown, while its other condition (the byte at CHALLENGE_ADDRESS
  * is 1) holds. Its third achievement measures the byte at MEASURED_ADDRESS
  * against MEASURED_TARGET: rcheevos shows the progress when that value
  * changes and hides it two seconds after the last change. The events and
  * the achievement list must carry the challenge state and the progress text.
+ *
+ * Every run checks that the game load waits for the emulator thread, as the
+ * glue turns rcheevos's background memory reads off. While emulation is
+ * paused the core runs no frames and calls only ra_glue_idle(), so the last
+ * run finishes the load that way, and ra_glue_idle() must not unlock the
+ * achievement. After an unlock whose first two answers are HTTP 503,
+ * ra_glue_idle() alone must then raise "disconnected", send the scheduled
+ * retry and raise "reconnected". rcheevos pings 30 seconds after the load and
+ * then every two minutes, but only if frames ran since its last ping: a pause
+ * before any frame sends none, and a pause after frames sends one when the
+ * next ping falls due.
  *
  * ra_glue.c and memory.c are included from the production sources, and
  * tools/test-ra-session.sh links the rcheevos sources the core builds.
@@ -103,6 +114,8 @@ static const char AWARD_RESPONSE[] =
     "{\"Success\":true,\"Score\":5,\"SoftcoreScore\":5,\"AchievementsRemaining\":0}";
 
 static const char REFUSAL_RESPONSE[] = "{\"Success\":false,\"Error\":\"" REFUSAL "\"}";
+
+static const char PING_RESPONSE[] = "{\"Success\":true}";
 
 static struct {
     int id;
@@ -262,6 +275,8 @@ static void answer_requests(void)
             }
         } else if (is_request(post_data, "submitlbentry") && g_refuse_entry) {
             body = REFUSAL_RESPONSE;
+        } else if (is_request(post_data, "ping")) {
+            body = PING_RESPONSE;
         } else {
             fprintf(stderr, "FAIL unexpected request: %s\n", post_data);
             ++g_failures;
@@ -290,12 +305,13 @@ static void* create_memory(uint8_t** rdram)
     return base;
 }
 
-/* Signs in, loads the game and runs two frames; the achievement is then active. */
-static void* start_session(int memory_before_load, int hardcore, uint8_t** rdram)
+/* Signs in, loads the game and runs two frames, or, while emulation is paused,
+ * calls ra_glue_idle() twice; the achievement is then active. */
+static void* start_session(int memory_before_load, int hardcore, int paused, uint8_t** rdram)
 {
     const rc_client_achievement_t* achievement;
     void* base = NULL;
-    int frame;
+    int step;
 
     g_num_requests = 0;
     g_num_answered = 0;
@@ -326,13 +342,19 @@ static void* start_session(int memory_before_load, int hardcore, uint8_t** rdram
     answer_requests();
     CHECK(ra_glue_load_game(GAME_HASH) == 1);
     answer_requests();
+    /* Only the sign-in has reported: the load finishes on the emulator thread. */
+    CHECK(g_num_results == 1);
 
     if (!memory_before_load) {
         base = create_memory(rdram);
     }
 
-    for (frame = 0; frame < 2; ++frame) {
-        ra_glue_do_frame();
+    for (step = 0; step < 2; ++step) {
+        if (paused) {
+            ra_glue_idle();
+        } else {
+            ra_glue_do_frame();
+        }
         answer_requests();
     }
     CHECK(g_num_results == 2 && g_results[0] == RC_OK && g_results[1] == RC_OK);
@@ -357,7 +379,7 @@ static void run_unlock(int memory_before_load, const char* name)
 {
     const int failures_before = g_failures;
     uint8_t* rdram = NULL;
-    void* base = start_session(memory_before_load, 0, &rdram);
+    void* base = start_session(memory_before_load, 0, 0, &rdram);
 
     rdram[ACHIEVEMENT_ADDRESS] = 1;
     ra_glue_do_frame();
@@ -391,7 +413,7 @@ static void run_refused_unlock(void)
 {
     const int failures_before = g_failures;
     uint8_t* rdram = NULL;
-    void* base = start_session(1, 0, &rdram);
+    void* base = start_session(1, 0, 0, &rdram);
 
     g_refuse_award = 1;
     rdram[ACHIEVEMENT_ADDRESS] = 1;
@@ -410,7 +432,7 @@ static void run_refused_leaderboard_entry(void)
 {
     const int failures_before = g_failures;
     uint8_t* rdram = NULL;
-    void* base = start_session(1, 1, &rdram);
+    void* base = start_session(1, 1, 0, &rdram);
 
     g_refuse_entry = 1;
     rdram[LEADERBOARD_ADDRESS] = 1;
@@ -425,7 +447,7 @@ static void run_unreachable_server(void)
 {
     const int failures_before = g_failures;
     uint8_t* rdram = NULL;
-    void* base = start_session(1, 0, &rdram);
+    void* base = start_session(1, 0, 0, &rdram);
     int requests;
 
     /* rcheevos sends the unlock again at once after the first failure, and
@@ -494,7 +516,7 @@ static void run_indicators(void)
 {
     const int failures_before = g_failures;
     uint8_t* rdram = NULL;
-    void* base = start_session(1, 0, &rdram);
+    void* base = start_session(1, 0, 0, &rdram);
     const int requests = g_num_requests;
     char expected[160];
 
@@ -536,6 +558,64 @@ static void run_indicators(void)
     end_session(base, "challenge and progress indicators", failures_before);
 }
 
+static void run_paused(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base = start_session(1, 0, 1, &rdram);
+    int requests = g_num_requests;
+
+    /* The first ping falls due, but no frame has run since the load. */
+    g_now += 150 * 1000;
+    ra_glue_idle();
+    CHECK(g_num_requests == requests);
+
+    /* Running again: the unlock takes a frame in which the achievement is
+     * false and one in which it is true; ra_glue_idle() in between must not
+     * evaluate it. rcheevos sends it again at once after the first failure
+     * and schedules the next try one second later. */
+    g_unavailable_awards = 2;
+    ra_glue_do_frame();
+    rdram[ACHIEVEMENT_ADDRESS] = 1;
+    ra_glue_idle();
+    CHECK(g_unlock_events == 0);
+    CHECK(g_num_requests == requests);
+    ra_glue_do_frame();
+    answer_requests();
+    CHECK(g_unlock_events == 1);
+    CHECK(g_unavailable_awards == 0);
+
+    /* Paused again: no frames, only ra_glue_idle(). */
+    CHECK(g_disconnected_events == 0);
+    ra_glue_idle();
+    CHECK(g_disconnected_events == 1);
+    requests = g_num_requests;
+    g_now += 1000;
+    ra_glue_idle();
+    CHECK(g_num_requests == requests + 1);
+    answer_requests();
+    CHECK(g_reconnected_events == 0);
+    ra_glue_idle();
+    CHECK(g_reconnected_events == 1);
+    CHECK(g_disconnected_events == 1);
+    CHECK(g_server_errors == 0);
+
+    /* Frames ran since the last ping, so the next one is sent, and the one
+     * after it is not. */
+    requests = g_num_requests;
+    g_now += 120 * 1000;
+    ra_glue_idle();
+    CHECK(g_num_requests == requests + 1);
+    CHECK(g_num_requests > requests && is_request(g_requests[requests].post_data, "ping"));
+    answer_requests();
+    requests = g_num_requests;
+    g_now += 120 * 1000;
+    ra_glue_idle();
+    CHECK(g_num_requests == requests);
+
+    end_session(base, "game load, unlock retry and pings while paused", failures_before);
+}
+
 int main(void)
 {
     run_unlock(1, "memory created before the game loads");
@@ -544,6 +624,7 @@ int main(void)
     run_refused_leaderboard_entry();
     run_unreachable_server();
     run_indicators();
+    run_paused();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);
