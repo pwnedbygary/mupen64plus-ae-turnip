@@ -66,6 +66,8 @@ public class RetroAchievementsManager {
 
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 30000;
+    private static final Connector URL_CONNECTOR =
+            url -> (HttpURLConnection) new URL(url).openConnection();
 
     /** rc_client async result code passed to {@link Listener#onRaAsyncResult}: RC_OK == 0; non-zero is an error. */
     public static final int RESULT_OK = 0;
@@ -309,43 +311,14 @@ public class RetroAchievementsManager {
 
     private void onServerCall(int requestId, String url, String postData, String contentType) {
         mHttpExecutor.execute(() -> {
-            byte[] body;
-            int status;
-
-            try {
-                HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-                connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-                connection.setReadTimeout(READ_TIMEOUT_MS);
-                connection.setRequestProperty("User-Agent", USER_AGENT);
-
-                if (postData != null && !postData.isEmpty()) {
-                    connection.setRequestMethod("POST");
-                    connection.setDoOutput(true);
-                    connection.setRequestProperty("Content-Type",
-                            (contentType != null && !contentType.isEmpty()) ? contentType : DEFAULT_CONTENT_TYPE);
-
-                    byte[] payload = postData.getBytes(StandardCharsets.UTF_8);
-                    connection.setFixedLengthStreamingMode(payload.length);
-                    try (OutputStream output = connection.getOutputStream()) {
-                        output.write(payload);
-                    }
-                } else {
-                    connection.setRequestMethod("GET");
-                }
-
-                status = connection.getResponseCode();
-                InputStream input = (status >= HttpURLConnection.HTTP_BAD_REQUEST)
-                        ? connection.getErrorStream() : connection.getInputStream();
-                body = readAll(input);
-                connection.disconnect();
-            } catch (IOException e) {
-                // Hand the error back to rcheevos as a retryable client error with a message body.
-                Log.w(TAG, "RA request failed: " + e.getMessage());
-                body = ("RA network error: " + e.getMessage()).getBytes(StandardCharsets.UTF_8);
-                status = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
+            ServerResponse response = request(URL_CONNECTOR, url, postData, contentType);
+            if (response.failure instanceof IOException) {
+                Log.w(TAG, "RA request failed: " + response.failure.getMessage());
+            } else if (response.failure != null) {
+                Log.w(TAG, "RA request failed", response.failure);
             }
-
-            mCore.ra_glue_dispatch_server_response(requestId, body, body.length, status);
+            mCore.ra_glue_dispatch_server_response(requestId, response.body, response.body.length,
+                    response.status);
         });
     }
 
@@ -413,6 +386,69 @@ public class RetroAchievementsManager {
             }
         }
         return null;
+    }
+
+    /** Opens the connection for one request. */
+    interface Connector {
+        HttpURLConnection open(String url) throws IOException;
+    }
+
+    /** The answer handed to rcheevos for one request. */
+    static final class ServerResponse {
+        final int status;
+        final byte[] body;
+        /** The exception that ended the request, or null when the server's answer was read. */
+        @Nullable final Exception failure;
+
+        ServerResponse(int status, byte[] body, @Nullable Exception failure) {
+            this.status = status;
+            this.body = body;
+            this.failure = failure;
+        }
+    }
+
+    /**
+     * Sends one request. A failure is answered as a client error that rcheevos retries, so the
+     * request still ends with an answer, and no exception leaves the executor's thread, where
+     * Android's default handler would kill the process.
+     */
+    static ServerResponse request(Connector connector, String url, @Nullable String postData,
+            @Nullable String contentType) {
+        try {
+            HttpURLConnection connection = connector.open(url);
+            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            connection.setReadTimeout(READ_TIMEOUT_MS);
+            connection.setRequestProperty("User-Agent", USER_AGENT);
+
+            if (postData != null && !postData.isEmpty()) {
+                connection.setRequestMethod("POST");
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type",
+                        (contentType != null && !contentType.isEmpty()) ? contentType : DEFAULT_CONTENT_TYPE);
+
+                byte[] payload = postData.getBytes(StandardCharsets.UTF_8);
+                connection.setFixedLengthStreamingMode(payload.length);
+                try (OutputStream output = connection.getOutputStream()) {
+                    output.write(payload);
+                }
+            } else {
+                connection.setRequestMethod("GET");
+            }
+
+            int status = connection.getResponseCode();
+            InputStream input = (status >= HttpURLConnection.HTTP_BAD_REQUEST)
+                    ? connection.getErrorStream() : connection.getInputStream();
+            byte[] body = readAll(input);
+            connection.disconnect();
+            return new ServerResponse(status, body, null);
+        } catch (IOException e) {
+            return new ServerResponse(RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR,
+                    ("RA network error: " + e.getMessage()).getBytes(StandardCharsets.UTF_8), e);
+        } catch (RuntimeException e) {
+            // As after a network failure, rcheevos then sends an unlock again instead of dropping it.
+            return new ServerResponse(RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR,
+                    ("RA request error: " + e).getBytes(StandardCharsets.UTF_8), e);
+        }
     }
 
     private static byte[] readAll(@Nullable InputStream input) throws IOException {

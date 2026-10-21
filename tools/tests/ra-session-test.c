@@ -36,7 +36,7 @@
  *
  * Every run checks that the game load waits for the emulator thread, as the
  * glue turns rcheevos's background memory reads off. While emulation is
- * paused the core runs no frames and calls only ra_glue_idle(), so the last
+ * paused the core runs no frames and calls only ra_glue_idle(), so the seventh
  * run finishes the load that way, and ra_glue_idle() must not unlock the
  * achievement. After an unlock whose first two answers are HTTP 503,
  * ra_glue_idle() alone must then raise "disconnected", send the scheduled
@@ -45,13 +45,24 @@
  * before any frame sends none, and a pause after frames sends one when the
  * next ping falls due.
  *
+ * The eighth run shuts the client down while another thread answers an unlock
+ * with HTTP 503. rcheevos sends that unlock again at once, and the run holds
+ * the answering thread until ra_glue_shutdown() has dropped the pending
+ * requests and waits for it. The new request must not reach Java or keep a
+ * request slot, as its answer would reach the destroyed client, and rcheevos
+ * must end it for good rather than schedule a retry that would never run. A
+ * client created afterwards must sign in and load the game again.
+ *
  * ra_glue.c and memory.c are included from the production sources, and
  * tools/test-ra-session.sh links the rcheevos sources the core builds.
  */
+#include <pthread.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define M64P_CORE_PROTOTYPES 1
 #include "api/callbacks.h"
@@ -139,6 +150,13 @@ static int g_reconnected_events;
 static int g_indicator_events;
 static char g_indicator_event[256];
 static rc_clock_t g_now;
+/* For the shutdown run: the ping left unanswered, and the hold on the thread
+ * that answers the unlock. */
+static int g_ping_id;
+static _Atomic int g_hold_retry;
+static _Atomic int g_retry_held;
+static _Atomic int g_hold_timed_out;
+static _Atomic int g_answer_done;
 
 static void fake_server_call(int request_id, const char* url, const char* post_data,
                              const char* content_type)
@@ -616,6 +634,122 @@ static void run_paused(void)
     end_session(base, "game load, unlock retry and pings while paused", failures_before);
 }
 
+/* Counts the glue's request slots in use, for one request or, with 0, for all. */
+static int pending_slots(int request_id)
+{
+    int count = 0;
+
+    for (int i = 0; i < RA_GLUE_MAX_PENDING; ++i) {
+        if (s_pending[i].in_use && (request_id == 0 || s_pending[i].id == request_id)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+/* rcheevos logs this just before it sends a failed unlock again at once. */
+static void hold_retry(const char* message, const rc_client_t* client)
+{
+    const time_t deadline = time(NULL) + 10;
+
+    (void)client;
+    if (!g_hold_retry || strstr(message, "retrying immediately") == NULL) {
+        return;
+    }
+    g_retry_held = 1;
+    /* ra_glue_shutdown() drops every pending request, the ping too, while it
+     * holds the lock, and then waits for this thread. */
+    while (time(NULL) <= deadline) {
+        if (pthread_mutex_trylock(&s_pending_lock) == 0) {
+            const int ping_pending = pending_slots(g_ping_id);
+
+            pthread_mutex_unlock(&s_pending_lock);
+            if (!ping_pending) {
+                return;
+            }
+        }
+        sched_yield();
+    }
+    g_hold_timed_out = 1;
+}
+
+static void* answer_unlock_unavailable(void* request_id)
+{
+    ra_glue_dispatch_server_response(*(const int*)request_id, "", 0, 503);
+    g_answer_done = 1;
+    return NULL;
+}
+
+static void* shut_down(void* unused)
+{
+    (void)unused;
+    ra_glue_shutdown();
+    return NULL;
+}
+
+static void run_shutdown_during_retry(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base = start_session(1, 0, 0, &rdram);
+    pthread_t answer_thread;
+    pthread_t shutdown_thread;
+    int award_id = 0;
+    int requests;
+    char expected[64];
+
+    /* The unlock and, 30 seconds after the load, a ping go out unanswered. */
+    rdram[ACHIEVEMENT_ADDRESS] = 1;
+    ra_glue_do_frame();
+    g_now += 30 * 1000;
+    ra_glue_do_frame();
+    CHECK(g_unlock_events == 1);
+    CHECK(g_num_requests == g_num_answered + 2);
+    if (g_num_requests == g_num_answered + 2) {
+        CHECK(is_request(g_requests[g_num_answered].post_data, "awardachievement"));
+        CHECK(is_request(g_requests[g_num_answered + 1].post_data, "ping"));
+        award_id = g_requests[g_num_answered].id;
+        g_ping_id = g_requests[g_num_answered + 1].id;
+    }
+    requests = g_num_requests;
+
+    if (award_id != 0) {
+        rc_client_enable_logging(s_client, RC_CLIENT_LOG_LEVEL_ERROR, hold_retry);
+        g_retry_held = 0;
+        g_hold_timed_out = 0;
+        g_answer_done = 0;
+        g_hold_retry = 1;
+        pthread_create(&answer_thread, NULL, answer_unlock_unavailable, &award_id);
+        while (!g_retry_held && !g_answer_done) {
+            sched_yield();
+        }
+        CHECK(g_retry_held);
+        pthread_create(&shutdown_thread, NULL, shut_down, NULL);
+        pthread_join(answer_thread, NULL);
+        pthread_join(shutdown_thread, NULL);
+        g_hold_retry = 0;
+        CHECK(!g_hold_timed_out);
+
+        /* The unlock went out again after shutdown began. rcheevos raises a
+         * server error for a request it does not retry (rc_client.h), and this
+         * one must name that unlock. */
+        CHECK(g_num_requests == requests);
+        pthread_mutex_lock(&s_pending_lock);
+        CHECK(pending_slots(0) == 0);
+        pthread_mutex_unlock(&s_pending_lock);
+        CHECK(g_server_errors == 1);
+        CHECK(strstr(g_server_error, "\"api\":\"award_achievement\"") != NULL);
+        snprintf(expected, sizeof(expected), "\"related_id\":%d,", ACHIEVEMENT_ID);
+        CHECK(strstr(g_server_error, expected) != NULL);
+    }
+
+    /* A client created afterwards signs in and loads the game again. */
+    g_mem_base = NULL;
+    release_mem_base(base);
+    base = start_session(1, 0, 0, &rdram);
+    end_session(base, "unlock sent again while the client shuts down", failures_before);
+}
+
 int main(void)
 {
     run_unlock(1, "memory created before the game loads");
@@ -625,6 +759,7 @@ int main(void)
     run_unreachable_server();
     run_indicators();
     run_paused();
+    run_shutdown_during_retry();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);

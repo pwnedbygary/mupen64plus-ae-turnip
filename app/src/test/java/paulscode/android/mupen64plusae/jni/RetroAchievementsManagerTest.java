@@ -2,6 +2,13 @@ package paulscode.android.mupen64plusae.jni;
 
 import org.junit.Test;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -11,11 +18,17 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 public class RetroAchievementsManagerTest {
 
     private static final int MB = 1024 * 1024;
+
+    private static final String SERVER_URL = "https://retroachievements.org/dorequest.php";
+
+    /** RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR in rcheevos's rc_api_request.h. */
+    private static final int RETRYABLE_CLIENT_ERROR = -2;
 
     /** Like the glue's JSON getters: writes the text and a NUL only if both fit, else returns 0. */
     private static final class FakeGetter implements RetroAchievementsManager.TextGetter {
@@ -36,6 +49,51 @@ public class RetroAchievementsManagerTest {
             buffer[text.length] = 0;
             return 1;
         }
+    }
+
+    /** Answers with a fixed status and body, and keeps what the request wrote. */
+    private static final class FakeConnection extends HttpURLConnection {
+        final ByteArrayOutputStream sent = new ByteArrayOutputStream();
+        private final int status;
+        private final byte[] answer;
+
+        FakeConnection(int status, String answer) throws IOException {
+            super(new URL(SERVER_URL));
+            this.status = status;
+            this.answer = answer.getBytes(StandardCharsets.UTF_8);
+        }
+
+        @Override
+        public void connect() {
+        }
+
+        @Override
+        public void disconnect() {
+        }
+
+        @Override
+        public boolean usingProxy() {
+            return false;
+        }
+
+        @Override
+        public OutputStream getOutputStream() {
+            return sent;
+        }
+
+        @Override
+        public int getResponseCode() {
+            return status;
+        }
+
+        @Override
+        public InputStream getInputStream() {
+            return new ByteArrayInputStream(answer);
+        }
+    }
+
+    private static String text(byte[] bytes) {
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     private static byte[] textOfLength(int length) {
@@ -73,5 +131,36 @@ public class RetroAchievementsManagerTest {
     public void textIsDecodedAsUtf8() {
         FakeGetter getter = new FakeGetter("Pok\u00e9mon Snap".getBytes(StandardCharsets.UTF_8));
         assertEquals("Pok\u00e9mon Snap", RetroAchievementsManager.readText(getter, 2 * MB));
+    }
+
+    @Test
+    public void serverAnswerIsPassedOn() throws IOException {
+        FakeConnection connection = new FakeConnection(200, "{\"Success\":true}");
+        RetroAchievementsManager.ServerResponse response =
+                RetroAchievementsManager.request(url -> connection, SERVER_URL, "r=ping&u=tester", null);
+        assertEquals(200, response.status);
+        assertEquals("{\"Success\":true}", text(response.body));
+        assertEquals("r=ping&u=tester", text(connection.sent.toByteArray()));
+        assertNull(response.failure);
+    }
+
+    @Test
+    public void networkFailureIsAnsweredForRetry() {
+        IOException offline = new IOException("offline");
+        RetroAchievementsManager.ServerResponse response = RetroAchievementsManager.request(
+                url -> { throw offline; }, SERVER_URL, "r=ping", null);
+        assertEquals(RETRYABLE_CLIENT_ERROR, response.status);
+        assertEquals("RA network error: offline", text(response.body));
+        assertSame(offline, response.failure);
+    }
+
+    @Test
+    public void unexpectedExceptionIsAnsweredForRetry() {
+        IllegalStateException broken = new IllegalStateException("broken");
+        RetroAchievementsManager.ServerResponse response = RetroAchievementsManager.request(
+                url -> { throw broken; }, SERVER_URL, "r=ping", null);
+        assertEquals(RETRYABLE_CLIENT_ERROR, response.status);
+        assertTrue(text(response.body).contains("broken"));
+        assertSame(broken, response.failure);
     }
 }

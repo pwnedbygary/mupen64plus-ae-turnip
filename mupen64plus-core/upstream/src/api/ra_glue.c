@@ -67,6 +67,11 @@ static ra_pending_t s_pending[RA_GLUE_MAX_PENDING];
 static int s_dispatch_in_flight = 0;
 static pthread_cond_t s_dispatch_cond = PTHREAD_COND_INITIALIZER;
 
+/* Set while ra_glue_shutdown() destroys the client. A request sent meanwhile,
+ * such as an immediate retry from a callback that shutdown waits for, gets no
+ * slot and fails at once, so no answer to it can reach the destroyed client. */
+static int s_shutting_down = 0;
+
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
@@ -177,7 +182,8 @@ static void ra_glue_server_call(const rc_api_request_t* request, rc_client_serve
 
   int id = 0;
   pthread_mutex_lock(&s_pending_lock);
-  for (int i = 0; i < RA_GLUE_MAX_PENDING; ++i) {
+  const int shutting_down = s_shutting_down;
+  for (int i = 0; !shutting_down && i < RA_GLUE_MAX_PENDING; ++i) {
     if (!s_pending[i].in_use) {
       id = ++s_next_request_id;
       s_pending[i].in_use = 1;
@@ -190,11 +196,19 @@ static void ra_glue_server_call(const rc_api_request_t* request, rc_client_serve
   pthread_mutex_unlock(&s_pending_lock);
 
   if (id == 0) {
-    /* No free pending slot: fail the request immediately. */
+    /* No free pending slot: fail the request immediately, with a status
+     * rcheevos retries. While the client is being destroyed, fail it for good,
+     * so rcheevos frees the request instead of scheduling a retry that would
+     * never run. */
     rc_api_server_response_t response;
     memset(&response, 0, sizeof(response));
-    response.http_status_code = 503;
-    response.body = "ra_glue: no pending request slot";
+    if (shutting_down) {
+      response.http_status_code = RC_API_SERVER_RESPONSE_CLIENT_ERROR;
+      response.body = "ra_glue: the client is shutting down";
+    } else {
+      response.http_status_code = 503;
+      response.body = "ra_glue: no pending request slot";
+    }
     response.body_length = (int)strlen(response.body);
     if (callback != NULL)
       callback(&response, callback_data);
@@ -413,10 +427,11 @@ void ra_glue_shutdown(void)
   if (s_client == NULL)
     return;
 
-  /* Drop outstanding requests and wait for any callback already running
-   * against the client before destroying it, so a concurrent
+  /* Drop outstanding requests, refuse new ones, and wait for any callback
+   * already running against the client before destroying it, so a concurrent
    * ra_glue_dispatch_server_response() cannot use freed client data. */
   pthread_mutex_lock(&s_pending_lock);
+  s_shutting_down = 1;
   memset(s_pending, 0, sizeof(s_pending));
   while (s_dispatch_in_flight > 0)
     pthread_cond_wait(&s_dispatch_cond, &s_pending_lock);
@@ -425,6 +440,10 @@ void ra_glue_shutdown(void)
   pthread_mutex_unlock(&s_pending_lock);
 
   rc_client_destroy(client);
+
+  pthread_mutex_lock(&s_pending_lock);
+  s_shutting_down = 0;
+  pthread_mutex_unlock(&s_pending_lock);
   s_hardcore = 0;
   s_last_error[0] = '\0';
 }
