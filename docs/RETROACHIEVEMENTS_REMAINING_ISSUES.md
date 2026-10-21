@@ -9,7 +9,7 @@ refuses only loading (see "Save states and Resume under hardcore").
 This file lists what is still open. Evidence labels: OBSERVED = read from current source, or
 seen in a named run such as "OBSERVED (host JVM)"; DERIVED = inferred from code paths;
 REFERENCE = read from a pinned outside source (RetroAchievements server or client source or
-documentation, AOSP, or libretro); HYPOTHESIS = plausible but untested.
+documentation, AOSP, libretro, or upstream mupen64plus-core); HYPOTHESIS = plausible but untested.
 Mode names: this file uses rcheevos's name, softcore, for the mode that RetroAchievements and the
 app's text now call casual.
 Issue #15 has its own section at the end; the rest are device verification results, deferred
@@ -323,10 +323,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   core emulates the frame, and those wait while a list is built. Only `ra_glue_do_frame`,
   `ra_glue_idle`, `ra_glue_state_loaded` and the list getter take the lock, and they take it
   before any other: rcheevos takes its mutex under it, and the glue its request lock when
-  rcheevos sends a request (`ra_glue.c:523,539`). When the request is an unlock or a leaderboard
-  entry, the glue first rewrites the file of unsent ones under that file's own lock
-  (`ra_glue.c:406-423,548-552`; see "Unlocks kept until the server answers"), so a list can also
-  wait for that write. The Java callbacks made under the frame lock only parse and post to the
+  rcheevos sends a request (`ra_glue.c:523,539`). When the request sends an unlock or a
+  leaderboard entry that the file of unsent ones does not hold yet, the glue first rewrites that
+  file under its own lock (`ra_glue.c:406-423,548-552`; see "Unlocks kept until the server
+  answers"), so a list can also wait for that write; for a retry of an entry the file holds, it
+  only looks the entry up. The Java callbacks made under the frame lock only parse and post to the
   main thread or hand the request to the HTTP threads
   (`RetroAchievementsManager.java:297-298,310-321,332-334`), and neither caller of the list
   getter holds a lock (`AchievementsDialog.java:53`; `RaIndicatorOverlay.java:70`). `ra_glue.h`
@@ -1178,9 +1179,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED: the glue now keeps each unlock and leaderboard entry that rcheevos sends in a file,
   from its first request until the server records it or refuses it in a way rcheevos does not
   retry (`ra_glue.c:208-226`). It reads the achievement or leaderboard, the hardcore flag or the
-  score, the game's hash and the player's name from the request's form data, and writes the file
-  before it hands the request to Java (`ra_glue.c:302-334,543-552`). The file is plain text with
-  no token, rewritten through a temporary file and a rename (`ra_glue.c:345-403`). The app keeps
+  score, the game's hash and the player's name from the request's form data and, if the file does
+  not hold that entry yet, rewrites the file before it hands the request to Java
+  (`ra_glue.c:302-334,406-423,543-552`). The file is plain text with no token, rewritten through a
+  temporary file and a rename (`ra_glue.c:345-403`). The app keeps
   it as `retroachievements-unsent.txt` in its folder of files that Android does not back up, and
   names it only from the game's process (`CoreService.java:1352-1355`; `AndroidManifest.xml:418`;
   `RetroAchievementsManager.java:199-208`; `ra_glue.h:63-67`). Settings' Connect check signs in
@@ -1212,10 +1214,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   sent by this sign-in (`ra_glue.c:406-423`). An entry's age comes from the device's clock.
 - OBSERVED (host build): six new runs of the session test name a file in the test's state folder.
   In a hardcore session, an unlock that gets the app's answer for a server it cannot reach
-  (status -2 with the error's text, `RetroAchievementsManager.java:446-448`) and an entry the
-  server answers with HTTP 503 raise no server error and are in the file when the session ends;
-  the next sign-in sends them again, one at a time, the first before the app hears of the
-  sign-in, with their hardcore flag, score and hash, and the file is empty once the server
+  (status -2 with the error's text, `RetroAchievementsManager.java:446-448`) and an entry that a
+  proxy answers with an HTTP 503 page raise no server error and are in the file when the session
+  ends; the next sign-in sends them again, one at a time, only the first before the app hears of
+  the sign-in, with their hardcore flag, score and hash, and the file is empty once the server
   records them. Entries from a file written by the test go out with their age (an hour and two
   hours), another player's entry stays, and a line that holds no entry is dropped. Unlocks the
   server refuses, or already has, are dropped; after a 503 the unlock stays and the next is not
@@ -1229,15 +1231,137 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   refused entries, the refusal run and the in-session run; dropping entries after a 503, the
   first run and the run that keeps an unlock; reading the app's answer for a server it cannot
   reach as a refusal, with no case for it in the copy of rcheevos's retry rule or with no retry
-  rule at all, only the first run; without the age, or sending another player's entries, the
-  file run; going on after a 503, the run that keeps an unlock; sending the first entry after the
-  app hears of the sign-in, only the first run's order check.
+  rule at all, only the first run; with the HTTP statuses left out of that copy, only the first
+  run, as rcheevos takes the 503 page's title as error text; without the age, or sending another
+  player's entries, the file run; going on after a 503, the run that keeps an unlock; sending the
+  first entry after the app hears of the sign-in, only the first run's order check; sending the
+  second entry with the first, or right after the app hears of the sign-in, the five resend runs,
+  the first of them also at its order check.
 - OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes with
   every unit test. `ra_glue.o` was recompiled for all four ABIs with empty ndk-build stderr logs,
   and each packaged core library exports `ra_glue_set_unsent_path` (`llvm-nm -D`).
 - Not yet verified on device: an unlock made with the network off, the session closed, and the
   game started again with the network on, which should show the "recorded" notice and leave the
   file empty.
+
+### Compliance checklist
+Each requirement of RetroAchievements' compliance page (revision `361119b677dc`) and its state on
+this branch. MET means the code and the host checks meet it, as DERIVED from the evidence cited
+here or in the section named; that section also lists what is still to be checked on a device.
+OPEN means it was not checked. USER means it needs the maintainer, outside the code. N/A means it
+does not apply to this app.
+
+A. RetroAchievements features
+- MET (UI visibility): the in-game menu opens the achievement list (see "In-game achievement
+  list").
+- MET (achievements): achievements read the emulator's memory and unlock (see "Memory reads").
+  Trigger and Measured conditions show as the challenge and progress indicators during play and
+  in each row's status in the list (see "Challenge and progress indicators").
+- MET (rich presence and leaderboards): leaderboard attempts start, fail and submit, with notices
+  and the attempt's value on screen (see "Leaderboard attempts"). OBSERVED: rcheevos builds the
+  rich presence text for each ping (`rc_client.c:5745-5753`), and the app has no setting for
+  either (`preferences_ra.xml:7-37`). Rich presence was not checked on the server.
+- MET (offline queueing): see "Unlocks kept until the server answers".
+- MET (save state hit storage, recommended): see "Achievement progress kept with save states".
+- N/A (toolkit support): the page asks for RAIntegration only in Windows builds, and this app
+  ships only for Android.
+- OPEN (save file compatibility, recommended): OBSERVED: the core writes each save type to a file
+  of its own (`main.c:166-181`). Whether their byte order matches other N64 emulators' was not
+  checked.
+
+B. Hardcore rules
+- MET (cheats a player chooses): OBSERVED: under hardcore the emulation job adds none of the
+  game's enabled cheats, and the GameShark button is refused (`CoreService.java:592-598,886-899`);
+  `:896`, in that loop, is the app's only call of `coreAddCheat`.
+- USER (the core's own database patches): OBSERVED: in every mode the core also adds the codes its
+  ROM database lists under the game's `Cheat` keys (`rom.c:688-716`; `main.c:1581`;
+  `cheat.c:497-536`). It writes boot codes once, at the first frame, and the others on every frame
+  after the first 60 (`main.c:936-950,975`; `cheat.c:229-236,281-282`). In the shipped database
+  (`app/src/main/assets/mupen64plus_data/mupen64plus.ini`) 14 entries list codes: seven GameCube
+  dumps of Ocarina of Time ("End Credits Fix"), five of Mario Kart 64 ("Multiplayer Timing Fix")
+  and two of Rat Attack ("Allows the game to boot"), whose codes are all boot codes. 37 more
+  entries refer to one of these with `RefMD5` and have no codes of their own, so they take its
+  codes (`rom.c:350,406-411`): other dumps, translations, trainers and hacks of the same games.
+  That makes 51 entries: 15 of Ocarina of Time, 32 of Mario Kart 64 and 4 of Rat Attack. A dump
+  the database does not list by MD5 gets the codes of the entry with its header's CRCs, if no
+  other entry has the same CRCs (`rom.c:195-196,214,847-856`). REFERENCE (upstream mupen64plus-core
+  pull requests 203, 333 and 714, merged as `337a0842`, `cc1e7f02` and `f93c9e77`): upstream
+  added the Mario Kart 64 and Rat Attack codes, with these comments, to fix multiplayer timing and
+  to let Rat Attack boot. HYPOTHESIS: the codes correct emulation or let a dump boot rather than
+  change play, so they are not section G's "gameplay-altering cheats", and turning them off would
+  bring the problems back; the game code they patch was not examined. The page also disables
+  "Built-in cheat engines", and these codes run through the core's, so the approval request should
+  name them for RetroAchievements to decide.
+- N/A (rewind): OBSERVED: no file in the app's or the core's sources mentions rewind.
+- MET (slowdown and frame advance): every speed other than 100% and frame advance are refused
+  (see "Speed lock under hardcore").
+- MET (loading save states): refused under hardcore, while creating save states is allowed (see
+  "Save states and Resume under hardcore").
+- MET (rich presence and leaderboards cannot be disabled): OBSERVED: the app has no setting to
+  disable them (`preferences_ra.xml:7-37`).
+- MET (resume): a game resumed from its auto save runs in softcore, with a notice (see "Save
+  states and Resume under hardcore").
+- MET (mode switching): OBSERVED: a session turns hardcore on only where it starts achievements,
+  before signing in (`CoreService.java:1366`), once per service (`:1329-1332`) and from the
+  settings read when the service was created (`:1101,1118`). Otherwise it only turns hardcore
+  off, for Resume and netplay (`:416,1366`; see "Hardcore session start"). DERIVED: a changed
+  setting applies to the next game.
+- MET (no memory editors, debuggers, scripting or input playback): OBSERVED: the core's debugger
+  is built only with `DBG` (`main.c:83,898,1879,1903,1998`), which none of the core's Android
+  build files define (`Android.mk`, `Application.mk`, `mupen64plus-core.mk` and `build.gradle` in
+  `mupen64plus-core`), and the app's Java sources mention no memory editor, Lua scripting or movie
+  playback. The core exports `DebugMemGetPointer`, which returns a pointer to the console's RAM,
+  without that guard (`debugger.c:227-247`; `api_export.ver:51`), but no code in this repository
+  calls it. The core's own key and joystick shortcuts save and load states, change speed, advance
+  frames and press the GameShark button (`eventloop.c:386-417,637-689`), but the core is built
+  against an SDL stub whose event functions are empty (`mupen64plus-core.mk:25`;
+  `ndkLibs/SDL2_stub/SDL_events.h:1001-1004,1120-1124`), and the app sends the core no key:
+  `M64CMD_SEND_SDL_KEYDOWN` and `M64CMD_SEND_SDL_KEYUP` only appear in its list of commands
+  (`CoreTypes.java:96-97`). OBSERVED (host build): the packaged core library of every ABI imports
+  only SDL_net's functions, none of SDL's own (`llvm-nm -D`). DERIVED: so the core's event
+  functions are the stub's empty ones, and those shortcuts never fire.
+
+C. Identity and integrity of the client
+- MET (user agent): see "User-Agent". USER: the approval request must disclose the two earlier
+  User-Agents recorded there.
+
+D. Eligibility timeline
+- MET: REFERENCE: section D also counts "the parent emulator it is forked from". OBSERVED: the
+  app is a fork of Mupen64Plus-AE (`README.md:8`), whose history in this repository starts with an
+  import on 2012-05-05 (`8772620d5`) and carries the release tags `1.9` and `1.9.2`, on commits of
+  2012-05-06 and 2012-05-07 that are ancestors of this branch. USER: the approval request should
+  name the parent and its first public release.
+
+E. Defaults and UX
+- MET: OBSERVED: softcore is the default (`preferences_ra.xml:31-36`), and hardcore is one
+  checkbox on the same RetroAchievements screen as the sign-in, whose summary says what it
+  disables (`preferences_ra.xml:7-37`; `strings.xml:326-327`). Each session shows its mode once
+  the game's achievements load (see "On-screen notices").
+
+F. Transparency and legality
+- N/A (monetization): OBSERVED: neither the app's sources nor its Gradle files use a billing or
+  ads library or ask for the billing permission.
+- USER (licenses and notices): OBSERVED: the README names the app's license and libadrenotools'
+  (`README.md:151-153`), and the app ships the core's license list in its assets
+  (`app/src/main/assets/mupen64plus_data/doc/LICENSES`), but no page lists every shipped core and
+  plugin with its license and upstream link; the in-app Credits entry opens a contributor roll
+  (`GalleryActivity.java:935-937`).
+- USER (privacy policy): none is published with the app. OBSERVED: besides RetroAchievements, the
+  app uses Google sign-in and the Google Drive API for its backups of game data
+  (`app/build.gradle:214-215,220`). REFERENCE: section G rejects a policy with contradictions,
+  such as "no third parties" while using social logins, so the policy has to name them.
+
+G. Auto-fail criteria: each is covered under B, C or F above.
+
+H. Banned emulators
+- N/A: the page bans only Afterplay.
+
+Before applying, the maintainer must publish a privacy policy (retention periods, server locations,
+GDPR, and the Google services named under F), publish a page that lists every shipped core and
+plugin with its license and upstream link, run the device checks the sections above list, and send
+the approval request to RetroAchievements; the page names no contact for it. The request must
+disclose `Mupen64PlusAE` and `Mupen64PlusAE/3.0 (Android)` (see "User-Agent") and should name the
+parent and its first public release (see D) and the core's database patches (see B).
 
 ### Open items (not fixed here)
 - REFERENCE (AOSP `android-14.0.0_r1`, `NotificationManagerService.java`): Android refuses a new
@@ -1277,8 +1401,12 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   work behind only when a session ends after the game's load has been answered but before the
   core's first frame, or while an unlock or entry waits for a retry. Not fixed here: rcheevos is
   vendored.
-- Not audited on this branch: the rest of the compliance page. Its save-state and resume rules
-  (section B) are covered under "Save states and Resume under hardcore", its hit-count
-  recommendation (section A) under "Achievement progress kept with save states", its rule for
-  unlocks made offline (section A) under "Unlocks kept until the server answers", and its
-  User-Agent rules (section C) under "User-Agent".
+- DERIVED: rcheevos has data races of its own that the glue's locks do not reach. When Java's two
+  HTTP threads (`RetroAchievementsManager.java:127`) hand rcheevos two unlock answers at once,
+  both write the player's score outside its mutex (`rc_client.c:4709-4710`). Its idle work reads
+  the list of scheduled work and the disconnect state outside the mutex (`:6507,6534`), while an
+  answer on an HTTP thread changes both under it (`:536-562,6538-6557`). The effect would be a
+  score taken from either answer, or a retry or a connection notice handled at the next frame or
+  idle call. An independent reviewer's scratch stress test reported them under ThreadSanitizer;
+  they were not repeated here. They are older than this branch: the two HTTP threads came with
+  `4df6051aa`. Not fixed here: rcheevos is vendored.

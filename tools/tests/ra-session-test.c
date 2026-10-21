@@ -84,14 +84,14 @@
  *
  * The last runs check the unlocks and leaderboard entries kept in the file
  * named with ra_glue_set_unsent_path() until the server answers them. An unlock
- * that gets the app's answer for a server it cannot reach, and an entry that
- * the server answers with HTTP 503, must be in the file when the session ends;
- * the next sign-in must send them again, one at a time, the first before the
- * app hears of the sign-in, and empty the file once the server records them.
- * Entries from an earlier session must go out with their age, while another
- * player's stay and a line that holds no entry is dropped. An unlock the
- * server refuses, or already has, must be dropped; after an answer rcheevos
- * would retry, the unlock must stay and the next must wait for a later
+ * that gets the app's answer for a server it cannot reach, and an entry that a
+ * proxy answers with an HTTP 503 page, must be in the file when the session
+ * ends; the next sign-in must send them again, one at a time, only the first
+ * before the app hears of the sign-in, and empty the file once the server
+ * records them. Entries from an earlier session must go out with their age,
+ * while another player's stay and a line that holds no entry is dropped. An
+ * unlock the server refuses, or already has, must be dropped; after an answer
+ * rcheevos would retry, the unlock must stay and the next must wait for a later
  * sign-in. Unlocks and entries the server records or refuses during the
  * session must not stay in the file.
  *
@@ -186,6 +186,11 @@ static const char ALREADY_UNLOCKED_RESPONSE[] =
  * RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR, with the exception's text. */
 static const char OFFLINE_ANSWER[] =
     "RA network error: Unable to resolve host \"retroachievements.org\"";
+/* A proxy's page for a server that is down, sent with HTTP 503. rcheevos takes the page's
+ * title as the error text (rc_api_common.c:270-301), so only the status says to try again. */
+static const char MAINTENANCE_PAGE[] =
+    "<html><head><title>503 Service Temporarily Unavailable</title></head>"
+    "<body>The server is down for maintenance.</body></html>";
 
 static const char PING_RESPONSE[] = "{\"Success\":true}";
 /* A recorded leaderboard entry of 5, ranked 3rd of 12. */
@@ -197,6 +202,8 @@ static const char SUBMIT_RESPONSE[] =
 static struct {
     int id;
     char post_data[512];
+    /* g_num_answered when it was sent. */
+    int answered_before;
 } g_requests[MAX_REQUESTS];
 static int g_num_requests;
 static int g_num_answered;
@@ -207,9 +214,9 @@ static int g_results[4];
 static int g_num_results;
 /* g_num_requests when the session's first result, the sign-in's, arrived. */
 static int g_requests_at_sign_in;
-/* How the fake server answers: this many unlock requests, and that many
- * leaderboard entries, get HTTP 503 before one is recorded, unless it is
- * refused or the player already has the unlock. */
+/* How the fake server answers: this many unlock requests get HTTP 503 with no
+ * body, and that many leaderboard entries MAINTENANCE_PAGE, before one is
+ * recorded, unless it is refused or the player already has the unlock. */
 static int g_unavailable_awards;
 static int g_unavailable_entries;
 /* Before those, this many unlock requests get OFFLINE_ANSWER. */
@@ -256,6 +263,7 @@ static void fake_server_call(int request_id, const char* url, const char* post_d
         g_requests[g_num_requests].id = request_id;
         snprintf(g_requests[g_num_requests].post_data, sizeof(g_requests[0].post_data), "%s",
                  post_data != NULL ? post_data : "");
+        g_requests[g_num_requests].answered_before = g_num_answered;
         ++g_num_requests;
     }
 }
@@ -427,7 +435,7 @@ static void answer_requests(void)
             }
         } else if (is_request(post_data, "submitlbentry") && g_unavailable_entries > 0) {
             --g_unavailable_entries;
-            body = "";
+            body = MAINTENANCE_PAGE;
             status = 503;
         } else if (is_request(post_data, "submitlbentry") && g_refuse_entry) {
             body = REFUSAL_RESPONSE;
@@ -1502,7 +1510,7 @@ static void end_unsent_run(const char* path, void* base, const char* name, int f
 }
 
 /* An unlock the app could not send, as when the device is offline, and a
- * leaderboard entry the server answered with HTTP 503 are kept when the
+ * leaderboard entry answered with a proxy's HTTP 503 page are kept when the
  * session ends, and the next sign-in sends them again. */
 static void run_unsent_sent_again(void)
 {
@@ -1536,8 +1544,10 @@ static void run_unsent_sent_again(void)
     sign_in(0);
     award = find_request("awardachievement", "a", ACHIEVEMENT_ID);
     entry = find_request("submitlbentry", "i", LEADERBOARD_ID);
-    /* One at a time, the first before the app hears of the sign-in and asks for the game. */
-    CHECK(award >= 0 && award < g_requests_at_sign_in && entry > award);
+    /* The first goes out before the app hears of the sign-in and asks for the game, and the
+     * second only once the first has been answered. */
+    CHECK(award >= 0 && award < g_requests_at_sign_in && entry >= 0
+          && g_requests[entry].answered_before > award);
     if (award >= 0 && entry >= 0) {
         CHECK(has_param(g_requests[award].post_data, "h=1"));
         CHECK(has_param(g_requests[award].post_data, "m=" GAME_HASH));
