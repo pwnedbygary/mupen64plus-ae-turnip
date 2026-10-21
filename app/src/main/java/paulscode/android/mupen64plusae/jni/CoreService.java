@@ -303,18 +303,6 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void autoSaveState(final boolean shutdownOnFinish)
     {
-        // Hardcore forbids save states. The shutdown flow normally completes via the
-        // save-complete callback, so it must be finished explicitly here.
-        if (isRaHardcore()) {
-            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreBlocked);
-            if (shutdownOnFinish) {
-                mIsShuttingDown = true;
-                mCoreInterface.setVolume(0);
-                mShutdownHandler.postDelayed(this::shutdownEmulator, 500);
-            }
-            return;
-        }
-
         final String latestSave = mGameDataManager.getAutoSaveFileName();
 
         // Auto-save in case device doesn't resume properly (e.g. OS kills process, battery dies, etc.)
@@ -408,14 +396,30 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     }
 
     /**
-     * Blocks an action that hardcore mode forbids, notifying the player. Package-private so the UI
-     * can ask before prompting for an action the service would deny.
-     * @return true if blocked.
+     * RetroAchievements requires a session resumed from a save state to run in casual mode. Runs on
+     * the emulation thread before the auto save loads and emulation starts: rcheevos activates the
+     * game's achievements only in the emulator's frames, so it gets the change first.
      */
-    boolean blockIfRaHardcore()
+    private void leaveRaHardcoreForResume()
     {
         if (isRaHardcore()) {
-            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreBlocked);
+            RetroAchievementsManager.getInstance().setHardcore(false);
+            // Before Android 11 a toast shows through the looper of the thread that made it, and
+            // this thread's looper is busy until emulation ends.
+            new Handler(Looper.getMainLooper()).post(() ->
+                    Notifier.showToast(getApplicationContext(), R.string.ra_resumeHardcoreOff));
+        }
+    }
+
+    /**
+     * Blocks loading a save state, which hardcore mode forbids, notifying the player. Hardcore
+     * mode allows creating one.
+     * @return true if blocked.
+     */
+    private boolean blockIfRaHardcoreLoad()
+    {
+        if (isRaHardcore()) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreLoadBlocked);
             return true;
         }
         return false;
@@ -423,11 +427,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void saveState(String filename, boolean overwriting)
     {
-        if (blockIfRaHardcore()) {
-            return;
-        }
         File currentSaveStateFile = new File( mGamePrefs.getUserSaveDir() + "/" + filename );
-        // Announce only the action that will actually happen; hardcore denials already returned.
         // The overwrite decision comes from the UI that showed the confirmation dialog, so the
         // announcement cannot disagree with it and there is no second exists() check.
         Notifier.showToast(getApplicationContext(),
@@ -501,16 +501,13 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void saveSlot()
     {
-        if (blockIfRaHardcore()) {
-            return;
-        }
         Notifier.showToast(getApplicationContext(), R.string.toast_savingSlot, getSlot());
         mCoreInterface.emuSaveSlot();
     }
 
     void loadSlot()
     {
-        if (blockIfRaHardcore()) {
+        if (blockIfRaHardcoreLoad()) {
             return;
         }
         Notifier.showToast(getApplicationContext(), R.string.toast_loadingSlot, getSlot());
@@ -519,7 +516,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void loadState(File file)
     {
-        if (blockIfRaHardcore()) {
+        if (blockIfRaHardcoreLoad()) {
             return;
         }
         Notifier.showToast(getApplicationContext(), R.string.toast_loadingFile, file.getName());
@@ -587,7 +584,8 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void emuGameShark(boolean pressed)
     {
-        if (blockIfRaHardcore()) {
+        if (isRaHardcore()) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreCheatsBlocked);
             return;
         }
         mCoreInterface.emuGameShark(pressed);
@@ -708,6 +706,13 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             // Copy game data from external storage
             if (mGlobalPrefs.useExternalStorge) {
                 copyGameContentsFromSdCard();
+            }
+
+            // With game data on external storage, the auto saves are local only after the copy.
+            final String latestSave = mIsRestarting ? null : mGameDataManager.getLatestAutoSave();
+            final boolean resuming = latestSave != null && new File(latestSave).exists();
+            if (resuming) {
+                leaveRaHardcoreForResume();
             }
 
             FileUtil.makeDirs(workingDir);
@@ -892,9 +897,8 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                 }
 
                 if (!mIsShuttingDown) {
-                    if (!mIsRestarting && !isRaHardcore())
+                    if (resuming)
                     {
-                        final String latestSave = mGameDataManager.getLatestAutoSave();
                         mCoreInterface.emuLoadFile(latestSave);
                     }
 

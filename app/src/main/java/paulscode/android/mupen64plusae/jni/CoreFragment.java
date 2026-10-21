@@ -754,15 +754,6 @@ public class CoreFragment extends Fragment implements CoreServiceListener, CoreS
 
             if (mViewModel.mCurrentSaveStateFile.exists()) {
 
-                // If hardcore denies the save, tell the player now instead of asking them to
-                // confirm an overwrite that will not happen (the service shows the deny toast).
-                if (mCoreService != null && mCoreService.blockIfRaHardcore()) {
-                    if (mCoreEventListener != null) {
-                        mCoreEventListener.onSaveLoad();
-                    }
-                    return;
-                }
-
                 String title = activity.getString(R.string.confirm_title);
                 String message = activity.getString(R.string.confirmOverwriteFile_message, filename);
 

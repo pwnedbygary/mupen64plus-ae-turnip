@@ -263,10 +263,11 @@
     <string name="retroAchievementsConnect_ok">Signed in as %1$s</string>
     <string name="retroAchievementsConnect_error">Sign-in failed: %1$s</string>
     <string name="retroAchievementsConnect_noRequest">could not start the request</string>
-    <string name="ra_hardcoreBlocked">Hardcore mode: save states and load states are disabled</string>
+    <string name="ra_hardcoreLoadBlocked">Hardcore mode: loading save states is disabled</string>
     <string name="ra_hardcoreCheatsBlocked">Hardcore mode: cheats are disabled</string>
     <string name="ra_hardcoreSpeedBlocked">Hardcore mode: speed controls are disabled</string>
     <string name="ra_netplayHardcoreOff">Netplay: hardcore mode is off for this session</string>
+    <string name="ra_resumeHardcoreOff">Resumed game: hardcore mode is off for this session</string>
     <string name="ra_sessionHardcore">RetroAchievements: hardcore mode</string>
     <string name="ra_sessionCasual">RetroAchievements: casual mode</string>
     <string name="ra_sessionOff">RetroAchievements is off for this session: %1$s</string>
@@ -311,7 +312,7 @@
     <string name="retroAchievementsPassword_title">Password</string>
     <string name="retroAchievementsPassword_summary">Your retroachievements.org password. Once a sign-in has saved a session token, games use that token and need the password only if the server rejects it.</string>
     <string name="retroAchievementsHardcore_title">Hardcore mode</string>
-    <string name="retroAchievementsHardcore_summary">Disables save states, cheats, fast-forward, slow motion, frame advance and audio sync while achievements are active. Netplay runs in casual mode.</string>
+    <string name="retroAchievementsHardcore_summary">Disables loading save states, cheats, fast-forward, slow motion, frame advance and audio sync while achievements are active. Resumed games and netplay run in casual mode.</string>
 
     <!-- Checkbox Preferences -->
     <string name="playShowCheats_title">Enable cheats</string>
