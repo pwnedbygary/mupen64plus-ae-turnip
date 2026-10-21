@@ -70,7 +70,7 @@
  * rcheevos raises the restored state's events outside its mutex too: the list
  * must wait until the restore has ended.
  *
- * The last runs check the progress kept with save states. The game's fourth
+ * The next runs check the progress kept with save states. The game's fourth
  * achievement unlocks after PROGRESS_HITS frames with the byte at
  * PROGRESS_ADDRESS at 1, so its hit count shows when it unlocks. Loading a
  * state must restore the count saved with it, and start it from zero when the
@@ -81,6 +81,19 @@
  * must keep no progress, even while a state loaded earlier waits to give its
  * count, so loading it later starts from zero. Without a client, a save must
  * remove the progress file of an earlier save of that state.
+ *
+ * The last runs check the unlocks and leaderboard entries kept in the file
+ * named with ra_glue_set_unsent_path() until the server answers them. An unlock
+ * that gets the app's answer for a server it cannot reach, and an entry that
+ * the server answers with HTTP 503, must be in the file when the session ends;
+ * the next sign-in must send them again, one at a time, the first before the
+ * app hears of the sign-in, and empty the file once the server records them.
+ * Entries from an earlier session must go out with their age, while another
+ * player's stay and a line that holds no entry is dropped. An unlock the
+ * server refuses, or already has, must be dropped; after an answer rcheevos
+ * would retry, the unlock must stay and the next must wait for a later
+ * sign-in. Unlocks and entries the server records or refuses during the
+ * session must not stay in the file.
  *
  * ra_glue.c and memory.c are included from the production sources, and
  * tools/test-ra-session.sh links the rcheevos sources the core builds.
@@ -166,6 +179,13 @@ static const char AWARD_RESPONSE[] =
     "{\"Success\":true,\"Score\":5,\"SoftcoreScore\":5,\"AchievementsRemaining\":0}";
 
 static const char REFUSAL_RESPONSE[] = "{\"Success\":false,\"Error\":\"" REFUSAL "\"}";
+/* The server's answer to an unlock the player already has (rc_api_runtime.c:707-716). */
+static const char ALREADY_UNLOCKED_RESPONSE[] =
+    "{\"Success\":false,\"Error\":\"User already has this achievement awarded.\"}";
+/* What RetroAchievementsManager.request answers when it cannot reach the server:
+ * RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR, with the exception's text. */
+static const char OFFLINE_ANSWER[] =
+    "RA network error: Unable to resolve host \"retroachievements.org\"";
 
 static const char PING_RESPONSE[] = "{\"Success\":true}";
 /* A recorded leaderboard entry of 5, ranked 3rd of 12. */
@@ -185,11 +205,20 @@ static int g_unlock_events;
 static int g_progress_unlock_events;
 static int g_results[4];
 static int g_num_results;
-/* How the fake server answers: this many unlock requests get HTTP 503
- * before one succeeds, unless the unlock or leaderboard entry is refused. */
+/* g_num_requests when the session's first result, the sign-in's, arrived. */
+static int g_requests_at_sign_in;
+/* How the fake server answers: this many unlock requests, and that many
+ * leaderboard entries, get HTTP 503 before one is recorded, unless it is
+ * refused or the player already has the unlock. */
 static int g_unavailable_awards;
+static int g_unavailable_entries;
+/* Before those, this many unlock requests get OFFLINE_ANSWER. */
+static int g_offline_awards;
 static int g_refuse_award;
+static int g_award_already_unlocked;
 static int g_refuse_entry;
+static int g_unsent_events;
+static char g_unsent_event[128];
 /* Whether the game has a fifth achievement, at BAD_ADDRESS. */
 static int g_bad_address;
 /* Whether fake_event holds the emulator thread when the challenge indicator shows. */
@@ -251,6 +280,9 @@ static void fake_event(const char* json)
     } else if (strstr(json, "\"type\":\"server_error\"") != NULL) {
         ++g_server_errors;
         snprintf(g_server_error, sizeof(g_server_error), "%s", json);
+    } else if (strstr(json, "\"type\":\"unsent_done\"") != NULL) {
+        ++g_unsent_events;
+        snprintf(g_unsent_event, sizeof(g_unsent_event), "%s", json);
     } else if (strcmp(json, "{\"type\":\"disconnected\"}") == 0) {
         ++g_disconnected_events;
     } else if (strcmp(json, "{\"type\":\"reconnected\"}") == 0) {
@@ -273,6 +305,9 @@ static void fake_async_result(int result, const char* error_message)
 {
     if (result != RC_OK) {
         fprintf(stderr, "request failed: %d %s\n", result, error_message);
+    }
+    if (g_num_results == 0) {
+        g_requests_at_sign_in = g_num_requests;
     }
     if (g_num_results < (int)(sizeof(g_results) / sizeof(g_results[0]))) {
         g_results[g_num_results] = result;
@@ -377,13 +412,23 @@ static void answer_requests(void)
             body = START_SESSION_RESPONSE;
         } else if (is_request(post_data, "awardachievement")) {
             g_award_requested |= has_param(post_data, award_param);
-            if (g_unavailable_awards > 0) {
+            if (g_offline_awards > 0) {
+                --g_offline_awards;
+                body = OFFLINE_ANSWER;
+                status = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
+            } else if (g_unavailable_awards > 0) {
                 --g_unavailable_awards;
                 body = "";
                 status = 503;
+            } else if (g_award_already_unlocked) {
+                body = ALREADY_UNLOCKED_RESPONSE;
             } else {
                 body = g_refuse_award ? REFUSAL_RESPONSE : AWARD_RESPONSE;
             }
+        } else if (is_request(post_data, "submitlbentry") && g_unavailable_entries > 0) {
+            --g_unavailable_entries;
+            body = "";
+            status = 503;
         } else if (is_request(post_data, "submitlbentry") && g_refuse_entry) {
             body = REFUSAL_RESPONSE;
         } else if (is_request(post_data, "submitlbentry")) {
@@ -422,8 +467,7 @@ static void* create_memory(uint8_t** rdram)
     return base;
 }
 
-/* Resets the fixture, signs in and asks for the game. */
-static void begin_session(int hardcore)
+static void reset_fixture(void)
 {
     g_num_requests = 0;
     g_num_answered = 0;
@@ -431,9 +475,15 @@ static void begin_session(int hardcore)
     g_unlock_events = 0;
     g_progress_unlock_events = 0;
     g_num_results = 0;
+    g_requests_at_sign_in = 0;
     g_unavailable_awards = 0;
+    g_unavailable_entries = 0;
+    g_offline_awards = 0;
     g_refuse_award = 0;
+    g_award_already_unlocked = 0;
     g_refuse_entry = 0;
+    g_unsent_events = 0;
+    g_unsent_event[0] = '\0';
     g_server_errors = 0;
     g_server_error[0] = '\0';
     g_disconnected_events = 0;
@@ -443,7 +493,11 @@ static void begin_session(int hardcore)
     g_leaderboard_events = 0;
     g_timer_entries = 0;
     g_now = 1000000;
+}
 
+/* Signs in and asks for the game. */
+static void sign_in(int hardcore)
+{
     CHECK(ra_glue_create() == 1);
     rc_client_set_get_time_millisecs_function(s_client, fake_clock);
     ra_glue_set_java_bridge((uintptr_t)fake_server_call, (uintptr_t)fake_event,
@@ -455,6 +509,13 @@ static void begin_session(int hardcore)
     answer_requests();
     /* Only the sign-in has reported: the load finishes on the emulator thread. */
     CHECK(g_num_results == 1);
+}
+
+/* Resets the fixture, signs in and asks for the game. */
+static void begin_session(int hardcore)
+{
+    reset_fixture();
+    sign_in(hardcore);
 }
 
 /* Signs in, loads the game and runs two frames, or, while emulation is paused,
@@ -1329,6 +1390,285 @@ static void run_save_without_achievements(void)
            g_failures == failures_before ? "ok" : "FAILED");
 }
 
+/* The file of unlocks and leaderboard entries the server has not answered, for
+ * the last runs. */
+static void unsent_file(char* out, size_t size)
+{
+    snprintf(out, size, "%s/unsent.txt", g_state_dir);
+}
+
+static void write_text_file(const char* path, const char* text)
+{
+    FILE* file = fopen(path, "w");
+
+    CHECK(file != NULL);
+    if (file != NULL) {
+        fputs(text, file);
+        fclose(file);
+    }
+}
+
+static int file_contains(const char* path, const char* text)
+{
+    char line[256];
+    int found = 0;
+    FILE* file = fopen(path, "r");
+
+    while (file != NULL && !found && fgets(line, sizeof(line), file) != NULL) {
+        found = strstr(line, text) != NULL;
+    }
+    if (file != NULL) {
+        fclose(file);
+    }
+    return found;
+}
+
+/* The entries of the unsent file, in the format ra_glue.c gives, with this kind,
+ * id, value and user and the game's hash; with id -1, every entry. */
+static int unsent_entries(const char* path, char kind, int id, int value, const char* user)
+{
+    char line[256];
+    int count = 0;
+    FILE* file = fopen(path, "r");
+
+    while (file != NULL && fgets(line, sizeof(line), file) != NULL) {
+        char line_kind;
+        unsigned int line_id;
+        int line_value;
+        long long line_time;
+        char hash[65];
+        char line_user[65];
+
+        if (sscanf(line, "%c %u %d %lld %64s %64s", &line_kind, &line_id, &line_value, &line_time,
+                   hash, line_user) != 6) {
+            continue;
+        }
+        count += id == -1 || (line_kind == kind && (int)line_id == id && line_value == value
+                              && strcmp(hash, GAME_HASH) == 0 && strcmp(line_user, user) == 0);
+    }
+    if (file != NULL) {
+        fclose(file);
+    }
+    return count;
+}
+
+/* A number in POST data, or -1 when it is missing. */
+static long param_number(const char* post_data, const char* key)
+{
+    const size_t length = strlen(key);
+    const char* found = post_data;
+
+    while ((found = strstr(found, key)) != NULL) {
+        if ((found == post_data || found[-1] == '&') && found[length] == '=') {
+            return strtol(found + length + 1, NULL, 10);
+        }
+        ++found;
+    }
+    return -1;
+}
+
+/* The first request to api whose number key has that value, or -1. */
+static int find_request(const char* api, const char* key, long value)
+{
+    int i;
+
+    for (i = 0; i < g_num_requests; ++i) {
+        if (is_request(g_requests[i].post_data, api)
+            && param_number(g_requests[i].post_data, key) == value) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* The age, in seconds, that a request gives an unlock or entry sent again;
+ * rcheevos leaves it out when it is 0 (rc_api_runtime.c:649-650,758-759). */
+static long request_age(int request)
+{
+    const long age = param_number(g_requests[request].post_data, "o");
+
+    return age < 0 ? 0 : age;
+}
+
+static void end_unsent_run(const char* path, void* base, const char* name, int failures_before)
+{
+    /* As the emulator thread would, finish the game's load: rcheevos does not free a load
+     * still queued for that thread when the client is destroyed. */
+    ra_glue_idle();
+    answer_requests();
+    CHECK(ra_glue_set_unsent_path(NULL) == 1);
+    remove(path);
+    end_session(base, name, failures_before);
+}
+
+/* An unlock the app could not send, as when the device is offline, and a
+ * leaderboard entry the server answered with HTTP 503 are kept when the
+ * session ends, and the next sign-in sends them again. */
+static void run_unsent_sent_again(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    char path[160];
+    void* base;
+    int award;
+    int entry;
+
+    unsent_file(path, sizeof(path));
+    CHECK(ra_glue_set_unsent_path(path) == 1);
+    base = start_session(1, 1, 0, &rdram);
+    g_offline_awards = 1000;
+    g_unavailable_entries = 1000;
+    rdram[ACHIEVEMENT_ADDRESS] = 1;
+    rdram[LEADERBOARD_ADDRESS] = 1;
+    ra_glue_do_frame();
+    answer_requests();
+    CHECK(g_award_requested);
+    CHECK(g_server_errors == 0);
+    CHECK(unsent_entries(path, 'A', ACHIEVEMENT_ID, 1, "tester") == 1);
+    CHECK(unsent_entries(path, 'L', LEADERBOARD_ID, 42, "tester") == 1);
+    CHECK(unsent_entries(path, 0, -1, 0, NULL) == 2);
+    ra_glue_shutdown();
+    g_mem_base = NULL;
+    release_mem_base(base);
+
+    base = create_memory(&rdram);
+    reset_fixture();
+    sign_in(0);
+    award = find_request("awardachievement", "a", ACHIEVEMENT_ID);
+    entry = find_request("submitlbentry", "i", LEADERBOARD_ID);
+    /* One at a time, the first before the app hears of the sign-in and asks for the game. */
+    CHECK(award >= 0 && award < g_requests_at_sign_in && entry > award);
+    if (award >= 0 && entry >= 0) {
+        CHECK(has_param(g_requests[award].post_data, "h=1"));
+        CHECK(has_param(g_requests[award].post_data, "m=" GAME_HASH));
+        CHECK(has_param(g_requests[award].post_data, "u=tester"));
+        CHECK(request_age(award) <= 5);
+        CHECK(param_number(g_requests[entry].post_data, "s") == 42);
+        CHECK(has_param(g_requests[entry].post_data, "m=" GAME_HASH));
+        CHECK(request_age(entry) <= 5);
+    }
+    CHECK(g_unsent_events == 1);
+    CHECK(strcmp(g_unsent_event, "{\"type\":\"unsent_done\",\"recorded\":2,\"refused\":0}") == 0);
+    CHECK(unsent_entries(path, 0, -1, 0, NULL) == 0);
+    CHECK(g_server_errors == 0);
+    end_unsent_run(path, base, "unlock and leaderboard entry sent again after the next sign-in",
+                   failures_before);
+}
+
+/* Entries from an earlier session go out with their age; another player's
+ * entry stays, and a line that holds no entry is dropped. */
+static void run_unsent_from_file(void)
+{
+    const int failures_before = g_failures;
+    const long long now = (long long)time(NULL);
+    uint8_t* rdram = NULL;
+    char path[160];
+    char text[512];
+    void* base;
+    int award;
+    int entry;
+
+    unsent_file(path, sizeof(path));
+    snprintf(text, sizeof(text),
+             "# entries\nA %d 0 %lld %s tester\nnot an entry\nL %d 5 %lld %s tester\n"
+             "A %d 1 %lld %s someone\n",
+             ACHIEVEMENT_ID, now - 3600, GAME_HASH, TIMER_ID, now - 7200, GAME_HASH,
+             CHALLENGE_ID, now - 60, GAME_HASH);
+    write_text_file(path, text);
+    CHECK(ra_glue_set_unsent_path(path) == 1);
+    g_mem_base = NULL;
+    base = create_memory(&rdram);
+    reset_fixture();
+    sign_in(0);
+
+    award = find_request("awardachievement", "a", ACHIEVEMENT_ID);
+    entry = find_request("submitlbentry", "i", TIMER_ID);
+    CHECK(award >= 0 && entry >= 0);
+    if (award >= 0 && entry >= 0) {
+        CHECK(has_param(g_requests[award].post_data, "h=0"));
+        CHECK(request_age(award) >= 3600 && request_age(award) <= 3610);
+        CHECK(param_number(g_requests[entry].post_data, "s") == 5);
+        CHECK(request_age(entry) >= 7200 && request_age(entry) <= 7210);
+    }
+    CHECK(find_request("awardachievement", "a", CHALLENGE_ID) < 0);
+    CHECK(strcmp(g_unsent_event, "{\"type\":\"unsent_done\",\"recorded\":2,\"refused\":0}") == 0);
+    CHECK(unsent_entries(path, 0, -1, 0, NULL) == 1);
+    CHECK(unsent_entries(path, 'A', CHALLENGE_ID, 1, "someone") == 1);
+    CHECK(!file_contains(path, "not an entry"));
+    end_unsent_run(path, base, "entries from an earlier session sent with their age", failures_before);
+}
+
+enum { ANSWER_REFUSED, ANSWER_ALREADY_UNLOCKED, ANSWER_UNAVAILABLE };
+
+/* Unlocks from an earlier session that the server refuses, or already has, are
+ * dropped. After an answer rcheevos would retry, the unlock stays, and the next
+ * waits for a later sign-in. */
+static void run_unsent_answer(int answer, const char* name)
+{
+    const int failures_before = g_failures;
+    const long long now = (long long)time(NULL);
+    uint8_t* rdram = NULL;
+    char path[160];
+    char text[256];
+    void* base;
+
+    unsent_file(path, sizeof(path));
+    snprintf(text, sizeof(text), "A %d 1 %lld %s tester\nA %d 1 %lld %s tester\n",
+             ACHIEVEMENT_ID, now - 10, GAME_HASH, MEASURED_ID, now - 10, GAME_HASH);
+    write_text_file(path, text);
+    CHECK(ra_glue_set_unsent_path(path) == 1);
+    g_mem_base = NULL;
+    base = create_memory(&rdram);
+    reset_fixture();
+    g_refuse_award = answer == ANSWER_REFUSED;
+    g_award_already_unlocked = answer == ANSWER_ALREADY_UNLOCKED;
+    g_unavailable_awards = answer == ANSWER_UNAVAILABLE ? 1000 : 0;
+    sign_in(0);
+
+    CHECK(find_request("awardachievement", "a", ACHIEVEMENT_ID) >= 0);
+    CHECK(g_server_errors == 0);
+    if (answer == ANSWER_UNAVAILABLE) {
+        CHECK(find_request("awardachievement", "a", MEASURED_ID) < 0);
+        CHECK(g_unsent_events == 0);
+        CHECK(unsent_entries(path, 0, -1, 0, NULL) == 2);
+    } else {
+        CHECK(find_request("awardachievement", "a", MEASURED_ID) >= 0);
+        CHECK(g_unsent_events == 1);
+        CHECK(strcmp(g_unsent_event, answer == ANSWER_REFUSED
+                     ? "{\"type\":\"unsent_done\",\"recorded\":0,\"refused\":2}"
+                     : "{\"type\":\"unsent_done\",\"recorded\":2,\"refused\":0}") == 0);
+        CHECK(unsent_entries(path, 0, -1, 0, NULL) == 0);
+    }
+    end_unsent_run(path, base, name, failures_before);
+}
+
+/* Unlocks and entries that the server records or refuses during the session
+ * are not kept. */
+static void run_unsent_answered_in_session(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    char path[160];
+    void* base;
+
+    unsent_file(path, sizeof(path));
+    CHECK(ra_glue_set_unsent_path(path) == 1);
+    base = start_session(1, 1, 0, &rdram);
+    g_refuse_entry = 1;
+    rdram[ACHIEVEMENT_ADDRESS] = 1;
+    rdram[LEADERBOARD_ADDRESS] = 1;
+    ra_glue_do_frame();
+    answer_requests();
+    CHECK(g_award_requested);
+    CHECK(g_server_errors == 1);
+    /* Written when they were sent, and emptied when they were answered. */
+    CHECK(file_exists(path));
+    CHECK(unsent_entries(path, 0, -1, 0, NULL) == 0);
+    CHECK(g_unsent_events == 0);
+    end_unsent_run(path, base, "unlock recorded and entry refused during the session not kept",
+                   failures_before);
+}
+
 static void remove_state_dir(void)
 {
     static const char* const names[] = { "progress.st0", "resume.sav", "earlier.st2", "later.st3",
@@ -1341,6 +1681,10 @@ static void remove_state_dir(void)
         remove(path);
     }
     snprintf(path, sizeof(path), "%s/.ra-progress", g_state_dir);
+    remove(path);
+    unsent_file(path, sizeof(path));
+    remove(path);
+    snprintf(path, sizeof(path), "%s/unsent.txt.tmp", g_state_dir);
     remove(path);
     remove(g_state_dir);
 }
@@ -1370,6 +1714,14 @@ int main(void)
     run_second_load_while_loading();
     run_save_before_game_loads();
     run_save_without_achievements();
+    run_unsent_sent_again();
+    run_unsent_from_file();
+    run_unsent_answer(ANSWER_REFUSED, "unlocks from an earlier session refused by the server dropped");
+    run_unsent_answer(ANSWER_ALREADY_UNLOCKED,
+                      "unlocks from an earlier session that the server already has dropped");
+    run_unsent_answer(ANSWER_UNAVAILABLE,
+                      "unlock from an earlier session kept while the server is unavailable");
+    run_unsent_answered_in_session();
     remove_state_dir();
 
     if (g_failures != 0) {

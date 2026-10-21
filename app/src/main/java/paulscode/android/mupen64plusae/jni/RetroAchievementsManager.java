@@ -15,6 +15,7 @@ import org.json.JSONObject;
 import paulscode.android.mupen64plusae.BuildConfig;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -88,7 +89,7 @@ public class RetroAchievementsManager {
          * challenge_show, challenge_hide, progress_show, progress_update, progress_hide,
          * server_error, disconnected, reconnected, reset, game_completed, leaderboard_started,
          * leaderboard_failed, leaderboard_submitted, tracker_show, tracker_update,
-         * tracker_hide), {@code json} is the raw event payload.
+         * tracker_hide, unsent_done), {@code json} is the raw event payload.
          */
         void onRaEvent(String type, String json);
 
@@ -194,6 +195,17 @@ public class RetroAchievementsManager {
     }
 
     // ---- session ---------------------------------------------------------
+
+    /**
+     * Keeps the unlocks and leaderboard entries the server has not answered in {@code file}, and
+     * sends those of the signed-in player again after each sign-in. Set it before signing in, and
+     * from one process only; {@code null} keeps none.
+     *
+     * @return false when the native side ran out of memory.
+     */
+    public boolean setUnsentFile(@Nullable File file) {
+        return mCore.ra_glue_set_unsent_path(file != null ? file.getAbsolutePath() : null) != 0;
+    }
 
     /** @return true if the async login request was started. */
     public boolean login(String username, String password) {

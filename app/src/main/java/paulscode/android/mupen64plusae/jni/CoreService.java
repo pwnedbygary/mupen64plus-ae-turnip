@@ -1349,6 +1349,10 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             failRaSession(getString(R.string.ra_clientNotStarted));
             return;
         }
+        // Settings' Connect check signs in from another process, which must not use this file.
+        if (!ra.setUnsentFile(new File(getNoBackupFilesDir(), "retroachievements-unsent.txt"))) {
+            Log.w(TAG, "RetroAchievements could not keep unsent unlocks: out of memory");
+        }
 
         mRaGameMd5 = mRomMd5;
         mRaModeShown = false;
@@ -1424,6 +1428,8 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                 showRaNotice(getString(R.string.ra_disconnected));
             } else if ("reconnected".equals(type)) {
                 showRaNotice(getString(R.string.ra_reconnected));
+            } else if ("unsent_done".equals(type)) {
+                showRaUnsentNotice(new JSONObject(json));
             }
         } catch (JSONException e) {
             Log.w(TAG, "Malformed RetroAchievements " + type + " event: " + json);
@@ -1454,6 +1460,20 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             showRaNotice(getString(R.string.ra_leaderboardEntryNotRecorded, title, reason));
         } else {
             showRaNotice(getString(R.string.ra_serverError, reason));
+        }
+    }
+
+    /** What the server did with the unlocks and entries an earlier session could not send. */
+    private void showRaUnsentNotice(JSONObject result) throws JSONException {
+        int recorded = result.getInt("recorded");
+        int refused = result.getInt("refused");
+        if (recorded > 0) {
+            showRaNotice(getResources().getQuantityString(R.plurals.ra_unsentRecorded, recorded,
+                    recorded));
+        }
+        if (refused > 0) {
+            showRaNotice(getResources().getQuantityString(R.plurals.ra_unsentRefused, refused,
+                    refused));
         }
     }
 

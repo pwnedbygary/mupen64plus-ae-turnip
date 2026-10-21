@@ -60,6 +60,12 @@ void ra_glue_state_loaded(const char* state_path, const uint32_t* rdram, size_t 
 EXPORT void ra_glue_set_hardcore(int enabled);
 EXPORT int ra_glue_get_hardcore(void);
 
+/* Keeps the unlocks and leaderboard entries the server has not answered in the
+ * file at path, and sends those of the signed-in player again after each
+ * sign-in (see ra_glue.c). NULL or "" keeps none. Set it before signing in,
+ * and from one process only. Returns 0 when out of memory. */
+EXPORT int ra_glue_set_unsent_path(const char* path);
+
 /* Session management. Returns 1 if the async operation was started. */
 EXPORT int ra_glue_login_password(const char* username, const char* password);
 EXPORT int ra_glue_login_token(const char* username, const char* token);
@@ -86,8 +92,8 @@ EXPORT int ra_glue_get_achievements_json(char* buffer, int buffer_size);
  * progress with each save state (ra_glue_state_saved).
  * serialize: returns bytes written (> 0), or -1 on failure / buffer too small.
  * deserialize: returns 1 on success, 0 on failure. Unlike ra_glue_state_loaded
- * it does not take the lock the achievement list waits for, so it must not run
- * while another thread can build the list. */
+ * it does not take the lock that frames, idle work and the achievement list
+ * take, so it must not run beside them on another thread. */
 EXPORT int ra_glue_serialize_progress(uint8_t* buffer, int buffer_size);
 EXPORT int ra_glue_deserialize_progress(const uint8_t* buffer, int buffer_size);
 

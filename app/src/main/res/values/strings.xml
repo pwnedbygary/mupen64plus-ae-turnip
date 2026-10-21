@@ -284,6 +284,14 @@
     <string name="ra_serverError">RetroAchievements server error: %1$s</string>
     <string name="ra_disconnected">RetroAchievements: sending failed. Keep playing while it retries.</string>
     <string name="ra_reconnected">RetroAchievements: connection restored</string>
+    <plurals name="ra_unsentRecorded">
+        <item quantity="one">RetroAchievements recorded %d unlock or leaderboard entry from an earlier session</item>
+        <item quantity="other">RetroAchievements recorded %d unlocks or leaderboard entries from an earlier session</item>
+    </plurals>
+    <plurals name="ra_unsentRefused">
+        <item quantity="one">RetroAchievements did not record %d unlock or leaderboard entry from an earlier session</item>
+        <item quantity="other">RetroAchievements did not record %d unlocks or leaderboard entries from an earlier session</item>
+    </plurals>
     <string name="ra_leaderboardStarted">Leaderboard attempt started: %1$s</string>
     <string name="ra_leaderboardFailed">Leaderboard attempt failed: %1$s</string>
     <string name="ra_leaderboardSubmitted">Submitted %1$s for %2$s</string>

@@ -71,6 +71,7 @@ ra_glue_idle;
 ra_glue_reset;
 ra_glue_set_hardcore;
 ra_glue_get_hardcore;
+ra_glue_set_unsent_path;
 ra_glue_login_password;
 ra_glue_login_token;
 ra_glue_logout;

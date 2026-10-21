@@ -107,6 +107,8 @@ public interface CoreLibrary extends Library {
 
     int ra_glue_get_hardcore();
 
+    int ra_glue_set_unsent_path(String path);
+
     int ra_glue_login_password(String username, String password);
 
     int ra_glue_login_token(String username, String token);
