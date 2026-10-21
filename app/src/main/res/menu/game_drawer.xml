@@ -12,9 +12,11 @@
         android:title="@string/menuItem_toggleSpeed"/>
     <item
         android:id="@+id/menuItem_set_speed"
+        android:icon="@drawable/ic_sliders"
         android:title="@string/menuItem_setSpeed"/>
     <item
         android:id="@+id/menuItem_achievements"
+        android:icon="@drawable/ic_trophy"
         android:title="@string/menuItem_achievements"/>
     <item
         android:id="@+id/menuItem_screenshot"
