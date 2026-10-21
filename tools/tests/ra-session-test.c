@@ -5,8 +5,8 @@
  * achievement sets, session start, unlock, leaderboard entry, ping) with
  * responses in the format the vendored rcheevos parses (src/rapi). The
  * game's first achievement is true when the N64 RAM byte at rcheevos address
- * ACHIEVEMENT_ADDRESS is 1, and its leaderboard starts and submits in the
- * frame the byte at LEADERBOARD_ADDRESS becomes 1. Once the emulator runs
+ * ACHIEVEMENT_ADDRESS is 1, and its first leaderboard starts and submits in
+ * the frame the byte at LEADERBOARD_ADDRESS becomes 1. Once the emulator runs
  * frames, the achievement must be active, and it must unlock when its byte
  * changes from 0 to 1 (rcheevos lets an achievement trigger only after a
  * frame in which it was false).
@@ -53,17 +53,23 @@
  * must end it for good rather than schedule a retry that would never run. A
  * client created afterwards must sign in and load the game again.
  *
+ * The ninth run uses a second leaderboard, which starts, is cancelled and
+ * submits on three other bytes and takes its value from a fourth. In a
+ * hardcore session an attempt must report its start, its live value and the
+ * value's update, and the value it submits, and a cancelled attempt its
+ * failure; both, and the end of the session, must hide the value.
+ *
  * The last runs check the progress kept with save states. The game's fourth
  * achievement unlocks after PROGRESS_HITS frames with the byte at
  * PROGRESS_ADDRESS at 1, so its hit count shows when it unlocks. Loading a
  * state must restore the count saved with it, and start it from zero when the
  * RAM differs from the state's. A state loaded before the game has loaded,
  * as when a session resumes from its auto save, must get its count once the
- * game has loaded, unless the core was reset in between. A state saved before
- * the game has loaded must keep no progress, even while a state loaded earlier
- * waits to give its count, so loading it later starts from zero. Without a
- * client, a save must remove the progress file of an earlier save of that
- * state.
+ * game has loaded, unless the core was reset in between or a state with no
+ * progress file was loaded after it. A state saved before the game has loaded
+ * must keep no progress, even while a state loaded earlier waits to give its
+ * count, so loading it later starts from zero. Without a client, a save must
+ * remove the progress file of an earlier save of that state.
  *
  * ra_glue.c and memory.c are included from the production sources, and
  * tools/test-ra-session.sh links the rcheevos sources the core builds.
@@ -117,6 +123,11 @@ static int g_failures;
 #define ACHIEVEMENT_ADDRESS 0x10
 #define LEADERBOARD_ID 7701
 #define LEADERBOARD_ADDRESS 0x20
+#define TIMER_ID 7702
+#define TIMER_START_ADDRESS 0x50
+#define TIMER_CANCEL_ADDRESS 0x51
+#define TIMER_SUBMIT_ADDRESS 0x52
+#define TIMER_VALUE_ADDRESS 0x53
 #define CHALLENGE_ID 5502
 #define CHALLENGE_ADDRESS 0x30
 #define CHALLENGE_TRIGGER_ADDRESS 0x31
@@ -143,6 +154,11 @@ static const char AWARD_RESPONSE[] =
 static const char REFUSAL_RESPONSE[] = "{\"Success\":false,\"Error\":\"" REFUSAL "\"}";
 
 static const char PING_RESPONSE[] = "{\"Success\":true}";
+/* A recorded leaderboard entry of 5, ranked 3rd of 12. */
+static const char SUBMIT_RESPONSE[] =
+    "{\"Success\":true,\"Response\":{\"Score\":5,\"BestScore\":5,"
+    "\"RankInfo\":{\"Rank\":3,\"NumEntries\":\"12\"},"
+    "\"TopEntries\":[{\"User\":\"tester\",\"Rank\":3,\"Score\":5}]}}";
 
 static struct {
     int id;
@@ -166,6 +182,10 @@ static int g_disconnected_events;
 static int g_reconnected_events;
 static int g_indicator_events;
 static char g_indicator_event[256];
+#define MAX_LEADERBOARD_EVENTS 16
+static int g_leaderboard_events;
+static char g_leaderboard_event[MAX_LEADERBOARD_EVENTS][256];
+static int g_timer_entries;
 static rc_clock_t g_now;
 /* For the shutdown run: the ping left unanswered, and the hold on the thread
  * that answers the unlock. */
@@ -216,6 +236,13 @@ static void fake_event(const char* json)
                || strstr(json, "\"type\":\"progress_") != NULL) {
         ++g_indicator_events;
         snprintf(g_indicator_event, sizeof(g_indicator_event), "%s", json);
+    } else if (strstr(json, "\"type\":\"leaderboard_") != NULL
+               || strstr(json, "\"type\":\"tracker_") != NULL) {
+        if (g_leaderboard_events < MAX_LEADERBOARD_EVENTS) {
+            snprintf(g_leaderboard_event[g_leaderboard_events], sizeof(g_leaderboard_event[0]),
+                     "%s", json);
+        }
+        ++g_leaderboard_events;
     }
 }
 
@@ -264,6 +291,7 @@ static void answer_requests(void)
 {
     char game_sets[4096];
     char award_param[32];
+    char timer_param[32];
     int length;
 
     length = snprintf(game_sets, sizeof(game_sets),
@@ -287,15 +315,20 @@ static void answer_requests(void)
         "\"Leaderboards\":[{\"ID\":%d,\"Title\":\"Fastest byte\","
         "\"Description\":\"Set the other byte\","
         "\"Mem\":\"STA:0xH%06x=1::CAN:0xH%06x=2::SUB:0xH%06x=1::VAL:0xH%06x\","
+        "\"Format\":\"VALUE\",\"LowerIsBetter\":false,\"Hidden\":false},"
+        "{\"ID\":%d,\"Title\":\"Timer\",\"Description\":\"Hold the value\","
+        "\"Mem\":\"STA:0xH%06x=1::CAN:0xH%06x=1::SUB:0xH%06x=1::VAL:0xH%06x\","
         "\"Format\":\"VALUE\",\"LowerIsBetter\":false,\"Hidden\":false}]}]}",
         RC_CONSOLE_NINTENDO_64, ACHIEVEMENT_ID, RC_ACHIEVEMENT_CATEGORY_CORE, ACHIEVEMENT_ADDRESS,
         CHALLENGE_ID, RC_ACHIEVEMENT_CATEGORY_CORE, CHALLENGE_ADDRESS, CHALLENGE_TRIGGER_ADDRESS,
         MEASURED_ID, RC_ACHIEVEMENT_CATEGORY_CORE, MEASURED_ADDRESS, MEASURED_TARGET,
         PROGRESS_ID, RC_ACHIEVEMENT_CATEGORY_CORE, PROGRESS_ADDRESS, PROGRESS_HITS,
         LEADERBOARD_ID, LEADERBOARD_ADDRESS, LEADERBOARD_ADDRESS, LEADERBOARD_ADDRESS,
-        LEADERBOARD_ADDRESS + 1);
+        LEADERBOARD_ADDRESS + 1, TIMER_ID, TIMER_START_ADDRESS, TIMER_CANCEL_ADDRESS,
+        TIMER_SUBMIT_ADDRESS, TIMER_VALUE_ADDRESS);
     CHECK(length > 0 && length < (int)sizeof(game_sets));
     snprintf(award_param, sizeof(award_param), "a=%d", ACHIEVEMENT_ID);
+    snprintf(timer_param, sizeof(timer_param), "i=%d", TIMER_ID);
 
     /* Answering a request can send the next one, which this loop answers too. */
     while (g_num_answered < g_num_requests) {
@@ -322,6 +355,10 @@ static void answer_requests(void)
             }
         } else if (is_request(post_data, "submitlbentry") && g_refuse_entry) {
             body = REFUSAL_RESPONSE;
+        } else if (is_request(post_data, "submitlbentry")) {
+            g_timer_entries += has_param(post_data, timer_param)
+                               && has_param(post_data, "s=5");
+            body = SUBMIT_RESPONSE;
         } else if (is_request(post_data, "ping")) {
             body = PING_RESPONSE;
         } else {
@@ -372,6 +409,8 @@ static void begin_session(int hardcore)
     g_reconnected_events = 0;
     g_indicator_events = 0;
     g_indicator_event[0] = '\0';
+    g_leaderboard_events = 0;
+    g_timer_entries = 0;
     g_now = 1000000;
 
     CHECK(ra_glue_create() == 1);
@@ -787,6 +826,90 @@ static void run_shutdown_during_retry(void)
     end_session(base, "unlock sent again while the client shuts down", failures_before);
 }
 
+/* Whether a leaderboard event from index `from` on has `type` and contains `text`. */
+static int has_leaderboard_event(int from, const char* type, const char* text)
+{
+    char wanted[64];
+    int i;
+
+    snprintf(wanted, sizeof(wanted), "\"type\":\"%s\"", type);
+    for (i = from; i < g_leaderboard_events && i < MAX_LEADERBOARD_EVENTS; ++i) {
+        if (strstr(g_leaderboard_event[i], wanted) != NULL
+            && strstr(g_leaderboard_event[i], text) != NULL) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void run_leaderboard_attempts(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base = start_session(1, 1, 0, &rdram);
+    char timer[48];
+    int from;
+
+    snprintf(timer, sizeof(timer), "\"id\":%d,\"title\":\"Timer\"", TIMER_ID);
+
+    from = g_leaderboard_events;
+    rdram[TIMER_VALUE_ADDRESS] = 3;
+    rdram[TIMER_START_ADDRESS] = 1;
+    ra_glue_do_frame();
+    CHECK(g_leaderboard_events == from + 2);
+    CHECK(has_leaderboard_event(from, "leaderboard_started", timer));
+    CHECK(has_leaderboard_event(from, "tracker_show", "\"display\":\"3\""));
+
+    from = g_leaderboard_events;
+    rdram[TIMER_START_ADDRESS] = 0;
+    rdram[TIMER_VALUE_ADDRESS] = 4;
+    ra_glue_do_frame();
+    CHECK(g_leaderboard_events == from + 1);
+    CHECK(has_leaderboard_event(from, "tracker_update", "\"display\":\"4\""));
+
+    /* The value changes on the frame that submits: the entry and its notice must both have 5. */
+    from = g_leaderboard_events;
+    rdram[TIMER_VALUE_ADDRESS] = 5;
+    rdram[TIMER_SUBMIT_ADDRESS] = 1;
+    ra_glue_do_frame();
+    answer_requests();
+    /* Sent once and not refused. At this fixture's status 200, rcheevos sends an entry again
+     * when a failed answer gives it no error text (malformed JSON, an empty body), and raises
+     * a server error when it does; at a status it retries, it sends the entry again either way. */
+    CHECK(g_timer_entries == 1);
+    CHECK(g_server_errors == 0);
+    CHECK(g_leaderboard_events == from + 2);
+    CHECK(has_leaderboard_event(from, "leaderboard_submitted", "\"title\":\"Timer\",\"value\":\"5\""));
+    CHECK(has_leaderboard_event(from, "tracker_hide", "\"id\":"));
+
+    /* A second attempt, cancelled. */
+    rdram[TIMER_SUBMIT_ADDRESS] = 0;
+    ra_glue_do_frame();
+    from = g_leaderboard_events;
+    rdram[TIMER_START_ADDRESS] = 1;
+    ra_glue_do_frame();
+    rdram[TIMER_START_ADDRESS] = 0;
+    rdram[TIMER_CANCEL_ADDRESS] = 1;
+    ra_glue_do_frame();
+    CHECK(g_leaderboard_events == from + 4);
+    CHECK(has_leaderboard_event(from, "leaderboard_started", timer));
+    CHECK(has_leaderboard_event(from, "leaderboard_failed", timer));
+    CHECK(has_leaderboard_event(from + 2, "tracker_hide", "\"id\":"));
+
+    /* Ending the session hides the value of an attempt that is still running. */
+    rdram[TIMER_CANCEL_ADDRESS] = 0;
+    ra_glue_do_frame();
+    rdram[TIMER_START_ADDRESS] = 1;
+    ra_glue_do_frame();
+    CHECK(has_leaderboard_event(from + 4, "tracker_show", "\"id\":"));
+    from = g_leaderboard_events;
+    ra_glue_shutdown();
+    CHECK(g_leaderboard_events == from + 1);
+    CHECK(has_leaderboard_event(from, "tracker_hide", "\"id\":"));
+
+    end_session(base, "leaderboard attempts in hardcore", failures_before);
+}
+
 static void state_file(char* out, size_t size, const char* name)
 {
     snprintf(out, size, "%s/%s", g_state_dir, name);
@@ -892,6 +1015,50 @@ static void run_progress_while_loading(int reset, const char* name)
     end_session(base, name, failures_before);
 }
 
+/* A second state loaded before the game has loaded replaces the count that
+ * the first one left waiting, even with no progress file of its own. */
+static void run_second_load_while_loading(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base = start_session(1, 0, 0, &rdram);
+    char first[128];
+    char bare[128];
+    int frame;
+
+    state_file(first, sizeof(first), "first.st4");
+    state_file(bare, sizeof(bare), "bare.st5");
+
+    /* The first session saves a state with three hits. */
+    rdram[PROGRESS_ADDRESS] = 1;
+    for (frame = 0; frame < 3; ++frame) {
+        ra_glue_do_frame();
+    }
+    ra_glue_state_saved(first, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    ra_glue_shutdown();
+    g_mem_base = NULL;
+    release_mem_base(base);
+
+    /* The next one loads it, then a state with no progress file, before the
+     * game has loaded. */
+    base = create_memory(&rdram);
+    rdram[PROGRESS_ADDRESS] = 1;
+    begin_session(0);
+    ra_glue_state_loaded(first, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    ra_glue_state_loaded(bare, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    /* The game loads at the end of this frame. With the first state's three
+     * hits, the two frames after it would unlock the achievement. */
+    ra_glue_do_frame();
+    answer_requests();
+    CHECK(g_num_results == 2 && g_results[1] == RC_OK);
+    ra_glue_do_frame();
+    ra_glue_do_frame();
+    answer_requests();
+    CHECK(g_progress_unlock_events == 0);
+
+    end_session(base, "no hit count after a second load while the game loads", failures_before);
+}
+
 /* A state saved before the game has loaded keeps no progress, even while a
  * state loaded earlier waits to give the game its count, as in a session whose
  * sign-in failed and whose game never loads. None of the game's achievements
@@ -986,7 +1153,7 @@ static void run_save_without_achievements(void)
 static void remove_state_dir(void)
 {
     static const char* const names[] = { "progress.st0", "resume.sav", "earlier.st2", "later.st3",
-                                         "off.st1" };
+                                         "off.st1", "first.st4", "bare.st5" };
     char path[160];
     size_t i;
 
@@ -1014,9 +1181,11 @@ int main(void)
     run_indicators();
     run_paused();
     run_shutdown_during_retry();
+    run_leaderboard_attempts();
     run_progress_with_states();
     run_progress_while_loading(0, "hit count of a state loaded while the game loads");
     run_progress_while_loading(1, "no hit count after a reset while the game loads");
+    run_second_load_while_loading();
     run_save_before_game_loads();
     run_save_without_achievements();
     remove_state_dir();

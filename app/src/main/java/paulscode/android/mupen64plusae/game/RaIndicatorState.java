@@ -6,11 +6,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * What the RetroAchievements indicators show: the achievements whose challenge is active, in the
- * order they started, and the progress rcheevos reported last.
+ * What the RetroAchievements indicators show: the achievements whose challenge is active and the
+ * values of the leaderboard trackers, each in the order rcheevos showed them, and the progress
+ * rcheevos reported last.
  */
 final class RaIndicatorState {
     private final Map<Long, String> mChallenges = new LinkedHashMap<>();
+    private final Map<Long, String> mTrackers = new LinkedHashMap<>();
     private String mProgressTitle = "";
     private String mProgressText = "";
 
@@ -24,6 +26,19 @@ final class RaIndicatorState {
 
     List<String> challengeTitles() {
         return new ArrayList<>(mChallenges.values());
+    }
+
+    /** rcheevos shares a tracker between leaderboards with the same value, so it names none. */
+    void showTracker(long id, String value) {
+        mTrackers.put(id, value);
+    }
+
+    void hideTracker(long id) {
+        mTrackers.remove(id);
+    }
+
+    List<String> trackerValues() {
+        return new ArrayList<>(mTrackers.values());
     }
 
     void showProgress(String title, String text) {

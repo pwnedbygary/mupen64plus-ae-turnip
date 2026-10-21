@@ -284,7 +284,11 @@
     <string name="ra_serverError">RetroAchievements server error: %1$s</string>
     <string name="ra_disconnected">RetroAchievements: sending failed. Keep playing while it retries.</string>
     <string name="ra_reconnected">RetroAchievements: connection restored</string>
+    <string name="ra_leaderboardStarted">Leaderboard attempt started: %1$s</string>
+    <string name="ra_leaderboardFailed">Leaderboard attempt failed: %1$s</string>
+    <string name="ra_leaderboardSubmitted">Submitted %1$s for %2$s</string>
     <string name="ra_indicatorChallenge">Challenge active: %1$s</string>
+    <string name="ra_indicatorLeaderboard">Leaderboard: %1$s</string>
     <string name="ra_indicatorProgress">%1$s: %2$s</string>
     <string name="achievements_unavailable">No achievements are loaded. This game may have none, the sign-in may have failed, or loading may not be finished yet.</string>
     <string name="achievements_unreadable">Could not read this game\'s achievement list.</string>

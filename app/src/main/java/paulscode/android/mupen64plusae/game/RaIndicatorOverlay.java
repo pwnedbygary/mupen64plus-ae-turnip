@@ -2,6 +2,7 @@ package paulscode.android.mupen64plusae.game;
 
 import android.content.Context;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.util.Log;
@@ -16,20 +17,23 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.List;
+
 import paulscode.android.mupen64plusae.R;
 import paulscode.android.mupen64plusae.jni.RetroAchievementsManager;
 
 /**
- * Shows the RetroAchievements challenge and progress indicators over the game: a line for each
- * achievement whose challenge is active, and a line with the progress rcheevos reported last,
- * which rcheevos hides two seconds after the last change. It handles no touches, so they reach
- * the views below it.
+ * Shows the RetroAchievements indicators over the game: a line for each achievement whose
+ * challenge is active, a line for each leaderboard tracker, which holds the value of one or more
+ * running attempts, and a line with the progress rcheevos reported last, which rcheevos hides two
+ * seconds after the last change. It handles no touches, so they reach the views below it.
  */
 public class RaIndicatorOverlay extends LinearLayout implements RetroAchievementsManager.Listener {
     private static final String TAG = "RaIndicatorOverlay";
 
     private final RaIndicatorState mState = new RaIndicatorState();
     private final LinearLayout mChallengeLines;
+    private final LinearLayout mTrackerLines;
     private final TextView mProgressLine;
     private RetroAchievementsManager mManager;
 
@@ -43,6 +47,11 @@ public class RaIndicatorOverlay extends LinearLayout implements RetroAchievement
         mChallengeLines.setGravity(Gravity.CENTER_HORIZONTAL);
         addView(mChallengeLines);
 
+        mTrackerLines = new LinearLayout(context);
+        mTrackerLines.setOrientation(VERTICAL);
+        mTrackerLines.setGravity(Gravity.CENTER_HORIZONTAL);
+        addView(mTrackerLines);
+
         mProgressLine = newLine(context);
         mProgressLine.setVisibility(GONE);
         addView(mProgressLine);
@@ -55,6 +64,8 @@ public class RaIndicatorOverlay extends LinearLayout implements RetroAchievement
         setVisibility(VISIBLE);
 
         // An activity created for a session that is already running starts with its challenges.
+        // rcheevos lists no trackers, so the value of a running leaderboard attempt shows again
+        // when it next changes.
         if (manager.isGameLoaded()) {
             addActiveChallenges(manager.getAchievementsJson());
         }
@@ -81,6 +92,17 @@ public class RaIndicatorOverlay extends LinearLayout implements RetroAchievement
             case "challenge_hide":
                 mState.hideChallenge(new JSONObject(json).getLong("id"));
                 showChallenges();
+                break;
+            case "tracker_show":
+            case "tracker_update": {
+                JSONObject event = new JSONObject(json);
+                mState.showTracker(event.getLong("id"), event.getString("display"));
+                showTrackers();
+                break;
+            }
+            case "tracker_hide":
+                mState.hideTracker(new JSONObject(json).getLong("id"));
+                showTrackers();
                 break;
             case "progress_show":
             case "progress_update": {
@@ -128,6 +150,26 @@ public class RaIndicatorOverlay extends LinearLayout implements RetroAchievement
             TextView line = newLine(getContext());
             line.setText(getContext().getString(R.string.ra_indicatorChallenge, title));
             mChallengeLines.addView(line);
+        }
+    }
+
+    /**
+     * Reuses the lines it has: a timer's value changes every frame. A fixed-width font keeps a
+     * changing value from shifting the line.
+     */
+    private void showTrackers() {
+        List<String> values = mState.trackerValues();
+        while (mTrackerLines.getChildCount() > values.size()) {
+            mTrackerLines.removeViewAt(mTrackerLines.getChildCount() - 1);
+        }
+        while (mTrackerLines.getChildCount() < values.size()) {
+            TextView line = newLine(getContext());
+            line.setTypeface(Typeface.MONOSPACE);
+            mTrackerLines.addView(line);
+        }
+        for (int i = 0; i < values.size(); i++) {
+            ((TextView) mTrackerLines.getChildAt(i)).setText(
+                    getContext().getString(R.string.ra_indicatorLeaderboard, values.get(i)));
         }
     }
 

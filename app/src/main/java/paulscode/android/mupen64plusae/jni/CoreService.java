@@ -375,7 +375,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         }
 
         // Terminal failure (bad credentials, offline, unsupported game, request never started):
-        // no achievement session exists or can exist, so release instead of blocking saves forever.
+        // no session exists or can exist, so release the hardcore rules for the rest of the game.
         // This is the deliberate pending-vs-aborted policy: pending enforces, aborted releases.
         if (mRaSessionFailed) {
             return false;
@@ -1394,10 +1394,23 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     @Override
     public void onRaEvent(String type, String json) {
-        if (!"progress_update".equals(type)) Log.i(TAG, "RetroAchievements event: " + json);
+        // Progress and a leaderboard attempt's value can change every frame.
+        if (!"progress_update".equals(type) && !"tracker_update".equals(type)) {
+            Log.i(TAG, "RetroAchievements event: " + json);
+        }
         try {
             if ("achievement".equals(type)) {
                 showRaUnlockNotice(new JSONObject(json));
+            } else if ("leaderboard_started".equals(type)) {
+                showRaNotice(getString(R.string.ra_leaderboardStarted,
+                        new JSONObject(json).getString("title")));
+            } else if ("leaderboard_failed".equals(type)) {
+                showRaNotice(getString(R.string.ra_leaderboardFailed,
+                        new JSONObject(json).getString("title")));
+            } else if ("leaderboard_submitted".equals(type)) {
+                JSONObject leaderboard = new JSONObject(json);
+                showRaNotice(getString(R.string.ra_leaderboardSubmitted,
+                        leaderboard.getString("value"), leaderboard.getString("title")));
             } else if ("server_error".equals(type)) {
                 showRaServerErrorNotice(new JSONObject(json));
             } else if ("disconnected".equals(type)) {
@@ -1454,8 +1467,8 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
         if (result != RetroAchievementsManager.RESULT_OK) {
             // Load-game failed terminally (offline, unsupported game). Latch it so hardcore
-            // enforcement releases instead of blocking saves for a session that can never be
-            // established.
+            // enforcement releases instead of refusing state loads, cheats and speed changes for a
+            // session that can never be established.
             Log.w(TAG, "RetroAchievements load-game error: " + errorMessage);
             failRaSession(raFailureReason(result, errorMessage));
             return;

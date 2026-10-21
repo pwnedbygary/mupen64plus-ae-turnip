@@ -42,6 +42,27 @@ public class RaIndicatorStateTest {
     }
 
     @Test
+    public void aTrackerKeepsItsPlaceWhenItsValueChanges() {
+        RaIndicatorState state = new RaIndicatorState();
+        // Sorting by ID or re-adding an updated tracker would list these the other way round.
+        state.showTracker(2, "0:12.50");
+        state.showTracker(1, "300");
+        state.showTracker(2, "0:13.00");
+        assertEquals(Arrays.asList("0:13.00", "300"), state.trackerValues());
+    }
+
+    @Test
+    public void hidingATrackerRemovesOnlyThatOne() {
+        RaIndicatorState state = new RaIndicatorState();
+        state.showTracker(1, "300");
+        state.showTracker(2, "0:12.50");
+        state.hideTracker(1);
+        assertEquals(Collections.singletonList("0:12.50"), state.trackerValues());
+        state.hideTracker(3);
+        assertEquals(Collections.singletonList("0:12.50"), state.trackerValues());
+    }
+
+    @Test
     public void progressShowsTheLatestReport() {
         RaIndicatorState state = new RaIndicatorState();
         state.showProgress("Collector", "3/10");

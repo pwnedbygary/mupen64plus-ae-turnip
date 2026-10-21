@@ -7,13 +7,14 @@
  * mem_base_u32(g_mem_base, MM_RDRAM_DRAM + address), which is correct in
  * both full and compressed memory base modes.
  *
- * ra_glue_do_frame and ra_glue_idle run on the emu thread, dispatch on the
- * Java HTTP threads, and the rest mostly on the main thread (ra_glue_reset
- * too: the app resets the core there). rcheevos does not lock every read:
- * its plain getters (user, game and subset info; game-loaded, load and
- * hardcore state) take no mutex, and other calls, rc_client_do_frame among
- * them, check for a game outside it. So the game must not be unloaded, nor
- * the client logged out or destroyed, while another thread can use them.
+ * ra_glue_do_frame, ra_glue_idle and the save-state hooks run on the emu
+ * thread, dispatch on the Java HTTP threads, and the rest mostly on the main
+ * thread (ra_glue_reset too: the app resets the core there). rcheevos does
+ * not lock every read: its plain getters (user, game and subset info;
+ * game-loaded, load and hardcore state) take no mutex, and other calls,
+ * rc_client_do_frame among them, check for a game outside it. So the game
+ * must not be unloaded, nor the client logged out or destroyed, while
+ * another thread can use them.
  */
 
 #include "ra_glue.h"
@@ -378,17 +379,48 @@ static char* ra_build_event_json(const rc_client_event_t* event, rc_client_t* cl
 
   case RC_CLIENT_EVENT_LEADERBOARD_STARTED:
   case RC_CLIENT_EVENT_LEADERBOARD_FAILED:
-  case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED:
     if (event->leaderboard != NULL) {
-      const char* name =
-        (event->type == RC_CLIENT_EVENT_LEADERBOARD_STARTED) ? "leaderboard_started" :
-        (event->type == RC_CLIENT_EVENT_LEADERBOARD_FAILED) ? "leaderboard_failed" : "leaderboard_submitted";
+      const char* name = (event->type == RC_CLIENT_EVENT_LEADERBOARD_STARTED) ?
+        "leaderboard_started" : "leaderboard_failed";
       char* title = ra_json_escape(event->leaderboard->title);
       if (title != NULL) {
         asprintf(&json, "{\"type\":\"%s\",\"id\":%u,\"title\":\"%s\"}", name, event->leaderboard->id, title);
         free(title);
       }
     }
+    break;
+
+  /* rcheevos formats the submitted value into tracker_value before it raises this event. */
+  case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED:
+    if (event->leaderboard != NULL) {
+      char* title = ra_json_escape(event->leaderboard->title);
+      char* value = ra_json_escape(event->leaderboard->tracker_value);
+      if (title != NULL && value != NULL) {
+        asprintf(&json, "{\"type\":\"leaderboard_submitted\",\"id\":%u,\"title\":\"%s\",\"value\":\"%s\"}",
+                 event->leaderboard->id, title, value);
+      }
+      free(title);
+      free(value);
+    }
+    break;
+
+  case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_SHOW:
+  case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_UPDATE:
+    if (event->leaderboard_tracker != NULL) {
+      const char* name = (event->type == RC_CLIENT_EVENT_LEADERBOARD_TRACKER_SHOW) ?
+        "tracker_show" : "tracker_update";
+      char* display = ra_json_escape(event->leaderboard_tracker->display);
+      if (display != NULL) {
+        asprintf(&json, "{\"type\":\"%s\",\"id\":%u,\"display\":\"%s\"}", name,
+                 event->leaderboard_tracker->id, display);
+        free(display);
+      }
+    }
+    break;
+
+  case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_HIDE:
+    if (event->leaderboard_tracker != NULL)
+      asprintf(&json, "{\"type\":\"tracker_hide\",\"id\":%u}", event->leaderboard_tracker->id);
     break;
 
   default:
