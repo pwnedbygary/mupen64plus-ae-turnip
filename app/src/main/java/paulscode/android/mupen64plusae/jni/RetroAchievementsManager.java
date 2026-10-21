@@ -61,8 +61,6 @@ public class RetroAchievementsManager {
     private static final int TEXT_BUFFER_SIZE = 128 * 1024;
     /** The achievement list covers every set the game loaded, so it may grow the buffer to this. */
     private static final int ACHIEVEMENTS_BUFFER_MAX = 2 * 1024 * 1024;
-    private static final int PROGRESS_BUFFER_SIZE = 64 * 1024;
-    private static final int PROGRESS_BUFFER_MAX = 1024 * 1024;
 
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 30000;
@@ -273,38 +271,6 @@ public class RetroAchievementsManager {
 
     public boolean isHardcore() {
         return mInitialized && mCore.ra_glue_get_hardcore() != 0;
-    }
-
-    // ---- progress persistence -------------------------------------------
-
-    /** @return serialized progress bytes, or null if unavailable/not loaded. */
-    @Nullable
-    public byte[] serializeProgress() {
-        if (!mInitialized) {
-            return null;
-        }
-
-        int capacity = PROGRESS_BUFFER_SIZE;
-        while (capacity <= PROGRESS_BUFFER_MAX) {
-            byte[] buffer = new byte[capacity];
-            int written = mCore.ra_glue_serialize_progress(buffer, buffer.length);
-            if (written > 0) {
-                byte[] result = new byte[written];
-                System.arraycopy(buffer, 0, result, 0, written);
-                return result;
-            }
-            // -1: either no game loaded or the buffer was too small; grow and retry.
-            capacity *= 4;
-        }
-        return null;
-    }
-
-    /** @return true if the progress blob was accepted by the client (glue returns 1 on success). */
-    public boolean deserializeProgress(byte[] progress) {
-        if (!mInitialized || progress == null || progress.length == 0) {
-            return false;
-        }
-        return mCore.ra_glue_deserialize_progress(progress, progress.length) != 0;
     }
 
     // ---- native -> Java bridge ------------------------------------------

@@ -39,6 +39,7 @@
 #include "api/config.h"
 #include "api/m64p_config.h"
 #include "api/m64p_types.h"
+#include "api/ra_glue.h"
 #include "backends/api/storage_backend.h"
 #include "device/device.h"
 #include "main/list.h"
@@ -1474,6 +1475,8 @@ int savestates_load(void)
             case savestates_type_pj64_unc: ret = savestates_load_pj64_unc(dev, filepath); break;
             default: ret = 0; break;
         }
+        if (ret)
+            ra_glue_state_loaded(filepath, dev->rdram.dram, dev->rdram.dram_size);
         free(filepath);
         filepath = NULL;
     }
@@ -2209,6 +2212,8 @@ int savestates_save(void)
             case savestates_type_pj64_unc: ret = savestates_save_pj64_unc(dev, filepath); break;
             default: ret = 0; break;
         }
+        if (ret)
+            ra_glue_state_saved(filepath, dev->rdram.dram, dev->rdram.dram_size);
         free(filepath);
     }
 

@@ -53,6 +53,18 @@
  * must end it for good rather than schedule a retry that would never run. A
  * client created afterwards must sign in and load the game again.
  *
+ * The last runs check the progress kept with save states. The game's fourth
+ * achievement unlocks after PROGRESS_HITS frames with the byte at
+ * PROGRESS_ADDRESS at 1, so its hit count shows when it unlocks. Loading a
+ * state must restore the count saved with it, and start it from zero when the
+ * RAM differs from the state's. A state loaded before the game has loaded,
+ * as when a session resumes from its auto save, must get its count once the
+ * game has loaded, unless the core was reset in between. A state saved before
+ * the game has loaded must keep no progress, even while a state loaded earlier
+ * waits to give its count, so loading it later starts from zero. Without a
+ * client, a save must remove the progress file of an earlier save of that
+ * state.
+ *
  * ra_glue.c and memory.c are included from the production sources, and
  * tools/test-ra-session.sh links the rcheevos sources the core builds.
  */
@@ -62,6 +74,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #define M64P_CORE_PROTOTYPES 1
@@ -110,6 +123,9 @@ static int g_failures;
 #define MEASURED_ID 5503
 #define MEASURED_ADDRESS 0x32
 #define MEASURED_TARGET 10
+#define PROGRESS_ID 5504
+#define PROGRESS_ADDRESS 0x40
+#define PROGRESS_HITS 5
 #define GAME_HASH "0123456789abcdef0123456789abcdef"
 #define MAX_REQUESTS 16
 #define REFUSAL "refused by the test server"
@@ -136,6 +152,7 @@ static int g_num_requests;
 static int g_num_answered;
 static int g_award_requested;
 static int g_unlock_events;
+static int g_progress_unlock_events;
 static int g_results[4];
 static int g_num_results;
 /* How the fake server answers: this many unlock requests get HTTP 503
@@ -157,6 +174,9 @@ static _Atomic int g_hold_retry;
 static _Atomic int g_retry_held;
 static _Atomic int g_hold_timed_out;
 static _Atomic int g_answer_done;
+/* The folder for the save-state runs. The hooks only use a state's path, so
+ * the state files themselves are never written. */
+static char g_state_dir[] = "/tmp/ra-session-test-XXXXXX";
 
 static void fake_server_call(int request_id, const char* url, const char* post_data,
                              const char* content_type)
@@ -176,10 +196,15 @@ static void fake_server_call(int request_id, const char* url, const char* post_d
 static void fake_event(const char* json)
 {
     char id[32];
+    char progress_id[32];
 
     snprintf(id, sizeof(id), "\"id\":%d,", ACHIEVEMENT_ID);
+    snprintf(progress_id, sizeof(progress_id), "\"id\":%d,", PROGRESS_ID);
     if (strstr(json, "\"type\":\"achievement\"") != NULL && strstr(json, id) != NULL) {
         ++g_unlock_events;
+    } else if (strstr(json, "\"type\":\"achievement\"") != NULL
+               && strstr(json, progress_id) != NULL) {
+        ++g_progress_unlock_events;
     } else if (strstr(json, "\"type\":\"server_error\"") != NULL) {
         ++g_server_errors;
         snprintf(g_server_error, sizeof(g_server_error), "%s", json);
@@ -255,7 +280,10 @@ static void answer_requests(void)
         "\"BadgeName\":\"00002\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"},"
         "{\"ID\":%d,\"Title\":\"Measured\",\"Description\":\"Count to the target\","
         "\"Flags\":%d,\"Points\":5,\"MemAddr\":\"M:0xH%06x=%d\",\"Author\":\"tester\","
-        "\"BadgeName\":\"00003\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"}],"
+        "\"BadgeName\":\"00003\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"},"
+        "{\"ID\":%d,\"Title\":\"Hits\",\"Description\":\"Hold the byte for a while\","
+        "\"Flags\":%d,\"Points\":5,\"MemAddr\":\"0xH%06x=1.%d.\",\"Author\":\"tester\","
+        "\"BadgeName\":\"00004\",\"Created\":1700000000,\"Modified\":1700000000,\"Type\":\"\"}],"
         "\"Leaderboards\":[{\"ID\":%d,\"Title\":\"Fastest byte\","
         "\"Description\":\"Set the other byte\","
         "\"Mem\":\"STA:0xH%06x=1::CAN:0xH%06x=2::SUB:0xH%06x=1::VAL:0xH%06x\","
@@ -263,6 +291,7 @@ static void answer_requests(void)
         RC_CONSOLE_NINTENDO_64, ACHIEVEMENT_ID, RC_ACHIEVEMENT_CATEGORY_CORE, ACHIEVEMENT_ADDRESS,
         CHALLENGE_ID, RC_ACHIEVEMENT_CATEGORY_CORE, CHALLENGE_ADDRESS, CHALLENGE_TRIGGER_ADDRESS,
         MEASURED_ID, RC_ACHIEVEMENT_CATEGORY_CORE, MEASURED_ADDRESS, MEASURED_TARGET,
+        PROGRESS_ID, RC_ACHIEVEMENT_CATEGORY_CORE, PROGRESS_ADDRESS, PROGRESS_HITS,
         LEADERBOARD_ID, LEADERBOARD_ADDRESS, LEADERBOARD_ADDRESS, LEADERBOARD_ADDRESS,
         LEADERBOARD_ADDRESS + 1);
     CHECK(length > 0 && length < (int)sizeof(game_sets));
@@ -313,6 +342,8 @@ static void* create_memory(uint8_t** rdram)
         exit(1);
     }
     *rdram = (uint8_t*)mem_base_u32(base, MM_RDRAM_DRAM);
+    /* The same RAM in every session, so a state saved in one matches the next. */
+    memset(*rdram, 0, RDRAM_8MB_SIZE);
     (*rdram)[ACHIEVEMENT_ADDRESS] = 0;
     (*rdram)[LEADERBOARD_ADDRESS] = 0;
     (*rdram)[LEADERBOARD_ADDRESS + 1] = 42;
@@ -323,18 +354,14 @@ static void* create_memory(uint8_t** rdram)
     return base;
 }
 
-/* Signs in, loads the game and runs two frames, or, while emulation is paused,
- * calls ra_glue_idle() twice; the achievement is then active. */
-static void* start_session(int memory_before_load, int hardcore, int paused, uint8_t** rdram)
+/* Resets the fixture, signs in and asks for the game. */
+static void begin_session(int hardcore)
 {
-    const rc_client_achievement_t* achievement;
-    void* base = NULL;
-    int step;
-
     g_num_requests = 0;
     g_num_answered = 0;
     g_award_requested = 0;
     g_unlock_events = 0;
+    g_progress_unlock_events = 0;
     g_num_results = 0;
     g_unavailable_awards = 0;
     g_refuse_award = 0;
@@ -346,10 +373,6 @@ static void* start_session(int memory_before_load, int hardcore, int paused, uin
     g_indicator_events = 0;
     g_indicator_event[0] = '\0';
     g_now = 1000000;
-    g_mem_base = NULL;
-    if (memory_before_load) {
-        base = create_memory(rdram);
-    }
 
     CHECK(ra_glue_create() == 1);
     rc_client_set_get_time_millisecs_function(s_client, fake_clock);
@@ -362,7 +385,21 @@ static void* start_session(int memory_before_load, int hardcore, int paused, uin
     answer_requests();
     /* Only the sign-in has reported: the load finishes on the emulator thread. */
     CHECK(g_num_results == 1);
+}
 
+/* Signs in, loads the game and runs two frames, or, while emulation is paused,
+ * calls ra_glue_idle() twice; the achievement is then active. */
+static void* start_session(int memory_before_load, int hardcore, int paused, uint8_t** rdram)
+{
+    const rc_client_achievement_t* achievement;
+    void* base = NULL;
+    int step;
+
+    g_mem_base = NULL;
+    if (memory_before_load) {
+        base = create_memory(rdram);
+    }
+    begin_session(hardcore);
     if (!memory_before_load) {
         base = create_memory(rdram);
     }
@@ -750,8 +787,225 @@ static void run_shutdown_during_retry(void)
     end_session(base, "unlock sent again while the client shuts down", failures_before);
 }
 
+static void state_file(char* out, size_t size, const char* name)
+{
+    snprintf(out, size, "%s/%s", g_state_dir, name);
+}
+
+/* Where the glue keeps a state's progress: <state folder>/.ra-progress/<name>.progress. */
+static void progress_file(char* out, size_t size, const char* name)
+{
+    snprintf(out, size, "%s/.ra-progress/%s.progress", g_state_dir, name);
+}
+
+static int file_exists(const char* path)
+{
+    struct stat info;
+
+    return stat(path, &info) == 0;
+}
+
+/* Loading a state restores the hit count saved with it, and starts the count
+ * from zero when the RAM differs from the state's. */
+static void run_progress_with_states(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base = start_session(1, 0, 0, &rdram);
+    char state[128];
+    char progress[160];
+    int frame;
+
+    state_file(state, sizeof(state), "progress.st0");
+    progress_file(progress, sizeof(progress), "progress.st0");
+    rdram[PROGRESS_ADDRESS] = 1;
+    for (frame = 0; frame < 3; ++frame) {
+        ra_glue_do_frame();
+    }
+    ra_glue_state_saved(state, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    CHECK(file_exists(progress));
+
+    /* A fourth hit; the load goes back to three, so one more is not enough. */
+    ra_glue_do_frame();
+    ra_glue_state_loaded(state, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    ra_glue_do_frame();
+    CHECK(g_progress_unlock_events == 0);
+
+    /* With other RAM the count starts from zero, and rcheevos waits for a frame
+     * in which the achievement is false before it counts again. */
+    rdram[PROGRESS_ADDRESS + 1] = 7;
+    ra_glue_state_loaded(state, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    rdram[PROGRESS_ADDRESS] = 0;
+    ra_glue_do_frame();
+    rdram[PROGRESS_ADDRESS] = 1;
+    for (frame = 0; frame < PROGRESS_HITS - 1; ++frame) {
+        ra_glue_do_frame();
+    }
+    CHECK(g_progress_unlock_events == 0);
+    ra_glue_do_frame();
+    answer_requests();
+    CHECK(g_progress_unlock_events == 1);
+
+    end_session(base, "hit counts kept with save states", failures_before);
+}
+
+/* A state loaded before the game has loaded, as when a session resumes from
+ * its auto save, gets its hit count once the game has loaded, unless the core
+ * is reset in between. */
+static void run_progress_while_loading(int reset, const char* name)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base = start_session(1, 0, 0, &rdram);
+    char state[128];
+    int frame;
+
+    /* The first session saves the state with three hits. */
+    state_file(state, sizeof(state), "resume.sav");
+    rdram[PROGRESS_ADDRESS] = 1;
+    for (frame = 0; frame < 3; ++frame) {
+        ra_glue_do_frame();
+    }
+    ra_glue_state_saved(state, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    ra_glue_shutdown();
+    g_mem_base = NULL;
+    release_mem_base(base);
+
+    /* The next one loads it before the game has loaded. */
+    base = create_memory(&rdram);
+    rdram[PROGRESS_ADDRESS] = 1;
+    begin_session(0);
+    ra_glue_state_loaded(state, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    if (reset) {
+        ra_glue_reset();
+    }
+    /* The game loads at the end of this frame, which runs none of its achievements. */
+    ra_glue_do_frame();
+    answer_requests();
+    CHECK(g_num_results == 2 && g_results[1] == RC_OK);
+    ra_glue_do_frame();
+    CHECK(g_progress_unlock_events == 0);
+    ra_glue_do_frame();
+    answer_requests();
+    CHECK(g_progress_unlock_events == (reset ? 0 : 1));
+
+    end_session(base, name, failures_before);
+}
+
+/* A state saved before the game has loaded keeps no progress, even while a
+ * state loaded earlier waits to give the game its count, as in a session whose
+ * sign-in failed and whose game never loads. None of the game's achievements
+ * ran on that state's RAM, so loading it later starts the count from zero. */
+static void run_save_before_game_loads(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base = start_session(1, 0, 0, &rdram);
+    char earlier[128];
+    char later[128];
+    char later_progress[160];
+    int frame;
+
+    state_file(earlier, sizeof(earlier), "earlier.st2");
+    state_file(later, sizeof(later), "later.st3");
+    progress_file(later_progress, sizeof(later_progress), "later.st3");
+
+    /* The first session saves a state with three hits. */
+    rdram[PROGRESS_ADDRESS] = 1;
+    for (frame = 0; frame < 3; ++frame) {
+        ra_glue_do_frame();
+    }
+    ra_glue_state_saved(earlier, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    ra_glue_shutdown();
+    g_mem_base = NULL;
+    release_mem_base(base);
+
+    /* The next one has a client but never loads the game. It loads that state,
+     * plays on to other RAM and saves another state. */
+    base = create_memory(&rdram);
+    rdram[PROGRESS_ADDRESS] = 1;
+    CHECK(ra_glue_create() == 1);
+    ra_glue_state_loaded(earlier, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    rdram[PROGRESS_ADDRESS + 1] = 9;
+    ra_glue_do_frame();
+    ra_glue_state_saved(later, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    CHECK(!file_exists(later_progress));
+    ra_glue_shutdown();
+    g_mem_base = NULL;
+    release_mem_base(base);
+
+    /* A session whose game loads loads the second state. With the first
+     * state's three hits, the remaining frames would unlock the achievement. */
+    base = start_session(1, 0, 0, &rdram);
+    rdram[PROGRESS_ADDRESS] = 1;
+    rdram[PROGRESS_ADDRESS + 1] = 9;
+    ra_glue_state_loaded(later, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    for (frame = 0; frame < PROGRESS_HITS - 3; ++frame) {
+        ra_glue_do_frame();
+    }
+    answer_requests();
+    CHECK(g_progress_unlock_events == 0);
+
+    end_session(base, "no hit count in a state saved before the game loads", failures_before);
+}
+
+/* Without a client, saving a state removes the progress file of an earlier
+ * save of that state, and loading one changes nothing. */
+static void run_save_without_achievements(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base;
+    char state[128];
+    char progress[160];
+    char folder[128];
+    FILE* file;
+
+    g_mem_base = NULL;
+    base = create_memory(&rdram);
+    state_file(state, sizeof(state), "off.st1");
+    progress_file(progress, sizeof(progress), "off.st1");
+    snprintf(folder, sizeof(folder), "%s/.ra-progress", g_state_dir);
+    mkdir(folder, 0700);
+    file = fopen(progress, "wb");
+    CHECK(file != NULL);
+    if (file != NULL) {
+        fputs("from an earlier save", file);
+        fclose(file);
+    }
+    ra_glue_state_saved(state, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+    CHECK(!file_exists(progress));
+    ra_glue_state_loaded(state, (const uint32_t*)rdram, RDRAM_8MB_SIZE);
+
+    g_mem_base = NULL;
+    release_mem_base(base);
+    printf("%s: %s\n", "progress file removed by a save without achievements",
+           g_failures == failures_before ? "ok" : "FAILED");
+}
+
+static void remove_state_dir(void)
+{
+    static const char* const names[] = { "progress.st0", "resume.sav", "earlier.st2", "later.st3",
+                                         "off.st1" };
+    char path[160];
+    size_t i;
+
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        progress_file(path, sizeof(path), names[i]);
+        remove(path);
+    }
+    snprintf(path, sizeof(path), "%s/.ra-progress", g_state_dir);
+    remove(path);
+    remove(g_state_dir);
+}
+
 int main(void)
 {
+    if (mkdtemp(g_state_dir) == NULL) {
+        perror("mkdtemp");
+        return 1;
+    }
+
     run_unlock(1, "memory created before the game loads");
     run_unlock(0, "memory created after the game loads");
     run_refused_unlock();
@@ -760,6 +1014,12 @@ int main(void)
     run_indicators();
     run_paused();
     run_shutdown_during_retry();
+    run_progress_with_states();
+    run_progress_while_loading(0, "hit count of a state loaded while the game loads");
+    run_progress_while_loading(1, "no hit count after a reset while the game loads");
+    run_save_before_game_loads();
+    run_save_without_achievements();
+    remove_state_dir();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d check(s) failed\n", g_failures);

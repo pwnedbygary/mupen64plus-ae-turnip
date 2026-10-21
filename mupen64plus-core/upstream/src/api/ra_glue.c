@@ -18,11 +18,15 @@
 
 #include "ra_glue.h"
 
+#include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <zlib.h>
 
 #include "main/main.h"
 #include "device/memory/memory.h"
@@ -41,12 +45,15 @@ typedef void (*ra_java_async_result_t)(int result, const char* error_message);
  * ra_glue_create() on the frontend init thread before any other entry point
  * is used, and are cleared by ra_glue_shutdown() only after emulation has
  * stopped (see ra_glue.h). Pending-request and dispatch state is guarded by
- * s_pending_lock; s_hardcore and s_last_error are best-effort diagnostics.
+ * s_pending_lock. s_hardcore is the mode the app asked for, which it enforces
+ * through ra_glue_get_hardcore(); it is atomic because the app sets it on the
+ * main thread and may turn it off on the emu thread. s_last_error is a
+ * best-effort diagnostic.
  */
 static rc_client_t* s_client = NULL;
 static pthread_mutex_t s_pending_lock = PTHREAD_MUTEX_INITIALIZER;
 static int s_next_request_id = 1;
-static int s_hardcore = 0;
+static atomic_int s_hardcore = 0;
 static char s_last_error[512];
 
 static ra_java_server_call_t s_java_server_call = NULL;
@@ -71,6 +78,16 @@ static pthread_cond_t s_dispatch_cond = PTHREAD_COND_INITIALIZER;
  * such as an immediate retry from a callback that shutdown waits for, gets no
  * slot and fails at once, so no answer to it can reach the destroyed client. */
 static int s_shutting_down = 0;
+
+/* Progress from a save state loaded before the game finished loading, as when
+ * a session resumes from its auto save; the first ra_glue_do_frame() or
+ * ra_glue_idle() after the game has loaded applies it. Emulator thread only,
+ * like the save-state hooks. ra_glue_reset() runs on another thread, so it
+ * only sets s_discard_pending_progress, and the emulator thread drops the
+ * progress, which belonged to the RAM before the reset. */
+static uint8_t* s_pending_progress = NULL;
+static size_t s_pending_progress_size = 0;
+static atomic_int s_discard_pending_progress = 0;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -444,38 +461,51 @@ void ra_glue_shutdown(void)
   pthread_mutex_lock(&s_pending_lock);
   s_shutting_down = 0;
   pthread_mutex_unlock(&s_pending_lock);
-  s_hardcore = 0;
+  atomic_store(&s_hardcore, 0);
   s_last_error[0] = '\0';
+  free(s_pending_progress);
+  s_pending_progress = NULL;
+  s_pending_progress_size = 0;
+  atomic_store(&s_discard_pending_progress, 0);
 }
+
+static void ra_apply_pending_progress(void);
 
 void ra_glue_do_frame(void)
 {
-  if (s_client != NULL)
+  if (s_client != NULL) {
     rc_client_do_frame(s_client);
+    ra_apply_pending_progress();
+  }
 }
 
 void ra_glue_idle(void)
 {
-  if (s_client != NULL)
+  if (s_client != NULL) {
     rc_client_idle(s_client);
+    ra_apply_pending_progress();
+  }
 }
 
 void ra_glue_reset(void)
 {
-  if (s_client != NULL)
+  if (s_client != NULL) {
+    atomic_store(&s_discard_pending_progress, 1);
     rc_client_reset(s_client);
+  }
 }
 
 void ra_glue_set_hardcore(int enabled)
 {
-  s_hardcore = enabled ? 1 : 0;
+  enabled = enabled ? 1 : 0;
+  atomic_store(&s_hardcore, enabled);
   if (s_client != NULL)
-    rc_client_set_hardcore_enabled(s_client, s_hardcore);
+    rc_client_set_hardcore_enabled(s_client, enabled);
 }
 
 int ra_glue_get_hardcore(void)
 {
-  return s_hardcore;
+  return atomic_load(&s_hardcore);
 }
 
 int ra_glue_login_password(const char* username, const char* password)
@@ -760,4 +790,239 @@ int ra_glue_deserialize_progress(const uint8_t* buffer, int buffer_size)
    * rc_client call uses RC_OK == 0 for success). */
   return rc_client_deserialize_progress_sized(s_client, (uint8_t*)buffer,
                                               (size_t)buffer_size) == RC_OK ? 1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Achievement progress kept with save states                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Each save state keeps rcheevos's progress (hit counts and the other runtime
+ * state of active achievements, leaderboards and rich presence) in a file of
+ * its own: <state folder>/.ra-progress/<state file name>.progress. The app's
+ * save-state lists show every file in a save-state folder but no folders.
+ * GameDataManager.java builds the same path to delete the file with an old
+ * auto save.
+ *
+ * The file starts with RA_PROGRESS_MAGIC and three little-endian 32-bit
+ * values: the CRC-32 of the console RAM the state was saved with, the size of
+ * that RAM, and the size of the progress that follows. A load applies the
+ * progress only when the RAM it restored matches, so a progress file never
+ * reaches a state it was not saved with, for example when the state's own
+ * write failed or the state file was replaced.
+ */
+#define RA_PROGRESS_FOLDER ".ra-progress"
+#define RA_PROGRESS_SUFFIX ".progress"
+#define RA_PROGRESS_HEADER_SIZE 20
+#define RA_PROGRESS_MAX_SIZE (4 * 1024 * 1024)
+static const char RA_PROGRESS_MAGIC[8] = { 'R', 'A', 'P', 'R', 'O', 'G', '0', '1' };
+
+/* Returns the malloc'd path of a state's progress file, and of its folder if
+ * folder is not NULL, or NULL when out of memory. */
+static char* ra_progress_path(const char* state_path, char** folder)
+{
+  const char* slash = strrchr(state_path, '/');
+  const int dir_length = slash != NULL ? (int)(slash - state_path + 1) : 0;
+  char* path;
+
+  if (asprintf(&path, "%.*s" RA_PROGRESS_FOLDER "/%s" RA_PROGRESS_SUFFIX, dir_length,
+               state_path, state_path + dir_length) < 0)
+    return NULL;
+  if (folder != NULL && asprintf(folder, "%.*s" RA_PROGRESS_FOLDER, dir_length, state_path) < 0) {
+    free(path);
+    return NULL;
+  }
+  return path;
+}
+
+static uint32_t ra_ram_crc(const uint32_t* rdram, size_t rdram_size)
+{
+  return (uint32_t)crc32(crc32(0L, Z_NULL, 0), (const Bytef*)rdram, (uInt)rdram_size);
+}
+
+static void ra_put_u32(uint8_t* out, uint32_t value)
+{
+  out[0] = (uint8_t)value;
+  out[1] = (uint8_t)(value >> 8);
+  out[2] = (uint8_t)(value >> 16);
+  out[3] = (uint8_t)(value >> 24);
+}
+
+static uint32_t ra_get_u32(const uint8_t* in)
+{
+  return (uint32_t)in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16)
+      | ((uint32_t)in[3] << 24);
+}
+
+static void ra_remove_progress(const char* state_path)
+{
+  char* path = ra_progress_path(state_path, NULL);
+
+  if (path != NULL)
+    remove(path);
+  free(path);
+}
+
+/* Writes a temporary file and renames it over the old one. If that fails, the
+ * old file is removed too, so a later load of the state starts from zero. */
+static void ra_write_progress(const char* state_path, const uint8_t* progress,
+                              size_t progress_size, const uint32_t* rdram, size_t rdram_size)
+{
+  char* folder = NULL;
+  char* path = ra_progress_path(state_path, &folder);
+  char* temp = NULL;
+  uint8_t header[RA_PROGRESS_HEADER_SIZE];
+  FILE* file;
+  int written = 0;
+
+  if (path == NULL)
+    return;
+  if (asprintf(&temp, "%s.tmp", path) < 0)
+    temp = NULL;
+  if (temp != NULL && (mkdir(folder, 0700) == 0 || errno == EEXIST)) {
+    memcpy(header, RA_PROGRESS_MAGIC, sizeof(RA_PROGRESS_MAGIC));
+    ra_put_u32(header + 8, ra_ram_crc(rdram, rdram_size));
+    ra_put_u32(header + 12, (uint32_t)rdram_size);
+    ra_put_u32(header + 16, (uint32_t)progress_size);
+    file = fopen(temp, "wb");
+    if (file != NULL) {
+      written = fwrite(header, 1, sizeof(header), file) == sizeof(header)
+          && fwrite(progress, 1, progress_size, file) == progress_size;
+      written = fclose(file) == 0 && written;
+      written = written && rename(temp, path) == 0;
+      if (!written)
+        remove(temp);
+    }
+  }
+  if (!written)
+    remove(path);
+  free(temp);
+  free(path);
+  free(folder);
+}
+
+/* Returns the malloc'd progress saved with a state, or NULL when the state has
+ * none or was saved with other RAM than the RAM given. */
+static uint8_t* ra_read_progress(const char* state_path, const uint32_t* rdram,
+                                 size_t rdram_size, size_t* progress_size)
+{
+  char* path = ra_progress_path(state_path, NULL);
+  uint8_t header[RA_PROGRESS_HEADER_SIZE];
+  uint8_t* progress = NULL;
+  FILE* file;
+  uint32_t size;
+
+  *progress_size = 0;
+  if (path == NULL)
+    return NULL;
+  file = fopen(path, "rb");
+  free(path);
+  if (file == NULL)
+    return NULL;
+
+  if (fread(header, 1, sizeof(header), file) == sizeof(header)
+      && memcmp(header, RA_PROGRESS_MAGIC, sizeof(RA_PROGRESS_MAGIC)) == 0
+      && ra_get_u32(header + 12) == (uint32_t)rdram_size
+      && ra_get_u32(header + 8) == ra_ram_crc(rdram, rdram_size)) {
+    size = ra_get_u32(header + 16);
+    if (size > 0 && size <= RA_PROGRESS_MAX_SIZE)
+      progress = (uint8_t*)malloc(size);
+    if (progress != NULL && fread(progress, 1, size, file) == size) {
+      *progress_size = size;
+    } else {
+      free(progress);
+      progress = NULL;
+    }
+  }
+  fclose(file);
+  return progress;
+}
+
+/* Returns the malloc'd progress of the loaded game, or NULL. */
+static uint8_t* ra_serialize_loaded_progress(size_t* progress_size)
+{
+  uint8_t* progress;
+  size_t size;
+
+  *progress_size = 0;
+  if (s_client == NULL || !rc_client_is_game_loaded(s_client))
+    return NULL;
+  size = rc_client_progress_size(s_client);
+  if (size == 0)
+    return NULL;
+  progress = (uint8_t*)malloc(size);
+  if (progress == NULL)
+    return NULL;
+  if (rc_client_serialize_progress_sized(s_client, progress, size) != RC_OK) {
+    free(progress);
+    return NULL;
+  }
+  *progress_size = size;
+  return progress;
+}
+
+/* rcheevos starts every count from zero when given no progress. */
+static void ra_restore_progress(const uint8_t* progress, size_t progress_size)
+{
+  if (progress == NULL
+      || rc_client_deserialize_progress_sized(s_client, progress, progress_size) != RC_OK)
+    rc_client_deserialize_progress_sized(s_client, NULL, 0);
+}
+
+static void ra_drop_pending_progress(void)
+{
+  free(s_pending_progress);
+  s_pending_progress = NULL;
+  s_pending_progress_size = 0;
+}
+
+static void ra_apply_pending_progress(void)
+{
+  if (atomic_exchange(&s_discard_pending_progress, 0))
+    ra_drop_pending_progress();
+  if (s_pending_progress == NULL || !rc_client_is_game_loaded(s_client))
+    return;
+  ra_restore_progress(s_pending_progress, s_pending_progress_size);
+  ra_drop_pending_progress();
+}
+
+void ra_glue_state_saved(const char* state_path, const uint32_t* rdram, size_t rdram_size)
+{
+  uint8_t* progress;
+  size_t progress_size;
+
+  if (state_path == NULL || rdram == NULL)
+    return;
+
+  progress = ra_serialize_loaded_progress(&progress_size);
+  if (progress != NULL) {
+    ra_write_progress(state_path, progress, progress_size, rdram, rdram_size);
+    free(progress);
+  } else {
+    /* Nothing to keep: achievements are off, or the game has not loaded and none
+     * of its achievements ran on this RAM (progress waiting from a state loaded
+     * earlier belongs to that state). A progress file from an earlier save of
+     * this state no longer belongs to it. */
+    ra_remove_progress(state_path);
+  }
+}
+
+void ra_glue_state_loaded(const char* state_path, const uint32_t* rdram, size_t rdram_size)
+{
+  uint8_t* progress;
+  size_t progress_size;
+
+  if (state_path == NULL || rdram == NULL || s_client == NULL)
+    return;
+  atomic_store(&s_discard_pending_progress, 0);
+  ra_drop_pending_progress();
+
+  progress = ra_read_progress(state_path, rdram, rdram_size, &progress_size);
+  if (rc_client_is_game_loaded(s_client)) {
+    ra_restore_progress(progress, progress_size);
+    free(progress);
+  } else {
+    s_pending_progress = progress;
+    s_pending_progress_size = progress_size;
+  }
 }

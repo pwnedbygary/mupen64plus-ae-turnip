@@ -41,7 +41,6 @@ import android.os.Message;
 import android.os.Process;
 import android.os.Vibrator;
 import android.text.TextUtils;
-import android.util.Base64;
 import android.util.Log;
 import android.util.SparseArray;
 import android.view.Surface;
@@ -162,7 +161,8 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     // RetroAchievements client state for the current game (null when disabled/inactive).
     // Written on the main thread, read on the service handler thread.
     private volatile String mRaGameMd5 = null;
-    private volatile boolean mRaProgressRestored = false;
+    // Whether the session's mode notice has been shown. Main thread only.
+    private boolean mRaModeShown = false;
 
     // Latched when the session's login/load fails terminally (bad credentials, offline, unsupported
     // game, or a request that never started). rc_client does not expose ABORTED through
@@ -919,11 +919,6 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                     mCoreInterface.emuStart();
                 }
 
-                // Emulation has stopped; persist RetroAchievements progress before teardown.
-                if (mRaGameMd5 != null) {
-                    saveRaProgress();
-                }
-
                 if (mNetplayInitSuccess) {
                     mCoreInterface.closeNetplay();
                 }
@@ -1317,8 +1312,6 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     // RetroAchievements
     // ------------------------------------------------------------------
 
-    private static final String RA_PROGRESS_PREFS = "ra_progress";
-
     /**
      * Start the RetroAchievements client for this game when the user has it enabled. Only the
      * first call does anything (see mRaStartAttempted).
@@ -1351,7 +1344,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         }
 
         mRaGameMd5 = mRomMd5;
-        mRaProgressRestored = false;
+        mRaModeShown = false;
         mRaSessionFailed = false;
         ra.addListener(this);
 
@@ -1387,46 +1380,16 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         }
     }
 
-    /** Persist progress and stop the RA client. Idempotent. */
+    /** Stop the RA client. Idempotent. */
     private void stopRetroAchievements() {
         if (mRaGameMd5 == null) {
             return;
         }
         RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
-        saveRaProgress();
         ra.removeListener(this);
         ra.shutdown();
         mRaGameMd5 = null;
-        mRaProgressRestored = false;
-    }
-
-    private void saveRaProgress() {
-        // Never save before the session's stored progress has been restored, or the
-        // pre-restore blob would overwrite it (shutdown timing race).
-        if (mRaGameMd5 == null || !mRaProgressRestored) {
-            return;
-        }
-        byte[] blob = RetroAchievementsManager.getInstance().serializeProgress();
-        if (blob == null || blob.length == 0) {
-            return;
-        }
-        // Synchronous commit: the emulation process is killed shortly after this.
-        getSharedPreferences(RA_PROGRESS_PREFS, MODE_PRIVATE).edit()
-                .putString(mRaGameMd5, Base64.encodeToString(blob, Base64.NO_WRAP))
-                .commit();
-    }
-
-    private byte[] loadRaProgress() {
-        String encoded = getSharedPreferences(RA_PROGRESS_PREFS, MODE_PRIVATE)
-                .getString(mRaGameMd5, null);
-        if (encoded == null) {
-            return null;
-        }
-        try {
-            return Base64.decode(encoded, Base64.NO_WRAP);
-        } catch (IllegalArgumentException e) {
-            return null;
-        }
+        mRaModeShown = false;
     }
 
     @Override
@@ -1498,14 +1461,9 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             return;
         }
 
-        // Once the game session is up, restore any locally saved progress and say which mode the
-        // session runs in.
-        if (!mRaProgressRestored && mRaGameMd5 != null && ra.isGameLoaded()) {
-            mRaProgressRestored = true;
-            byte[] progress = loadRaProgress();
-            if (progress != null) {
-                ra.deserializeProgress(progress);
-            }
+        // Once the game session is up, say which mode the session runs in.
+        if (!mRaModeShown && mRaGameMd5 != null && ra.isGameLoaded()) {
+            mRaModeShown = true;
             showRaNotice(getString(isRaHardcore()
                     ? R.string.ra_sessionHardcore : R.string.ra_sessionCasual));
         }

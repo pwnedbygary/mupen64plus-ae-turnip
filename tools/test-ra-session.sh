@@ -56,6 +56,6 @@ done
 "$cc" -std=gnu11 -Wall -Wextra -Werror -fcommon -pthread \
   -ffunction-sections -fdata-sections "${includes[@]}" \
   tools/tests/ra-session-test.c "${objects[@]}" \
-  -Wl,--gc-sections -lm -o "$work/ra-session-test"
+  -Wl,--gc-sections -lm -lz -o "$work/ra-session-test"
 "$work/ra-session-test"
 echo "RetroAchievements session check passed"

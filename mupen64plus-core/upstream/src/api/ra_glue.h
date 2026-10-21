@@ -21,6 +21,7 @@
 #ifndef RA_GLUE_H
 #define RA_GLUE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "m64p_types.h"
@@ -44,9 +45,18 @@ EXPORT void ra_glue_do_frame(void);
 EXPORT void ra_glue_idle(void);
 EXPORT void ra_glue_reset(void);
 
-/* Hardcore mode. Set before ra_glue_load_game() (or at session start): rcheevos
- * defers a mid-session change until the next reset (main_reset -> ra_glue_reset),
- * so enabling it later stalls achievement processing until a reset occurs. */
+/* Save-state hooks: savestates.c calls them on the emu thread when the core's
+ * save or load of a state reports success (an M64P save reports it even when
+ * writing the file fails), with the console RAM at that moment, so that each
+ * state keeps rcheevos's progress (see ra_glue.c). Java never calls them, so
+ * they need no EXPORT. */
+void ra_glue_state_saved(const char* state_path, const uint32_t* rdram, size_t rdram_size);
+void ra_glue_state_loaded(const char* state_path, const uint32_t* rdram, size_t rdram_size);
+
+/* Hardcore mode. Enable it before ra_glue_load_game() (or at session start):
+ * once a game is loaded, rcheevos stops processing achievements after it is
+ * enabled until the next reset (main_reset -> ra_glue_reset). Disabling takes
+ * effect at once, before or after the game has loaded. */
 EXPORT void ra_glue_set_hardcore(int enabled);
 EXPORT int ra_glue_get_hardcore(void);
 
@@ -70,7 +80,8 @@ EXPORT int ra_glue_get_game_name(char* buffer, int buffer_size);
 EXPORT int ra_glue_get_summary_json(char* buffer, int buffer_size);
 EXPORT int ra_glue_get_achievements_json(char* buffer, int buffer_size);
 
-/* Achieved-progress persistence (per game, driven by Java).
+/* The loaded game's progress as one blob. The app does not use these: it keeps
+ * progress with each save state (ra_glue_state_saved).
  * serialize: returns bytes written (> 0), or -1 on failure / buffer too small.
  * deserialize: returns 1 on success, 0 on failure. */
 EXPORT int ra_glue_serialize_progress(uint8_t* buffer, int buffer_size);
