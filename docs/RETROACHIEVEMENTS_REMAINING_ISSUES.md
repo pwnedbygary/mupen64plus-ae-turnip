@@ -43,6 +43,39 @@ token-handling items and the remaining device-verification gaps.
   (sha256 `d444cc902ee7d21b68ddd59ba968fd5de9167754358f8a36a658309c10efb854` before and after).
 - Existing-file save under hardcore shows only the deny toast — the overwrite dialog is skipped.
 
+## Device verification (debug build `3.0.338 06aedfe1`, Retroid Pocket 6, 2026-10-20)
+- OBSERVED (`adb shell dumpsys package`, read at 22:15 that day): the debug package is version
+  `3.0.338 06aedfe1`, first installed 2026-09-24 and last updated 2026-10-20 00:18, ten minutes
+  before the first start below. DERIVED: the build replaced the earlier debug build in place,
+  which keeps the app's data, and every session below ran it. The tester reported that Connect in
+  Settings then showed "Signed in as" with their user name; the captures do not include that
+  dialog.
+- OBSERVED (device): the emulation process started 15 times. Two starts failed to open the ROM
+  ("Failed to open ROM file for reading."; the ROM's content URI from the Argosy launcher had no
+  provider) and showed no RetroAchievements notice. The other 13 ran Mario Tennis (MD5
+  `759358FAD1ED5AE31DCB2001A07F2FE5`), and each showed "RetroAchievements: casual mode" and no
+  other RetroAchievements notice (toasts read from `dumpsys notification`). DERIVED: none of this
+  covers hardcore, and each of the 13 signed in and loaded the game: the app asks for the game only
+  after a sign-in succeeds (`CoreService.java:1510-1536`, the only `loadGame` call) and shows the
+  mode toast only once the game has loaded (`:1488-1507`).
+- OBSERVED (device): the in-game achievement list read "Casual: 0 of 97 unlocked" and "0 of 658
+  points", showed the warning row "Warning: Unknown Emulator" ("Hardcore unlocks cannot be earned
+  using this emulator."), and listed the achievements on screen, "Match Winner", "Intense Match"
+  and "MAXimum Overdrive!", as "Locked" (the third row's status line is cut off by the bottom of
+  the list; what shows of it matches "Locked"). DERIVED: achievements about play, such as winning a
+  match, have to read memory, so their addresses passed rcheevos's check when the game loaded;
+  with the read callback at `29a0dfb48`, the commit before `cc3553790`, they would have shown as
+  "Unsupported" (see "Memory reads" in the issue #15 section).
+- OBSERVED (device): no session logged a RetroAchievements event (`CoreService.java:1430` logs
+  each event's JSON except progress updates). DERIVED: that fits what was played. The captured
+  screens and the tester's reports show only the intro, the app's in-game menu and the achievement
+  list, nothing is known to have been earned, and the server's warning does not pop in softcore
+  (see "On-screen notices"). The captures do not cover every minute of the longer sessions, and no
+  run on this build has yet shown an event reaching the app, so these logs cannot tell "nothing
+  was earned" from "events did not arrive".
+- Still open: the "Not yet verified on device" items in the issue #15 section, among them an
+  unlock in softcore from an achievement that reads memory, and everything under hardcore.
+
 ## Deferred items from commit `8f14880ef` (login/token handling)
 Reference: that commit's message lists these as nonblocking. The issue #15 section ("Sign-in
 order") addresses three of them. The saved token now goes before the password, which stays in
@@ -79,11 +112,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   (`RetroAchievementsManager.java:57`). `CoreService.onRaEvent` logs each event's JSON except
   progress updates; in `ff249b18a` it logged only the event type.
 - DERIVED: hardcore unlocks are recorded as softcore until RetroAchievements approves this client.
-  The server's warning achievement is shown on screen when it unlocks (see "On-screen notices")
-  and in the in-game achievement list. The server's separate `Warning` text (RAWeb
-  `ac7bf9b84d98`, `GetAchievementSetsAction.php:557`) is never shown, because rcheevos does not read
-  that field. Not yet verified on device: that award requests reach the server and come back as
-  softcore.
+  The server's warning achievement is shown on screen when it unlocks, which happens only in
+  hardcore (see "On-screen notices"), and in the in-game achievement list in both modes. The
+  server's separate `Warning` text (RAWeb `ac7bf9b84d98`, `GetAchievementSetsAction.php:557`) is
+  never shown, because rcheevos does not read that field. Not yet verified on device: that award
+  requests reach the server and come back as softcore.
 
 ### Memory reads
 - OBSERVED: rcheevos addresses N64 RAM as `0x000000`-`0x7FFFFF`; `0x80000000` is only the matching
@@ -105,8 +138,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   from the server rule under "Hardcore unlocks: server side".
 - REFERENCE (RAWeb `ac7bf9b84d98`, `app/Connect/Actions/CreateWarningAchievementAction.php:16`):
   the server's warning achievement is `1=1.300.`, which reads no memory. DERIVED: it was the only
-  kind of achievement that could still unlock. HYPOTHESIS: it was the achievement event in the
-  2026-09-21 device notes.
+  kind of achievement that could still unlock, and only in hardcore, since the server marks it
+  earned in softcore (see "On-screen notices"). HYPOTHESIS: it was the achievement event in the
+  2026-09-21 device notes. It would need that session to have run in hardcore, as several of that
+  day's checks did.
 - OBSERVED: the callback now treats the address as an offset into RDRAM. It refuses an address
   only while `g_mem_base` is NULL or at 16 MB and above, and reads from
   `mem_base_u32(g_mem_base, MM_RDRAM_DRAM + address)` (`ra_glue.c:86-111`).
@@ -174,10 +209,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `ra_glue.c` was recompiled for all four ABIs with empty ndk-build stderr logs. In the linked arm64
   and x86_64 libraries, `ra_glue_read_memory` compares the address only with 16 MB and passes it to
   `mem_base_u32` unchanged, and `ra_glue_create` turns background memory reads off.
-- Not yet verified on device: the list no longer shows every achievement as "Unsupported"; an
-  achievement that reads memory unlocks in softcore; under hardcore the server still records it as
-  softcore until RetroAchievements approves this client; the mode notice appears once the game
-  runs, also after a slow start.
+- OBSERVED (device, 2026-10-20): the list showed the achievements on screen as "Locked", not
+  "Unsupported", and the mode notice appeared as the game started (see "Device verification" for
+  build `3.0.338 06aedfe1`). Not yet verified on device: an achievement that reads memory unlocks
+  in softcore; under hardcore the server still records it as softcore until RetroAchievements
+  approves this client; the mode notice also appears after a slow start.
 
 ### Threads in the glue
 - OBSERVED: rcheevos does not lock every read of the loaded game. The getters the glue uses for
@@ -368,7 +404,14 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   achievement (`rc_client.c:6185-6210`). For the server's warning the award returns early and
   submits nothing (`:4818-4821`), but the event is still raised. So the warning toast shows when
   the warning unlocks, which the server says happens a few seconds after loading (RAWeb
-  `ac7bf9b84d98`, `GetAchievementSetsAction.php:493-499`).
+  `ac7bf9b84d98`, `GetAchievementSetsAction.php:493-499`), in hardcore only (see the next item).
+- REFERENCE (RAWeb `ac7bf9b84d98`, `app/Connect/Actions/StartSessionAction.php:131-141`): unless
+  the client has full support, the start-session answer lists the warning as earned in softcore,
+  "so it only pops in hardcore" (its comment). OBSERVED: rcheevos records that list with the
+  softcore bit (`rc_client.c:1810-1811`). When the game loads, an achievement already earned in
+  the current mode becomes unlocked instead of active (`rc_client.c:1457-1485,1518-1525`).
+  DERIVED: the warning toast shows a few seconds after a hardcore session loads, and never in
+  softcore.
 - OBSERVED: when an unlock or a leaderboard entry fails, rcheevos raises a server error only if
   the answer carries an error message and `rc_client_should_retry` (`rc_client.c:586-640`) does
   not ask for a retry (unlocks `:4669-4674`, leaderboard entries `:5375`), or if an allocation
@@ -445,12 +488,13 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes, and
   `aapt2 dump resources` shows the new strings in the debug APK. There is no JVM test for the
   notices: they need Android's `Toast`, resources and `org.json`.
-- Not yet verified on device: the toasts' order and timing over the game (the mode toast after
-  sign-in, the warning a few seconds later, one toast per unlock), whether long notices are cut at
-  two lines, the failure toast for a ROM RetroAchievements does not know and for a wrong password
-  with no valid saved token, and the sending-failed and connection-restored notices when the
-  network is off for an unlock and comes back while the game runs. A refused unlock is hard to
-  cause on purpose.
+- OBSERVED (device, 2026-10-20): the softcore mode toast showed at each of the 13 starts that
+  opened the game (see "Device verification" for build `3.0.338 06aedfe1`). Not yet verified on
+  device: the hardcore mode toast and the warning a few seconds after it, one toast per unlock,
+  whether long notices are cut at two lines, the failure toast for a ROM RetroAchievements does
+  not know and for a wrong password with no valid saved token, and the sending-failed and
+  connection-restored notices when the network is off for an unlock and comes back while the game
+  runs. A refused unlock is hard to cause on purpose.
 
 ### In-game achievement list
 - OBSERVED: with RetroAchievements enabled in Settings, the in-game menu has an "Achievements" item
@@ -472,10 +516,13 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   diagnostic.
 - REFERENCE (RAWeb `ac7bf9b84d98`): `GetAchievementSetsAction.php:493-552` puts the client warning
   achievement first in the first set, and its comment says it unlocks itself a few seconds after
-  loading. For this client its description is "Hardcore unlocks cannot be earned using this
-  emulator." (`:540`). rcheevos leaves IDs from `101000001` up out of the summary
-  (`rc_client.c:954`), so the dialog shows them as warning rows, not achievements, and leaves them
-  out of its totals.
+  loading; in softcore the server's start-session answer lists it as already earned (see
+  "On-screen notices"). For this client its description is "Hardcore unlocks cannot be earned
+  using this emulator." (`GetAchievementSetsAction.php:540`). OBSERVED: rcheevos leaves IDs from
+  `101000001` up out of the summary (`rc_client.c:954`), and the dialog takes the same IDs as
+  warning rows, whatever their state, which skip its totals
+  (`AchievementsDialog.java:95-97,110-115`). DERIVED: the dialog lists the warning as a warning
+  row, not an achievement, in both modes.
 - OBSERVED: `rc_client_get_user_game_summary` counts only the game's main achievement set
   (`rc_client.c:1031`), but `rc_client_create_achievement_list` lists every active set
   (`rc_client.c:4397-4431`). So the dialog counts its totals from the achievements in the list and
@@ -518,9 +565,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `"hardcore"` and the list format with `"unsupported"` and `"set"`, and still exports both JSON
   functions. There is no JVM test for the dialog: local unit tests get Android's stubbed
   `org.json`.
-- Not yet verified on device: the item shows only with RetroAchievements enabled; the dialog
-  matches the loaded game in hardcore and in softcore; the warning row shows for this client; a
-  game with a bonus set shows set headings; long titles wrap.
+- OBSERVED (device, 2026-10-20): in softcore the dialog showed the game's title, the summary
+  "Casual: 0 of 97 unlocked", the warning row, and "Locked" rows with descriptions and points (see
+  "Device verification" for build `3.0.338 06aedfe1`). Not yet verified on device: the item shows
+  only with RetroAchievements enabled; in hardcore the dialog matches the loaded game and still
+  lists the warning row; a game with a bonus set shows set headings; long titles wrap.
 
 ### Challenge and progress indicators
 - REFERENCE (RetroAchievements docs): a Trigger flag exists "so a challenge indicator can be shown
