@@ -79,12 +79,12 @@ token-handling items and the remaining device-verification gaps.
   unlock in softcore from an achievement that reads memory, and everything under hardcore.
 
 ## Deferred items from commit `8f14880ef` (login/token handling)
-Reference: that commit's message lists these as nonblocking. The issue #15 section ("Sign-in
-order") addresses three of them. The saved token now goes before the password, which stays in
-Settings as the fallback for a rejected token (so there is no offer to clear it). The token is
-written with `commit()`. The missing token fallback after a failed password login is covered by
-the same order: a saved token is always tried before the password. Still open:
-- HTTP User-Agent version is hardcoded (`RetroAchievementsManager.java:57`).
+Reference: that commit's message lists these as nonblocking. The issue #15 section addresses all
+four: "Sign-in order" three of them, and "User-Agent" the hardcoded User-Agent version. The saved
+token now goes before the password, which stays in Settings as the fallback for a rejected token
+(so there is no offer to clear it). The token is written with `commit()`. The missing token
+fallback after a failed password login is covered by the same order: a saved token is always
+tried before the password.
 
 ## Verification gaps (not bugs; close with device tests)
 - Terminal-failure release policy: with hardcore active and a broken login (offline, or a bad
@@ -110,15 +110,63 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `app/Connect/Actions/GetAchievementSetsAction.php:532-536` titles its warning achievement
   "Warning: Unknown Emulator" for Unknown clients, and the client-warning achievement ID is
   `101000001` (`app/Models/Achievement.php:129`).
-- OBSERVED: the app sends `USER_AGENT = "Mupen64PlusAE/3.0 (Android)"`
-  (`RetroAchievementsManager.java:57`). `CoreService.onRaEvent` logs each event's JSON except
-  progress updates; in `ff249b18a` it logged only the event type.
+- OBSERVED: from `8f14880ef` up to `6e79f9e9b` the app sent the User-Agent
+  `Mupen64PlusAE/3.0 (Android)`, and with it the device's achievement list showed the server's
+  "Warning: Unknown Emulator" (see the device verification of 2026-10-20). Before `8f14880ef` it
+  sent `Mupen64PlusAE`. It now sends its own name and version (see "User-Agent").
+  `CoreService.onRaEvent` logs each event's JSON except progress and tracker updates; in
+  `ff249b18a` it logged only the event type.
 - DERIVED: hardcore unlocks are recorded as softcore until RetroAchievements approves this client.
   The server's warning achievement is shown on screen when it unlocks, which happens only in
   hardcore (see "On-screen notices"), and in the in-game achievement list in both modes. The
   server's separate `Warning` text (RAWeb `ac7bf9b84d98`, `GetAchievementSetsAction.php:557`) is
   never shown, because rcheevos does not read that field. Not yet verified on device: that award
   requests reach the server and come back as softcore.
+
+### User-Agent
+- REFERENCE (compliance page revision `361119b677dc`, section C): "The emulator must use its own
+  unique, stable user agent with the following format:"
+  `EmulatorName/v1.0.0 (OSName 10.0) core_name/v0.5.0`. The name and version are required, and
+  "Versions must be numeric and incrementing, with the exception of an optional "v" prefix". The
+  operating system is optional, and so is the core, which is "strongly advised if the emulator
+  supports multiple cores". An emulator that identified itself as another client before must
+  disclose that "when applying for compliance".
+- OBSERVED: every request, from a game session or from Connect in Settings, goes through
+  `RetroAchievementsManager.request`, which sends `USER_AGENT`: rcheevos hands each request to the
+  glue's `ra_glue_server_call`, which passes it to the manager (`ra_glue.c:196-237,454`;
+  `RetroAchievementsManager.java:285-287,411`; `LoginPreference.java:82,108`). `USER_AGENT` is
+  now "Mupen64Turnip/", the leading number of the app's version name, and " (Android <release>)"
+  with `Build.VERSION.RELEASE` (`RetroAchievementsManager.java:62-63,370-379`). The build makes
+  the version name from the version and the git commit, as in `3.0.338 06aedfe1`
+  (`version_common.gradle:11-12`). A version name without a leading number would give the
+  version code instead, and an unknown release leaves the operating system out.
+- OBSERVED: before this, the app sent two User-Agents, both with the parent emulator's name:
+  `Mupen64PlusAE` from `4df6051aa` (`RetroAchievementsManager.java:52` at `4df6051aa` and at
+  `cbe73ad69`), then `Mupen64PlusAE/3.0 (Android)` from `8f14880ef` up to `6e79f9e9b` (`:56` at
+  `8f14880ef`). Both reached the server. The commit message of `cbe73ad69` records a device run in
+  which the server answered "Invalid user/token combination" over TLS; builds of `4df6051aa` could
+  not reach it, as the app's cleartext policy blocked their http:// URL (same message). The second
+  got the warning row on the device (see "Hardcore unlocks").
+- DERIVED: on Android 13 this branch's debug build sends "Mupen64Turnip/3.0.338 (Android 13)". The
+  request for approval has to disclose both earlier User-Agents. The new one has no core segment:
+  the app has one emulation core, `mupen64plus-core`, and its video and RSP plugins are not cores.
+  Until RetroAchievements approves the new name, hardcore unlocks stay softcore with it too (see
+  "Hardcore unlocks").
+- OBSERVED (host JVM): `RetroAchievementsManagerTest` has five more tests: the User-Agent for a
+  version name with and without the commit, without an Android release, and for a version name
+  without a leading number, and the User-Agent header of a request against the compliance page's
+  format. Against the manager of `6e79f9e9b` the five fail and the other seven pass. A copy of the
+  new manager that keeps the commit in the version fails four of them; one that writes
+  "(Android null)" for an unknown release, and one without the version code, each fail one; one
+  that still sends the old User-Agent fails only the header test; and one that keeps the version
+  pattern in a static field declared after `USER_AGENT` fails all twelve, as the field is still
+  null when the class sets `USER_AGENT` (javac 17.0.20.1, JUnit 4.13.2). On the host JVM
+  `Build.VERSION.RELEASE` is null, so no test shows that the call site passes the release rather
+  than another value; that part rests on the source.
+- OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes with
+  every unit test, and the APK's code has "Mupen64Turnip/" and no longer the old User-Agent.
+- Not yet verified on device: sign-in, the game's load and unlocks still work with the new
+  User-Agent.
 
 ### Memory reads
 - OBSERVED: rcheevos addresses N64 RAM as `0x000000`-`0x7FFFFF`; `0x80000000` is only the matching
@@ -157,7 +205,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED: rcheevos checks a loaded game's addresses when the last load response arrives, on the
   thread that delivers it, unless background memory reads are off (`rc_client.c:1982-1983`,
   `:1997-2001`, `:2414-2418`); they are on by default (`rc_client.c:175`). The app delivers
-  responses on its HTTP thread (`RetroAchievementsManager.java:280,287`). `g_mem_base` is NULL
+  responses on its HTTP thread (`RetroAchievementsManager.java:286,293`). `g_mem_base` is NULL
   until `CoreStartup` (`main.c:111`; `frontend.c:105`), which the service runs on its handler
   thread (`CoreService.java:780`) after other start-up work, while the sign-in starts from
   `onStartCommand` (`CoreService.java:1247,1367`) and the game loads as soon as it succeeds
@@ -183,7 +231,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   is loaded (`:6490`). The emulator calls `ra_glue_do_frame` from `new_vi` (`main.c:986`) on the
   handler thread, between `CoreStartup` and `CoreShutdown`. The load result now comes from that
   thread too, and the Java side still posts it to the main thread
-  (`RetroAchievementsManager.java:314-316`). DERIVED: rich presence, which rcheevos reads for each
+  (`RetroAchievementsManager.java:320-322`). DERIVED: rich presence, which rcheevos reads for each
   ping (`rc_client.c:5745-5752`), is read there as well.
 - OBSERVED: `ra_glue_idle` runs the same queued work (`ra_glue.c:514-520`;
   `rc_client.c:6493-6536`), and the core's pause loop now calls it while emulation is paused (see
@@ -227,7 +275,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `ra_glue.c` header said every rcheevos call the glue makes is mutex-protected, and the
   `RetroAchievementsManager` javadoc said its API may be called from the emulator thread and from
   Java threads; both now state the rule that follows (`ra_glue.c:10-17`;
-  `RetroAchievementsManager.java:39-42`).
+  `RetroAchievementsManager.java:44-47`).
 - OBSERVED: the achievement list holds pointers to rcheevos's live achievement data
   (`rc_client.c:4413`), and the glue reads each one's progress text and bucket after rcheevos has
   released its mutex (`rc_client.c:4433`; `ra_glue.c:734-742`). The emulator thread rewrites
@@ -272,7 +320,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   media belongs to another game (`rc_client.c:6643-6652`). The app reaches none of these during a
   session: it loads one game per session, after the first successful sign-in
   (`CoreService.java:1508`); nothing calls `RetroAchievementsManager.logout()`
-  (`RetroAchievementsManager.java:208-210`); and the glue never changes media, so the hash of the
+  (`RetroAchievementsManager.java:214-216`); and the glue never changes media, so the hash of the
   loaded game maps to that game (`rc_client.c:2329,2334-2335`; an unknown game keeps both at 0:
   `:2320,2427,2620-2622`). The client is destroyed by `ra_glue_shutdown` from
   `CoreService.onDestroy` (`CoreService.java:1306,1390`), on the main thread like every caller of
@@ -337,10 +385,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 
 ### Network requests and shutdown
 - OBSERVED: the HTTP thread now hands each request to `RetroAchievementsManager.request()`
-  (`RetroAchievementsManager.java:279-290,382-419`). It answers a network failure (`IOException`)
+  (`RetroAchievementsManager.java:285-296,405-442`). It answers a network failure (`IOException`)
   with status -2 and "RA network error: <message>", as before, and any other runtime exception
   with status -2 and "RA request error: <exception>", so every request still gets one answer
-  (`:411-417`). Before, `onServerCall` caught only `IOException`. REFERENCE (AOSP
+  (`:434-440`). Before, `onServerCall` caught only `IOException`. REFERENCE (AOSP
   `android-14.0.0_r1`, `RuntimeInit.java:125-177,235`, `KillApplicationHandler`): an exception
   that leaves a thread reaches Android's default handler, which kills the process; the app sets no
   handler of its own. DERIVED: so any other exception during a request closed the emulation
@@ -478,7 +526,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   auto save made in hardcore can be resumed only in softcore; Start keeps hardcore.
 - DERIVED: rcheevos puts the current hardcore setting into its start-session request
   (`rc_client.c:2020`), which it sends as soon as the game's data arrive (`rc_client.c:2344-2351`),
-  on the HTTP thread that delivers them (`RetroAchievementsManager.java:287`). The sign-in starts
+  on the HTTP thread that delivers them (`RetroAchievementsManager.java:293`). The sign-in starts
   from `onStartCommand` and does not wait for the job, so that request can go out before the
   switch when the job is late, for example with a slow copy from external storage, a large
   texture-dump folder to delete first (`CoreService.java:704`) or a Raphnet adapter it waits for
@@ -615,7 +663,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `rc_error.h:47-48`). The login parser returns that code (`rc_api_user.c:72-74`), the login
   callback gets it unchanged (`rc_client_server_error_message`, `rc_client.c:497-516`; callback
   `:698-708`), and `ra_glue_async_cb` passes it to Java (`ra_glue.c:183-194`). A failed HTTP
-  request becomes `RC_NO_RESPONSE` (`RetroAchievementsManager.java:411-417`,
+  request becomes `RC_NO_RESPONSE` (`RetroAchievementsManager.java:434-440`,
   `rc_api_common.c:360-365`). Only -34 and -35 are retried with the password.
 - OBSERVED: `loadGame` is requested only after a login succeeds. rc_client results carry no
   request ID (`ra_glue_async_cb`, `ra_glue.c:183-194`), so the session makes one request at a
@@ -627,7 +675,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `:786-792`, load `:2900`). `onRaAsyncResult` ignores any result that arrives after that.
 - DERIVED: in that last case a successful login is dropped, and the session runs without
   achievements and with enforcement released. It needs the main thread to stall for a whole HTTP
-  round trip (responses arrive on the HTTP thread, `RetroAchievementsManager.java:287`), so it
+  round trip (responses arrive on the HTTP thread, `RetroAchievementsManager.java:293`), so it
   should be rare. In `fd6b452f1` the same case latched the failure but still loaded the game, so
   achievements would run with enforcement released.
 - DERIVED: the password login starts from the token login's result, which is posted to the main
@@ -680,8 +728,8 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
     this session: <reason>", where the reason is rcheevos' error text (for example "Unknown
     game"), "could not start the request", "no sign-in is saved in Settings", "the game's MD5 is
     not known" or "the achievements client could not start". Offline, rcheevos' text is the app's
-    own "RA network error: <message>" (`RetroAchievementsManager.java:413`), and after any other
-    failure of the request "RA request error: <exception>" (`:417`); rcheevos passes either on as
+    own "RA network error: <message>" (`RetroAchievementsManager.java:436`), and after any other
+    failure of the request "RA request error: <exception>" (`:440`); rcheevos passes either on as
     the error message (`rc_api_common.c:360-365`).
 - OBSERVED: two start-up exits that ended achievements without a notice now call `failRaSession`:
   a game started without an MD5 (`CoreService.java:1333-1337`) and a failed
@@ -690,7 +738,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   notice is new. The service reads the MD5 from its start intent (`CoreService.java:1232`); the
   gallery computes it when it scans a game (`CacheRomInfoService.java:490,534`). `initialize()`
   fails only when `rc_client_create` cannot allocate the client
-  (`RetroAchievementsManager.java:152-155`; `ra_glue.c:454-458`; `rc_client.c:169-171`). Neither
+  (`RetroAchievementsManager.java:158-161`; `ra_glue.c:454-458`; `rc_client.c:169-171`). Neither
   failure has been seen on a device.
 - DERIVED: the mode toast shows what the app enforces. rcheevos changes its own hardcore setting
   only when the media changes (`rc_client.c:3221-3227`), and `ra_glue` never changes media, so
@@ -717,10 +765,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   (`:368-388`); both are retried, as below. `rc_client_should_retry` asks for a retry for HTTP
   status 502, 503, 504, 429 and 521-525, for an answer without a body, and for the app's answer
   to a request that failed without an HTTP answer, offline or otherwise (status -2,
-  `RetroAchievementsManager.java:411-417`; `rc_client.c:625-627`), and an answer without an error
+  `RetroAchievementsManager.java:434-440`; `rc_client.c:625-627`), and an answer without an error
   message is retried as well. So an error page with any other status, for example 500 or 403, ends
   the request with a server error instead of a retry. The app passes on only HTTP statuses and -2
-  (`RetroAchievementsManager.java:405,412,416`). The first retry is sent at
+  (`RetroAchievementsManager.java:428,435,439`). The first retry is sent at
   once, later ones after 1 s, doubling up to 120 s, with no limit on the count
   (`rc_client.c:4675-4706,5377-5408`). While a retry is scheduled, rcheevos counts as
   disconnected; when that changes, `rc_client_idle` raises a disconnected or a reconnected event
@@ -741,7 +789,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED: the glue looks the title up in its event handler, on the thread that raises the
   server error. A refused answer (`rc_client.c:4669-4674`, `:5375`) and a failed allocation for a
   retry (`:4691,5393`) raise it in the response callback, which runs on the HTTP thread that
-  delivers the answer (`RetroAchievementsManager.java:287`). When the glue has no free request
+  delivers the answer (`RetroAchievementsManager.java:293`). When the glue has no free request
   slot, it answers at once on the sending thread with HTTP 503 (`ra_glue.c:216-234`), which
   rcheevos always retries (`rc_client.c:593-595`), so there only a failed allocation for that
   retry can raise one. While the client shuts down, the glue answers with status -1 instead, which
@@ -755,7 +803,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   its own while rcheevos handles an answer (`ra_glue.c:254-266`), and `ra_glue_shutdown` waits
   until that handling ends (`ra_glue.c:479-486`). The disconnected and reconnected events come
   from the emulator thread. `RetroAchievementsManager` posts every event to the main thread
-  (`RetroAchievementsManager.java:303`).
+  (`RetroAchievementsManager.java:309`).
 - DERIVED: both lookups read the loaded game, which stays loaded while the event is handled,
   because the app never unloads it during a session (see "Threads in the glue", also derived).
 - DERIVED: a request that waits for a retry stays in memory only, and nothing retries it after the
@@ -913,7 +961,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   that keep the challenges in a `HashMap` or in a `TreeMap` in either order, or that list the
   titles sorted either way or reversed, fail the order test (javac 17.0.20.1, JUnit 4.13.2).
 - OBSERVED: `GameActivity` gets the manager with `getInstance()` (`GameActivity.java:417`), which
-  loads the core library (`RetroAchievementsManager.java:95-107,119`). Its other callers in the
+  loads the core library (`RetroAchievementsManager.java:101-113,125`). Its other callers in the
   emulation process are `CoreService` methods (`CoreService.java:384,406,1339,1388,1461`). In
   Settings, Connect gets it (`LoginPreference.java:82,108`) and calls `initialize()` (`:83`) in
   the app's main process (`preferences_ra.xml:25`; `RaPrefsActivity.java:66`;
@@ -1004,7 +1052,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `ea136d07a` that run fails 12 checks and the other fourteen runs pass. In copies of the current
   glue with one fault each, an update sent as tracker_show fails one check, a missing
   tracker_hide fails seven, and an empty submitted value fails one, all in that run, with GCC
-  16.2.1 and clang 23.1.1. In copies of the test, whose server answers that entry with status 200,
+  16.2.1 and clang 23.1.1. In copies of the test (the server answers that entry with status 200),
   malformed JSON or an empty body gives rcheevos no error text, so rcheevos sends the entry again
   and only the check that it is sent once fails; a refusal, or an HTML error page whose title
   rcheevos takes as the error text, fails only the check that no server error is raised
@@ -1065,5 +1113,6 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   may call the list getter. Holding it only around `rc_client_create_achievement_list`, not
   while the JSON is built, limits how long a frame can wait for it. Not seen on a device.
 - Not audited on this branch: the rest of the compliance page. Its save-state and resume rules
-  (section B) are covered under "Save states and Resume under hardcore", and its hit-count
-  recommendation (section A) under "Achievement progress kept with save states".
+  (section B) are covered under "Save states and Resume under hardcore", its hit-count
+  recommendation (section A) under "Achievement progress kept with save states", and its
+  User-Agent rules (section C) under "User-Agent".

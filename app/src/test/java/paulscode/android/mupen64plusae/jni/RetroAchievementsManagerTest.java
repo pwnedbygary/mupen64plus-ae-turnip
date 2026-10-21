@@ -30,6 +30,14 @@ public class RetroAchievementsManagerTest {
     /** RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR in rcheevos's rc_api_request.h. */
     private static final int RETRYABLE_CLIENT_ERROR = -2;
 
+    /**
+     * RetroAchievements' compliance page (section C) asks for "EmulatorName/v1.0.0 (OSName 10.0)":
+     * the emulator's own name, a numeric version with an optional "v", then, optionally, the
+     * operating system.
+     */
+    private static final String USER_AGENT_FORMAT =
+            "Mupen64Turnip/v?\\d+(\\.\\d+)*( \\(Android [^()]+\\))?";
+
     /** Like the glue's JSON getters: writes the text and a NUL only if both fit, else returns 0. */
     private static final class FakeGetter implements RetroAchievementsManager.TextGetter {
         final List<Integer> bufferSizes = new ArrayList<>();
@@ -162,5 +170,41 @@ public class RetroAchievementsManagerTest {
         assertEquals(RETRYABLE_CLIENT_ERROR, response.status);
         assertTrue(text(response.body).contains("broken"));
         assertSame(broken, response.failure);
+    }
+
+    @Test
+    public void userAgentNamesTheAppVersionAndAndroidRelease() {
+        assertEquals("Mupen64Turnip/3.0.338 (Android 13)",
+                RetroAchievementsManager.userAgent("3.0.338 06aedfe1", 338, "13"));
+    }
+
+    @Test
+    public void userAgentWithoutTheCommit() {
+        // The build leaves the commit out of the version name when git fails.
+        assertEquals("Mupen64Turnip/3.0.339 (Android 14)",
+                RetroAchievementsManager.userAgent("3.0.339 ", 339, "14"));
+    }
+
+    @Test
+    public void userAgentWithoutAnAndroidRelease() {
+        assertEquals("Mupen64Turnip/3.0.338",
+                RetroAchievementsManager.userAgent("3.0.338 06aedfe1", 338, null));
+        assertEquals("Mupen64Turnip/3.0.338",
+                RetroAchievementsManager.userAgent("3.0.338 06aedfe1", 338, ""));
+    }
+
+    @Test
+    public void userAgentFallsBackToTheVersionCode() {
+        assertEquals("Mupen64Turnip/338 (Android 13)",
+                RetroAchievementsManager.userAgent("debug", 338, "13"));
+    }
+
+    @Test
+    public void requestsSendTheUserAgent() throws IOException {
+        FakeConnection connection = new FakeConnection(200, "{\"Success\":true}");
+        RetroAchievementsManager.request(url -> connection, SERVER_URL, "r=ping&u=tester", null);
+        String userAgent = connection.getRequestProperty("User-Agent");
+        assertNotNull(userAgent);
+        assertTrue(userAgent, userAgent.matches(USER_AGENT_FORMAT));
     }
 }

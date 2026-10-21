@@ -1,5 +1,6 @@
 package paulscode.android.mupen64plusae.jni;
 
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -10,6 +11,8 @@ import com.sun.jna.Native;
 
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import paulscode.android.mupen64plusae.BuildConfig;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -22,6 +25,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Java-side driver for the native RetroAchievements glue (see
@@ -52,9 +57,10 @@ public class RetroAchievementsManager {
 
     /**
      * RetroAchievements negotiates client capabilities (including hardcore unlocks) from the
-     * User-Agent, which must carry a numeric product version.
+     * User-Agent, which must name this emulator and carry a numeric product version.
      */
-    private static final String USER_AGENT = "Mupen64PlusAE/3.0 (Android)";
+    private static final String USER_AGENT =
+            userAgent(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, Build.VERSION.RELEASE);
     private static final String DEFAULT_CONTENT_TYPE = "application/x-www-form-urlencoded";
 
     /** Size of the first buffer for text read from the glue. */
@@ -353,6 +359,23 @@ public class RetroAchievementsManager {
             }
         }
         return null;
+    }
+
+    /**
+     * The User-Agent in the format RetroAchievements asks for, "Name/version (OS version)": for
+     * the version name "3.0.338 06aedfe1", which the build makes from the version and the git
+     * commit, it is "Mupen64Turnip/3.0.338 (Android 13)" on Android 13. The version code stands in
+     * for a name without a leading number, and an unknown Android release is left out.
+     */
+    static String userAgent(String versionName, int versionCode, @Nullable String androidRelease) {
+        // Not a static field: USER_AGENT calls this during class initialization, before the
+        // fields declared after it are set.
+        Matcher version = Pattern.compile("\\d+(\\.\\d+)*").matcher(versionName);
+        String userAgent = "Mupen64Turnip/" + (version.lookingAt() ? version.group() : versionCode);
+        if (androidRelease == null || androidRelease.isEmpty()) {
+            return userAgent;
+        }
+        return userAgent + " (Android " + androidRelease + ")";
     }
 
     /** Opens the connection for one request. */
