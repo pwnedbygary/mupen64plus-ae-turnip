@@ -75,8 +75,70 @@ token-handling items and the remaining device-verification gaps.
   pop in softcore (see "On-screen notices"). The captures do not cover every minute of the longer
   sessions, and no run on this build has yet shown an event reaching the app, so these logs cannot
   tell "nothing was earned" from "events did not arrive".
-- Still open: the "Not yet verified on device" items in the issue #15 section, among them an
-  unlock in softcore from an achievement that reads memory, and everything under hardcore.
+- Still open after this run: the "Not yet verified on device" items in the issue #15 section,
+  among them an unlock in softcore from an achievement that reads memory, and everything under
+  hardcore (the run of 2026-10-21 below covers part of it).
+
+## Device verification (debug build `3.0.338 017e3557`, Retroid Pocket 6, 2026-10-21)
+- OBSERVED (`adb install -r`, `adb shell dumpsys package`): the debug APK built from `017e35574`
+  replaced `3.0.338 06aedfe1` in place at 16:20 that day. Its sha256, recorded when it was built
+  (the file was overwritten later), was
+  `64f3aa89208f3d0d65f4898c97bfe4b1c1080da72ae04358f9d7c30f18cc91f0`. The 25 files in the app's
+  `GameData` folder had been copied off the device first, with matching MD5 sums. The device runs
+  Android 13 (`getprop ro.build.version.release`). DERIVED: so the build sent
+  "Mupen64Turnip/3.0.338 (Android 13)" (see "User-Agent").
+- OBSERVED (device): Mario Tennis ran five times: three starts came from a view intent for the
+  ROM, which the app treats as a launch from another app and so restarts the game (see "Save
+  states and Resume under hardcore"), and two from the gallery. Notices were read from
+  `dumpsys notification`; events, state loads and how each game was launched, from the app's log.
+- OBSERVED (device), hardcore off in Settings: "RetroAchievements: casual mode" showed; the
+  achievement list read "Casual: 0 of 97 unlocked" and "0 of 658 points" and listed the warning
+  row and "Locked" rows, as on 2026-10-20; the speed item went to "Speed 250 %" with no notice;
+  no warning toast showed. Connect in Settings then showed "Signed in as" and the account name,
+  and hardcore was switched on there.
+- OBSERVED (device), hardcore: "RetroAchievements: hardcore mode" showed, and about six seconds
+  later "Warning: Unknown Emulator. Hardcore unlocks cannot be earned using this emulator.". The
+  log has the matching event for achievement `101000001`, rcheevos's ID for the server's warning
+  (`rc_client.c:25`). The two later hardcore starts showed the same pair; in all three the event
+  came 6.5 to 6.7 seconds after the session's service started. Neither softcore session showed
+  the warning. DERIVED: each mode notice means the session signed in and loaded the game
+  (`CoreService.java:1495-1509,1512-1538`). The warning's timing matches "On-screen notices", and
+  the server still treats `Mupen64Turnip` as an unknown emulator, as it will until
+  RetroAchievements approves the name (see "Hardcore unlocks").
+- OBSERVED (device), hardcore: the speed item, and OK in the Game speed dialog, were refused with
+  "Hardcore mode: speed controls are disabled", and the menu stayed at "Speed 100 %". The dialog
+  itself still opened, showing the stored custom speed, 250 %. The audio sync item read
+  "Sync audio", its label while the frame limiter is on (`GameActivity.java:856-858`), and
+  tapping it was refused with the same notice. DERIVED: the app's preferences on the device, read
+  back at 20:10 that day after a later reinstall, have audio sync on and volume 100 (each session
+  also logged "Change volume to 100" from the audio plugin), with which a session starts with the
+  limiter off (`GlobalPrefs.java:727-730`), and the label was read before the item was first
+  used, so hardcore turned the limiter on when the session started (`CoreService.java:884`).
+- OBSERVED (device), hardcore: Save slot showed "Saving slot 0…" and wrote the state and
+  `.ra-progress/Mario Tennis (U) [!].st0.progress` (14,040 bytes) in the slot folder. Load slot,
+  and a state picked in "Load from auto save…", were each refused with "Hardcore mode: loading
+  save states is disabled", and the log shows no state loaded. The achievement list read
+  "Hardcore: 0 of 97 unlocked" under the game's title and still listed the warning row. The
+  menu's Exit wrote an auto save and its progress file, and the auto-save cleanup then deleted
+  the oldest auto save, one from 2026-10-20 that had no progress file.
+- OBSERVED (device): the gallery's Resume then showed "Resumed game: hardcore mode is off for this
+  session" and "RetroAchievements: casual mode", the log shows that auto save loaded, the list
+  read "Casual: 0 of 97 unlocked", and Load slot loaded the slot saved under hardcore. The next
+  start, from the gallery with hardcore still on in Settings, ran in hardcore and showed no
+  resume notice, although the auto save still existed. DERIVED: so it was the gallery's Start,
+  which restarts the game (see "Save states and Resume under hardcore"), and Start keeps
+  hardcore.
+- OBSERVED (device): afterwards hardcore was switched off in Settings (the app's preferences, read
+  back at 20:10, have it off), the files the checks had added were copied off the device and
+  removed, and the auto save the cleanup had deleted was put back, so the `GameData` folder again
+  matched the copy taken before the install (25 files, same MD5 sums).
+- Not covered, among others: an unlock of an achievement that reads memory, in either mode;
+  leaderboard attempts; the challenge, progress and leaderboard lines; the offline queue;
+  netplay; the sign-in fallbacks; game data on external storage and the Drive backup; the re-arm
+  test; slow speeds and frame advance; saving to and loading from a file; cheats chosen in the
+  game's settings; and the mode notice for a game load that ends while the menu is open (in one
+  hardcore start the menu was meant to open in the first second, but the log shows only the
+  start-up pause).
 
 ## Deferred items from commit `8f14880ef` (login/token handling)
 Reference: that commit's message lists these as nonblocking. The issue #15 section addresses all
@@ -123,8 +185,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   The server's warning achievement is shown on screen when it unlocks, which happens only in
   hardcore (see "On-screen notices"), and in the in-game achievement list in both modes. The
   server's separate `Warning` text (RAWeb `ac7bf9b84d98`, `GetAchievementSetsAction.php:557`) is
-  never shown, because rcheevos does not read that field. Not yet verified on device: that award
-  requests reach the server and come back as softcore.
+  never shown, because rcheevos does not read that field. OBSERVED (device, 2026-10-21): build
+  `3.0.338 017e3557` still got the server's warning achievement, and it popped in hardcore (see
+  "Device verification" for that build); DERIVED: that build sends the new User-Agent (see
+  "User-Agent"). Not yet verified on device: that award requests reach the server and come back
+  as softcore.
 
 ### User-Agent
 - REFERENCE (compliance page revision `361119b677dc`, section C): "The emulator must use its own
@@ -170,8 +235,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   than another value; that part rests on the source.
 - OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes with
   every unit test, and the APK's code has "Mupen64Turnip/" and no longer the old User-Agent.
-- Not yet verified on device: sign-in, the game's load and unlocks still work with the new
-  User-Agent.
+- OBSERVED (device, 2026-10-21): with build `3.0.338 017e3557`, Connect in Settings showed
+  "Signed in as" and every game session showed its mode notice (see "Device verification" for
+  that build). DERIVED: so sign-in and the game's load work with the new User-Agent, which that
+  build sends as "Mupen64Turnip/3.0.338 (Android 13)". Not yet verified on device: an unlock
+  with the new User-Agent.
 
 ### Memory reads
 - OBSERVED: rcheevos addresses N64 RAM as `0x000000`-`0x7FFFFF`; `0x80000000` is only the matching
@@ -530,8 +598,12 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED (host JVM): `RaHardcoreRulesTest` failed against the old speed rule (99% allowed),
   against a limiter rule that refused every switch, and against the previous limiter rule at the
   default audio-sync setting (switching on was refused); it passes now.
-- Not yet verified on device: hardcore starts with the limiter on and refuses fast speed, slow
-  speed, frame advance and switching the limiter off; softcore still allows all of them.
+- OBSERVED (device, 2026-10-21): a hardcore session refused fast speed, from the speed item and
+  from the Game speed dialog, and switching the limiter off, and its menu showed the limiter on;
+  a softcore session allowed fast speed (see "Device verification" for build
+  `3.0.338 017e3557`). DERIVED (in that section): hardcore turned the limiter on when the session
+  started. Not yet verified on device: slow speeds and frame advance in either mode, and
+  switching the limiter off in softcore.
 
 ### Hardcore session start
 - OBSERVED: `startRetroAchievements()` returns at once on every start command after the
@@ -628,10 +700,13 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   limiter and the cheats, and calls `emuLoadFile` with that path, only when the file exists,
   before `emuStart`. `leaveRaHardcoreForResume` calls `setHardcore(false)`, then posts the code
   that shows the notice to a `Handler` on the main looper.
-- Not yet verified on device: in hardcore, saving to a slot and to a file works and loading
-  either is refused; exiting writes an auto save; Resume then shows the notice and the
-  achievement list says "Casual", also with game data on external storage; Start keeps hardcore.
-  The Retroid runs Android 13, so it cannot show the notice on Android 6 to 10.
+- OBSERVED (device, 2026-10-21): in hardcore, saving to a slot worked and loading it, or an auto
+  save, was refused; exiting wrote an auto save; Resume then showed the notice, the achievement
+  list said "Casual" and loading the slot worked; the next start from the gallery stayed in
+  hardcore with no resume notice while the auto save existed. DERIVED: so it was the gallery's
+  Start, and Start keeps hardcore (see "Device verification" for build `3.0.338 017e3557`). Not
+  yet verified on device: saving to and loading from a file, and Resume with game data on
+  external storage. The Retroid runs Android 13, so it cannot show the notice on Android 6 to 10.
 
 ### Achievement progress kept with save states
 - REFERENCE (compliance page revision `361119b677dc`, section A): "Hit counts should be stored in
@@ -720,10 +795,13 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   exported, and `crc32` comes from `libz.so`, which the library already needed. In each ABI the
   packaged library has the linked one's build ID, and `savestates_load` and `savestates_save`
   call them (NDK `llvm-objdump`).
-- Not yet verified on device: a slot or a file saved during play brings its counts back when it
-  loads; Resume brings back the auto save's counts; the progress files sit under `.ra-progress`
-  and stay out of the file prompts; the cleanup deletes them with old auto saves; copies to and
-  from external storage, and a Google Drive backup and restore, keep the `.ra-progress` folder.
+- OBSERVED (device, 2026-10-21): a slot save and the auto save written at exit each wrote its
+  progress file under `.ra-progress` in its own folder (see "Device verification" for build
+  `3.0.338 017e3557`). Not yet verified on device: a slot or a file saved during play brings its
+  counts back when it loads; Resume brings back the auto save's counts; the progress files stay
+  out of the file prompts; the cleanup deletes them with old auto saves (the auto save it deleted
+  that day had none); copies to and from external storage, and a Google Drive backup and
+  restore, keep the `.ra-progress` folder.
 
 ### Sign-in order
 - OBSERVED: a game session signs in with the saved session token first and uses the password
@@ -835,7 +913,9 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   softcore bit (`rc_client.c:1810-1811`). When the game loads, an achievement already earned in
   the current mode becomes unlocked instead of active (`rc_client.c:1457-1485,1518-1525`).
   DERIVED: the warning toast shows a few seconds after a hardcore session loads, and never in
-  softcore.
+  softcore. OBSERVED (device, 2026-10-21): it showed about six seconds after the mode notice in
+  each of three hardcore sessions and in neither softcore session (see "Device verification" for
+  build `3.0.338 017e3557`).
 - OBSERVED: when an unlock or a leaderboard entry fails, rcheevos raises a server error only if
   the answer carries an error message and `rc_client_should_retry` (`rc_client.c:586-640`) does
   not ask for a retry (unlocks `:4669-4674`, leaderboard entries `:5375`), or if an allocation
@@ -915,12 +995,13 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `aapt2 dump resources` shows the new strings in the debug APK. There is no JVM test for the
   notices: they need Android's `Toast`, resources and `org.json`.
 - OBSERVED (device, 2026-10-20): the softcore mode toast showed at each of the 13 starts that
-  opened the game (see "Device verification" for build `3.0.338 06aedfe1`). Not yet verified on
-  device: the hardcore mode toast and the warning a few seconds after it, one toast per unlock,
-  whether long notices are cut at two lines, the failure toast for a ROM RetroAchievements does
-  not know and for a wrong password with no valid saved token, and the sending-failed and
-  connection-restored notices when the network is off for an unlock and comes back while the game
-  runs. A refused unlock is hard to cause on purpose.
+  opened the game (see "Device verification" for build `3.0.338 06aedfe1`). OBSERVED (device,
+  2026-10-21): the hardcore mode toast showed at each of three hardcore starts, and the warning
+  about six seconds after it (see "Device verification" for build `3.0.338 017e3557`). Not yet
+  verified on device: one toast per unlock, whether long notices are cut at two lines, the
+  failure toast for a ROM RetroAchievements does not know and for a wrong password with no valid
+  saved token, and the sending-failed and connection-restored notices when the network is off
+  for an unlock and comes back while the game runs. A refused unlock is hard to cause on purpose.
 
 ### In-game achievement list
 - OBSERVED: with RetroAchievements enabled in Settings, the in-game menu has an "Achievements" item
@@ -993,9 +1074,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `org.json`.
 - OBSERVED (device, 2026-10-20): in softcore the dialog showed the game's title, the summary
   "Casual: 0 of 97 unlocked", the warning row, and "Locked" rows with descriptions and points (see
-  "Device verification" for build `3.0.338 06aedfe1`). Not yet verified on device: the item shows
-  only with RetroAchievements enabled; in hardcore the dialog matches the loaded game and still
-  lists the warning row; a game with a bonus set shows set headings; long titles wrap.
+  "Device verification" for build `3.0.338 06aedfe1`). OBSERVED (device, 2026-10-21): in hardcore
+  it read "Hardcore: 0 of 97 unlocked" under the game's title and still listed the warning row,
+  and after Resume it read "Casual" (see "Device verification" for build `3.0.338 017e3557`). Not
+  yet verified on device: the item shows only with RetroAchievements enabled; a game with a bonus
+  set shows set headings; long titles wrap.
 
 ### Challenge and progress indicators
 - REFERENCE (RetroAchievements docs): a Trigger flag exists "so a challenge indicator can be shown
@@ -1275,13 +1358,16 @@ B. Hardcore rules
   `:896`, in that loop, is the app's only call of `coreAddCheat`.
 - USER (the core's own database patches): OBSERVED: in every mode the core also adds the codes its
   ROM database lists under the game's `Cheat` keys (`rom.c:688-716`; `main.c:1581`;
-  `cheat.c:497-536`). It writes boot codes once, at the first frame, and the others on every frame
-  after the first 60 (`main.c:936-950,975`; `cheat.c:229-236,281-282`). In the shipped database
+  `cheat.c:497-536`). It writes boot codes at the first frame, and again after each soft reset,
+  which sets the frame count back to zero (`interrupt.c:449`), and the others on every frame after
+  the first 60; a code that follows a test is written only on frames when the test holds
+  (`main.c:936-950,975`; `cheat.c:229-236,242-267,281-282`). In the shipped database
   (`app/src/main/assets/mupen64plus_data/mupen64plus.ini`) 14 entries list codes: seven GameCube
-  dumps of Ocarina of Time ("End Credits Fix"), five of Mario Kart 64 ("Multiplayer Timing Fix")
-  and two of Rat Attack ("Allows the game to boot"), whose codes are all boot codes. 37 more
-  entries refer to one of these with `RefMD5` and have no codes of their own, so they take its
-  codes (`rom.c:350,406-411`): other dumps, translations, trainers and hacks of the same games.
+  dumps of Ocarina of Time ("End Credits Fix": tests, each followed by a write), five of
+  Mario Kart 64 ("Multiplayer Timing Fix": writes) and two of Rat Attack ("Allows the game to
+  boot": boot codes). 37 more entries refer to one of these with `RefMD5` and have no codes of
+  their own, so they take its codes (`rom.c:350,406-411`): other dumps, translations, trainers and
+  hacks of the same games, and three debug builds of Ocarina of Time Master Quest.
   That makes 51 entries: 15 of Ocarina of Time, 32 of Mario Kart 64 and 4 of Rat Attack. A dump
   the database does not list by MD5 gets the codes of the entry with its header's CRCs, if no
   other entry has the same CRCs (`rom.c:195-196,214,847-856`). REFERENCE (upstream mupen64plus-core
@@ -1317,9 +1403,11 @@ B. Hardcore rules
   against an SDL stub whose event functions are empty (`mupen64plus-core.mk:25`;
   `ndkLibs/SDL2_stub/SDL_events.h:1001-1004,1120-1124`), and the app sends the core no key:
   `M64CMD_SEND_SDL_KEYDOWN` and `M64CMD_SEND_SDL_KEYUP` only appear in its list of commands
-  (`CoreTypes.java:96-97`). OBSERVED (host build): the packaged core library of every ABI imports
-  only SDL_net's functions, none of SDL's own (`llvm-nm -D`). DERIVED: so the core's event
-  functions are the stub's empty ones, and those shortcuts never fire.
+  (`CoreTypes.java:96-97`). OBSERVED (host build): in the debug APK `3.0.338 11f5f3b9`, built from
+  `11f5f3b96` on 2026-10-21, the core library of every ABI imports only SDL_net's functions, none
+  of SDL's own (`llvm-nm -D`), and the APK ships `libSDL2_net.so` but no `libSDL2.so`
+  (`unzip -l`). DERIVED: so the core's event functions are the stub's empty ones, and those
+  shortcuts never fire.
 
 C. Identity and integrity of the client
 - MET (user agent): see "User-Agent". USER: the approval request must disclose the two earlier
