@@ -76,8 +76,8 @@ token-handling items and the remaining device-verification gaps.
   sessions, and no run on this build has yet shown an event reaching the app, so these logs cannot
   tell "nothing was earned" from "events did not arrive".
 - Still open after this run: the "Not yet verified on device" items in the issue #15 section,
-  among them an unlock in softcore from an achievement that reads memory, and everything under
-  hardcore (the run of 2026-10-21 below covers part of it).
+  among them an unlock in softcore from an achievement that reads memory (seen on 2026-10-22,
+  below), and everything under hardcore (the run of 2026-10-21 below covers part of it).
 
 ## Device verification (debug build `3.0.338 017e3557`, Retroid Pocket 6, 2026-10-21)
 - OBSERVED (`adb install -r`, `adb shell dumpsys package`): the debug APK built from `017e35574`
@@ -140,6 +140,49 @@ token-handling items and the remaining device-verification gaps.
   hardcore start the menu was meant to open in the first second, but the log shows only the
   start-up pause).
 
+## Device verification (debug build `3.0.338 11f5f3b9`, Retroid Pocket 6, 2026-10-22)
+- OBSERVED (read at 01:35 that night with `adb shell dumpsys package`, `getprop` and, through
+  `run-as`, the app's preferences): the debug package is `3.0.338 11f5f3b9`, last updated at 16:52
+  on 2026-10-21; RetroAchievements was on and hardcore off; the device runs Android 13. DERIVED:
+  the version name ends with the short hash of the commit it was built from, `11f5f3b96`
+  (`version_common.gradle:12`), which differs from `017e35574` only by two menu icons; the
+  build sent "Mupen64Turnip/3.0.338 (Android 13)" (see "User-Agent").
+- OBSERVED (device): the tester started Mario Tennis from the gallery at 01:26. At 01:30:36.229,
+  4 minutes 22.5 seconds after the service started, the app logged the unlock event of
+  achievement 48351, "Match Winner" ("Win a exhibition match.", 3 points), the only
+  RetroAchievements event it logged in the session; it does not log progress or tracker updates
+  (`CoreService.java:1408-1411`). The device's system log, from 01:26:01 to 01:35:19, shows two
+  toast windows from the app: one opening 1.2 seconds after the service started, and one opening
+  26 ms after the unlock was logged and closing about four seconds later. Asked whether
+  "Achievement unlocked: Match Winner (3 points)" popped up, the tester said it did. The app's
+  file of unsent unlocks (`retroachievements-unsent.txt` in its no-backup folder,
+  `CoreService.java:1353`) was last written at 01:30:36.546 and then held only its comment line.
+  The app's log has no server error event and no "RA request failed" line
+  (`RetroAchievementsManager.java:300-304`) up to 01:54, when the tester closed the game. The
+  tester's screenshot at 01:31:02, in the achievement list they opened at 01:30:43, shows
+  "Match Winner" with a ticked box and "Unlocked, 3 points", and the other rows on screen
+  "Locked".
+- DERIVED: the session ran in softcore. Hardcore was off in Settings when read, and the system
+  log shows no activity started after the game at 01:26:13, so Settings was not opened before the
+  read; no server warning arrived, which in hardcore came within seven seconds of each start (see
+  the run of 2026-10-21); and the tester called it "a casual achievement". The first toast was
+  the mode notice (`CoreService.java:1504-1509`) and the second the unlock notice
+  (`:1413-1414,1439-1450`; `strings.xml:280`). The server recorded the unlock within about a
+  third of a second: the glue keeps an unlock in that file from just before it is sent
+  (`ra_glue.c:548-552`), writes the file only when it keeps or drops one, so a write that leaves
+  none is a drop (`:406-437`), drops one only when the server records or refuses it
+  (`:620-623`), and counts an answer as a refusal only when rcheevos raises a server error for it
+  (`:478-482`; `rc_client.c:4669-4673`), which the app would have logged
+  (`CoreService.java:1409-1411`) and shown as a third toast (`:1425-1426,1452-1464,1555-1557`).
+  Winning a match is read from the game's memory, so achievements that read memory unlock on the
+  device in softcore (see "Memory reads").
+- OBSERVED (device): the game was still open when these were read, its emulation paused since
+  01:30:42, just before the achievement list was opened from its menu.
+- Not covered, among others: an unlock in hardcore, which the server should record as softcore
+  until RetroAchievements approves the client (see "Hardcore unlocks"); an unlock with the
+  network off (see "Unlocks kept until the server answers"); leaderboard attempts; the challenge,
+  progress and leaderboard lines; and the mode notice after a slow start.
+
 ## Deferred items from commit `8f14880ef` (login/token handling)
 Reference: that commit's message lists these as nonblocking. The issue #15 section addresses all
 four: "Sign-in order" three of them, and "User-Agent" the hardcoded User-Agent version. The saved
@@ -188,8 +231,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   never shown, because rcheevos does not read that field. OBSERVED (device, 2026-10-21): build
   `3.0.338 017e3557` still got the server's warning achievement, and it popped in hardcore (see
   "Device verification" for that build); DERIVED: that build sends the new User-Agent (see
-  "User-Agent"). Not yet verified on device: that award requests reach the server and come back
-  as softcore.
+  "User-Agent"). OBSERVED (device, 2026-10-22): an unlock left nothing in the app's file of
+  unsent unlocks and raised no server error; DERIVED: it was made in softcore, and the server
+  recorded it (see "Device verification" for build `3.0.338 11f5f3b9`). Not yet verified on
+  device: that a hardcore award request comes back as softcore.
 
 ### User-Agent
 - REFERENCE (compliance page revision `361119b677dc`, section C): "The emulator must use its own
@@ -238,8 +283,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED (device, 2026-10-21): with build `3.0.338 017e3557`, Connect in Settings showed
   "Signed in as" and every game session showed its mode notice (see "Device verification" for
   that build). DERIVED: so sign-in and the game's load work with the new User-Agent, which that
-  build sends as "Mupen64Turnip/3.0.338 (Android 13)". Not yet verified on device: an unlock
-  with the new User-Agent.
+  build sends as "Mupen64Turnip/3.0.338 (Android 13)". OBSERVED (device, 2026-10-22): build
+  `3.0.338 11f5f3b9` logged an unlock that then left nothing in the app's file of unsent unlocks;
+  DERIVED: it sends the same User-Agent, the unlock was made in softcore, and the server recorded
+  it (see "Device verification" for that build).
 
 ### Memory reads
 - OBSERVED: rcheevos addresses N64 RAM as `0x000000`-`0x7FFFFF`; `0x80000000` is only the matching
@@ -333,9 +380,12 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `mem_base_u32` unchanged, and `ra_glue_create` turns background memory reads off.
 - OBSERVED (device, 2026-10-20): the list showed the achievements on screen as "Locked", not
   "Unsupported", and the mode notice appeared as the game started (see "Device verification" for
-  build `3.0.338 06aedfe1`). Not yet verified on device: an achievement that reads memory unlocks
-  in softcore; under hardcore the server still records it as softcore until RetroAchievements
-  approves this client; the mode notice also appears after a slow start.
+  build `3.0.338 06aedfe1`). OBSERVED (device, 2026-10-22): "Match Winner" ("Win a exhibition
+  match.") unlocked and then showed as "Unlocked" in the list; DERIVED: the session ran in
+  softcore, and winning a match is read from the game's memory, so an achievement that reads
+  memory unlocked in softcore (see "Device verification" for build `3.0.338 11f5f3b9`). Not yet
+  verified on device: under hardcore the server still records an unlock as softcore until
+  RetroAchievements approves this client; the mode notice also appears after a slow start.
 
 ### Threads in the glue
 - OBSERVED: rcheevos does not lock every read of the loaded game. The getters the glue uses for
@@ -997,11 +1047,15 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED (device, 2026-10-20): the softcore mode toast showed at each of the 13 starts that
   opened the game (see "Device verification" for build `3.0.338 06aedfe1`). OBSERVED (device,
   2026-10-21): the hardcore mode toast showed at each of three hardcore starts, and the warning
-  about six seconds after it (see "Device verification" for build `3.0.338 017e3557`). Not yet
-  verified on device: one toast per unlock, whether long notices are cut at two lines, the
-  failure toast for a ROM RetroAchievements does not know and for a wrong password with no valid
-  saved token, and the sending-failed and connection-restored notices when the network is off
-  for an unlock and comes back while the game runs. A refused unlock is hard to cause on purpose.
+  about six seconds after it (see "Device verification" for build `3.0.338 017e3557`). OBSERVED
+  (device, 2026-10-22): a toast window from the app opened 26 ms after the app logged an unlock,
+  the only one in the almost five minutes that followed, and the tester, asked whether
+  "Achievement unlocked: Match Winner (3 points)" popped up, said it did (see "Device
+  verification" for build `3.0.338 11f5f3b9`). Not yet verified on device: whether long notices
+  are cut at two lines, the failure toast for a ROM RetroAchievements does not know and for a
+  wrong password with no valid saved token, and the sending-failed and connection-restored
+  notices when the network is off for an unlock and comes back while the game runs. A refused
+  unlock is hard to cause on purpose.
 
 ### In-game achievement list
 - OBSERVED: with RetroAchievements enabled in Settings, the in-game menu has an "Achievements" item
@@ -1076,9 +1130,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   "Casual: 0 of 97 unlocked", the warning row, and "Locked" rows with descriptions and points (see
   "Device verification" for build `3.0.338 06aedfe1`). OBSERVED (device, 2026-10-21): in hardcore
   it read "Hardcore: 0 of 97 unlocked" under the game's title and still listed the warning row,
-  and after Resume it read "Casual" (see "Device verification" for build `3.0.338 017e3557`). Not
-  yet verified on device: the item shows only with RetroAchievements enabled; a game with a bonus
-  set shows set headings; long titles wrap.
+  and after Resume it read "Casual" (see "Device verification" for build `3.0.338 017e3557`).
+  OBSERVED (device, 2026-10-22): after an unlock, that achievement's row showed a ticked box and
+  "Unlocked, 3 points" (the tester's screenshot; see "Device verification" for build
+  `3.0.338 11f5f3b9`). Not yet verified on device: the item shows only with RetroAchievements
+  enabled; a game with a bonus set shows set headings; long titles wrap.
 
 ### Challenge and progress indicators
 - REFERENCE (RetroAchievements docs): a Trigger flag exists "so a challenge indicator can be shown
@@ -1323,9 +1379,12 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes with
   every unit test. `ra_glue.o` was recompiled for all four ABIs with empty ndk-build stderr logs,
   and each packaged core library exports `ra_glue_set_unsent_path` (`llvm-nm -D`).
-- Not yet verified on device: an unlock made with the network off, the session closed, and the
-  game started again with the network on, which should show the "recorded" notice and leave the
-  file empty.
+- OBSERVED (device, 2026-10-22): after an unlock, the file was last written about a third of a
+  second after the app logged the unlock, and then held only its comment line; DERIVED: the
+  server had recorded the unlock (see "Device verification" for build `3.0.338 11f5f3b9`). Not
+  yet verified on device: an unlock made with the network off, the session closed, and the game
+  started again with the network on, which should show the "recorded" notice and leave the file
+  empty.
 
 ### Compliance checklist
 Each requirement of RetroAchievements' compliance page (revision `361119b677dc`) and its state on
