@@ -14,9 +14,9 @@
  * game-loaded, load and hardcore state) take no mutex, and other calls,
  * rc_client_do_frame among them, check for a game outside it. So the game
  * must not be unloaded, nor the client logged out or destroyed, while
- * another thread can use them. Frames, idle work and restoring a state's
- * progress also change the achievements outside rcheevos's mutex, so the
- * achievement list is built and read under s_frame_lock.
+ * another thread can use them. Frames, idle work, resets and restoring a
+ * state's progress also change the achievements outside rcheevos's mutex, so
+ * they and the building of the achievement list take turns under s_frame_lock.
  */
 
 #include "ra_glue.h"
@@ -60,9 +60,9 @@ typedef void (*ra_java_async_result_t)(int result, const char* error_message);
  */
 static rc_client_t* s_client = NULL;
 static pthread_mutex_t s_pending_lock = PTHREAD_MUTEX_INITIALIZER;
-/* Held while rcheevos runs a frame or its idle work, or restores a state's progress, which change
- * achievements outside rcheevos's mutex, and while the achievement list is built and read. Taken
- * before any other lock, and nothing that runs under it builds the list. */
+/* Held while rcheevos runs a frame or its idle work, resets the game or restores a state's
+ * progress, which change achievements outside rcheevos's mutex, and while the achievement list is
+ * built and read. Taken before any other lock, and nothing that runs under it builds the list. */
 static pthread_mutex_t s_frame_lock = PTHREAD_MUTEX_INITIALIZER;
 static int s_next_request_id = 1;
 static atomic_int s_hardcore = 0;
@@ -1001,8 +1001,10 @@ void ra_glue_idle(void)
 void ra_glue_reset(void)
 {
   if (s_client != NULL) {
+    pthread_mutex_lock(&s_frame_lock);
     atomic_store(&s_discard_pending_progress, 1);
     rc_client_reset(s_client);
+    pthread_mutex_unlock(&s_frame_lock);
   }
 }
 

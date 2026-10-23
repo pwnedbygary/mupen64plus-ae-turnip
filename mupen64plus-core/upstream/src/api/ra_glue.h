@@ -39,8 +39,8 @@ EXPORT void ra_glue_shutdown(void);
  */
 EXPORT void ra_glue_set_java_bridge(uintptr_t server_call, uintptr_t event, uintptr_t async_result);
 
-/* Emulation hooks: do_frame and idle run on the emu thread; reset runs on
- * the thread that resets the core (the app's main thread). */
+/* Emulation hooks: do_frame and idle run on the emu thread; reset runs on the
+ * thread that resets the core (the app's main thread), waiting while either runs. */
 EXPORT void ra_glue_do_frame(void);
 EXPORT void ra_glue_idle(void);
 EXPORT void ra_glue_reset(void);
@@ -84,16 +84,16 @@ EXPORT int ra_glue_get_user_token(char* buffer, int buffer_size);
 
 EXPORT int ra_glue_get_game_name(char* buffer, int buffer_size);
 EXPORT int ra_glue_get_summary_json(char* buffer, int buffer_size);
-/* Waits for a frame, idle work or a state's progress restore that is running,
- * so it must not be called from a callback the glue makes during one. */
+/* Waits for a frame, idle work, a reset or a state's progress restore that is
+ * running, so it must not be called from a callback the glue makes during one. */
 EXPORT int ra_glue_get_achievements_json(char* buffer, int buffer_size);
 
 /* The loaded game's progress as one blob. The app does not use these: it keeps
  * progress with each save state (ra_glue_state_saved).
  * serialize: returns bytes written (> 0), or -1 on failure / buffer too small.
  * deserialize: returns 1 on success, 0 on failure. Unlike ra_glue_state_loaded
- * it does not take the lock that frames, idle work and the achievement list
- * take, so it must not run beside them on another thread. */
+ * it does not take the lock that frames, idle work, resets and the achievement
+ * list take, so it must not run beside them on another thread. */
 EXPORT int ra_glue_serialize_progress(uint8_t* buffer, int buffer_size);
 EXPORT int ra_glue_deserialize_progress(const uint8_t* buffer, int buffer_size);
 

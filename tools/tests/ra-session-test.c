@@ -68,7 +68,10 @@
  * the achievement as unsupported. The twelfth run holds the emulator thread
  * when a state load restores progress that primes the challenge again, as
  * rcheevos raises the restored state's events outside its mutex too: the list
- * must wait until the restore has ended.
+ * must wait until the restore has ended. The thirteenth run holds it when a
+ * frame primes the challenge, while another thread resets the game, which
+ * changes the same achievements: the reset must wait until the frame has
+ * ended, so the challenge indicator's last event hides it.
  *
  * The next runs check the progress kept with save states. The game's fourth
  * achievement unlocks after PROGRESS_HITS frames with the byte at
@@ -268,7 +271,7 @@ static void fake_server_call(int request_id, const char* url, const char* post_d
     }
 }
 
-static void hold_for_list(void);
+static void hold_for_call(void);
 
 static void fake_event(const char* json)
 {
@@ -276,7 +279,7 @@ static void fake_event(const char* json)
     char progress_id[32];
 
     if (g_hold_on_challenge && strstr(json, "\"type\":\"challenge_show\"") != NULL) {
-        hold_for_list();
+        hold_for_call();
     }
     snprintf(id, sizeof(id), "\"id\":%d,", ACHIEVEMENT_ID);
     snprintf(progress_id, sizeof(progress_id), "\"id\":%d,", PROGRESS_ID);
@@ -1010,15 +1013,15 @@ static void run_leaderboard_attempts(void)
     end_session(base, "leaderboard attempts in hardcore", failures_before);
 }
 
-/* For the list runs: the emulator thread is held where rcheevos has just changed achievements
- * outside its mutex, while another thread asks for the achievement list. During the hold the
- * threads use only relaxed atomics, so ThreadSanitizer sees no ordering between them but the
- * glue's; g_frame_done, set after the held work, orders the rest. */
+/* For the list and reset runs: the emulator thread is held where rcheevos has just changed
+ * achievements outside its mutex, while another thread asks for the achievement list or resets the
+ * game. During the hold the threads use only relaxed atomics, so ThreadSanitizer sees no ordering
+ * between them but the glue's; g_frame_done, set after the held work, orders the rest. */
 static atomic_int g_held;
 static atomic_int g_hold_ended;
 static atomic_int g_frame_done;
-static atomic_int g_list_built;
-static atomic_int g_list_during_hold;
+static atomic_int g_call_done;
+static atomic_int g_call_during_hold;
 
 static int relaxed(atomic_int* flag)
 {
@@ -1035,14 +1038,15 @@ static void reset_hold(void)
     set_relaxed(&g_held, 0);
     set_relaxed(&g_hold_ended, 0);
     set_relaxed(&g_frame_done, 0);
-    set_relaxed(&g_list_built, 0);
-    set_relaxed(&g_list_during_hold, 0);
+    set_relaxed(&g_call_done, 0);
+    set_relaxed(&g_call_during_hold, 0);
 }
 
-/* Holds the emulator thread once per run until the list is built, for at most 500 ms; with the
- * glue's lock the list waits, so the hold lasts 500 ms. A run passes without the lock if the list
- * thread stalls for longer, as when ThreadSanitizer stalls it to print its first report. */
-static void hold_for_list(void)
+/* Holds the emulator thread once per run until the other thread's call returns, for at most
+ * 500 ms; with the glue's lock the call waits, so the hold lasts 500 ms. A run passes without the
+ * lock if the other thread stalls for longer, as when ThreadSanitizer stalls it to print its
+ * first report. */
+static void hold_for_call(void)
 {
     struct timespec start;
     struct timespec now;
@@ -1055,7 +1059,7 @@ static void hold_for_list(void)
     do {
         sched_yield();
         clock_gettime(CLOCK_MONOTONIC, &now);
-    } while (!relaxed(&g_list_built)
+    } while (!relaxed(&g_call_done)
              && (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000 < 500);
     set_relaxed(&g_hold_ended, 1);
 }
@@ -1065,7 +1069,7 @@ static void hold_validation(const char* message, const rc_client_t* client)
 {
     (void)client;
     if (strstr(message, "Disabled achievement") != NULL) {
-        hold_for_list();
+        hold_for_call();
     }
 }
 
@@ -1078,10 +1082,24 @@ static void* build_list_during_hold(void* unused)
         sched_yield();
     }
     if (list != NULL && relaxed(&g_held) && ra_glue_get_achievements_json(list, 65536)) {
-        set_relaxed(&g_list_during_hold, !relaxed(&g_hold_ended));
-        set_relaxed(&g_list_built, 1);
+        set_relaxed(&g_call_during_hold, !relaxed(&g_hold_ended));
+        set_relaxed(&g_call_done, 1);
     }
     free(list);
+    return NULL;
+}
+
+static void* reset_during_hold(void* unused)
+{
+    (void)unused;
+    while (!relaxed(&g_held) && !atomic_load_explicit(&g_frame_done, memory_order_acquire)) {
+        sched_yield();
+    }
+    if (relaxed(&g_held)) {
+        ra_glue_reset();
+        set_relaxed(&g_call_during_hold, !relaxed(&g_hold_ended));
+        set_relaxed(&g_call_done, 1);
+    }
     return NULL;
 }
 
@@ -1113,8 +1131,8 @@ static void run_list_while_loading(int paused, const char* name)
 
     CHECK(g_num_results == 2 && g_results[1] == RC_OK);
     CHECK(relaxed(&g_held));
-    CHECK(relaxed(&g_list_built));
-    CHECK(!relaxed(&g_list_during_hold));
+    CHECK(relaxed(&g_call_done));
+    CHECK(!relaxed(&g_call_during_hold));
     CHECK(list_entry_has(BAD_ADDRESS_ID, "\"unsupported\":1"));
 
     g_bad_address = 0;
@@ -1169,11 +1187,44 @@ static void run_list_while_restoring(void)
     g_hold_on_challenge = 0;
 
     CHECK(relaxed(&g_held));
-    CHECK(relaxed(&g_list_built));
-    CHECK(!relaxed(&g_list_during_hold));
+    CHECK(relaxed(&g_call_done));
+    CHECK(!relaxed(&g_call_during_hold));
     CHECK(list_entry_has(CHALLENGE_ID, "\"challenge\":1"));
     end_session(base, "achievement list asked for while a state load restores progress",
                 failures_before);
+}
+
+/* A reset while a frame raises the challenge indicator of the achievement it primed: rcheevos
+ * raises a frame's events outside its mutex, and a reset changes the same achievements, then
+ * raises its own events outside the mutex too, so the reset must wait until the frame has ended.
+ * The indicator then shows and hides once each, and its last event hides it. */
+static void run_reset_during_frame(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base = start_session(1, 0, 0, &rdram);
+    const int events_before = g_indicator_events;
+    char hidden[160];
+    pthread_t reset_thread;
+
+    rdram[CHALLENGE_ADDRESS] = 1;
+    reset_hold();
+    g_hold_on_challenge = 1;
+    pthread_create(&reset_thread, NULL, reset_during_hold, NULL);
+    ra_glue_do_frame();
+    atomic_store_explicit(&g_frame_done, 1, memory_order_release);
+    pthread_join(reset_thread, NULL);
+    g_hold_on_challenge = 0;
+
+    CHECK(relaxed(&g_held));
+    CHECK(relaxed(&g_call_done));
+    CHECK(!relaxed(&g_call_during_hold));
+    snprintf(hidden, sizeof(hidden),
+             "{\"type\":\"challenge_hide\",\"id\":%d,\"title\":\"Challenge\"}", CHALLENGE_ID);
+    CHECK(g_indicator_events == events_before + 2);
+    CHECK(strcmp(g_indicator_event, hidden) == 0);
+    CHECK(list_entry_has(CHALLENGE_ID, "\"challenge\":0"));
+    end_session(base, "reset while a frame raises the challenge indicator", failures_before);
 }
 
 /* Loading a state restores the hit count saved with it, and starts the count
@@ -1718,6 +1769,7 @@ int main(void)
     run_list_while_loading(0, "achievement list asked for while a frame loads the game");
     run_list_while_loading(1, "achievement list asked for while idle work loads the game");
     run_list_while_restoring();
+    run_reset_during_frame();
     run_progress_with_states();
     run_progress_while_loading(0, "hit count of a state loaded while the game loads");
     run_progress_while_loading(1, "no hit count after a reset while the game loads");
