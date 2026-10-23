@@ -665,7 +665,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   pause sends at most one, the first that falls due, and only if frames ran since the last ping.
   The calls run on the emulator thread while the core's memory exists, like `ra_glue_do_frame`,
   and end before the client is destroyed: stopping emulation clears the pause
-  (`main.c:1991-1995`), the pause loop runs inside `emuStart` (`CoreService.java:926`), and the
+  (`main.c:1997-2001`), the pause loop runs inside `emuStart` (`CoreService.java:926`), and the
   service destroys the client only after `emuStart` returns, or kills the process (see "Threads
   in the glue").
 - DERIVED: outside netplay, the achievement dialog opens only from the in-game menu, which pauses
@@ -1614,15 +1614,15 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 
 ### Controller Pak saves of players 2 to 4
 - OBSERVED: the core keeps the four Controller Paks in one 128 KB file
-  (`main.c:164-167,1025-1028,1635`; `device.h:55`; `mempak.h:40`). Each player's pak is a 32 KB
+  (`main.c:164-167,1025-1028,1641`; `device.h:55`; `mempak.h:40`). Each player's pak is a 32 KB
   part of it, with a storage of its own whose save goes to the file's storage, and only the paks
-  use that kind of storage (`main.c:1742-1748`; `file_storage.c:125-131,154-159`). The in-game
+  use that kind of storage (`main.c:1748-1754`; `file_storage.c:129-135,158-163`). The in-game
   menu has a pak choice for each of the four players (`GameActivity.java:997-1004`). A game
   writes a pak 32 bytes at a time (`game_controller.c:36,137`), and each write copies the bytes
   into that player's part and saves their range (`mempak.c:184-192`). The file's storage writes
   the whole file on the session's first save and only the given range after that
-  (`file_storage.c:38,102-110`), and when the game closes, or a plugin fails to open, the core
-  only frees it (`main.c:1922,1962`; `file_storage.c:74-78`).
+  (`file_storage.c:38,104-114`), and when the game closes, or a plugin fails to open, the core
+  only frees it (`main.c:1928,1968`; `file_storage.c:76-80`).
 - OBSERVED: before this change, a part's save passed the range at the pak's own address, without
   the part's place in the file (`file_storage.c:125-129` at `801d6b18d`). That code was the same
   where this branch starts (`d9779061b`).
@@ -1638,11 +1638,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   from mupen64plus-ae's fork at `3c4182f7473b` (`mupen64plus-core/upstream/.gitrepo`), which is
   still the head of that fork's `master` (checked 2026-10-23) and lacks the fix.
 - OBSERVED: this change applies those three hunks unchanged (`file_storage.h:32`;
-  `file_storage.c:125-131`; `main.c:1745`). Nothing fills that struct by position, which a new
+  `file_storage.c:129-135`; `main.c:1751`). Nothing fills that struct by position, which a new
   field would break, and the paks' storages, the only ones whose save reads the field, set it.
 - OBSERVED (host build): `tools/test-mempak-save.sh` builds `tools/tests/mempak-save-test.c` with
   the core's `file_storage.c`, `mempak.c` and file helpers. The test sets up the four paks as
-  `main_run` does, but sets each pak's offset itself, so `main.c:1745` is checked only by reading
+  `main_run` does, but sets each pak's offset itself, so `main.c:1751` is checked only by reading
   it and by the build. It writes 32-byte blocks to each pak after the session's first save,
   compares the file with the bytes it should hold, and reads the blocks back as the next session
   would. It passes with GCC 16.2.1 and clang 23.1.3, and in a scratch build under clang ASan,
@@ -1668,7 +1668,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   2 KB when the game's database entry, or for a game not in the database its homebrew header,
   gives a 16 Kbit EEPROM, as the session's first save rewrites the file at that size
   (`main.c:1084-1087`; `rom.c:235-244,323-324,553,625-627`;
-  `mupen64plus-core/upstream/src/api/m64p_types.h:237-238`; `file_storage.c:102-110`;
+  `mupen64plus-core/upstream/src/api/m64p_types.h:237-238`; `file_storage.c:104-114`;
   `util.c:70`). The core stores EEPROM and pak bytes in the order the game sees them
   (`eeprom.c:59,74`; `mempak.c:176,190`; `si_controller.c:64,69`), and SRAM and FlashRAM bytes
   with each 32-bit word's bytes reversed (`sram.c:54,71`; `flashram.c:84-88,211,231`), as
@@ -1679,7 +1679,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   16 bits of an SRAM address (`sram.h:29`; `sram.c:31,51,68`), also for homebrew whose header
   asks for 768 Kbit (banked) or 1 Mbit of SRAM (`rom.c:326-329`). It reads a file shorter than
   its save type as far as the file goes and leaves the rest of its copy unset; it fills in a
-  blank save only when it cannot open the file (`file_storage.c:41,49`; `util.c:58-61`;
+  blank save only when it cannot open the file (`file_storage.c:42,50`; `util.c:58-61`;
   `main.c:1030,1054,1064,1079`).
 - REFERENCE (Project64 `develop` at `24376e868350`): Project64 also stores EEPROM bytes in the
   game's order (`PifRamHandler.cpp:113,120,210,217,467`; `Eeprom.cpp:74,85,176,190`), SRAM bytes
@@ -1713,29 +1713,72 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   the session's working folder, in the app's cache, before the game starts, and the core is given
   that copy (`CoreService.java:703,725-738`; `CoreInterface.java:183-188,235-236,448-455`;
   `FileUtil.java:482-485`); with no save chosen, the core uses a file of its own in its save
-  folder (`main.c:184-187,1414-1417`). The core opens the save at the RAM size that the Game Boy
-  game's header gives and saves at each write to that RAM, so the first write to it rewrites the
-  file at that size, without anything that followed the RAM (`gb_cart.c:105,138,1024-1040`;
-  `main.c:1402-1437`; `file_storage.c:102-110`; `util.c:70`). After the game, the app writes the
-  copy over the start of the chosen file, opened with mode "rw", and deletes the working folder
-  (`CoreService.java:939,943`; `CoreInterface.java:522-530`; `FileUtil.java:676,691`).
+  folder (`main.c:184-187,1416-1419`). The core opens the save at the RAM size that the Game Boy
+  game's header gives and saves at each write to that RAM (`gb_cart.c:105,138,1024-1040`;
+  `main.c:1404-1443`). After the game, the app writes the whole copy over the start of the chosen
+  file, opened with mode "rw", and deletes the working folder (`CoreService.java:939,943`;
+  `CoreInterface.java:522-530`; `FileUtil.java:676,691-700`).
+- OBSERVED: before this change, the first write to that RAM rewrote the save at the RAM's size,
+  without anything that followed the RAM (`file_storage.c:102-110` at `9fcd0913a`; `util.c:70`).
+  This change applies upstream mupen64plus-core's `902bc60f5615` (2026-10-18): `init_gb_ram` marks
+  the save, and the first write of a marked save writes the RAM over the start of the file and
+  leaves the rest (`main.c:1432-1434`; `file_storage.c:104-114`; `util.c:91-94`). The two
+  functions that open a save clear the mark (`file_storage.c:39,64`). The 64DD disk's save is not
+  opened by them: `load_dd_disk` allocates it with `malloc`, fills it in by hand and gives it the
+  file save that the disk's writes reach, all of them in the full-disk format that the app sets
+  and only those to the disk's RAM area in the RAM-only format
+  (`main.c:1177,1186,1256-1271,1281-1282`; `disk.c:49-53,60-64`; `NativeConfigFiles.java:118`).
+  Upstream's patch leaves that save's mark unset (REFERENCE: so does upstream's `master`,
+  `src/main/main.c:1270,1356,1363` at `3be6336a`), so this change also clears it there, in two
+  lines of its own (`main.c:1262,1270`). Every save but the Game Boy one is therefore unmarked,
+  and its first write still rewrites the file at its size. REFERENCE (upstream `902bc60f5615`):
+  Game Boy saves now "keep what other emulators append after the cartridge RAM, like the MBC3
+  RTC footer".
+- OBSERVED (host build): a scratch program that fills a save as `load_dd_disk` does and writes to
+  it once through `file_storage.c` gets a MemorySanitizer report of an uninitialized read of the
+  mark (`file_storage.c:108`) without the cleared line, and none with it. DERIVED: so with
+  upstream's patch alone, whether a 64DD save's first write cut the file at its size would have
+  depended on what the allocator left in that field.
 - REFERENCE (AOSP `android-13.0.0_r1`): mode "rw" opens a file for reading and writing without
   truncating it (`ParcelFileDescriptor.java:652-654`; `FileUtils.java:1341-1372,1396-1417`), and
   Android's local-storage document provider opens the file itself with that mode
   (`ExternalStorageProvider.java:68`; `FileSystemProvider.java:506-529`).
-- REFERENCE: upstream mupen64plus-core stopped truncating Game Boy save files on their first write
-  in `902bc60f5615` (2026-10-18), so that they "keep what other emulators append after the
-  cartridge RAM, like the MBC3 RTC footer".
 - OBSERVED: the app runs from Android 6 (`version_common.gradle:9`). On Android 8.1 and older, on
   Android TV before Android 11, and where no folder picker is available, it picks files with its
   own browser, which keeps a `file://` path instead of a document (`AppData.java:415-417`;
   `LegacyFilePicker.java:107`; `GamePrefsActivity.java:189,225-231,787,811-812`).
-- DERIVED: so on Android 13, for a save chosen through the local-storage document provider (on
-  the device's storage or an SD card), what another Game Boy emulator appends after the cartridge
-  RAM, such as the clock of an MBC3 cartridge, stays in the chosen file, unchanged by the
-  session, though the core's working copy loses it. Other Android versions, other document
-  providers, and how Android opens the `file://` path that the app's own browser keeps, were not
-  read. Not tried.
+- DERIVED: so what another Game Boy emulator appends after the cartridge RAM, such as the clock
+  of an MBC3 cartridge, now stays in the core's working copy, and the app writes it back with the
+  RAM; a save that the core keeps in its own folder keeps it too. Before this change the working
+  copy lost it once the game wrote to that RAM, and the chosen file kept it only where opening it
+  with "rw" did not truncate it, as on Android 13 through the local-storage document provider (on
+  the device's storage or an SD card); other Android versions, other document providers and the
+  `file://` path of the app's own browser were not read. When the copy into the working folder
+  succeeds, it has the chosen file's whole length and the app writes all of it back, so the result
+  no longer depends on whether opening the chosen file truncates it. When that copy fails or is cut
+  short, which the app does not notice (`FileUtil.java:493-501`; `CoreInterface.java:452`), the
+  core gets a copy without the end of the chosen file, or its own file if no copy was made
+  (`CoreInterface.java:184-188`; `main.c:1416-1419`), as before this change, and what the chosen
+  file keeps still depends on how it is opened. Not tried.
+- OBSERVED (host build): `tools/test-gb-ram-save.sh` builds `tools/tests/gb-ram-save-test.c` with
+  `file_storage.c` and the core's file helpers. The test opens saves as `init_gb_ram` does, from a
+  struct whose bytes start out nonzero, and writes to the RAM: a marked save with 48 bytes after
+  its 32 KB of RAM must keep both writes and the same 48 bytes after them, an unmarked one must be
+  written at its size, and a marked one with no file yet must be created at its RAM size by its
+  first write. It passes with GCC 16.2.1 and clang 23.1.3, and under clang ASan, UBSan,
+  LeakSanitizer and MemorySanitizer with no reports. With the `file_storage.c` and `.h` from
+  before this change, which have no mark, and the test's marking line removed, only the first
+  check fails, as it does with a copy of the fix whose first write ignores the mark; a copy whose
+  opening does not clear the mark fails only the second, and one whose marked first write writes
+  only the changed bytes fails only the third. The test marks the save itself, so
+  `main.c:1432-1434` and the cleared mark in `load_dd_disk` are checked only by reading them and
+  by the build.
+- OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` recompiled
+  `file_storage.o` and `main.o`, the only core files that include `file_storage.h`, for all four
+  ABIs with empty ndk-build stderr logs; each packaged core library has the build ID of the one
+  that was linked, and the 31 unit tests pass. In the arm64 `main.o`, where `load_dd_disk` is
+  inlined, both of its cases set `first_access` and the mark with one 8-byte store of 1 and then
+  0 (NDK `llvm-objdump`).
 - Not yet verified on device: moving each save type between the app and Project64 or RetroArch,
   and a Game Boy save with a clock after its RAM used through the Transfer Pak.
 
@@ -1771,7 +1814,7 @@ B. Hardcore rules
   game's enabled cheats, and the GameShark button is refused (`CoreService.java:592-598,886-899`);
   `:896`, in that loop, is the app's only call of `coreAddCheat`.
 - USER (the core's own database patches): OBSERVED: in every mode the core also adds the codes its
-  ROM database lists under the game's `Cheat` keys (`rom.c:688-716`; `main.c:1581`;
+  ROM database lists under the game's `Cheat` keys (`rom.c:688-716`; `main.c:1587`;
   `cheat.c:497-536`). It writes boot codes at the first frame, and again after each soft reset,
   which sets the frame count back to zero (`interrupt.c:449`), and the others on every frame after
   the first 60; a code that follows a test is written only on frames when the test holds
@@ -1807,7 +1850,7 @@ B. Hardcore rules
   off, for Resume and netplay (`:416,1366`; see "Hardcore session start"). DERIVED: a changed
   setting applies to the next game.
 - MET (no memory editors, debuggers, scripting or input playback): OBSERVED: the core's debugger
-  is built only with `DBG` (`main.c:83,898,1880,1904,1999`), which none of the core's Android
+  is built only with `DBG` (`main.c:83,898,1886,1910,2005`), which none of the core's Android
   build files define (`Android.mk`, `Application.mk`, `mupen64plus-core.mk` and `build.gradle` in
   `mupen64plus-core`), and the app's Java sources mention no memory editor, Lua scripting or movie
   playback. The core exports `DebugMemGetPointer`, which returns a pointer to the console's RAM,

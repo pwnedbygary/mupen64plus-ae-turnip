@@ -1259,6 +1259,7 @@ static int load_dd_disk(struct dd_disk* dd_disk, const struct storage_backend_in
         fstorage_save->data = fstorage->data;
         fstorage_save->size = fstorage->size;
         fstorage_save->first_access = 1;
+        fstorage_save->keep_trailing_data = 0;
         break;
     case 1: /* RAM only */
         *dd_idisk = &g_istorage_disk_ram_only;
@@ -1266,6 +1267,7 @@ static int load_dd_disk(struct dd_disk* dd_disk, const struct storage_backend_in
         fstorage_save->data = &fstorage->data[offset_ram];
         fstorage_save->size = size_ram;
         fstorage_save->first_access = 1;
+        fstorage_save->keep_trailing_data = 0;
         break;
     default: /* read only */
         *dd_idisk = &g_istorage_disk_read_only;
@@ -1426,6 +1428,10 @@ static void init_gb_ram(void* opaque, size_t ram_size, void** storage, const str
     else if (err == file_read_error) {
         DebugMessage(M64MSG_WARNING, "Size mismatch between expected RAM size and effective file size");
     }
+
+    /* Game Boy emulators append extra data to cartridge RAM files,
+     * like the MBC3 RTC state, so don't truncate it */
+    data->ram_fstorage.keep_trailing_data = 1;
 
     DebugMessage(M64MSG_INFO, "GB Loader RAM: %s - %zu",
             data->ram_fstorage.filename,
