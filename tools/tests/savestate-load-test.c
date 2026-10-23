@@ -9,10 +9,19 @@
  * up more RDRAM modules than the core keeps registers for. It now accepts
  * only 4 MB and 8 MB, the sizes the format supports.
  *
+ * An M64P state holds the event queue as entries of a type and a count, and
+ * the entry that starts with 0xFFFFFFFF ends it. The loader handed the queue
+ * on without looking for that entry, and the queue is read until it, so a
+ * queue without one was read past its end. It is now refused.
+ *
  * The test includes savestates.c to reach its static save and load functions,
  * with stand-ins for the parts of the core that they call. It saves a
  * Project64 state with the core and loads it back, then loads states whose
- * start gives other sizes.
+ * start gives other sizes. It saves M64P states with the core, whose event
+ * queues come from a stand-in, and loads them back, and it writes states of
+ * version 1.0, whose queue is only as long as the file, by hand. A refused
+ * M64P state must restore nothing: neither the first register the loader
+ * restores nor the first word of RDRAM may change.
  */
 #include <stdarg.h>
 #include <sys/time.h> /* the SDL stub calls gettimeofday without including it */
@@ -80,6 +89,16 @@ uint32_t* r4300_pc(struct r4300_core* r4300) { (void)r4300; return &g_pc; }
 int64_t* r4300_regs(struct r4300_core* r4300) { (void)r4300; return g_regs; }
 unsigned int* get_event(const struct interrupt_queue* q, int type) { (void)q; (void)type; return &g_next_vi; }
 void load_eventqueue_infos(struct cp0* cp0, const char *buf) { (void)cp0; (void)buf; g_queue_loads++; }
+
+/* The event queue that the next M64P save writes. */
+static unsigned int g_next_queue[256];
+
+int save_eventqueue_infos(const struct cp0* cp0, char *buf)
+{
+    (void)cp0;
+    memcpy(buf, g_next_queue, sizeof(g_next_queue));
+    return sizeof(g_next_queue);
+}
 void savestates_load_set_pc(struct r4300_core* r4300, uint32_t pc) { (void)r4300; (void)pc; }
 void set_fpr_pointers(struct cp1* cp1, uint32_t newStatus) { (void)cp1; (void)newStatus; }
 void update_x86_rounding_mode(struct cp1* cp1) { (void)cp1; }
@@ -109,6 +128,8 @@ static struct device* test_device(void)
     dev->sp.mem = calloc(1, SP_MEM_SIZE);
     dev->pif.ram = calloc(1, PIF_RAM_SIZE);
     dev->cart.cart_rom.rom = g_rom_header;
+    /* An M64P state names the ROM it was saved from. */
+    memcpy(ROM_SETTINGS.MD5, "0123456789ABCDEF0123456789ABCDEF", 32);
     gfx.viStatusChanged = vi_changed;
     gfx.viWidthChanged = vi_changed;
     /* A load resets the controllers that the input plugin does not handle. */
@@ -141,12 +162,13 @@ static void write_pj64_start(const char *path, uint32_t rdram_size)
         fclose(f);
 }
 
-static char g_dir[512], g_path[600];
+static char g_dir[512], g_path[600], g_m64p_path[600];
 
 /* Also runs when a failed check stops the test early. */
 static void remove_files(void)
 {
     unlink(g_path);
+    unlink(g_m64p_path);
     rmdir(g_dir);
 }
 
@@ -163,6 +185,80 @@ static void check_pj64_start(struct device *dev, const char *run, uint32_t rdram
     report(run, before);
 }
 
+/* Set before each M64P load in the first register that the loader restores
+ * and in the first word of RDRAM. The states hold 0 in both, so a load that
+ * restores the machine clears them. */
+#define MACHINE_MARK 0x4d41524bu
+
+/* Loads the M64P state at g_m64p_path. A refused one must give the message
+ * and restore nothing. */
+static void load_m64p(struct device *dev, int loads, const char *message)
+{
+    dev->rdram.regs[0][RDRAM_CONFIG_REG] = MACHINE_MARK;
+    dev->rdram.dram[0] = MACHINE_MARK;
+    g_message[0] = '\0';
+    g_queue_loads = 0;
+    CHECK(savestates_load_m64p(dev, g_m64p_path) == loads);
+    CHECK(g_queue_loads == loads);
+    CHECK(dev->rdram.regs[0][RDRAM_CONFIG_REG] == (loads ? 0 : MACHINE_MARK));
+    CHECK(dev->rdram.dram[0] == (loads ? 0 : MACHINE_MARK));
+    if (!loads)
+        CHECK(starts_with(g_message, message));
+}
+
+/* Saves an M64P state whose queue has one VI interrupt, with the given count
+ * and then the given second entry type, and loads it back. */
+static void check_m64p(struct device *dev, const char *run, unsigned int count,
+                       unsigned int second_type, int loads)
+{
+    int before = g_failures;
+
+    memset(g_next_queue, 0, sizeof(g_next_queue));
+    g_next_queue[0] = VI_INT;
+    g_next_queue[1] = count;
+    g_next_queue[2] = second_type;
+    dev->rdram.regs[0][RDRAM_CONFIG_REG] = 0;
+    dev->rdram.dram[0] = 0;
+    CHECK(savestates_save_m64p(dev, g_m64p_path) == 1);
+    load_m64p(dev, loads, "Invalid event queue in savestate");
+    report(run, before);
+}
+
+/* Writes an M64P state of version 1.0 for the running ROM: a header, the
+ * machine as 16788244 bytes of 0, then the first bytes of a queue with one VI
+ * interrupt and an end entry. */
+static void write_m64p_1_0(size_t queue_bytes)
+{
+    static const unsigned char version[4] = { 0x00, 0x01, 0x00, 0x00 };
+    const unsigned int queue[3] = { VI_INT, 1000, 0xffffffff };
+    const size_t machine_bytes = 16788244;
+    unsigned char *machine = calloc(1, machine_bytes);
+    gzFile f = gzopen(g_m64p_path, "wb");
+
+    CHECK(machine != NULL && f != NULL && queue_bytes <= sizeof(queue));
+    if (machine != NULL && f != NULL && queue_bytes <= sizeof(queue)) {
+        CHECK(gzwrite(f, savestate_magic, 8) == 8);
+        CHECK(gzwrite(f, version, 4) == 4);
+        CHECK(gzwrite(f, ROM_SETTINGS.MD5, 32) == 32);
+        CHECK(gzwrite(f, machine, machine_bytes) == (int)machine_bytes);
+        if (queue_bytes > 0)
+            CHECK(gzwrite(f, queue, queue_bytes) == (int)queue_bytes);
+    }
+    if (f != NULL)
+        gzclose(f);
+    free(machine);
+}
+
+static void check_m64p_1_0(struct device *dev, const char *run, size_t queue_bytes, int loads,
+                           const char *message)
+{
+    int before = g_failures;
+
+    write_m64p_1_0(queue_bytes);
+    load_m64p(dev, loads, message);
+    report(run, before);
+}
+
 int main(void)
 {
     const char *tmp = getenv("TMPDIR");
@@ -175,7 +271,9 @@ int main(void)
         return 1;
     }
     snprintf(g_path, sizeof(g_path), "%s/state.pj", g_dir);
+    snprintf(g_m64p_path, sizeof(g_m64p_path), "%s/state.st0", g_dir);
     atexit(remove_files);
+    savestates_init();
 
     before = g_failures;
     CHECK(savestates_save_pj64_unc(dev, g_path) == 1);
@@ -197,5 +295,17 @@ int main(void)
     check_pj64_start(dev, "Project64 state whose length wraps is refused", 0xffffd8ac,
                      "Invalid Project64 state RDRAM size.");
 
+    check_m64p(dev, "M64P state with the queue's end entry loads", 1000, 0xffffffff, 1);
+    check_m64p(dev, "M64P state without it is refused", 1000, 0, 0);
+    check_m64p(dev, "M64P state with 0xFFFFFFFF only as a count is refused", 0xffffffff, 0, 0);
+    check_m64p_1_0(dev, "M64P 1.0 state whose queue ends at its last 4 bytes loads", 12, 1, "");
+    check_m64p_1_0(dev, "M64P 1.0 state whose queue stops before its end entry is refused", 8, 0,
+                   "Invalid event queue in savestate");
+    check_m64p_1_0(dev, "M64P 1.0 state with no queue is refused", 0, 0,
+                   "Invalid event queue in savestate");
+    check_m64p_1_0(dev, "M64P 1.0 state whose queue stops inside an entry is refused", 6, 0,
+                   "Could not read Mupen64Plus savestate 1.0 data");
+
+    savestates_deinit();
     return g_failures != 0;
 }

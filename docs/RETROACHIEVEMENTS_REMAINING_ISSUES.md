@@ -448,7 +448,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   raises events for that achievement (`rc_client.c:6190-6193,6465-6467`), after a frame and also
   after a state's load: rcheevos restores the progress kept with the state under its mutex, then
   raises the restored events outside it (`:6882-6904`), and the glue restores it in the load hook
-  on the emulator thread (`savestates.c:1485`; `ra_glue.c:1545`). DERIVED: a list read during
+  on the emulator thread (`savestates.c:1509`; `ra_glue.c:1545`). DERIVED: a list read during
   play could show a row as it was a frame earlier, or progress text that was being rewritten.
 - OBSERVED: rcheevos makes a loaded game visible under its mutex (`rc_client.c:1815-1818`), and
   `rc_client_is_game_loaded` is true from then on (`:3106`), but it checks the game's addresses
@@ -822,7 +822,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   same file, only if it exists (`:907-910`). In `9e8066d30` a start that was not a restart (Resume
   or a long press), outside hardcore and with no auto save, asked the core to load the path that
   `getLatestAutoSave` returns when there is none (`GameDataManager.java:80`), which failed
-  (`savestates.c:1462-1468`). The gallery's Resume and a long press on a game resume
+  (`savestates.c:1486-1492`). The gallery's Resume and a long press on a game resume
   (`GalleryActivity.java:1050-1055,1161-1163`); its Start, netplay, and launches from another app
   or from Android TV restart (`:1056-1076,295-296,837-841`).
 - REFERENCE (AOSP `android-10.0.0_r1`, `Toast.java:131-147,403-418,446-451`): before Android 11 a
@@ -886,7 +886,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   debugging complex achievement logic and ensures proper functionality in casual mode."
 - OBSERVED: the core calls `ra_glue_state_saved` after a save and `ra_glue_state_loaded` after a
   load, only when the save or load function returns success, with the state's path and the
-  console RAM (`savestates.c:1484-1485,2236-2237`; declared without `EXPORT`, `ra_glue.h:48-54`).
+  console RAM (`savestates.c:1508-1509,2260-2261`; declared without `EXPORT`, `ra_glue.h:48-54`).
   Both run on the emulator thread, which runs the core's save and load jobs
   (`interrupt.c:554-556,654-656`). A save writes the loaded game's progress, as rcheevos
   serializes it (`ra_glue.c:1464-1484`), to
@@ -898,11 +898,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   old file (`ra_glue.c:1511-1530`). So a state saved before the game has loaded keeps no
   progress, even while progress from a state loaded earlier waits for the game (next bullet).
 - OBSERVED: an M64P save returns success once it has passed the file write to `queue_work`, even
-  if that write then fails to open or write the file (`savestates.c:1498-1531,1950-1953`). The
+  if that write then fails to open or write the file (`savestates.c:1522-1555,1974-1977`). The
   app's core build, `mupen64plus-core/mupen64plus-core.mk`, does not define `M64P_PARALLEL` or
   compile `workqueue.c` (only upstream's `projects/unix/Makefile:162` defines it), so `queue_work`
   runs the write at once, before the save hook (`workqueue.h:42-63`). A PJ64 zip save also returns
-  success when its write fails (`savestates.c:2144-2176`), but the app saves only M64P states
+  success when its write fails (`savestates.c:2168-2200`), but the app saves only M64P states
   (`CoreInterface.java:834,850` pass type 1, `savestates_type_m64p` in `savestates.h:35-40`). So
   the hook still runs after a failed write, though the app is now told that the save failed (see
   "Failed save-state writes").
@@ -1522,33 +1522,33 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   says that a thread relocking such a mutex deadlocks (POSIX.1-2017, `pthread_mutex_lock`).
 - OBSERVED: the app's core build runs the write at once, on the emulator thread that asked for the
   save (see "Achievement progress kept with save states"). Loading an M64P state whose file opens
-  takes the same lock (`savestates.c:203`, called at `:1479`), and so does an M64P save
-  (`:1504`). A load whose file is missing or cannot be opened stops before that
-  (`:1442-1447,1462-1467`), and loading a PJ64 state never takes the lock (`:963,1326,1361`).
+  takes the same lock (`savestates.c:217`, called at `:1503`), and so does an M64P save
+  (`:1528`). A load whose file is missing or cannot be opened stops before that
+  (`:1466-1471,1486-1491`), and loading a PJ64 state never takes the lock (`:987,1350,1385`).
 - DERIVED: so after one failed write, as with full storage or a state folder that is gone, the
   emulator thread's next M64P save, or its next load of an M64P state that exists, waited for
   itself and the game froze. Not seen on a device.
 - OBSERVED: since `4ad1f8b16`, both returns free the path and the work item and release the lock,
-  as a successful write does (`savestates.c:1509-1539`).
-- OBSERVED: before this change, a failed write was still reported to the front end as a saved
+  as a successful write does (`savestates.c:1533-1563`).
+- OBSERVED: before `9f176c815`, a failed write was still reported to the front end as a saved
   state: `savestates_save` reported what the save function returned (`savestates.c:2214-2227` at
   `55c9b3d9c`), and an M64P save returns success once its write is queued (see "Achievement
   progress kept with save states"). DERIVED: so the app also marked a failed auto save complete,
   unless it could not create the marker file either, as when the folder is gone. Resume picks the
   newest auto save file that has a marker (`CoreService.java:325-342,719`;
   `GameDataManager.java:29,40-75`), so after a failed write it would pick the cut-short file, whose
-  load then fails (`savestates.c:288-300`); after a failed open there is no file for it to pick.
-- OBSERVED: this change applies upstream mupen64plus-core's `8b75435b6d` (2024-07-01, "savestates:
+  load then fails (`savestates.c:304-316`); after a failed open there is no file for it to pick.
+- OBSERVED: `9f176c815` applies upstream mupen64plus-core's `8b75435b6d` (2024-07-01, "savestates:
   Only notify SAVECOMPLETE once save is actually done"). Each save function now tells the front end
   itself whether it saved the state, and `savestates_save` tells it only for a type it does not
-  know or when it has no path for the state (`savestates.c:2227-2243`). An M64P write tells it 0
+  know or when it has no path for the state (`savestates.c:2251-2267`). An M64P write tells it 0
   after a failed open or a short `gzwrite` and 1 once `gzwrite` has taken the whole state, and an
-  M64P save that gets no memory for the write tells it 0 (`savestates.c:1516,1529,1540,1559,1578`).
+  M64P save that gets no memory for the write tells it 0 (`savestates.c:1540,1553,1564,1583,1602`).
   REFERENCE (upstream, `src/main/savestates.c:1529,1539,1549-1550` at `3be6336a`): upstream reports
   a failed write while it still holds the lock, as its failure returns keep it (see the first
   bullet). OBSERVED: here the report comes after the lock is released, as it does on the path
-  through `gzclose` in both (`savestates.c:1515-1516,1528-1529,1539-1540`).
-- OBSERVED: this core's write does not check what `gzclose` returns (`savestates.c:1533`);
+  through `gzclose` in both (`savestates.c:1539-1540,1552-1553,1563-1564`).
+- OBSERVED: this core's write does not check what `gzclose` returns (`savestates.c:1557`);
   REFERENCE: nor does upstream's (`src/main/savestates.c:1543` at `3be6336a`). REFERENCE (NDK
   26.1.10909125, `sysroot/usr/include/zlib.h:1683-1693`): `gzclose` writes the output that zlib
   still holds and returns `Z_ERRNO` when a file operation fails. OBSERVED (host build):
@@ -1557,7 +1557,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   full" (GCC 16.2.1 and clang 23.1.3, host zlib-ng-compat 2.3.3).
 - OBSERVED: the PJ64 saves report too: an uncompressed one 0 when it cannot create or fill its file
   and 1 otherwise, without checking `fclose`, and a zip one 1 on every path, as it returns 1 on
-  every path (`savestates.c:2144-2176,2183-2206`; `fclose` at `:2203`). The app saves only M64P
+  every path (`savestates.c:2168-2200,2207-2230`; `fclose` at `:2227`). The app saves only M64P
   states (see "Achievement progress kept with save states").
 - DERIVED: so the app now marks an auto save complete only when the core's write has taken the
   whole state, and Resume passes over one whose open or write failed. An auto save whose end
@@ -1566,7 +1566,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - DERIVED: for an M64P save the report of 1 now reaches the front end just before
   `savestates_save` calls the progress hook: the write reports and returns, `savestates_save_m64p`
   returns 1 and `savestates_save` calls the hook, all on the emulator thread
-  (`savestates.c:1540,1950-1953,2236-2237`; `workqueue.h:59-63`). Apart from creating the marker,
+  (`savestates.c:1564,1974-1977,2260-2261`; `workqueue.h:59-63`). Apart from creating the marker,
   nothing the app does when the report reaches it comes between them: its listener posts the rest
   to another thread (`CoreService.java:325-354`). On its exit path the app also asks the core to
   stop, 500 ms after the report or earlier, as its watchdog asks every 500 ms from the start of the
@@ -1579,7 +1579,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   count at zero (see "Achievement progress kept with save states").
 - OBSERVED (host build): `tools/test-savestate-lock.sh` builds `tools/tests/savestate-lock-test.c`,
   which includes `savestates.c` and hands it states through `queue_work` as `savestates_save_m64p`
-  does (`savestates.c:1950-1951`): one written and read back, one to a missing folder, 1 MiB that
+  does (`savestates.c:1974-1975`): one written and read back, one to a missing folder, 1 MiB that
   zlib cannot shrink written to `/dev/full`, and one more written. After each, the lock must be
   free, and the write must have told the front end once, with the lock free, 1 for a written state
   and 0 for a failed one. The test calls the write directly, so `savestates_save` itself, the
@@ -1588,19 +1588,19 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   reports. With the `savestates.c` from before `4ad1f8b16`, the first run fails its report check
   and the test stops at the missing folder, with the lock still held, and LeakSanitizer reports the
   path and the work item (98 bytes in 2 allocations, with `TMPDIR` unset); a copy of it that
-  releases the lock only after a failed open stops at `/dev/full`. With the one from before this
-  change every run fails its report check, and a copy of the new one that reports a failed write
-  before releasing the lock fails only the two failed writes.
+  releases the lock only after a failed open stops at `/dev/full`. With the one from before
+  `9f176c815` every run fails its report check, and a copy of the new one that reports a failed
+  write before releasing the lock fails only the two failed writes.
 - OBSERVED (host build): for `4ad1f8b16`, `./gradlew :app:assembleDebug` recompiled `savestates.o`
   for all four ABIs with empty ndk-build stderr logs, each packaged core library had the build ID
   of the one that was linked, and in the arm64 object the failed open, the failed write and the
   successful write all ended in one shared tail that freed the three allocations and then jumped
-  to `SDL_UnlockMutex`. For this change,
+  to `SDL_UnlockMutex`. For `9f176c815`,
   `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` recompiled `savestates.o` and the
-  other two files that include `ra_glue.h` (`main.o`, `ra_glue.o`), whose comment this change
-  corrects, for all four ABIs with empty ndk-build stderr logs; each packaged core library has the
-  build ID of the one that was linked, and the 31 unit tests pass. In the arm64 object the shared
-  tail now calls `SDL_UnlockMutex` and then jumps to `StateChanged` with 1 on the path through
+  other two files that include `ra_glue.h` (`main.o`, `ra_glue.o`), whose comment `9f176c815`
+  corrected, for all four ABIs with empty ndk-build stderr logs; each packaged core library had the
+  build ID of the one that was linked, and the 31 unit tests passed. In the arm64 object the shared
+  tail then called `SDL_UnlockMutex` and jumped to `StateChanged` with 1 on the path through
   `gzclose` and 0 after a failed open or write (NDK `llvm-objdump -d -r`).
 
 ### Damaged save states
@@ -1610,7 +1610,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   user saves, with no filter on the name, and gives the core the chosen file's path with no type
   (`GameActivity.java:979-980`; `CoreFragment.java:779-803`; `Prompt.java:268-301,337-341`;
   `FileUtil.java:108-115,148-155`; `CoreService.java:524-531`; `CoreInterface.java:837-842`;
-  `frontend.c:310-311`; `main.c:565-573`; `savestates.c:1384-1408,1452-1458,1477-1481`).
+  `frontend.c:310-311`; `main.c:565-573`; `savestates.c:1408-1432,1476-1482,1501-1505`).
   "Load from auto save…" does the same with the files in the game's folder of auto saves whose
   names end in "sav", and so does Resume, after leaving hardcore, with the latest auto save it
   finds there (`GameActivity.java:983-984`; `CoreFragment.java:805-829`;
@@ -1619,53 +1619,97 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `<header name>.pj<slot>` in the core's folder of slot saves, which the app sets to the game's,
   where the header name is the name in the ROM's header (`CoreService.java:515-522`;
   `CoreInterface.java:825-829`; `main.c:276-279`; `NativeConfigFiles.java:110`;
-  `savestates.c:93-101,1422-1451`; `rom.c:190-192`). The loader takes the size of the RDRAM in
-  the state from the state (`savestates.c:995`), allocates that size plus 0x2754 bytes, a sum
-  computed in 32 bits (`:968,1004-1005`), and reads that much of the state (`:1011-1016`). It
-  copies at most the core's own RDRAM from it (`:1246-1255`), but sets up the registers of one
-  RDRAM module for each 2 MB of the given size (`:1302-1305`), and the core keeps registers
+  `savestates.c:93-101,1446-1475`; `rom.c:190-192`). The loader takes the size of the RDRAM in
+  the state from the state (`savestates.c:1019`), allocates that size plus 0x2754 bytes, a sum
+  computed in 32 bits (`:992,1028-1029`), and reads that much of the state (`:1035-1040`). It
+  copies at most the core's own RDRAM from it (`:1270-1279`), but sets up the registers of one
+  RDRAM module for each 2 MB of the given size (`:1326-1329`), and the core keeps registers
   for 8 modules (`rdram.h:48,52`).
 - REFERENCE (Project64 `develop` at `24376e868350`): Project64 writes 0x25EF3FAC as its states'
   magic number, before the RDRAM size it runs with, and loads states with that one or with
   0x23D8A6C8 (`N64System.h:221-222`; `N64System.cpp:1645,1653-1654,1723-1724,1902,2042`).
-  OBSERVED: this core writes and accepts only 0x23D8A6C8 (`savestates.c:63,1978`): a load that
-  gives the core a file's path turns an unzipped state with another magic number away as a file
-  of unknown type, and the loader's check of the magic number turns away every other one
-  (`savestates.c:988-992,1405-1413,1482`). DERIVED: so Project64's current states never reach the
-  size check.
-- DERIVED: before this change nothing checked that size, so a size of 0xFFFFD8AC or more made the
+  OBSERVED: this core writes and accepts only 0x23D8A6C8 (`savestates.c:63,2002`): a load that
+  gives the core a file's path turns an unzipped state with Project64's newer magic number away
+  as a file of unknown type, and the loader's check of the magic number turns away every other
+  one (`savestates.c:1012-1016,1429-1437,1506`). DERIVED: so Project64's current states never
+  reach the size check.
+- DERIVED: before `a40a5ca6e` nothing checked that size, so a size of 0xFFFFD8AC or more made the
   state's length wrap to less than 0x2754 bytes. The loader then read past the buffer it had
   allocated: at the ROM header when the length was under 0x40 bytes, as for 0xFFFFD8AC
-  (`savestates.c:1019`), and otherwise only if that header matched the running game, at the reads
+  (`savestates.c:1043`), and otherwise only if that header matched the running game, at the reads
   after it. A size of 18 MB or more, in a file long enough to be read and made for the running
   game, set up module registers past the core's 8. A state of any other size below 18 MB loaded if
   the file held all of it and its ROM header matched, with its RDRAM cut, or padded with zeros, to
-  the core's (`:1246-1255`).
-- OBSERVED: this change applies upstream mupen64plus-core's `c5dfc44764` (2026-10-02, "savestates:
+  the core's (`:1270-1279`).
+- OBSERVED: `a40a5ca6e` applies upstream mupen64plus-core's `c5dfc44764` (2026-10-02, "savestates:
   validate Project64 RDRAM size", upstream pull request 1191): a size other than 4 MB or 8 MB is
   refused with "Invalid Project64 state RDRAM size." before anything is allocated
-  (`savestates.c:996-1001`). Upstream compares with its `RDRAM_MAX_SIZE`, which this core does not
+  (`savestates.c:1020-1025`). Upstream compares with its `RDRAM_MAX_SIZE`, which this core does not
   have; this core compares with `RDRAM_8MB_SIZE`, the same 0x800000
   (`mupen64plus-core/upstream/src/device/memory/memory.h:31`; REFERENCE: upstream's
   `src/device/memory/memory.h:30` at `3be6336a`). REFERENCE (upstream `c5dfc44764`): "Allow the
   4 MiB and 8 MiB sizes supported by the format." The core runs with 4 MB or 8 MB of RDRAM
-  (`main.c:1566`), and its own Project64 save always gives 8 MB (`savestates.c:1961,1979`).
+  (`main.c:1566`), and its own Project64 save always gives 8 MB (`savestates.c:1985,2003`).
 - OBSERVED (host build): `tools/test-savestate-load.sh` builds `tools/tests/savestate-load-test.c`,
   which includes `savestates.c` with stand-ins for the parts of the core that it calls. The test
   saves a Project64 state with the core and loads it back, then loads files that hold only the
   start of a state: with 4 MB and 8 MB they pass the size check and stop at "Could not read
   savestate data", and with 6 MB, 16 MB and 0xFFFFD8AC they are refused; none of them reaches the
   event queue. It passes with GCC 16.2.1 and clang 23.1.3, and in a scratch build under clang ASan,
-  UBSan and LeakSanitizer with no reports. With the `savestates.c` from before this change only the
-  6 MB, 16 MB and 0xFFFFD8AC cases fail, and ASan reports the loader reading 64 bytes at the ROM
-  header copy (now `savestates.c:1019`) past the buffer that it allocated for the 0xFFFFD8AC state
-  with a length of 0, which ASan records as a 1-byte region (the allocation is now at `:1005`). A
-  copy of the check that refuses only sizes above 8 MB fails only the 6 MB case.
+  UBSan and LeakSanitizer, where its Project64 cases give no reports. With the `savestates.c` from
+  before `a40a5ca6e`, of its Project64 cases only the 6 MB, 16 MB and 0xFFFFD8AC ones fail, and
+  ASan reports the loader reading 64 bytes at the ROM header copy (now `savestates.c:1043`) past
+  the buffer that it allocated for the 0xFFFFD8AC state with a length of 0, which ASan records as a
+  1-byte region (the allocation is now at `:1029`). A copy of the check that refuses only sizes
+  above 8 MB fails only the 6 MB one of them.
+- OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` recompiled
+  `savestates.o` of `a40a5ca6e` for all four ABIs with empty ndk-build stderr logs; each packaged
+  core library had the build ID of the one that was linked and held "Invalid Project64 state RDRAM
+  size.", and the 31 unit tests passed.
+- OBSERVED: an M64P state keeps the core's event queue as 8-byte entries, a type and a count,
+  ended by an entry that starts with 0xFFFFFFFF; the core's own saves always end it, with at most
+  16 entries (`interrupt.c:292-308`; `cp0.h:136,152`). The loader refuses a state that names
+  another ROM (`savestates.c:258-264`), reads up to 1 KB of the queue into a buffer on its stack
+  and hands that on, and `load_eventqueue_infos` reads entries until it finds the end
+  (`savestates.c:211,277-317,514-515`; `interrupt.c:310-323`). A Project64 state's queue is built
+  by the loader itself, with that end (`savestates.c:1076-1082`).
+- DERIVED: so before this change, an M64P state made for the running game whose queue had no end
+  entry made the core read on until it met a word 0xFFFFFFFF at the start of an entry, or the read
+  faulted: past that buffer for a state of version 1.1 or later, and for a version 1.0 state first
+  through the part of the buffer that the read had not filled. The core keeps at most 16 events and
+  the buffer holds 128 entries, so the events it set up came from inside the buffer, and each entry
+  after them only logged an error (`cp0.h:136`; `interrupt.c:60-69,148-153,315-323`).
+- OBSERVED: this change applies upstream mupen64plus-core's `4f71d580e8` (2026-10-02, "savestates:
+  reject unterminated event queues", merged in upstream pull request 1193): after reading the
+  state, the loader looks for an entry that starts with 0xFFFFFFFF at an 8-byte boundary within
+  what it read, using the length read for a version 1.0 state, and without one refuses the state
+  with "Invalid event queue in savestate" before it parses anything into the emulated machine
+  (`savestates.c:187-198,206,277-281,302,317,323-328`). Before it hands the queue on, it now
+  converts the byte order of only the words it read (`:514`), which does nothing on Android, where
+  no build defines `M64P_BIG_ENDIAN` (`util.c:246-251`; see "Save file formats").
+- OBSERVED (host build): `tools/tests/savestate-load-test.c` also saves M64P states with the core,
+  with event queues from a stand-in, and loads them back: one with an end entry loads, and one
+  without it and one with 0xFFFFFFFF only as a count are refused. It also writes states of version
+  1.0 by hand: one whose 12-byte queue ends with the end entry loads, one with an 8-byte queue and
+  one with none are refused, and one whose queue stops inside an entry is refused by the read
+  check, as it was before. A refused state must not hand its queue on, and must leave markers in
+  the first register the loader restores and in the first word of RDRAM, which a load that
+  restores the machine clears. The test passes with GCC 16.2.1 and clang 23.1.3, and under clang
+  ASan and LeakSanitizer with no reports; UBSan reports misaligned loads where the M64P loader
+  reads values from the state (`savestates.c:467-472,810-828,884-891,901-904`), with or without
+  this change. With the `savestates.c` from before this change only the four refusals fail. With
+  copies that check the queue after the parse, or after the registers are restored but before
+  RDRAM is, they fail only at the markers, and with a copy that compares with `<` where upstream
+  has `<=` only the 12-byte version 1.0 state fails. With a stand-in for
+  `load_eventqueue_infos` that reads the queue as `interrupt.c` does, ASan reports that code
+  reading past the loader's 1 KB queue buffer on the stack, and nothing with this change.
 - OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` recompiled
   `savestates.o` for all four ABIs with empty ndk-build stderr logs; each packaged core library has
-  the build ID of the one that was linked and holds the new message, and the 31 unit tests pass.
+  the build ID of the one that was linked and holds "Invalid event queue in savestate", and the 31
+  unit tests pass.
 - Not yet verified on device: loading a Project64 state with the magic number 0x23D8A6C8 through
-  any of the loads above.
+  any of the loads above, and loading the core's own M64P states with the check of their event
+  queue.
 
 ### Benchmark result toast
 - OBSERVED: with "Benchmark mode" on in the display settings (`preferences_display.xml:136-140`;
