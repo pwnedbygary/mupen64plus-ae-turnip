@@ -25,6 +25,7 @@ done
 "$cc" -std=gnu11 -w -pthread -ffunction-sections -fdata-sections \
   "${includes[@]}" tools/tests/savestate-lock-test.c "${objects[@]}" \
   -Wl,--gc-sections -lz -o "$work/savestate-lock-test"
-# The test's state folder goes under $work, so the trap removes it even after a crash.
+# The test's state folder goes under $work, so the trap removes it even
+# after a crash.
 TMPDIR="$work" "$work/savestate-lock-test"
 echo "Save state lock check passed"

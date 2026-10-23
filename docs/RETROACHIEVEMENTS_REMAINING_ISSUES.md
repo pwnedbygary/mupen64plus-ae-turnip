@@ -146,7 +146,7 @@ token-handling items and the remaining device-verification gaps.
   `run-as`, the app's preferences): the debug package is `3.0.338 11f5f3b9`, last updated at 16:52
   on 2026-10-21; RetroAchievements was on and hardcore off; the device runs Android 13. DERIVED:
   the version name ends with the short hash of the commit it was built from, `11f5f3b96`
-  (`version_common.gradle:12`), which differs from `017e35574` only by two menu icons; the
+  (`version_common.gradle:12,19`), which differs from `017e35574` only by two menu icons; the
   build sent "Mupen64Turnip/3.0.338 (Android 13)" (see "User-Agent").
 - OBSERVED (device): the tester started Mario Tennis from the gallery at 01:26. At 01:30:36.229,
   4 minutes 22.5 seconds after the service started, the app logged the unlock event of
@@ -1456,7 +1456,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   save (see "Achievement progress kept with save states"). Loading an M64P state whose file opens
   takes the same lock (`savestates.c:203`, called at `:1473`), and so does an M64P save
   (`:1498`). A load whose file is missing or cannot be opened stops before that
-  (`:1436-1441,1456-1461`), and loading a PJ64 state never takes the lock.
+  (`:1436-1441,1456-1461`), and loading a PJ64 state never takes the lock (`:963,1320,1355`).
 - DERIVED: so after one failed write, as with full storage or a state folder that is gone, the
   emulator thread's next M64P save, or its next load of an M64P state that exists, waited for
   itself and the game froze. Not seen on a device.
@@ -1480,6 +1480,39 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   one that was linked. In the arm64 object, the failed open, the failed write and the successful
   write all end in one shared tail that frees the three allocations and then jumps to
   `SDL_UnlockMutex` (NDK `llvm-objdump -d -r`).
+
+### Benchmark result toast
+- OBSERVED: with "Benchmark mode" on in the display settings (`preferences_display.xml:136-140`;
+  `strings.xml:431-432`), a session that runs the parallel plugin outside netplay averages the
+  frame rate for 30 seconds, then shows the result in a toast and stores it under the GPU driver's
+  name, which is empty for the device's own driver, so results with that driver are not stored
+  (`CoreService.java:220,912-923,1667-1688,1700-1716`). That toast now goes through the method
+  that posts the resume and cheats notices to the main thread, which now passes format arguments
+  on (`:398-406,417,889,1714-1715`). This is outside RetroAchievements; it was an open item here.
+- OBSERVED: `Notifier` has one `showToast` for a string resource, and it takes format arguments
+  (`Notifier.java:79-82`), so the resume and cheats notices, which pass none, make the same call
+  as before.
+- DERIVED: the frame rate reaches `onFpsChanged` on the emulation thread. The parallel plugin
+  swaps buffers from the core's screen update in its frame interrupt (`vi_controller.c:179`;
+  `mupen64plus-video-parallel/upstream/gfx_m64p.c:281-284`; `parallel_imp.cpp:134,144`;
+  `glguts.c:400`). The plugin's swap is the core's `VidExt_GL_SwapBuffers` (`glguts.c:296`), which
+  calls the swap that ae-bridge gives the core (`vidext.c:84-86,684-688`; `ae_bridge.cpp:577-581`;
+  `CoreInterface.java:578`), and that swap counts frames and calls back into Java on that thread
+  (`ae_bridge.cpp:397-407,453-460`; `CoreInterface.java:207-211`), whose listener is the service
+  (`CoreService.java:1271`). So until this change the result toast was made on that thread, and
+  on Android 6 to 10 it never showed (see the `Toast` REFERENCE under "Save states and Resume
+  under hardcore"); from Android 11 it shows either way. Not verified on a device running
+  Android 6 to 10.
+- OBSERVED (device, 2026-10-21): each part of the toast's new route has shown on the Retroid
+  Pocket 6: a notice posted through that method (the resume notice) and a toast made by the same
+  `Notifier.showToast` with a format argument ("Saving slot 0…", `CoreService.java:511`); see
+  "Device verification (debug build `3.0.338 017e3557`, Retroid Pocket 6, 2026-10-21)". This
+  change itself was not run on a device, and no recorded run has used "Benchmark mode".
+- OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes
+  with every unit test. In `javap -c -p` of the compiled classes, `finishBenchmark` passes the
+  result and the driver's name as two format arguments, the method's lambda hands them on to
+  `Notifier.showToast(Context, int, Object...)`, the cheats and resume notices pass an empty
+  array, and no class of `CoreService` calls the `Notifier.showToast` that takes a string.
 
 ### Compliance checklist
 Each requirement of RetroAchievements' compliance page (revision `361119b677dc`) and its state on
@@ -1616,14 +1649,6 @@ parent and its first public release (see D) and the core's database patches (see
   an unlock that arrives while repeated taps on a blocked control fill the queue, go unannounced.
   A "disabled" toast that follows a notice waits for it, up to 3.5 seconds for each notice ahead
   of it. The achievement list still shows every unlock.
-- DERIVED: outside RetroAchievements, the GPU-driver benchmark's result toast
-  (`CoreService.java:1714`) is made on the emulation job's thread, as the cheats toast was, so on
-  Android 6 to 10 it does not show. The benchmark runs only with the parallel plugin (`:913-914`),
-  which swaps buffers from the core's screen update in its frame interrupt (`vi_controller.c:179`;
-  `mupen64plus-video-parallel/upstream/gfx_m64p.c:281-284`; `parallel_imp.cpp:134,144`;
-  `glguts.c:400`). The swap counts frames and calls back into Java on that thread
-  (`ae_bridge.cpp:397-407,453-460`; `CoreInterface.java:207-211`), which reaches
-  `finishBenchmark` (`CoreService.java:1668-1678`). Not seen on a device.
 - DERIVED: `rc_client_destroy` frees none of the work rcheevos has scheduled
   (`rc_client.c:191-227`), and unloading the game takes only its ping off that list
   (`:3185-3198`). OBSERVED (host build): in the session test, LeakSanitizer reports 88 bytes for

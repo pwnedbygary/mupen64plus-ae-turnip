@@ -399,10 +399,10 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
      * Shows a toast from the emulation thread. Before Android 11 a toast shows through the looper
      * of the thread that made it, and this thread's looper is busy until emulation ends.
      */
-    private void showToastFromEmulationThread(int messageId)
+    private void showToastFromEmulationThread(int messageId, Object... formatArgs)
     {
         new Handler(Looper.getMainLooper()).post(() ->
-                Notifier.showToast(getApplicationContext(), messageId));
+                Notifier.showToast(getApplicationContext(), messageId, formatArgs));
     }
 
     /**
@@ -1711,6 +1711,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         String message = getApplicationContext().getString(R.string.gpuDriver_benchmarkResult,
                 result, mBenchmarkDriverName);
         Log.i(TAG, "Driver benchmark finished: " + message);
-        Notifier.showToast(getApplicationContext(), message);
+        showToastFromEmulationThread(R.string.gpuDriver_benchmarkResult, result,
+                mBenchmarkDriverName);
     }
 }
