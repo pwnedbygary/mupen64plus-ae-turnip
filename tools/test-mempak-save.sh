@@ -8,7 +8,8 @@ includes=(
   -isystem mupen64plus-core/upstream/subprojects/md5
   -I mupen64plus-core/upstream/src
 )
-# The core's file helpers. Their warnings are off, as they are not edited here.
+# The core's file helpers. Their warnings are off, as this test checks the pak
+# code built below, not them.
 objects=()
 for source in mupen64plus-core/upstream/src/main/util.c \
               mupen64plus-core/upstream/src/osal/files_unix.c; do
