@@ -9,7 +9,8 @@ refuses only loading (see "Save states and Resume under hardcore").
 This file lists what is still open. Evidence labels: OBSERVED = read from current source, or
 seen in a named run such as "OBSERVED (host JVM)"; DERIVED = inferred from code paths;
 REFERENCE = read from a pinned outside source (RetroAchievements server or client source or
-documentation, AOSP, libretro, or upstream mupen64plus-core); HYPOTHESIS = plausible but untested.
+documentation, AOSP, libretro, POSIX, or upstream mupen64plus-core); HYPOTHESIS = plausible but
+untested.
 Mode names: this file uses rcheevos's name, softcore, for the mode that RetroAchievements and the
 app's text now call casual.
 Issue #15 has its own section at the end; the rest are device verification results, deferred
@@ -764,7 +765,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   debugging complex achievement logic and ensures proper functionality in casual mode."
 - OBSERVED: the core calls `ra_glue_state_saved` after a save and `ra_glue_state_loaded` after a
   load, only when the save or load function reports success, with the state's path and the
-  console RAM (`savestates.c:1478-1479,2215-2216`; declared without `EXPORT`, `ra_glue.h:48-54`).
+  console RAM (`savestates.c:1478-1479,2221-2222`; declared without `EXPORT`, `ra_glue.h:48-54`).
   Both run on the emulator thread, which runs the core's save and load jobs
   (`interrupt.c:554-556,654-656`). A save writes the loaded game's progress, as rcheevos
   serializes it (`ra_glue.c:1462-1482`), to
@@ -776,11 +777,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   old file (`ra_glue.c:1509-1528`). So a state saved before the game has loaded keeps no
   progress, even while progress from a state loaded earlier waits for the game (next bullet).
 - OBSERVED: an M64P save reports success once it has passed the file write to `queue_work`, even
-  if that write then fails to open or write the file (`savestates.c:1492-1517,1933-1936`). The
+  if that write then fails to open or write the file (`savestates.c:1492-1523,1939-1942`). The
   app's core build, `mupen64plus-core/mupen64plus-core.mk`, does not define `M64P_PARALLEL` or
   compile `workqueue.c` (only upstream's `projects/unix/Makefile:162` defines it), so `queue_work`
   runs the write at once, before the save hook (`workqueue.h:42-63`). A PJ64 zip save also reports
-  success when its write fails (`savestates.c:2127-2158`), but the app saves only M64P states
+  success when its write fails (`savestates.c:2133-2164`), but the app saves only M64P states
   (`CoreInterface.java:834,850` pass type 1, `savestates_type_m64p` in `savestates.h:35-40`).
 - OBSERVED: a load reads that file and applies it only if the RAM size and the CRC-32 in it match
   the RAM the core has just restored (`ra_glue.c:1426-1459`). Otherwise, or without a file, rcheevos
@@ -1385,6 +1386,45 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   yet verified on device: an unlock made with the network off, the session closed, and the game
   started again with the network on, which should show the "recorded" notice and leave the file
   empty.
+
+### Failed save-state writes
+- OBSERVED: before this change, an M64P save that could not open its file, or could not write all
+  of it, returned without releasing `savestates_lock` and without freeing the state's path and
+  work item (`savestates.c:1503-1517` at `7f2379e26`). REFERENCE: in upstream mupen64plus-core's
+  `master` (`3be6336a`) the same two returns keep the lock, though there they also report the
+  failure to the front end (`src/main/savestates.c:1525-1541` there).
+- OBSERVED: the lock is a pthread mutex made with default attributes
+  (`ndkLibs/SDL2_stub/SDL.h:221-224,460-496,521-532`). REFERENCE: bionic's default mutex type is
+  `PTHREAD_MUTEX_NORMAL` (NDK 26.1.10909125, `sysroot/usr/include/pthread.h:46,53`), and POSIX
+  says that a thread relocking such a mutex deadlocks (POSIX.1-2017, `pthread_mutex_lock`).
+- OBSERVED: the app's core build runs the write at once, on the emulator thread that asked for the
+  save (see "Achievement progress kept with save states"). Loading an M64P state whose file opens
+  takes the same lock (`savestates.c:203`, called at `:1473`), and so does an M64P save
+  (`:1498`). A load whose file is missing or cannot be opened stops before that
+  (`:1436-1441,1456-1461`), and loading a PJ64 state never takes the lock.
+- DERIVED: so after one failed write, as with full storage or a state folder that is gone, the
+  emulator thread's next M64P save, or its next load of an M64P state that exists, waited for
+  itself and the game froze. Not seen on a device.
+- OBSERVED: both returns now free the path and the work item and release the lock, as a
+  successful write does (`savestates.c:1503-1531`).
+- OBSERVED, unchanged: a failed write is still reported as a saved state (see "Achievement
+  progress kept with save states"). DERIVED: so the app also marks a failed auto save as
+  complete, unless it cannot create the marker file either, as when the folder is gone
+  (`CoreService.java:325-342`).
+- OBSERVED (host build): `tools/test-savestate-lock.sh` builds `tools/tests/savestate-lock-test.c`,
+  which includes `savestates.c` and hands it states through `queue_work` as `savestates_save_m64p`
+  does (`savestates.c:1939-1940`): one written and read back, one to a missing folder, 1 MiB that
+  zlib cannot shrink written to `/dev/full`, and one more written. After each, the lock must be
+  free. It passes with GCC 16.2.1 and clang 23.1.3, and in a scratch build under clang ASan,
+  UBSan and LeakSanitizer with no reports. With the `savestates.c` from before this change it
+  stops at the missing folder, with the lock still held, and LeakSanitizer reports the path and
+  the work item (98 bytes in 2 allocations, with `TMPDIR` unset); a copy that releases the lock
+  only after a failed open stops at `/dev/full`.
+- OBSERVED (host build): `./gradlew :app:assembleDebug` recompiled `savestates.o` for all four
+  ABIs with empty ndk-build stderr logs, and each packaged core library has the build ID of the
+  one that was linked. In the arm64 object, the failed open, the failed write and the successful
+  write all end in one shared tail that frees the three allocations and then jumps to
+  `SDL_UnlockMutex` (NDK `llvm-objdump -d -r`).
 
 ### Compliance checklist
 Each requirement of RetroAchievements' compliance page (revision `361119b677dc`) and its state on

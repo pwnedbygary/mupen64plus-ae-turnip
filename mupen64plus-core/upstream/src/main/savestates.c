@@ -1504,6 +1504,9 @@ static void savestates_save_m64p_work(struct work_struct *work)
     {
         main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Could not open state file: %s", save->filepath);
         free(save->data);
+        free(save->filepath);
+        free(save);
+        SDL_UnlockMutex(savestates_lock);
         return;
     }
 
@@ -1513,6 +1516,9 @@ static void savestates_save_m64p_work(struct work_struct *work)
         main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Could not write data to state file: %s", save->filepath);
         gzclose(f);
         free(save->data);
+        free(save->filepath);
+        free(save);
+        SDL_UnlockMutex(savestates_lock);
         return;
     }
 
