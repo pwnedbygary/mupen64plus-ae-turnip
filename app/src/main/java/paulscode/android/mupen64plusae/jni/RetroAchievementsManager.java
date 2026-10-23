@@ -1,5 +1,6 @@
 package paulscode.android.mupen64plusae.jni;
 
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -11,7 +12,10 @@ import com.sun.jna.Native;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import paulscode.android.mupen64plusae.BuildConfig;
+
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -22,6 +26,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Java-side driver for the native RetroAchievements glue (see
@@ -36,8 +42,9 @@ import java.util.concurrent.Executors;
  *    thread;
  *  - expose login / load-game / progress / hardcore operations to the UI.
  *
- * The native client is internally mutex-protected, so its API may be called
- * from the emu thread and from Java threads. All ra_glue_* entry points are
+ * rcheevos does not lock every call, so the client must not be shut down or
+ * logged out, nor its game replaced by loadGame(), while another thread can
+ * still use them (see the top of ra_glue.c). All ra_glue_* entry points are
  * exported by the core .so (see api_export.ver).
  *
  * This class is a process-wide singleton: rcheevos must outlive individual
@@ -51,28 +58,38 @@ public class RetroAchievementsManager {
 
     /**
      * RetroAchievements negotiates client capabilities (including hardcore unlocks) from the
-     * User-Agent, which must carry a numeric product version.
+     * User-Agent, which must name this emulator and carry a numeric product version.
      */
-    private static final String USER_AGENT = "Mupen64PlusAE/3.0 (Android)";
+    private static final String USER_AGENT =
+            userAgent(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, Build.VERSION.RELEASE);
     private static final String DEFAULT_CONTENT_TYPE = "application/x-www-form-urlencoded";
 
-    /** Large enough for any realistic achievement list / progress blob. */
+    /** Size of the first buffer for text read from the glue. */
     private static final int TEXT_BUFFER_SIZE = 128 * 1024;
-    private static final int PROGRESS_BUFFER_SIZE = 64 * 1024;
-    private static final int PROGRESS_BUFFER_MAX = 1024 * 1024;
+    /** The achievement list covers every set the game loaded, so it may grow the buffer to this. */
+    private static final int ACHIEVEMENTS_BUFFER_MAX = 2 * 1024 * 1024;
 
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 30000;
+    private static final Connector URL_CONNECTOR =
+            url -> (HttpURLConnection) new URL(url).openConnection();
 
     /** rc_client async result code passed to {@link Listener#onRaAsyncResult}: RC_OK == 0; non-zero is an error. */
     public static final int RESULT_OK = 0;
 
+    /**
+     * Achievement IDs from this one up belong to the server's client warning, not to the game.
+     * Must match RC_CLIENT_ACHIEVEMENT_WARNING_ID in rcheevos/src/rc_client.c.
+     */
+    public static final long WARNING_ACHIEVEMENT_ID = 101000001L;
+
     public interface Listener {
         /**
-         * A native rcheevos event. {@code type} is the parsed event type
-         * (achievement, server_error, reset, game_completed,
-         * leaderboard_started, leaderboard_failed, leaderboard_submitted),
-         * {@code json} is the raw event payload.
+         * A native rcheevos event. {@code type} is the parsed event type (achievement,
+         * challenge_show, challenge_hide, progress_show, progress_update, progress_hide,
+         * server_error, disconnected, reconnected, reset, game_completed, leaderboard_started,
+         * leaderboard_failed, leaderboard_submitted, tracker_show, tracker_update,
+         * tracker_hide, unsent_done), {@code json} is the raw event payload.
          */
         void onRaEvent(String type, String json);
 
@@ -179,6 +196,17 @@ public class RetroAchievementsManager {
 
     // ---- session ---------------------------------------------------------
 
+    /**
+     * Keeps the unlocks and leaderboard entries the server has not answered in {@code file}, and
+     * sends those of the signed-in player again after each sign-in. Set it before signing in, and
+     * from one process only; {@code null} keeps none.
+     *
+     * @return false when the native side ran out of memory.
+     */
+    public boolean setUnsentFile(@Nullable File file) {
+        return mCore.ra_glue_set_unsent_path(file != null ? file.getAbsolutePath() : null) != 0;
+    }
+
     /** @return true if the async login request was started. */
     public boolean login(String username, String password) {
         if (!initialize()) {
@@ -244,7 +272,7 @@ public class RetroAchievementsManager {
 
     @Nullable
     public String getAchievementsJson() {
-        return readText(mCore::ra_glue_get_achievements_json);
+        return readText(mCore::ra_glue_get_achievements_json, ACHIEVEMENTS_BUFFER_MAX);
     }
 
     @Nullable
@@ -264,86 +292,18 @@ public class RetroAchievementsManager {
         return mInitialized && mCore.ra_glue_get_hardcore() != 0;
     }
 
-    // ---- progress persistence -------------------------------------------
-
-    /** @return serialized progress bytes, or null if unavailable/not loaded. */
-    @Nullable
-    public byte[] serializeProgress() {
-        if (!mInitialized) {
-            return null;
-        }
-
-        int capacity = PROGRESS_BUFFER_SIZE;
-        while (capacity <= PROGRESS_BUFFER_MAX) {
-            byte[] buffer = new byte[capacity];
-            int written = mCore.ra_glue_serialize_progress(buffer, buffer.length);
-            if (written > 0) {
-                byte[] result = new byte[written];
-                System.arraycopy(buffer, 0, result, 0, written);
-                return result;
-            }
-            // -1: either no game loaded or the buffer was too small; grow and retry.
-            capacity *= 4;
-        }
-        return null;
-    }
-
-    /** @return true if the progress blob was accepted by the client (glue returns 1 on success). */
-    public boolean deserializeProgress(byte[] progress) {
-        if (!mInitialized || progress == null || progress.length == 0) {
-            return false;
-        }
-        return mCore.ra_glue_deserialize_progress(progress, progress.length) != 0;
-    }
-
-    /** Call periodically while emulation is paused so achievements still tick. */
-    public void idle() {
-        if (mInitialized) {
-            mCore.ra_glue_idle();
-        }
-    }
-
     // ---- native -> Java bridge ------------------------------------------
 
     private void onServerCall(int requestId, String url, String postData, String contentType) {
         mHttpExecutor.execute(() -> {
-            byte[] body;
-            int status;
-
-            try {
-                HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-                connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-                connection.setReadTimeout(READ_TIMEOUT_MS);
-                connection.setRequestProperty("User-Agent", USER_AGENT);
-
-                if (postData != null && !postData.isEmpty()) {
-                    connection.setRequestMethod("POST");
-                    connection.setDoOutput(true);
-                    connection.setRequestProperty("Content-Type",
-                            (contentType != null && !contentType.isEmpty()) ? contentType : DEFAULT_CONTENT_TYPE);
-
-                    byte[] payload = postData.getBytes(StandardCharsets.UTF_8);
-                    connection.setFixedLengthStreamingMode(payload.length);
-                    try (OutputStream output = connection.getOutputStream()) {
-                        output.write(payload);
-                    }
-                } else {
-                    connection.setRequestMethod("GET");
-                }
-
-                status = connection.getResponseCode();
-                InputStream input = (status >= HttpURLConnection.HTTP_BAD_REQUEST)
-                        ? connection.getErrorStream() : connection.getInputStream();
-                body = readAll(input);
-                connection.disconnect();
-            } catch (IOException e) {
-                // Hand the error back to rcheevos as a retryable client error with a message body.
-                Log.w(TAG, "RA request failed: " + e.getMessage());
-                body = ("RA network error: " + e.getMessage()).getBytes(StandardCharsets.UTF_8);
-                status = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
+            ServerResponse response = request(URL_CONNECTOR, url, postData, contentType);
+            if (response.failure instanceof IOException) {
+                Log.w(TAG, "RA request failed: " + response.failure.getMessage());
+            } else if (response.failure != null) {
+                Log.w(TAG, "RA request failed", response.failure);
             }
-
-            mCore.ra_glue_dispatch_server_response(requestId, body, body.length, status);
+            mCore.ra_glue_dispatch_server_response(requestId, response.body, response.body.length,
+                    response.status);
         });
     }
 
@@ -384,21 +344,113 @@ public class RetroAchievementsManager {
 
     // ---- helpers ---------------------------------------------------------
 
-    private interface TextGetter {
+    interface TextGetter {
         int get(byte[] buffer, int bufferSize);
     }
 
     @Nullable
-    private String readText(TextGetter getter) {
-        byte[] buffer = new byte[TEXT_BUFFER_SIZE];
-        if (getter.get(buffer, buffer.length) == 0) {
-            return null;
+    private static String readText(TextGetter getter) {
+        return readText(getter, TEXT_BUFFER_SIZE);
+    }
+
+    /**
+     * The glue's JSON getters return 0 both when they fail and when the text does not fit, so the
+     * buffer grows fourfold up to {@code maxSize} before the text counts as unavailable. The other
+     * getters cut the text to the buffer instead.
+     */
+    @Nullable
+    static String readText(TextGetter getter, int maxSize) {
+        for (int size = TEXT_BUFFER_SIZE; size <= maxSize; size *= 4) {
+            byte[] buffer = new byte[size];
+            if (getter.get(buffer, buffer.length) != 0) {
+                int length = 0;
+                while (length < buffer.length && buffer[length] != 0) {
+                    ++length;
+                }
+                return new String(buffer, 0, length, StandardCharsets.UTF_8);
+            }
         }
-        int length = 0;
-        while (length < buffer.length && buffer[length] != 0) {
-            ++length;
+        return null;
+    }
+
+    /**
+     * The User-Agent in the format RetroAchievements asks for, "Name/version (OS version)": for
+     * the version name "3.0.338 06aedfe1", which the build makes from the version and the git
+     * commit, it is "Mupen64Turnip/3.0.338 (Android 13)" on Android 13. The version code stands in
+     * for a name without a leading number, and an unknown Android release is left out.
+     */
+    static String userAgent(String versionName, int versionCode, @Nullable String androidRelease) {
+        // Not a static field: USER_AGENT calls this during class initialization, before the
+        // fields declared after it are set.
+        Matcher version = Pattern.compile("\\d+(\\.\\d+)*").matcher(versionName);
+        String userAgent = "Mupen64Turnip/" + (version.lookingAt() ? version.group() : versionCode);
+        if (androidRelease == null || androidRelease.isEmpty()) {
+            return userAgent;
         }
-        return new String(buffer, 0, length, StandardCharsets.UTF_8);
+        return userAgent + " (Android " + androidRelease + ")";
+    }
+
+    /** Opens the connection for one request. */
+    interface Connector {
+        HttpURLConnection open(String url) throws IOException;
+    }
+
+    /** The answer handed to rcheevos for one request. */
+    static final class ServerResponse {
+        final int status;
+        final byte[] body;
+        /** The exception that ended the request, or null when the server's answer was read. */
+        @Nullable final Exception failure;
+
+        ServerResponse(int status, byte[] body, @Nullable Exception failure) {
+            this.status = status;
+            this.body = body;
+            this.failure = failure;
+        }
+    }
+
+    /**
+     * Sends one request. A failure is answered as a client error that rcheevos retries, so the
+     * request still ends with an answer, and no exception leaves the executor's thread, where
+     * Android's default handler would kill the process.
+     */
+    static ServerResponse request(Connector connector, String url, @Nullable String postData,
+            @Nullable String contentType) {
+        try {
+            HttpURLConnection connection = connector.open(url);
+            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            connection.setReadTimeout(READ_TIMEOUT_MS);
+            connection.setRequestProperty("User-Agent", USER_AGENT);
+
+            if (postData != null && !postData.isEmpty()) {
+                connection.setRequestMethod("POST");
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type",
+                        (contentType != null && !contentType.isEmpty()) ? contentType : DEFAULT_CONTENT_TYPE);
+
+                byte[] payload = postData.getBytes(StandardCharsets.UTF_8);
+                connection.setFixedLengthStreamingMode(payload.length);
+                try (OutputStream output = connection.getOutputStream()) {
+                    output.write(payload);
+                }
+            } else {
+                connection.setRequestMethod("GET");
+            }
+
+            int status = connection.getResponseCode();
+            InputStream input = (status >= HttpURLConnection.HTTP_BAD_REQUEST)
+                    ? connection.getErrorStream() : connection.getInputStream();
+            byte[] body = readAll(input);
+            connection.disconnect();
+            return new ServerResponse(status, body, null);
+        } catch (IOException e) {
+            return new ServerResponse(RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR,
+                    ("RA network error: " + e.getMessage()).getBytes(StandardCharsets.UTF_8), e);
+        } catch (RuntimeException e) {
+            // As after a network failure, rcheevos then sends an unlock again instead of dropping it.
+            return new ServerResponse(RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR,
+                    ("RA request error: " + e).getBytes(StandardCharsets.UTF_8), e);
+        }
     }
 
     private static byte[] readAll(@Nullable InputStream input) throws IOException {

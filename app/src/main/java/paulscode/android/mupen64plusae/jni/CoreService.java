@@ -41,15 +41,18 @@ import android.os.Message;
 import android.os.Process;
 import android.os.Vibrator;
 import android.text.TextUtils;
-import android.util.Base64;
 import android.util.Log;
 import android.util.SparseArray;
 import android.view.Surface;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
+
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import paulscode.android.mupen64plusae.R;
 
@@ -158,13 +161,23 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     // RetroAchievements client state for the current game (null when disabled/inactive).
     // Written on the main thread, read on the service handler thread.
     private volatile String mRaGameMd5 = null;
-    private volatile boolean mRaProgressRestored = false;
+    // Whether the session's mode notice has been shown. Main thread only.
+    private boolean mRaModeShown = false;
 
     // Latched when the session's login/load fails terminally (bad credentials, offline, unsupported
     // game, or a request that never started). rc_client does not expose ABORTED through
     // get_load_game_state(), so this latch is the reliable terminal signal. Written on the main
     // thread from onRaAsyncResult, read on the service handler thread by isRaHardcore().
     private volatile boolean mRaSessionFailed = false;
+
+    // Set by the first start command. A later one comes from a new GameActivity for the game that
+    // is already running, so it must not log in again, clear mRaSessionFailed or re-arm hardcore.
+    private boolean mRaStartAttempted = false;
+
+    // The credential of the login in flight, NONE when no login is in flight. rc_client results
+    // carry no request ID, so the session makes one request at a time: login, a password login
+    // after a rejected token, then loadGame. Main thread only.
+    private RaSignInRules.Credential mRaLoginCredential = RaSignInRules.Credential.NONE;
     private String mRomCrc = null;
     private String mRomHeaderName = null;
     private byte mRomCountryCode = 0;
@@ -290,18 +303,6 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void autoSaveState(final boolean shutdownOnFinish)
     {
-        // Hardcore forbids save states. The shutdown flow normally completes via the
-        // save-complete callback, so it must be finished explicitly here.
-        if (isRaHardcore()) {
-            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreBlocked);
-            if (shutdownOnFinish) {
-                mIsShuttingDown = true;
-                mCoreInterface.setVolume(0);
-                mShutdownHandler.postDelayed(this::shutdownEmulator, 500);
-            }
-            return;
-        }
-
         final String latestSave = mGameDataManager.getAutoSaveFileName();
 
         // Auto-save in case device doesn't resume properly (e.g. OS kills process, battery dies, etc.)
@@ -374,7 +375,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         }
 
         // Terminal failure (bad credentials, offline, unsupported game, request never started):
-        // no achievement session exists or can exist, so release instead of blocking saves forever.
+        // no session exists or can exist, so release the hardcore rules for the rest of the game.
         // This is the deliberate pending-vs-aborted policy: pending enforces, aborted releases.
         if (mRaSessionFailed) {
             return false;
@@ -395,14 +396,37 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     }
 
     /**
-     * Blocks an action that hardcore mode forbids, notifying the player. Package-private so the UI
-     * can ask before prompting for an action the service would deny.
-     * @return true if blocked.
+     * Shows a toast from the emulation thread. Before Android 11 a toast shows through the looper
+     * of the thread that made it, and this thread's looper is busy until emulation ends.
      */
-    boolean blockIfRaHardcore()
+    private void showToastFromEmulationThread(int messageId, Object... formatArgs)
+    {
+        new Handler(Looper.getMainLooper()).post(() ->
+                Notifier.showToast(getApplicationContext(), messageId, formatArgs));
+    }
+
+    /**
+     * RetroAchievements requires a session resumed from a save state to run in casual mode. Runs on
+     * the emulation thread before the auto save loads and emulation starts: rcheevos activates the
+     * game's achievements only in the emulator's frames, so it gets the change first.
+     */
+    private void leaveRaHardcoreForResume()
     {
         if (isRaHardcore()) {
-            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreBlocked);
+            RetroAchievementsManager.getInstance().setHardcore(false);
+            showToastFromEmulationThread(R.string.ra_resumeHardcoreOff);
+        }
+    }
+
+    /**
+     * Blocks loading a save state, which hardcore mode forbids, notifying the player. Hardcore
+     * mode allows creating one.
+     * @return true if blocked.
+     */
+    private boolean blockIfRaHardcoreLoad()
+    {
+        if (isRaHardcore()) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreLoadBlocked);
             return true;
         }
         return false;
@@ -410,11 +434,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void saveState(String filename, boolean overwriting)
     {
-        if (blockIfRaHardcore()) {
-            return;
-        }
         File currentSaveStateFile = new File( mGamePrefs.getUserSaveDir() + "/" + filename );
-        // Announce only the action that will actually happen; hardcore denials already returned.
         // The overwrite decision comes from the UI that showed the confirmation dialog, so the
         // announcement cannot disagree with it and there is no second exists() check.
         Notifier.showToast(getApplicationContext(),
@@ -458,6 +478,9 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     {
         if (!mUsingNetplay) {
             boolean state = mCoreInterface.emuGetFramelimiter();
+            if (!RaHardcoreRules.isFramelimiterToggleAllowed(state) && blockIfRaHardcoreSpeedControl()) {
+                return;
+            }
             mCoreInterface.emuSetFramelimiter( !state );
         }
     }
@@ -485,16 +508,13 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void saveSlot()
     {
-        if (blockIfRaHardcore()) {
-            return;
-        }
         Notifier.showToast(getApplicationContext(), R.string.toast_savingSlot, getSlot());
         mCoreInterface.emuSaveSlot();
     }
 
     void loadSlot()
     {
-        if (blockIfRaHardcore()) {
+        if (blockIfRaHardcoreLoad()) {
             return;
         }
         Notifier.showToast(getApplicationContext(), R.string.toast_loadingSlot, getSlot());
@@ -503,7 +523,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void loadState(File file)
     {
-        if (blockIfRaHardcore()) {
+        if (blockIfRaHardcoreLoad()) {
             return;
         }
         Notifier.showToast(getApplicationContext(), R.string.toast_loadingFile, file.getName());
@@ -516,17 +536,30 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     }
 
     /**
-     * Blocks a speed request that hardcore mode forbids (fast-forward), notifying the player and
-     * forcing the core back to baseline. Package-private so the UI can ask before changing its
-     * speed state.
+     * Blocks a speed request that hardcore mode forbids (anything but normal speed), notifying the
+     * player and forcing the core back to baseline. Package-private so the UI can ask before
+     * changing its speed state.
      * @return true if blocked.
      */
-    boolean blockIfRaHardcoreFastForward(int speed)
+    boolean blockIfRaHardcoreSpeed(int speed)
     {
-        // Slowing back to baseline stays allowed so an already-fast session can come into compliance.
-        if (isRaHardcore() && speed > CoreFragment.BASELINE_SPEED) {
-            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreFastForwardBlocked);
+        if (!RaHardcoreRules.isSpeedAllowed(speed) && isRaHardcore()) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreSpeedBlocked);
             mCoreInterface.emuSetSpeed( CoreFragment.BASELINE_SPEED );
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Blocks a speed control that hardcore mode forbids (frame limiter toggle, frame advance),
+     * notifying the player.
+     * @return true if blocked.
+     */
+    private boolean blockIfRaHardcoreSpeedControl()
+    {
+        if (isRaHardcore()) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreSpeedBlocked);
             return true;
         }
         return false;
@@ -534,7 +567,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void setCustomSpeed(int value)
     {
-        if (blockIfRaHardcoreFastForward(value)) {
+        if (blockIfRaHardcoreSpeed(value)) {
             return;
         }
         mCoreInterface.emuSetSpeed( value );
@@ -550,12 +583,16 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
     void advanceFrame()
     {
+        if (mUsingNetplay || blockIfRaHardcoreSpeedControl()) {
+            return;
+        }
         mCoreInterface.emuAdvanceFrame();
     }
 
     void emuGameShark(boolean pressed)
     {
-        if (blockIfRaHardcore()) {
+        if (isRaHardcore()) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreCheatsBlocked);
             return;
         }
         mCoreInterface.emuGameShark(pressed);
@@ -676,6 +713,13 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
             // Copy game data from external storage
             if (mGlobalPrefs.useExternalStorge) {
                 copyGameContentsFromSdCard();
+            }
+
+            // With game data on external storage, the auto saves are local only after the copy.
+            final String latestSave = mIsRestarting ? null : mGameDataManager.getLatestAutoSave();
+            final boolean resuming = latestSave != null && new File(latestSave).exists();
+            if (resuming) {
+                leaveRaHardcoreForResume();
             }
 
             FileUtil.makeDirs(workingDir);
@@ -835,12 +879,14 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                     mCoreInterface.emuSetFramelimiter(true);
                     mCoreInterface.usingNetplay(true);
                 } else {
-                    mCoreInterface.emuSetFramelimiter(mGlobalPrefs.isFramelimiterEnabled);
+                    // Hardcore keeps the core limiter on: audio sync paces the game only through
+                    // its audio output.
+                    mCoreInterface.emuSetFramelimiter(mGlobalPrefs.isFramelimiterEnabled || isRaHardcore());
 
                     for (GamePrefs.CheatSelection selection : mGamePrefs.getEnabledCheats())
                     {
                         if (isRaHardcore()) {
-                            Notifier.showToast(getApplicationContext(), R.string.ra_hardcoreCheatsBlocked);
+                            showToastFromEmulationThread(R.string.ra_hardcoreCheatsBlocked);
                             break;
                         }
                         if (selection.getIndex() < mCheats.size()) {
@@ -858,9 +904,8 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                 }
 
                 if (!mIsShuttingDown) {
-                    if (!mIsRestarting && !isRaHardcore())
+                    if (resuming)
                     {
-                        final String latestSave = mGameDataManager.getLatestAutoSave();
                         mCoreInterface.emuLoadFile(latestSave);
                     }
 
@@ -879,11 +924,6 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
                     // This call blocks until emulation is stopped
                     mCoreInterface.emuStart();
-                }
-
-                // Emulation has stopped; persist RetroAchievements progress before teardown.
-                if (mRaGameMd5 != null) {
-                    saveRaProgress();
                 }
 
                 if (mNetplayInitSuccess) {
@@ -1279,136 +1319,241 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     // RetroAchievements
     // ------------------------------------------------------------------
 
-    private static final String RA_PROGRESS_PREFS = "ra_progress";
-
     /**
-     * Start the RetroAchievements client for this game when the user has it enabled.
+     * Start the RetroAchievements client for this game when the user has it enabled. Only the
+     * first call does anything (see mRaStartAttempted).
      * Runs in the emulation process, where the native ra_glue client is driven by
      * new_vi()/main_reset().
      */
     private void startRetroAchievements() {
-        if (!mGlobalPrefs.isRetroAchievementsEnabled || TextUtils.isEmpty(mRomMd5)) {
+        if (mRaStartAttempted) {
+            return;
+        }
+        mRaStartAttempted = true;
+
+        if (!mGlobalPrefs.isRetroAchievementsEnabled) {
+            return;
+        }
+
+        // These two failures come before the session is set up, so hardcore was never enforced;
+        // failRaSession only tells the player why achievements are off.
+        if (TextUtils.isEmpty(mRomMd5)) {
+            Log.w(TAG, "RetroAchievements enabled but the game has no MD5");
+            failRaSession(getString(R.string.ra_noGameMd5));
             return;
         }
 
         RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
         if (!ra.initialize()) {
             Log.e(TAG, "RetroAchievements init failed: " + ra.getLastError());
+            failRaSession(getString(R.string.ra_clientNotStarted));
             return;
+        }
+        // Settings' Connect check signs in from another process, which must not use this file.
+        if (!ra.setUnsentFile(new File(getNoBackupFilesDir(), "retroachievements-unsent.txt"))) {
+            Log.w(TAG, "RetroAchievements could not keep unsent unlocks: out of memory");
         }
 
         mRaGameMd5 = mRomMd5;
-        mRaProgressRestored = false;
+        mRaModeShown = false;
         mRaSessionFailed = false;
         ra.addListener(this);
-        ra.setHardcore(mGlobalPrefs.isRetroAchievementsHardcore);
 
-        // Password first: rc_client's token login expects the token returned by a login,
-        // not the website's Web API key (which is only valid for the web API).
-        // A request that cannot even start, or missing credentials, is a terminal failure: no
-        // session can be established, so hardcore enforcement must release rather than block.
-        if (TextUtils.isEmpty(mGlobalPrefs.retroAchievementsUsername)) {
-            Log.w(TAG, "RetroAchievements enabled but username missing");
-            mRaSessionFailed = true;
-        } else if (!TextUtils.isEmpty(mGlobalPrefs.retroAchievementsPassword)) {
-            if (!ra.login(mGlobalPrefs.retroAchievementsUsername,
-                    mGlobalPrefs.retroAchievementsPassword)) {
-                mRaSessionFailed = true;
-            }
-        } else if (!TextUtils.isEmpty(mGlobalPrefs.retroAchievementsToken)) {
-            if (!ra.loginWithToken(mGlobalPrefs.retroAchievementsUsername,
-                    mGlobalPrefs.retroAchievementsToken)) {
-                mRaSessionFailed = true;
-            }
-        } else {
-            Log.w(TAG, "RetroAchievements enabled but no password or stored session token");
-            mRaSessionFailed = true;
+        // Netplay catch-up changes the core speed, which hardcore does not allow.
+        if (mGlobalPrefs.isRetroAchievementsHardcore && mUsingNetplay) {
+            Notifier.showToast(getApplicationContext(), R.string.ra_netplayHardcoreOff);
         }
+        ra.setHardcore(mGlobalPrefs.isRetroAchievementsHardcore && !mUsingNetplay);
 
-        // Safe before login completes: the client waits for the session.
-        if (!ra.loadGame(mRomMd5)) {
-            Log.w(TAG, "RetroAchievements load-game request did not start");
-            mRaSessionFailed = true;
+        // Missing credentials, or a request call that returns false (refused, or finished before
+        // the call returned), are a terminal failure: hardcore enforcement must release rather
+        // than block, and onRaAsyncResult ignores any result that still arrives.
+        mRaLoginCredential = RaSignInRules.firstCredential(mGlobalPrefs.retroAchievementsUsername,
+                mGlobalPrefs.retroAchievementsPassword, mGlobalPrefs.retroAchievementsToken);
+        if (mRaLoginCredential == RaSignInRules.Credential.NONE) {
+            Log.w(TAG, "RetroAchievements enabled but the username, or both password and session token, are missing");
+            failRaSession(getString(R.string.ra_noSignIn));
+            return;
+        }
+        beginRaLogin(ra);
+    }
+
+    /** Starts the login with mRaLoginCredential; its result arrives in onRaAsyncResult. */
+    private void beginRaLogin(RetroAchievementsManager ra) {
+        String username = mGlobalPrefs.retroAchievementsUsername;
+        boolean started = mRaLoginCredential == RaSignInRules.Credential.TOKEN
+                ? ra.loginWithToken(username, mGlobalPrefs.retroAchievementsToken)
+                : ra.login(username, mGlobalPrefs.retroAchievementsPassword);
+        if (!started) {
+            Log.w(TAG, "RetroAchievements login request did not start");
+            mRaLoginCredential = RaSignInRules.Credential.NONE;
+            failRaSession(getString(R.string.retroAchievementsConnect_noRequest));
         }
     }
 
-    /** Persist progress and stop the RA client. Idempotent. */
+    /** Stop the RA client. Idempotent. */
     private void stopRetroAchievements() {
         if (mRaGameMd5 == null) {
             return;
         }
         RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
-        saveRaProgress();
         ra.removeListener(this);
         ra.shutdown();
         mRaGameMd5 = null;
-        mRaProgressRestored = false;
-    }
-
-    private void saveRaProgress() {
-        // Never save before the session's stored progress has been restored, or the
-        // pre-restore blob would overwrite it (shutdown timing race).
-        if (mRaGameMd5 == null || !mRaProgressRestored) {
-            return;
-        }
-        byte[] blob = RetroAchievementsManager.getInstance().serializeProgress();
-        if (blob == null || blob.length == 0) {
-            return;
-        }
-        // Synchronous commit: the emulation process is killed shortly after this.
-        getSharedPreferences(RA_PROGRESS_PREFS, MODE_PRIVATE).edit()
-                .putString(mRaGameMd5, Base64.encodeToString(blob, Base64.NO_WRAP))
-                .commit();
-    }
-
-    private byte[] loadRaProgress() {
-        String encoded = getSharedPreferences(RA_PROGRESS_PREFS, MODE_PRIVATE)
-                .getString(mRaGameMd5, null);
-        if (encoded == null) {
-            return null;
-        }
-        try {
-            return Base64.decode(encoded, Base64.NO_WRAP);
-        } catch (IllegalArgumentException e) {
-            return null;
-        }
+        mRaModeShown = false;
     }
 
     @Override
     public void onRaEvent(String type, String json) {
-        Log.i(TAG, "RetroAchievements event: " + type);
+        // Progress and a leaderboard attempt's value can change every frame.
+        if (!"progress_update".equals(type) && !"tracker_update".equals(type)) {
+            Log.i(TAG, "RetroAchievements event: " + json);
+        }
+        try {
+            if ("achievement".equals(type)) {
+                showRaUnlockNotice(new JSONObject(json));
+            } else if ("leaderboard_started".equals(type)) {
+                showRaNotice(getString(R.string.ra_leaderboardStarted,
+                        new JSONObject(json).getString("title")));
+            } else if ("leaderboard_failed".equals(type)) {
+                showRaNotice(getString(R.string.ra_leaderboardFailed,
+                        new JSONObject(json).getString("title")));
+            } else if ("leaderboard_submitted".equals(type)) {
+                JSONObject leaderboard = new JSONObject(json);
+                showRaNotice(getString(R.string.ra_leaderboardSubmitted,
+                        leaderboard.getString("value"), leaderboard.getString("title")));
+            } else if ("server_error".equals(type)) {
+                showRaServerErrorNotice(new JSONObject(json));
+            } else if ("disconnected".equals(type)) {
+                showRaNotice(getString(R.string.ra_disconnected));
+            } else if ("reconnected".equals(type)) {
+                showRaNotice(getString(R.string.ra_reconnected));
+            } else if ("unsent_done".equals(type)) {
+                showRaUnsentNotice(new JSONObject(json));
+            }
+        } catch (JSONException e) {
+            Log.w(TAG, "Malformed RetroAchievements " + type + " event: " + json);
+        }
+    }
+
+    private void showRaUnlockNotice(JSONObject achievement) throws JSONException {
+        String title = achievement.getString("title");
+        // The server's client warning arrives as the unlock of a pseudo-achievement.
+        if (achievement.getLong("id") >= RetroAchievementsManager.WARNING_ACHIEVEMENT_ID) {
+            showRaNotice(getString(R.string.ra_serverWarning, title,
+                    achievement.getString("description")));
+        } else {
+            int points = achievement.getInt("points");
+            showRaNotice(getResources().getQuantityString(R.plurals.ra_achievementUnlocked,
+                    points, title, points));
+        }
+    }
+
+    private void showRaServerErrorNotice(JSONObject error) throws JSONException {
+        // rcheevos names the request: "award_achievement" or "submit_lboard_entry" (rc_client.c).
+        String api = error.getString("api");
+        String title = error.getString("title");
+        String reason = raFailureReason(error.getInt("result"), error.getString("message"));
+        if (!TextUtils.isEmpty(title) && "award_achievement".equals(api)) {
+            showRaNotice(getString(R.string.ra_unlockNotRecorded, title, reason));
+        } else if (!TextUtils.isEmpty(title) && "submit_lboard_entry".equals(api)) {
+            showRaNotice(getString(R.string.ra_leaderboardEntryNotRecorded, title, reason));
+        } else {
+            showRaNotice(getString(R.string.ra_serverError, reason));
+        }
+    }
+
+    /** What the server did with the unlocks and entries an earlier session could not send. */
+    private void showRaUnsentNotice(JSONObject result) throws JSONException {
+        int recorded = result.getInt("recorded");
+        int refused = result.getInt("refused");
+        if (recorded > 0) {
+            showRaNotice(getResources().getQuantityString(R.plurals.ra_unsentRecorded, recorded,
+                    recorded));
+        }
+        if (refused > 0) {
+            showRaNotice(getResources().getQuantityString(R.plurals.ra_unsentRefused, refused,
+                    refused));
+        }
     }
 
     @Override
     public void onRaAsyncResult(int result, String errorMessage) {
-        if (result != RetroAchievementsManager.RESULT_OK) {
-            // Login or load-game failed terminally (bad credentials, offline, unsupported game).
-            // Latch it so hardcore enforcement releases instead of blocking saves for a session
-            // that can never be established.
-            mRaSessionFailed = true;
-            Log.w(TAG, "RetroAchievements async error: " + errorMessage);
+        // The session is over after a terminal failure. A result can still arrive for a request
+        // whose call returned false, and it must not start another request.
+        if (mRaSessionFailed) {
             return;
         }
 
         RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
 
-        // Capture the session token so future sessions can log in without the password.
+        if (mRaLoginCredential != RaSignInRules.Credential.NONE) {
+            onRaLoginResult(ra, result, errorMessage);
+            return;
+        }
+
+        if (result != RetroAchievementsManager.RESULT_OK) {
+            // Load-game failed terminally (offline, unsupported game). Latch it so hardcore
+            // enforcement releases instead of refusing state loads, cheats and speed changes for a
+            // session that can never be established.
+            Log.w(TAG, "RetroAchievements load-game error: " + errorMessage);
+            failRaSession(raFailureReason(result, errorMessage));
+            return;
+        }
+
+        // Once the game session is up, say which mode the session runs in.
+        if (!mRaModeShown && mRaGameMd5 != null && ra.isGameLoaded()) {
+            mRaModeShown = true;
+            showRaNotice(getString(isRaHardcore()
+                    ? R.string.ra_sessionHardcore : R.string.ra_sessionCasual));
+        }
+    }
+
+    private void onRaLoginResult(RetroAchievementsManager ra, int result, String errorMessage) {
+        if (result != RetroAchievementsManager.RESULT_OK) {
+            Log.w(TAG, "RetroAchievements " + mRaLoginCredential + " login error: " + errorMessage);
+            mRaLoginCredential = RaSignInRules.nextCredential(mRaLoginCredential, result,
+                    mGlobalPrefs.retroAchievementsPassword);
+            if (mRaLoginCredential == RaSignInRules.Credential.NONE) {
+                failRaSession(raFailureReason(result, errorMessage));
+            } else {
+                beginRaLogin(ra);
+            }
+            return;
+        }
+        mRaLoginCredential = RaSignInRules.Credential.NONE;
+
+        // Synchronous commit: the emulation process can be killed before an apply() is written.
         String token = ra.getUserToken();
-        if (!TextUtils.isEmpty(token)) {
+        if (!TextUtils.isEmpty(token) && !token.equals(mGlobalPrefs.retroAchievementsToken)) {
             PreferenceManager.getDefaultSharedPreferences(this)
                     .edit()
                     .putString(GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_TOKEN, token)
-                    .apply();
+                    .commit();
         }
 
-        // Once the game session is up, restore any locally saved progress.
-        if (!mRaProgressRestored && mRaGameMd5 != null && ra.isGameLoaded()) {
-            mRaProgressRestored = true;
-            byte[] progress = loadRaProgress();
-            if (progress != null) {
-                ra.deserializeProgress(progress);
-            }
+        if (!ra.loadGame(mRaGameMd5)) {
+            Log.w(TAG, "RetroAchievements load-game request did not start");
+            failRaSession(getString(R.string.retroAchievementsConnect_noRequest));
         }
+    }
+
+    /**
+     * Ends achievements for this session after a terminal failure, which also releases hardcore
+     * enforcement (see isRaHardcore()), and says why on screen.
+     */
+    private void failRaSession(String reason) {
+        mRaSessionFailed = true;
+        showRaNotice(getString(R.string.ra_sessionOff, reason));
+    }
+
+    private static String raFailureReason(int result, String errorMessage) {
+        return TextUtils.isEmpty(errorMessage) ? String.valueOf(result) : errorMessage;
+    }
+
+    // A long toast: achievement titles and server messages take more than two seconds to read.
+    private void showRaNotice(String notice) {
+        Toast.makeText(getApplicationContext(), notice, Toast.LENGTH_LONG).show();
     }
 
     public void forceExit()
@@ -1566,6 +1711,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         String message = getApplicationContext().getString(R.string.gpuDriver_benchmarkResult,
                 result, mBenchmarkDriverName);
         Log.i(TAG, "Driver benchmark finished: " + message);
-        Notifier.showToast(getApplicationContext(), message);
+        showToastFromEmulationThread(R.string.gpuDriver_benchmarkResult, result,
+                mBenchmarkDriverName);
     }
 }

@@ -406,7 +406,10 @@ public class GlobalPrefs
     /** RetroAchievements user name, empty if not configured. */
     public final String retroAchievementsUsername;
 
-    /** RetroAchievements password, used for the first login. Never log or display it. */
+    /**
+     * RetroAchievements password, used by Connect in Settings, and by a game session that has no
+     * saved session token or whose token is rejected. Never log or display it.
+     */
     public final String retroAchievementsPassword;
 
     /** Session token captured from a successful login; never log or display it. */

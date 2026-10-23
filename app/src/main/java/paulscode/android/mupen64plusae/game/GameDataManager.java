@@ -121,12 +121,21 @@ public class GameDataManager
                 completeFile = completeFile + "." + CoreService.COMPLETE_EXTENSION;
                 deleteResult = deleteResult && new File(completeFile).delete();
 
+                // And the achievement progress saved with the state, if any
+                getRaProgressFile(theResult).delete();
+
                 if (!deleteResult) {
                     Log.w("GameDataManager", "Unable to delete autosave file: " + result.get(0).getName());
                 }
                 result.remove(0);
             }
         }
+    }
+
+    /** The file where the core keeps the achievement progress saved with a state (ra_glue.c). */
+    static File getRaProgressFile(File state)
+    {
+        return new File(state.getParentFile(), ".ra-progress/" + state.getName() + ".progress");
     }
 
     public String getAutoSaveFileName()

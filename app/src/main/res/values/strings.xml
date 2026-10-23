@@ -35,6 +35,7 @@
     <string name="menuItem_fileLoadAutoSave">Load from auto save…</string>
     <string name="menuItem_screenshot">Screenshot</string>
     <string name="menuItem_setSpeed">Game speed</string>
+    <string name="menuItem_achievements">Achievements</string>
     <string name="menuItem_enableFramelimiter">Sync audio</string>
     <string name="menuItem_disableFramelimiter">Desync audio</string>
     <string name="menuItem_player_one">Player 1</string>
@@ -262,13 +263,68 @@
     <string name="retroAchievementsConnect_ok">Signed in as %1$s</string>
     <string name="retroAchievementsConnect_error">Sign-in failed: %1$s</string>
     <string name="retroAchievementsConnect_noRequest">could not start the request</string>
-    <string name="ra_hardcoreBlocked">Hardcore mode: save states and load states are disabled</string>
+    <string name="ra_hardcoreLoadBlocked">Hardcore mode: loading save states is disabled</string>
     <string name="ra_hardcoreCheatsBlocked">Hardcore mode: cheats are disabled</string>
-    <string name="ra_hardcoreFastForwardBlocked">Hardcore mode: fast-forward is disabled</string>
+    <string name="ra_hardcoreSpeedBlocked">Hardcore mode: speed controls are disabled</string>
+    <string name="ra_netplayHardcoreOff">Netplay: hardcore mode is off for this session</string>
+    <string name="ra_resumeHardcoreOff">Resumed game: hardcore mode is off for this session</string>
+    <string name="ra_sessionHardcore">RetroAchievements: hardcore mode</string>
+    <string name="ra_sessionCasual">RetroAchievements: casual mode</string>
+    <string name="ra_sessionOff">RetroAchievements is off for this session: %1$s</string>
+    <string name="ra_noSignIn">no sign-in is saved in Settings</string>
+    <string name="ra_noGameMd5">the game\'s MD5 is not known</string>
+    <string name="ra_clientNotStarted">the achievements client could not start</string>
+    <string name="ra_serverWarning">%1$s. %2$s</string>
+    <plurals name="ra_achievementUnlocked">
+        <item quantity="one">Achievement unlocked: %1$s (%2$d point)</item>
+        <item quantity="other">Achievement unlocked: %1$s (%2$d points)</item>
+    </plurals>
+    <string name="ra_unlockNotRecorded">RetroAchievements did not record the unlock of %1$s: %2$s</string>
+    <string name="ra_leaderboardEntryNotRecorded">RetroAchievements did not record the leaderboard entry for %1$s: %2$s</string>
+    <string name="ra_serverError">RetroAchievements server error: %1$s</string>
+    <string name="ra_disconnected">RetroAchievements: sending failed. Keep playing while it retries.</string>
+    <string name="ra_reconnected">RetroAchievements: connection restored</string>
+    <plurals name="ra_unsentRecorded">
+        <item quantity="one">RetroAchievements recorded %d unlock or leaderboard entry from an earlier session</item>
+        <item quantity="other">RetroAchievements recorded %d unlocks or leaderboard entries from an earlier session</item>
+    </plurals>
+    <plurals name="ra_unsentRefused">
+        <item quantity="one">RetroAchievements did not record %d unlock or leaderboard entry from an earlier session</item>
+        <item quantity="other">RetroAchievements did not record %d unlocks or leaderboard entries from an earlier session</item>
+    </plurals>
+    <string name="ra_leaderboardStarted">Leaderboard attempt started: %1$s</string>
+    <string name="ra_leaderboardFailed">Leaderboard attempt failed: %1$s</string>
+    <string name="ra_leaderboardSubmitted">Submitted %1$s for %2$s</string>
+    <string name="ra_indicatorChallenge">Challenge active: %1$s</string>
+    <string name="ra_indicatorLeaderboard">Leaderboard: %1$s</string>
+    <string name="ra_indicatorProgress">%1$s: %2$s</string>
+    <string name="achievements_unavailable">No achievements are loaded. This game may have none, the sign-in may have failed, or loading may not be finished yet.</string>
+    <string name="achievements_unreadable">Could not read this game\'s achievement list.</string>
+    <string name="achievements_empty">This game has no achievements</string>
+    <string name="achievements_summaryHardcore">Hardcore: %1$d of %2$d unlocked</string>
+    <string name="achievements_summaryCasual">Casual: %1$d of %2$d unlocked</string>
+    <plurals name="achievements_summaryPoints">
+        <item quantity="one">%1$d of %2$d point</item>
+        <item quantity="other">%1$d of %2$d points</item>
+    </plurals>
+    <plurals name="achievements_unlocked">
+        <item quantity="one">Unlocked, %1$d point</item>
+        <item quantity="other">Unlocked, %1$d points</item>
+    </plurals>
+    <plurals name="achievements_locked">
+        <item quantity="one">Locked, %1$d point</item>
+        <item quantity="other">Locked, %1$d points</item>
+    </plurals>
+    <plurals name="achievements_unsupported">
+        <item quantity="one">Unsupported, %1$d point</item>
+        <item quantity="other">Unsupported, %1$d points</item>
+    </plurals>
+    <string name="achievements_progress">%1$s, progress %2$s</string>
+    <string name="achievements_challengeActive">%1$s, challenge active</string>
     <string name="retroAchievementsPassword_title">Password</string>
-    <string name="retroAchievementsPassword_summary">Your retroachievements.org password; a session token is saved after the first login</string>
+    <string name="retroAchievementsPassword_summary">Your retroachievements.org password. Once a sign-in has saved a session token, games use that token and need the password only if the server rejects it.</string>
     <string name="retroAchievementsHardcore_title">Hardcore mode</string>
-    <string name="retroAchievementsHardcore_summary">Disables save states, fast-forward and cheats while achievements are active</string>
+    <string name="retroAchievementsHardcore_summary">Disables loading save states, cheats, fast-forward, slow motion, frame advance and audio sync while achievements are active. Resumed games and netplay run in casual mode.</string>
 
     <!-- Checkbox Preferences -->
     <string name="playShowCheats_title">Enable cheats</string>

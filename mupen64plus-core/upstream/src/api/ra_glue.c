@@ -1,32 +1,46 @@
 /*
  * ra_glue.c - RetroAchievements (rcheevos) integration glue.
  *
- * Wraps the vendored rcheevos v12.5.0 client. The N64 achievement
- * memory references use full console addresses (0x80000000 + offset);
- * mupen's internal memory map places RDRAM at offset 0, so reads are
- * resolved with mem_base_u32(g_mem_base, offset), which is correct in
+ * Wraps the vendored rcheevos v12.5.0 client. rcheevos addresses N64
+ * RDRAM from 0 (0x000000-0x7FFFFF), not from its 0x80000000 real
+ * address, so reads are resolved with
+ * mem_base_u32(g_mem_base, MM_RDRAM_DRAM + address), which is correct in
  * both full and compressed memory base modes.
  *
- * All client API entry points used here are internally mutex-protected
- * by rcheevos, so it is safe to call them from the emu thread (do_frame)
- * and from Java worker threads (idle, dispatch, getters).
+ * ra_glue_do_frame, ra_glue_idle and the save-state hooks run on the emu
+ * thread, dispatch on the Java HTTP threads, and the rest mostly on the main
+ * thread (ra_glue_reset too: the app resets the core there). rcheevos does
+ * not lock every read: its plain getters (user, game and subset info;
+ * game-loaded, load and hardcore state) take no mutex, and other calls,
+ * rc_client_do_frame among them, check for a game outside it. So the game
+ * must not be unloaded, nor the client logged out or destroyed, while
+ * another thread can use them. Frames, idle work, resets and restoring a
+ * state's progress also change the achievements outside rcheevos's mutex, so
+ * they and the building of the achievement list take turns under s_frame_lock.
  */
 
 #include "ra_glue.h"
 
+#include <ctype.h>
+#include <errno.h>
+#include <inttypes.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <zlib.h>
 
 #include "main/main.h"
 #include "device/memory/memory.h"
 #include "rc_client.h"
 #include "rc_api_request.h"
+#include "rc_api_runtime.h"
 
 #define RA_GLUE_MAX_PENDING 16
-#define RA_GLUE_N64_RAM_BASE 0x80000000u
 
 /* C -> Java trampolined functions (JNA Function pointers). */
 typedef void (*ra_java_server_call_t)(int request_id, const char* url, const char* post_data, const char* content_type);
@@ -38,23 +52,49 @@ typedef void (*ra_java_async_result_t)(int result, const char* error_message);
  * ra_glue_create() on the frontend init thread before any other entry point
  * is used, and are cleared by ra_glue_shutdown() only after emulation has
  * stopped (see ra_glue.h). Pending-request and dispatch state is guarded by
- * s_pending_lock; s_hardcore and s_last_error are best-effort diagnostics.
+ * s_pending_lock, and the unlocks and entries the server has not answered by
+ * s_unsent_lock. s_hardcore is the mode the app asked for, which it enforces
+ * through ra_glue_get_hardcore(); it is atomic because the app sets it on the
+ * main thread and may turn it off on the emu thread. s_last_error is a
+ * best-effort diagnostic.
  */
 static rc_client_t* s_client = NULL;
 static pthread_mutex_t s_pending_lock = PTHREAD_MUTEX_INITIALIZER;
+/* Held while rcheevos runs a frame or its idle work, resets the game or restores a state's
+ * progress, which change achievements outside rcheevos's mutex, and while the achievement list is
+ * built and read. Taken before any other lock, and nothing that runs under it builds the list. */
+static pthread_mutex_t s_frame_lock = PTHREAD_MUTEX_INITIALIZER;
 static int s_next_request_id = 1;
-static int s_hardcore = 0;
+static atomic_int s_hardcore = 0;
 static char s_last_error[512];
 
 static ra_java_server_call_t s_java_server_call = NULL;
 static ra_java_event_t s_java_event = NULL;
 static ra_java_async_result_t s_java_async_result = NULL;
 
+/* An unlock or leaderboard entry sent to the server (see "Unlocks and
+ * leaderboard entries the server has not answered"). */
+#define RA_UNSENT_TEXT_MAX 64
+typedef struct {
+  char kind;     /* 'A' for an unlock, 'L' for a leaderboard entry */
+  uint32_t id;
+  int32_t value; /* an unlock's hardcore flag, or the entry's score */
+  int64_t time;  /* when it was first sent, in seconds since 1970 */
+  char hash[RA_UNSENT_TEXT_MAX + 1];
+  char user[RA_UNSENT_TEXT_MAX + 1];
+  int tried;     /* sent, or sent again, since the last sign-in */
+} ra_unsent_t;
+
 typedef struct {
   int in_use;
   int id;
   rc_client_server_callback_t callback;
   void* callback_data;
+  /* The unlock or entry the request sends, and whether the glue sends it
+   * again from an earlier session, with no rcheevos callback. */
+  int has_unsent;
+  int resend;
+  ra_unsent_t unsent;
 } ra_pending_t;
 
 static ra_pending_t s_pending[RA_GLUE_MAX_PENDING];
@@ -63,6 +103,21 @@ static ra_pending_t s_pending[RA_GLUE_MAX_PENDING];
  * ra_glue_shutdown() can wait for them before destroying the client. */
 static int s_dispatch_in_flight = 0;
 static pthread_cond_t s_dispatch_cond = PTHREAD_COND_INITIALIZER;
+
+/* Set while ra_glue_shutdown() destroys the client. A request sent meanwhile,
+ * such as an immediate retry from a callback that shutdown waits for, gets no
+ * slot and fails at once, so no answer to it can reach the destroyed client. */
+static int s_shutting_down = 0;
+
+/* Progress from a save state loaded before the game finished loading, as when
+ * a session resumes from its auto save; the first ra_glue_do_frame() or
+ * ra_glue_idle() after the game has loaded applies it. Emulator thread only,
+ * like the save-state hooks. ra_glue_reset() runs on another thread, so it
+ * only sets s_discard_pending_progress, and the emulator thread drops the
+ * progress, which belonged to the RAM before the reset. */
+static uint8_t* s_pending_progress = NULL;
+static size_t s_pending_progress_size = 0;
+static atomic_int s_discard_pending_progress = 0;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -82,10 +137,9 @@ const char* ra_glue_get_last_error(void)
 
 /*
  * rcheevos memory read callback.
- * rcheevos passes full N64 memory-mapped addresses (0x80000000+).
- * mupen maps RDRAM at MM address 0, so the buffer offset is
- * address - 0x80000000; mem_base_u32() resolves that in both
- * full and compressed memory base modes.
+ * rcheevos passes the addresses of its N64 memory map (consoleinfo.c),
+ * where 0 is the first byte of RDRAM, and disables every achievement
+ * that directly reads an address this callback refuses.
  */
 static uint32_t ra_glue_read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client)
 {
@@ -94,17 +148,13 @@ static uint32_t ra_glue_read_memory(uint32_t address, uint8_t* buffer, uint32_t 
   if (g_mem_base == NULL || num_bytes == 0)
     return 0;
 
-  if (address < RA_GLUE_N64_RAM_BASE)
+  if (address >= RDRAM_16MB_SIZE)
     return 0;
 
-  uint32_t offset = address - RA_GLUE_N64_RAM_BASE;
-  if (offset >= RDRAM_16MB_SIZE)
-    return 0;
+  if (num_bytes > RDRAM_16MB_SIZE - address)
+    num_bytes = RDRAM_16MB_SIZE - address;
 
-  if (num_bytes > RDRAM_16MB_SIZE - offset)
-    num_bytes = RDRAM_16MB_SIZE - offset;
-
-  uint32_t* mem = mem_base_u32(g_mem_base, offset);
+  uint32_t* mem = mem_base_u32(g_mem_base, MM_RDRAM_DRAM + address);
   if (mem == NULL)
     return 0;
 
@@ -156,6 +206,297 @@ void ra_glue_set_java_bridge(uintptr_t server_call, uintptr_t event, uintptr_t a
 }
 
 /* ------------------------------------------------------------------ */
+/* Unlocks and leaderboard entries the server has not answered         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * rcheevos keeps an unlock or leaderboard entry it could not send only in
+ * memory, retrying it until the client is destroyed (rc_client.c:191-227,
+ * 3139-3209). So that one made offline reaches the server later, the glue
+ * keeps each one rcheevos sends in the file the app names with
+ * ra_glue_set_unsent_path(), from its first request until the server records
+ * it or refuses it in a way rcheevos does not retry. After each sign-in it
+ * sends those of the signed-in player again, one at a time, with the time
+ * since they were first sent. The file holds no token: a comment line, then
+ * one line per entry, "<kind> <id> <value> <time> <hash> <user>", where kind is
+ * A for an unlock, whose value is 1 if it was made in hardcore, or L for a
+ * leaderboard entry, whose value is the score; time is when it was first sent,
+ * in seconds since 1970, and hash is the game's hash. s_unsent_lock guards the
+ * entries, the file and the resend counts, and nothing is called under it.
+ */
+#define RA_UNSENT_MAX 256
+#define RA_UNSENT_LINE_MAX 256
+
+static pthread_mutex_t s_unsent_lock = PTHREAD_MUTEX_INITIALIZER;
+static char* s_unsent_path = NULL;
+static ra_unsent_t s_unsent[RA_UNSENT_MAX];
+static int s_unsent_count = 0;
+/* While a sign-in's entries are sent again: how many the server recorded and
+ * how many it refused. */
+static int s_resending = 0;
+static int s_resend_recorded = 0;
+static int s_resend_refused = 0;
+
+enum { RA_UNSENT_WAITING, RA_UNSENT_RECORDED, RA_UNSENT_REFUSED };
+
+/* A hash or user name fit for the file: letters, digits, '_', '-' or '.'. */
+static int ra_unsent_text_ok(const char* text)
+{
+  const size_t length = strlen(text);
+
+  if (length == 0 || length > RA_UNSENT_TEXT_MAX)
+    return 0;
+  for (size_t i = 0; i < length; ++i) {
+    const unsigned char c = (unsigned char)text[i];
+    if (!isalnum(c) && c != '_' && c != '-' && c != '.')
+      return 0;
+  }
+  return 1;
+}
+
+static int ra_parse_number(const char* text, long long min, long long max, long long* value)
+{
+  char* end;
+
+  errno = 0;
+  const long long parsed = strtoll(text, &end, 10);
+  if (errno != 0 || end == text || *end != '\0' || parsed < min || parsed > max)
+    return 0;
+  *value = parsed;
+  return 1;
+}
+
+/* Copies the decoded value of a key in URL-encoded form data. Returns 0 when
+ * the key is missing or its value does not fit. */
+static int ra_form_value(const char* form, const char* key, char* out, size_t out_size)
+{
+  const size_t key_length = strlen(key);
+  const char* p = form;
+
+  while (p != NULL && *p != '\0') {
+    if (strncmp(p, key, key_length) == 0 && p[key_length] == '=') {
+      size_t n = 0;
+      for (p += key_length + 1; *p != '\0' && *p != '&'; ++p) {
+        char c = *p;
+        if (c == '%' && isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2])) {
+          const char hex[3] = { p[1], p[2], '\0' };
+          c = (char)strtol(hex, NULL, 16);
+          p += 2;
+        }
+        if (n + 1 >= out_size)
+          return 0;
+        out[n++] = c;
+      }
+      out[n] = '\0';
+      return 1;
+    }
+    p = strchr(p, '&');
+    if (p != NULL)
+      ++p;
+  }
+  return 0;
+}
+
+/* Reads the unlock or leaderboard entry a request sends, if it sends one
+ * (rc_api_runtime.c:626-676,733-781). */
+static int ra_unsent_from_request(const char* post_data, ra_unsent_t* entry)
+{
+  char text[RA_UNSENT_TEXT_MAX + 1];
+  long long number;
+
+  memset(entry, 0, sizeof(*entry));
+  if (post_data == NULL || !ra_form_value(post_data, "r", text, sizeof(text)))
+    return 0;
+  if (strcmp(text, "awardachievement") == 0)
+    entry->kind = 'A';
+  else if (strcmp(text, "submitlbentry") == 0)
+    entry->kind = 'L';
+  else
+    return 0;
+
+  if (!ra_form_value(post_data, entry->kind == 'A' ? "a" : "i", text, sizeof(text))
+      || !ra_parse_number(text, 1, UINT32_MAX, &number))
+    return 0;
+  entry->id = (uint32_t)number;
+  if (entry->kind == 'A') {
+    if (!ra_form_value(post_data, "h", text, sizeof(text)) || !ra_parse_number(text, 0, 1, &number))
+      return 0;
+  }
+  else if (!ra_form_value(post_data, "s", text, sizeof(text))
+           || !ra_parse_number(text, INT32_MIN, INT32_MAX, &number)) {
+    return 0;
+  }
+  entry->value = (int32_t)number;
+  return ra_form_value(post_data, "m", entry->hash, sizeof(entry->hash))
+      && ra_unsent_text_ok(entry->hash)
+      && ra_form_value(post_data, "u", entry->user, sizeof(entry->user))
+      && ra_unsent_text_ok(entry->user);
+}
+
+static int ra_unsent_same(const ra_unsent_t* a, const ra_unsent_t* b)
+{
+  return a->kind == b->kind && a->id == b->id && a->value == b->value
+      && strcmp(a->hash, b->hash) == 0 && strcmp(a->user, b->user) == 0;
+}
+
+/* Writes a temporary file and renames it over the file. If that fails, the
+ * file keeps its old entries, so one the server has answered since is sent
+ * again after a later sign-in, and the server answers that it has it. */
+static void ra_unsent_save_locked(void)
+{
+  char* temp = NULL;
+  FILE* file;
+  int written;
+
+  if (s_unsent_path == NULL || asprintf(&temp, "%s.tmp", s_unsent_path) < 0)
+    return;
+  file = fopen(temp, "w");
+  if (file != NULL) {
+    written = fputs("# RetroAchievements unlocks and leaderboard entries not answered yet\n",
+                    file) >= 0;
+    for (int i = 0; written && i < s_unsent_count; ++i) {
+      const ra_unsent_t* entry = &s_unsent[i];
+      written = fprintf(file, "%c %" PRIu32 " %" PRId32 " %" PRId64 " %s %s\n", entry->kind,
+                        entry->id, entry->value, entry->time, entry->hash, entry->user) > 0;
+    }
+    written = fclose(file) == 0 && written;
+    if (!written || rename(temp, s_unsent_path) != 0)
+      remove(temp);
+  }
+  free(temp);
+}
+
+/* Lines that do not hold a whole entry are skipped. */
+static void ra_unsent_load_locked(void)
+{
+  char line[RA_UNSENT_LINE_MAX];
+  FILE* file;
+
+  s_unsent_count = 0;
+  if (s_unsent_path == NULL || (file = fopen(s_unsent_path, "r")) == NULL)
+    return;
+  while (s_unsent_count < RA_UNSENT_MAX && fgets(line, sizeof(line), file) != NULL) {
+    ra_unsent_t entry;
+    char id[16];
+    char value[16];
+    char time_text[24];
+    long long number;
+
+    memset(&entry, 0, sizeof(entry));
+    if (sscanf(line, "%c %15s %15s %23s %64s %64s", &entry.kind, id, value, time_text,
+               entry.hash, entry.user) != 6
+        || (entry.kind != 'A' && entry.kind != 'L')
+        || !ra_parse_number(id, 1, UINT32_MAX, &number))
+      continue;
+    entry.id = (uint32_t)number;
+    if (!ra_parse_number(value, entry.kind == 'A' ? 0 : INT32_MIN, entry.kind == 'A' ? 1 : INT32_MAX,
+                         &number))
+      continue;
+    entry.value = (int32_t)number;
+    if (!ra_parse_number(time_text, 0, INT64_MAX, &number) || !ra_unsent_text_ok(entry.hash)
+        || !ra_unsent_text_ok(entry.user))
+      continue;
+    entry.time = (int64_t)number;
+    s_unsent[s_unsent_count++] = entry;
+  }
+  fclose(file);
+}
+
+/* Keeps an unlock or entry rcheevos sends, unless it is kept already. */
+static void ra_unsent_add(const ra_unsent_t* entry)
+{
+  pthread_mutex_lock(&s_unsent_lock);
+  if (s_unsent_path != NULL && s_unsent_count < RA_UNSENT_MAX) {
+    int i = 0;
+    while (i < s_unsent_count && !ra_unsent_same(&s_unsent[i], entry))
+      ++i;
+    if (i == s_unsent_count) {
+      s_unsent[i] = *entry;
+      s_unsent[i].time = (int64_t)time(NULL);
+      /* rcheevos sends it, and sends it again while the session lasts. */
+      s_unsent[i].tried = 1;
+      ++s_unsent_count;
+      ra_unsent_save_locked();
+    }
+  }
+  pthread_mutex_unlock(&s_unsent_lock);
+}
+
+static void ra_unsent_remove(const ra_unsent_t* entry)
+{
+  pthread_mutex_lock(&s_unsent_lock);
+  for (int i = 0; i < s_unsent_count; ++i) {
+    if (ra_unsent_same(&s_unsent[i], entry)) {
+      memmove(&s_unsent[i], &s_unsent[i + 1], (size_t)(s_unsent_count - i - 1) * sizeof(s_unsent[0]));
+      --s_unsent_count;
+      ra_unsent_save_locked();
+      break;
+    }
+  }
+  pthread_mutex_unlock(&s_unsent_lock);
+}
+
+/* rcheevos's rule for sending an unlock or entry again (rc_client.c:586-640). */
+static int ra_should_retry(const rc_api_server_response_t* answer)
+{
+  switch (answer->http_status_code) {
+    case 502: case 503: case 504: case 429:
+    case 521: case 522: case 523: case 524: case 525:
+    case RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR:
+      return 1;
+    case RC_API_SERVER_RESPONSE_CLIENT_ERROR:
+      return 0;
+    default:
+      return answer->body_length == 0 || answer->body == NULL || answer->body[0] == '\0';
+  }
+}
+
+/* What an answer means for an unlock or entry, read as rcheevos reads it: the
+ * server recorded it, or already had the unlock; it refused it with an answer
+ * rcheevos does not send again; or rcheevos sends it again
+ * (rc_client.c:497-516,4666-4674,5368-5376; rc_api_runtime.c:706-716). */
+static int ra_unsent_outcome(char kind, const rc_api_server_response_t* answer)
+{
+  int result;
+  int succeeded;
+  int refused;
+
+  if (kind == 'A') {
+    rc_api_award_achievement_response_t response;
+    result = rc_api_process_award_achievement_server_response(&response, answer);
+    succeeded = response.response.succeeded;
+    refused = response.response.error_message != NULL;
+    rc_api_destroy_award_achievement_response(&response);
+  }
+  else {
+    rc_api_submit_lboard_entry_response_t response;
+    result = rc_api_process_submit_lboard_entry_server_response(&response, answer);
+    succeeded = response.response.succeeded;
+    refused = response.response.error_message != NULL;
+    rc_api_destroy_submit_lboard_entry_response(&response);
+  }
+  if (result == RC_OK && succeeded)
+    return RA_UNSENT_RECORDED;
+  if (refused && !ra_should_retry(answer))
+    return RA_UNSENT_REFUSED;
+  return RA_UNSENT_WAITING;
+}
+
+int ra_glue_set_unsent_path(const char* path)
+{
+  char* copy = NULL;
+
+  if (path != NULL && path[0] != '\0' && (copy = strdup(path)) == NULL)
+    return 0;
+  pthread_mutex_lock(&s_unsent_lock);
+  free(s_unsent_path);
+  s_unsent_path = copy;
+  ra_unsent_load_locked();
+  pthread_mutex_unlock(&s_unsent_lock);
+  return 1;
+}
+
+/* ------------------------------------------------------------------ */
 /* rcheevos callbacks                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -172,31 +513,62 @@ static void ra_glue_async_cb(int result, const char* error_message, rc_client_t*
   s_java_async_result(result, message);
 }
 
-static void ra_glue_server_call(const rc_api_request_t* request, rc_client_server_callback_t callback,
-                                void* callback_data, rc_client_t* client)
+/* Takes a free request slot and returns its request id, or 0 when no slot is
+ * free or the client is shutting down, which *shutting_down tells. */
+static int ra_take_request_slot(rc_client_server_callback_t callback, void* callback_data,
+                                const ra_unsent_t* unsent, int resend, int* shutting_down)
 {
-  (void)client;
-
   int id = 0;
+
   pthread_mutex_lock(&s_pending_lock);
-  for (int i = 0; i < RA_GLUE_MAX_PENDING; ++i) {
+  *shutting_down = s_shutting_down;
+  for (int i = 0; !*shutting_down && i < RA_GLUE_MAX_PENDING; ++i) {
     if (!s_pending[i].in_use) {
       id = ++s_next_request_id;
       s_pending[i].in_use = 1;
       s_pending[i].id = id;
       s_pending[i].callback = callback;
       s_pending[i].callback_data = callback_data;
+      s_pending[i].has_unsent = unsent != NULL;
+      s_pending[i].resend = resend;
+      if (unsent != NULL)
+        s_pending[i].unsent = *unsent;
       break;
     }
   }
   pthread_mutex_unlock(&s_pending_lock);
+  return id;
+}
+
+static void ra_glue_server_call(const rc_api_request_t* request, rc_client_server_callback_t callback,
+                                void* callback_data, rc_client_t* client)
+{
+  (void)client;
+
+  /* Kept before it is sent, so that it is not lost if the app ends first. */
+  ra_unsent_t unsent;
+  const int has_unsent = ra_unsent_from_request(request->post_data, &unsent);
+  if (has_unsent)
+    ra_unsent_add(&unsent);
+
+  int shutting_down;
+  const int id = ra_take_request_slot(callback, callback_data, has_unsent ? &unsent : NULL, 0,
+                                      &shutting_down);
 
   if (id == 0) {
-    /* No free pending slot: fail the request immediately. */
+    /* No free pending slot: fail the request immediately, with a status
+     * rcheevos retries. While the client is being destroyed, fail it for good,
+     * so rcheevos frees the request instead of scheduling a retry that would
+     * never run. */
     rc_api_server_response_t response;
     memset(&response, 0, sizeof(response));
-    response.http_status_code = 503;
-    response.body = "ra_glue: no pending request slot";
+    if (shutting_down) {
+      response.http_status_code = RC_API_SERVER_RESPONSE_CLIENT_ERROR;
+      response.body = "ra_glue: the client is shutting down";
+    } else {
+      response.http_status_code = 503;
+      response.body = "ra_glue: no pending request slot";
+    }
     response.body_length = (int)strlen(response.body);
     if (callback != NULL)
       callback(&response, callback_data);
@@ -207,10 +579,17 @@ static void ra_glue_server_call(const rc_api_request_t* request, rc_client_serve
     s_java_server_call(id, request->url, request->post_data, request->content_type);
 }
 
+static void ra_resend_next(void);
+static void ra_finish_resend(void);
+
 void ra_glue_dispatch_server_response(int request_id, const char* body, int body_length, int http_status)
 {
   rc_client_server_callback_t callback = NULL;
   void* callback_data = NULL;
+  ra_unsent_t unsent = { 0 };
+  int has_unsent = 0;
+  int resend = 0;
+  int found = 0;
 
   pthread_mutex_lock(&s_pending_lock);
   for (int i = 0; i < RA_GLUE_MAX_PENDING; ++i) {
@@ -218,14 +597,18 @@ void ra_glue_dispatch_server_response(int request_id, const char* body, int body
       s_pending[i].in_use = 0;
       callback = s_pending[i].callback;
       callback_data = s_pending[i].callback_data;
+      has_unsent = s_pending[i].has_unsent;
+      resend = s_pending[i].resend;
+      unsent = s_pending[i].unsent;
+      found = 1;
       break;
     }
   }
-  if (callback != NULL)
+  if (found)
     ++s_dispatch_in_flight;
   pthread_mutex_unlock(&s_pending_lock);
 
-  if (callback == NULL)
+  if (!found)
     return;
 
   rc_api_server_response_t response;
@@ -233,9 +616,27 @@ void ra_glue_dispatch_server_response(int request_id, const char* body, int body
   response.body = body;
   response.body_length = body_length;
   response.http_status_code = http_status;
-  callback(&response, callback_data);
 
-  /* Tell ra_glue_shutdown() the callback no longer touches the client. */
+  if (has_unsent) {
+    const int outcome = ra_unsent_outcome(unsent.kind, &response);
+    if (outcome != RA_UNSENT_WAITING)
+      ra_unsent_remove(&unsent);
+    if (resend) {
+      pthread_mutex_lock(&s_unsent_lock);
+      s_resend_recorded += outcome == RA_UNSENT_RECORDED;
+      s_resend_refused += outcome == RA_UNSENT_REFUSED;
+      pthread_mutex_unlock(&s_unsent_lock);
+      /* After an answer rcheevos would retry, the rest wait for the next sign-in. */
+      if (outcome == RA_UNSENT_WAITING)
+        ra_finish_resend();
+      else
+        ra_resend_next();
+    }
+  }
+  if (callback != NULL)
+    callback(&response, callback_data);
+
+  /* Tell ra_glue_shutdown() that this answer no longer touches the client. */
   pthread_mutex_lock(&s_pending_lock);
   --s_dispatch_in_flight;
   if (s_dispatch_in_flight == 0)
@@ -243,7 +644,128 @@ void ra_glue_dispatch_server_response(int request_id, const char* body, int body
   pthread_mutex_unlock(&s_pending_lock);
 }
 
-static char* ra_build_event_json(const rc_client_event_t* event)
+/* Ends a sign-in's resend and reports what the server recorded or refused. */
+static void ra_finish_resend(void)
+{
+  char json[96];
+  int report;
+  int recorded;
+  int refused;
+
+  pthread_mutex_lock(&s_unsent_lock);
+  recorded = s_resend_recorded;
+  refused = s_resend_refused;
+  report = s_resending && recorded + refused > 0;
+  s_resending = 0;
+  pthread_mutex_unlock(&s_unsent_lock);
+  if (report && s_java_event != NULL) {
+    snprintf(json, sizeof(json), "{\"type\":\"unsent_done\",\"recorded\":%d,\"refused\":%d}",
+             recorded, refused);
+    s_java_event(json);
+  }
+}
+
+/* Sends an entry from an earlier session again, with the time since it was first sent, to the
+ * default host: the glue sets none, so rcheevos's requests go there too. Returns 0 if not sent. */
+static int ra_send_unsent(const ra_unsent_t* entry, const rc_client_user_t* user)
+{
+  const int64_t age = (int64_t)time(NULL) - entry->time;
+  const uint32_t seconds = age <= 0 ? 0 : age >= (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)age;
+  rc_api_request_t request;
+  int shutting_down;
+  int result;
+  int id = 0;
+
+  if (entry->kind == 'A') {
+    rc_api_award_achievement_request_t params;
+    memset(&params, 0, sizeof(params));
+    params.username = user->username;
+    params.api_token = user->token;
+    params.achievement_id = entry->id;
+    params.hardcore = (uint32_t)entry->value;
+    params.game_hash = entry->hash;
+    params.seconds_since_unlock = seconds;
+    result = rc_api_init_award_achievement_request(&request, &params);
+  }
+  else {
+    rc_api_submit_lboard_entry_request_t params;
+    memset(&params, 0, sizeof(params));
+    params.username = user->username;
+    params.api_token = user->token;
+    params.leaderboard_id = entry->id;
+    params.score = entry->value;
+    params.game_hash = entry->hash;
+    params.seconds_since_completion = seconds;
+    result = rc_api_init_submit_lboard_entry_request(&request, &params);
+  }
+  if (result == RC_OK && s_java_server_call != NULL)
+    id = ra_take_request_slot(NULL, NULL, entry, 1, &shutting_down);
+  if (id != 0)
+    s_java_server_call(id, request.url, request.post_data, request.content_type);
+  rc_api_destroy_request(&request);
+  return id != 0;
+}
+
+/* Sends the signed-in player's next entry that this sign-in has not sent. */
+static void ra_resend_next(void)
+{
+  const rc_client_user_t* user = rc_client_get_user_info(s_client);
+  ra_unsent_t entry = { 0 };
+  int found = 0;
+
+  if (user != NULL && user->username != NULL && user->token != NULL) {
+    pthread_mutex_lock(&s_unsent_lock);
+    for (int i = 0; i < s_unsent_count && !found; ++i) {
+      if (!s_unsent[i].tried && strcmp(s_unsent[i].user, user->username) == 0) {
+        s_unsent[i].tried = 1;
+        entry = s_unsent[i];
+        found = 1;
+      }
+    }
+    pthread_mutex_unlock(&s_unsent_lock);
+  }
+  if (!found || !ra_send_unsent(&entry, user))
+    ra_finish_resend();
+}
+
+/* After a sign-in, the player's entries from an earlier session are sent
+ * again, the first before the app hears of the sign-in and loads the game. */
+static void ra_glue_login_cb(int result, const char* error_message, rc_client_t* client, void* userdata)
+{
+  if (result == RC_OK) {
+    pthread_mutex_lock(&s_unsent_lock);
+    for (int i = 0; i < s_unsent_count; ++i)
+      s_unsent[i].tried = 0;
+    s_resending = 1;
+    s_resend_recorded = 0;
+    s_resend_refused = 0;
+    pthread_mutex_unlock(&s_unsent_lock);
+    ra_resend_next();
+  }
+  ra_glue_async_cb(result, error_message, client, userdata);
+}
+
+/* Title of the achievement or leaderboard a server error is about, or "". */
+static const char* ra_server_error_title(rc_client_t* client, const rc_client_server_error_t* error)
+{
+  if (error->api == NULL)
+    return "";
+
+  if (strcmp(error->api, "award_achievement") == 0) {
+    const rc_client_achievement_t* achievement = rc_client_get_achievement_info(client, error->related_id);
+    if (achievement != NULL && achievement->title != NULL)
+      return achievement->title;
+  }
+  else if (strcmp(error->api, "submit_lboard_entry") == 0) {
+    const rc_client_leaderboard_t* leaderboard = rc_client_get_leaderboard_info(client, error->related_id);
+    if (leaderboard != NULL && leaderboard->title != NULL)
+      return leaderboard->title;
+  }
+
+  return "";
+}
+
+static char* ra_build_event_json(const rc_client_event_t* event, rc_client_t* client)
 {
   char* json = NULL;
 
@@ -261,17 +783,62 @@ static char* ra_build_event_json(const rc_client_event_t* event)
     }
     break;
 
+  case RC_CLIENT_EVENT_ACHIEVEMENT_CHALLENGE_INDICATOR_SHOW:
+  case RC_CLIENT_EVENT_ACHIEVEMENT_CHALLENGE_INDICATOR_HIDE:
+    if (event->achievement != NULL) {
+      const char* name = (event->type == RC_CLIENT_EVENT_ACHIEVEMENT_CHALLENGE_INDICATOR_SHOW) ?
+        "challenge_show" : "challenge_hide";
+      char* title = ra_json_escape(event->achievement->title);
+      if (title != NULL) {
+        asprintf(&json, "{\"type\":\"%s\",\"id\":%u,\"title\":\"%s\"}", name, event->achievement->id, title);
+        free(title);
+      }
+    }
+    break;
+
+  case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_SHOW:
+  case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_UPDATE:
+    if (event->achievement != NULL) {
+      const char* name = (event->type == RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_SHOW) ?
+        "progress_show" : "progress_update";
+      char* title = ra_json_escape(event->achievement->title);
+      char* progress = ra_json_escape(event->achievement->measured_progress);
+      if (title != NULL && progress != NULL) {
+        asprintf(&json, "{\"type\":\"%s\",\"id\":%u,\"title\":\"%s\",\"progress\":\"%s\"}",
+                 name, event->achievement->id, title, progress);
+      }
+      free(title);
+      free(progress);
+    }
+    break;
+
+  /* rcheevos raises this without an achievement when the indicator times out. */
+  case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_HIDE:
+    asprintf(&json, "{\"type\":\"progress_hide\"}");
+    break;
+
   case RC_CLIENT_EVENT_SERVER_ERROR:
     if (event->server_error != NULL) {
       char* api = ra_json_escape(event->server_error->api);
       char* message = ra_json_escape(event->server_error->error_message);
-      if (api != NULL && message != NULL) {
-        asprintf(&json, "{\"type\":\"server_error\",\"api\":\"%s\",\"message\":\"%s\",\"result\":%d,\"related_id\":%u}",
-                 api, message, event->server_error->result, event->server_error->related_id);
-        free(api);
-        free(message);
+      char* title = ra_json_escape(ra_server_error_title(client, event->server_error));
+      if (api != NULL && message != NULL && title != NULL) {
+        asprintf(&json, "{\"type\":\"server_error\",\"api\":\"%s\",\"message\":\"%s\",\"result\":%d,"
+                 "\"related_id\":%u,\"title\":\"%s\"}",
+                 api, message, event->server_error->result, event->server_error->related_id, title);
       }
+      free(api);
+      free(message);
+      free(title);
     }
+    break;
+
+  case RC_CLIENT_EVENT_DISCONNECTED:
+    asprintf(&json, "{\"type\":\"disconnected\"}");
+    break;
+
+  case RC_CLIENT_EVENT_RECONNECTED:
+    asprintf(&json, "{\"type\":\"reconnected\"}");
     break;
 
   case RC_CLIENT_EVENT_RESET:
@@ -284,17 +851,48 @@ static char* ra_build_event_json(const rc_client_event_t* event)
 
   case RC_CLIENT_EVENT_LEADERBOARD_STARTED:
   case RC_CLIENT_EVENT_LEADERBOARD_FAILED:
-  case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED:
     if (event->leaderboard != NULL) {
-      const char* name =
-        (event->type == RC_CLIENT_EVENT_LEADERBOARD_STARTED) ? "leaderboard_started" :
-        (event->type == RC_CLIENT_EVENT_LEADERBOARD_FAILED) ? "leaderboard_failed" : "leaderboard_submitted";
+      const char* name = (event->type == RC_CLIENT_EVENT_LEADERBOARD_STARTED) ?
+        "leaderboard_started" : "leaderboard_failed";
       char* title = ra_json_escape(event->leaderboard->title);
       if (title != NULL) {
         asprintf(&json, "{\"type\":\"%s\",\"id\":%u,\"title\":\"%s\"}", name, event->leaderboard->id, title);
         free(title);
       }
     }
+    break;
+
+  /* rcheevos formats the submitted value into tracker_value before it raises this event. */
+  case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED:
+    if (event->leaderboard != NULL) {
+      char* title = ra_json_escape(event->leaderboard->title);
+      char* value = ra_json_escape(event->leaderboard->tracker_value);
+      if (title != NULL && value != NULL) {
+        asprintf(&json, "{\"type\":\"leaderboard_submitted\",\"id\":%u,\"title\":\"%s\",\"value\":\"%s\"}",
+                 event->leaderboard->id, title, value);
+      }
+      free(title);
+      free(value);
+    }
+    break;
+
+  case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_SHOW:
+  case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_UPDATE:
+    if (event->leaderboard_tracker != NULL) {
+      const char* name = (event->type == RC_CLIENT_EVENT_LEADERBOARD_TRACKER_SHOW) ?
+        "tracker_show" : "tracker_update";
+      char* display = ra_json_escape(event->leaderboard_tracker->display);
+      if (display != NULL) {
+        asprintf(&json, "{\"type\":\"%s\",\"id\":%u,\"display\":\"%s\"}", name,
+                 event->leaderboard_tracker->id, display);
+        free(display);
+      }
+    }
+    break;
+
+  case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_HIDE:
+    if (event->leaderboard_tracker != NULL)
+      asprintf(&json, "{\"type\":\"tracker_hide\",\"id\":%u}", event->leaderboard_tracker->id);
     break;
 
   default:
@@ -306,11 +904,10 @@ static char* ra_build_event_json(const rc_client_event_t* event)
 
 static void ra_glue_event_handler(const rc_client_event_t* event, rc_client_t* client)
 {
-  (void)client;
   if (event == NULL || s_java_event == NULL)
     return;
 
-  char* json = ra_build_event_json(event);
+  char* json = ra_build_event_json(event, client);
   if (json != NULL) {
     s_java_event(json);
     free(json);
@@ -334,6 +931,10 @@ int ra_glue_create(void)
 
   s_client = client;
   rc_client_set_event_handler(s_client, ra_glue_event_handler);
+  /* Read memory only in ra_glue_do_frame() and ra_glue_idle(), which must run on
+   * the emulator thread: g_mem_base is NULL until CoreStartup and is freed by
+   * CoreShutdown there. A game load then finishes in the next of those calls. */
+  rc_client_set_allow_background_memory_reads(s_client, 0);
   /* Keep the rcheevos default host (https://retroachievements.org). Passing a bare
    * hostname makes rc_api_update_host() prepend "http://", which is blocked by the
    * app's cleartext policy and is not a valid API endpoint. */
@@ -347,10 +948,11 @@ void ra_glue_shutdown(void)
   if (s_client == NULL)
     return;
 
-  /* Drop outstanding requests and wait for any callback already running
-   * against the client before destroying it, so a concurrent
+  /* Drop outstanding requests, refuse new ones, and wait for any callback
+   * already running against the client before destroying it, so a concurrent
    * ra_glue_dispatch_server_response() cannot use freed client data. */
   pthread_mutex_lock(&s_pending_lock);
+  s_shutting_down = 1;
   memset(s_pending, 0, sizeof(s_pending));
   while (s_dispatch_in_flight > 0)
     pthread_cond_wait(&s_dispatch_cond, &s_pending_lock);
@@ -359,38 +961,64 @@ void ra_glue_shutdown(void)
   pthread_mutex_unlock(&s_pending_lock);
 
   rc_client_destroy(client);
-  s_hardcore = 0;
+
+  pthread_mutex_lock(&s_pending_lock);
+  s_shutting_down = 0;
+  pthread_mutex_unlock(&s_pending_lock);
+  pthread_mutex_lock(&s_unsent_lock);
+  s_resending = 0;
+  pthread_mutex_unlock(&s_unsent_lock);
+  atomic_store(&s_hardcore, 0);
   s_last_error[0] = '\0';
+  free(s_pending_progress);
+  s_pending_progress = NULL;
+  s_pending_progress_size = 0;
+  atomic_store(&s_discard_pending_progress, 0);
 }
+
+static void ra_apply_pending_progress(void);
 
 void ra_glue_do_frame(void)
 {
-  if (s_client != NULL)
+  if (s_client != NULL) {
+    pthread_mutex_lock(&s_frame_lock);
     rc_client_do_frame(s_client);
+    ra_apply_pending_progress();
+    pthread_mutex_unlock(&s_frame_lock);
+  }
 }
 
 void ra_glue_idle(void)
 {
-  if (s_client != NULL)
+  if (s_client != NULL) {
+    pthread_mutex_lock(&s_frame_lock);
     rc_client_idle(s_client);
+    ra_apply_pending_progress();
+    pthread_mutex_unlock(&s_frame_lock);
+  }
 }
 
 void ra_glue_reset(void)
 {
-  if (s_client != NULL)
+  if (s_client != NULL) {
+    pthread_mutex_lock(&s_frame_lock);
+    atomic_store(&s_discard_pending_progress, 1);
     rc_client_reset(s_client);
+    pthread_mutex_unlock(&s_frame_lock);
+  }
 }
 
 void ra_glue_set_hardcore(int enabled)
 {
-  s_hardcore = enabled ? 1 : 0;
+  enabled = enabled ? 1 : 0;
+  atomic_store(&s_hardcore, enabled);
   if (s_client != NULL)
-    rc_client_set_hardcore_enabled(s_client, s_hardcore);
+    rc_client_set_hardcore_enabled(s_client, enabled);
 }
 
 int ra_glue_get_hardcore(void)
 {
-  return s_hardcore;
+  return atomic_load(&s_hardcore);
 }
 
 int ra_glue_login_password(const char* username, const char* password)
@@ -399,7 +1027,7 @@ int ra_glue_login_password(const char* username, const char* password)
     return 0;
 
   rc_client_async_handle_t* handle =
-    rc_client_begin_login_with_password(s_client, username, password, ra_glue_async_cb, NULL);
+    rc_client_begin_login_with_password(s_client, username, password, ra_glue_login_cb, NULL);
   return handle != NULL ? 1 : 0;
 }
 
@@ -409,7 +1037,7 @@ int ra_glue_login_token(const char* username, const char* token)
     return 0;
 
   rc_client_async_handle_t* handle =
-    rc_client_begin_login_with_token(s_client, username, token, ra_glue_async_cb, NULL);
+    rc_client_begin_login_with_token(s_client, username, token, ra_glue_login_cb, NULL);
   return handle != NULL ? 1 : 0;
 }
 
@@ -520,11 +1148,12 @@ int ra_glue_get_summary_json(char* buffer, int buffer_size)
   const char* empty = "\"\"";
   char* json = NULL;
   asprintf(&json,
-           "{\"user\":\"%s\",\"game\":\"%s\","
+           "{\"user\":\"%s\",\"game\":\"%s\",\"hardcore\":%d,"
            "\"total_achievements\":%u,\"unlocked_achievements\":%u,"
            "\"total_points\":%u,\"unlocked_points\":%u}",
            user_name != NULL ? user_name : empty,
            game_name != NULL ? game_name : empty,
+           rc_client_get_hardcore_enabled(s_client) ? 1 : 0,
            summary.num_core_achievements, summary.num_unlocked_achievements,
            summary.points_core, summary.points_unlocked);
   free(user_name);
@@ -543,7 +1172,7 @@ int ra_glue_get_summary_json(char* buffer, int buffer_size)
   return 1;
 }
 
-int ra_glue_get_achievements_json(char* buffer, int buffer_size)
+static int ra_write_achievements_json(char* buffer, int buffer_size)
 {
   if (s_client == NULL || buffer == NULL || buffer_size <= 0)
     return 0;
@@ -553,6 +1182,10 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
                                      RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
   if (list == NULL)
     return 0;
+
+  /* The unlock bit rc_client_get_user_game_summary counts, so the list matches the summary. */
+  const uint8_t unlock_bit = rc_client_get_hardcore_enabled(s_client) ?
+    RC_CLIENT_ACHIEVEMENT_UNLOCKED_HARDCORE : RC_CLIENT_ACHIEVEMENT_UNLOCKED_SOFTCORE;
 
   size_t capacity = 4096;
   char* json = malloc(capacity);
@@ -565,6 +1198,13 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
 
   for (uint32_t b = 0; b < list->num_buckets; ++b) {
     const rc_client_achievement_bucket_t* bucket = &list->buckets[b];
+    /* rcheevos sets subset_id only when more than one set is active. */
+    const rc_client_subset_t* subset = (bucket->subset_id != 0) ?
+      rc_client_get_subset_info(s_client, bucket->subset_id) : NULL;
+    char* escaped_set = ra_json_escape(subset != NULL ? subset->title : "");
+    const char* set_title = (escaped_set != NULL) ? escaped_set : "";
+    const int unsupported = (bucket->bucket_type == RC_CLIENT_ACHIEVEMENT_BUCKET_UNSUPPORTED) ? 1 : 0;
+
     for (uint32_t i = 0; i < bucket->num_achievements; ++i) {
       const rc_client_achievement_t* achievement = bucket->achievements[i];
       if (achievement == NULL)
@@ -572,18 +1212,24 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
 
       char* title = ra_json_escape(achievement->title);
       char* description = ra_json_escape(achievement->description);
-      if (title == NULL || description == NULL) {
+      char* progress = ra_json_escape(achievement->measured_progress);
+      if (title == NULL || description == NULL || progress == NULL) {
         free(title);
         free(description);
+        free(progress);
         continue;
       }
+      /* rcheevos refreshed the bucket for this list: an active challenge is a primed trigger. */
+      const int challenge = (achievement->bucket == RC_CLIENT_ACHIEVEMENT_BUCKET_ACTIVE_CHALLENGE) ? 1 : 0;
 
       const char* comma = (n > 17) ? "," : ""; /* prefix "{\"achievements\":[" is 17 chars */
       int entry_len = snprintf(NULL, 0,
-                               "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d}",
+                               "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d,"
+                               "\"unsupported\":%d,\"set\":\"%s\",\"progress\":\"%s\",\"challenge\":%d}",
                                comma,
                                achievement->id, title, description,
-                               achievement->points, achievement->unlocked ? 1 : 0);
+                               achievement->points, (achievement->unlocked & unlock_bit) ? 1 : 0,
+                               unsupported, set_title, progress, challenge);
 
       if (n + (size_t)entry_len + 2 >= capacity) {
         capacity = (capacity + (size_t)entry_len + 256) * 2;
@@ -591,6 +1237,8 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
         if (grown == NULL) {
           free(title);
           free(description);
+          free(progress);
+          free(escaped_set);
           free(json);
           rc_client_destroy_achievement_list(list);
           return 0;
@@ -599,14 +1247,19 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
       }
 
       n += (size_t)snprintf(json + n, capacity - n,
-                            "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d}",
+                            "%s{\"id\":%u,\"title\":\"%s\",\"description\":\"%s\",\"points\":%u,\"unlocked\":%d,"
+                            "\"unsupported\":%d,\"set\":\"%s\",\"progress\":\"%s\",\"challenge\":%d}",
                             comma,
                             achievement->id, title, description,
-                            achievement->points, achievement->unlocked ? 1 : 0);
+                            achievement->points, (achievement->unlocked & unlock_bit) ? 1 : 0,
+                            unsupported, set_title, progress, challenge);
 
       free(title);
       free(description);
+      free(progress);
     }
+
+    free(escaped_set);
   }
 
   n += (size_t)sprintf(json + n, "]}");
@@ -621,6 +1274,15 @@ int ra_glue_get_achievements_json(char* buffer, int buffer_size)
   free(json);
   rc_client_destroy_achievement_list(list);
   return 1;
+}
+
+int ra_glue_get_achievements_json(char* buffer, int buffer_size)
+{
+  /* The rows point at rcheevos's live achievements, which the lock's other holders change. */
+  pthread_mutex_lock(&s_frame_lock);
+  const int written = ra_write_achievements_json(buffer, buffer_size);
+  pthread_mutex_unlock(&s_frame_lock);
+  return written;
 }
 
 int ra_glue_serialize_progress(uint8_t* buffer, int buffer_size)
@@ -650,4 +1312,241 @@ int ra_glue_deserialize_progress(const uint8_t* buffer, int buffer_size)
    * rc_client call uses RC_OK == 0 for success). */
   return rc_client_deserialize_progress_sized(s_client, (uint8_t*)buffer,
                                               (size_t)buffer_size) == RC_OK ? 1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Achievement progress kept with save states                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Each save state keeps rcheevos's progress (hit counts and the other runtime
+ * state of active achievements, leaderboards and rich presence) in a file of
+ * its own: <state folder>/.ra-progress/<state file name>.progress. The app's
+ * save-state lists show every file in a save-state folder but no folders.
+ * GameDataManager.java builds the same path to delete the file with an old
+ * auto save.
+ *
+ * The file starts with RA_PROGRESS_MAGIC and three little-endian 32-bit
+ * values: the CRC-32 of the console RAM the state was saved with, the size of
+ * that RAM, and the size of the progress that follows. A load applies the
+ * progress only when the RAM it restored matches, so a progress file never
+ * reaches a state it was not saved with, for example when the state's own
+ * write failed or the state file was replaced.
+ */
+#define RA_PROGRESS_FOLDER ".ra-progress"
+#define RA_PROGRESS_SUFFIX ".progress"
+#define RA_PROGRESS_HEADER_SIZE 20
+#define RA_PROGRESS_MAX_SIZE (4 * 1024 * 1024)
+static const char RA_PROGRESS_MAGIC[8] = { 'R', 'A', 'P', 'R', 'O', 'G', '0', '1' };
+
+/* Returns the malloc'd path of a state's progress file, and of its folder if
+ * folder is not NULL, or NULL when out of memory. */
+static char* ra_progress_path(const char* state_path, char** folder)
+{
+  const char* slash = strrchr(state_path, '/');
+  const int dir_length = slash != NULL ? (int)(slash - state_path + 1) : 0;
+  char* path;
+
+  if (asprintf(&path, "%.*s" RA_PROGRESS_FOLDER "/%s" RA_PROGRESS_SUFFIX, dir_length,
+               state_path, state_path + dir_length) < 0)
+    return NULL;
+  if (folder != NULL && asprintf(folder, "%.*s" RA_PROGRESS_FOLDER, dir_length, state_path) < 0) {
+    free(path);
+    return NULL;
+  }
+  return path;
+}
+
+static uint32_t ra_ram_crc(const uint32_t* rdram, size_t rdram_size)
+{
+  return (uint32_t)crc32(crc32(0L, Z_NULL, 0), (const Bytef*)rdram, (uInt)rdram_size);
+}
+
+static void ra_put_u32(uint8_t* out, uint32_t value)
+{
+  out[0] = (uint8_t)value;
+  out[1] = (uint8_t)(value >> 8);
+  out[2] = (uint8_t)(value >> 16);
+  out[3] = (uint8_t)(value >> 24);
+}
+
+static uint32_t ra_get_u32(const uint8_t* in)
+{
+  return (uint32_t)in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16)
+      | ((uint32_t)in[3] << 24);
+}
+
+static void ra_remove_progress(const char* state_path)
+{
+  char* path = ra_progress_path(state_path, NULL);
+
+  if (path != NULL)
+    remove(path);
+  free(path);
+}
+
+/* Writes a temporary file and renames it over the old one. If that fails, the
+ * old file is removed too, so a later load of the state starts from zero. */
+static void ra_write_progress(const char* state_path, const uint8_t* progress,
+                              size_t progress_size, const uint32_t* rdram, size_t rdram_size)
+{
+  char* folder = NULL;
+  char* path = ra_progress_path(state_path, &folder);
+  char* temp = NULL;
+  uint8_t header[RA_PROGRESS_HEADER_SIZE];
+  FILE* file;
+  int written = 0;
+
+  if (path == NULL)
+    return;
+  if (asprintf(&temp, "%s.tmp", path) < 0)
+    temp = NULL;
+  if (temp != NULL && (mkdir(folder, 0700) == 0 || errno == EEXIST)) {
+    memcpy(header, RA_PROGRESS_MAGIC, sizeof(RA_PROGRESS_MAGIC));
+    ra_put_u32(header + 8, ra_ram_crc(rdram, rdram_size));
+    ra_put_u32(header + 12, (uint32_t)rdram_size);
+    ra_put_u32(header + 16, (uint32_t)progress_size);
+    file = fopen(temp, "wb");
+    if (file != NULL) {
+      written = fwrite(header, 1, sizeof(header), file) == sizeof(header)
+          && fwrite(progress, 1, progress_size, file) == progress_size;
+      written = fclose(file) == 0 && written;
+      written = written && rename(temp, path) == 0;
+      if (!written)
+        remove(temp);
+    }
+  }
+  if (!written)
+    remove(path);
+  free(temp);
+  free(path);
+  free(folder);
+}
+
+/* Returns the malloc'd progress saved with a state, or NULL when the state has
+ * none or was saved with other RAM than the RAM given. */
+static uint8_t* ra_read_progress(const char* state_path, const uint32_t* rdram,
+                                 size_t rdram_size, size_t* progress_size)
+{
+  char* path = ra_progress_path(state_path, NULL);
+  uint8_t header[RA_PROGRESS_HEADER_SIZE];
+  uint8_t* progress = NULL;
+  FILE* file;
+  uint32_t size;
+
+  *progress_size = 0;
+  if (path == NULL)
+    return NULL;
+  file = fopen(path, "rb");
+  free(path);
+  if (file == NULL)
+    return NULL;
+
+  if (fread(header, 1, sizeof(header), file) == sizeof(header)
+      && memcmp(header, RA_PROGRESS_MAGIC, sizeof(RA_PROGRESS_MAGIC)) == 0
+      && ra_get_u32(header + 12) == (uint32_t)rdram_size
+      && ra_get_u32(header + 8) == ra_ram_crc(rdram, rdram_size)) {
+    size = ra_get_u32(header + 16);
+    if (size > 0 && size <= RA_PROGRESS_MAX_SIZE)
+      progress = (uint8_t*)malloc(size);
+    if (progress != NULL && fread(progress, 1, size, file) == size) {
+      *progress_size = size;
+    } else {
+      free(progress);
+      progress = NULL;
+    }
+  }
+  fclose(file);
+  return progress;
+}
+
+/* Returns the malloc'd progress of the loaded game, or NULL. */
+static uint8_t* ra_serialize_loaded_progress(size_t* progress_size)
+{
+  uint8_t* progress;
+  size_t size;
+
+  *progress_size = 0;
+  if (s_client == NULL || !rc_client_is_game_loaded(s_client))
+    return NULL;
+  size = rc_client_progress_size(s_client);
+  if (size == 0)
+    return NULL;
+  progress = (uint8_t*)malloc(size);
+  if (progress == NULL)
+    return NULL;
+  if (rc_client_serialize_progress_sized(s_client, progress, size) != RC_OK) {
+    free(progress);
+    return NULL;
+  }
+  *progress_size = size;
+  return progress;
+}
+
+/* rcheevos starts every count from zero when given no progress. */
+static void ra_restore_progress(const uint8_t* progress, size_t progress_size)
+{
+  if (progress == NULL
+      || rc_client_deserialize_progress_sized(s_client, progress, progress_size) != RC_OK)
+    rc_client_deserialize_progress_sized(s_client, NULL, 0);
+}
+
+static void ra_drop_pending_progress(void)
+{
+  free(s_pending_progress);
+  s_pending_progress = NULL;
+  s_pending_progress_size = 0;
+}
+
+static void ra_apply_pending_progress(void)
+{
+  if (atomic_exchange(&s_discard_pending_progress, 0))
+    ra_drop_pending_progress();
+  if (s_pending_progress == NULL || !rc_client_is_game_loaded(s_client))
+    return;
+  ra_restore_progress(s_pending_progress, s_pending_progress_size);
+  ra_drop_pending_progress();
+}
+
+void ra_glue_state_saved(const char* state_path, const uint32_t* rdram, size_t rdram_size)
+{
+  uint8_t* progress;
+  size_t progress_size;
+
+  if (state_path == NULL || rdram == NULL)
+    return;
+
+  progress = ra_serialize_loaded_progress(&progress_size);
+  if (progress != NULL) {
+    ra_write_progress(state_path, progress, progress_size, rdram, rdram_size);
+    free(progress);
+  } else {
+    /* Nothing to keep: achievements are off, or the game has not loaded and none
+     * of its achievements ran on this RAM (progress waiting from a state loaded
+     * earlier belongs to that state). A progress file from an earlier save of
+     * this state no longer belongs to it. */
+    ra_remove_progress(state_path);
+  }
+}
+
+void ra_glue_state_loaded(const char* state_path, const uint32_t* rdram, size_t rdram_size)
+{
+  uint8_t* progress;
+  size_t progress_size;
+
+  if (state_path == NULL || rdram == NULL || s_client == NULL)
+    return;
+  atomic_store(&s_discard_pending_progress, 0);
+  ra_drop_pending_progress();
+
+  progress = ra_read_progress(state_path, rdram, rdram_size, &progress_size);
+  if (rc_client_is_game_loaded(s_client)) {
+    pthread_mutex_lock(&s_frame_lock);
+    ra_restore_progress(progress, progress_size);
+    pthread_mutex_unlock(&s_frame_lock);
+    free(progress);
+  } else {
+    s_pending_progress = progress;
+    s_pending_progress_size = progress_size;
+  }
 }

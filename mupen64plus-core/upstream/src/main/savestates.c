@@ -39,6 +39,7 @@
 #include "api/config.h"
 #include "api/m64p_config.h"
 #include "api/m64p_types.h"
+#include "api/ra_glue.h"
 #include "backends/api/storage_backend.h"
 #include "device/device.h"
 #include "main/list.h"
@@ -183,12 +184,26 @@ static void savestates_clear_job(void)
 #define PUTDATA(buff, type, value) \
     do { type x = value; PUTARRAY(&x, buff, type, 1); } while(0)
 
+static int savestates_queue_has_terminator(const char* queue, size_t size)
+{
+    static const char terminator[4] = { -1, -1, -1, -1 };
+
+    for (size_t offset = 0; offset + sizeof(terminator) <= size; offset += 8)
+    {
+        if (memcmp(queue + offset, terminator, sizeof(terminator)) == 0)
+            return 1;
+    }
+
+    return 0;
+}
+
 static int savestates_load_m64p(struct device* dev, char *filepath)
 {
     unsigned char header[44];
     gzFile f;
     unsigned int version;
     int i;
+    int queue_bytes;
     uint32_t FCR31;
 
     size_t savestateSize;
@@ -262,7 +277,8 @@ static int savestates_load_m64p(struct device* dev, char *filepath)
     if (version == 0x00010000) /* original savestate version */
     {
         if (gzread(f, savestateData, savestateSize) != (int)savestateSize ||
-            (gzread(f, queue, sizeof(queue)) % 4) != 0)
+            (queue_bytes = gzread(f, queue, sizeof(queue))) < 0 ||
+            (queue_bytes % 4) != 0)
         {
             main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Could not read Mupen64Plus savestate 1.0 data from %s", filepath);
             free(savestateData);
@@ -283,6 +299,7 @@ static int savestates_load_m64p(struct device* dev, char *filepath)
             SDL_UnlockMutex(savestates_lock);
             return 0;
         }
+        queue_bytes = sizeof(queue);
     }
     else // version >= 0x00010200  saves entire eventqueue, 4-byte using_tlb flags and extra state
     {
@@ -297,10 +314,18 @@ static int savestates_load_m64p(struct device* dev, char *filepath)
             SDL_UnlockMutex(savestates_lock);
             return 0;
         }
+        queue_bytes = sizeof(queue);
     }
 
     gzclose(f);
     SDL_UnlockMutex(savestates_lock);
+
+    if (!savestates_queue_has_terminator(queue, queue_bytes))
+    {
+        main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Invalid event queue in savestate: %s", filepath);
+        free(savestateData);
+        return 0;
+    }
 
     // Parse savestate
     dev->rdram.regs[0][RDRAM_CONFIG_REG]       = GETDATA(curr, uint32_t);
@@ -486,7 +511,7 @@ static int savestates_load_m64p(struct device* dev, char *filepath)
 
     // assert(savestateData+savestateSize == curr)
 
-    to_little_endian_buffer(queue, 4, 256);
+    to_little_endian_buffer(queue, 4, queue_bytes / 4);
     load_eventqueue_infos(&dev->r4300.cp0, queue);
 
 #ifdef NEW_DYNAREC
@@ -992,6 +1017,12 @@ static int savestates_load_pj64(struct device* dev,
     curr += 4;
 
     SaveRDRAMSize = GETDATA(curr, uint32_t);
+    if (SaveRDRAMSize != 0x400000 && SaveRDRAMSize != RDRAM_8MB_SIZE)
+    {
+        main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT,
+            "Invalid Project64 state RDRAM size.");
+        return 0;
+    }
 
     /* Read the rest of the savestate into memory. */
     savestateSize = SaveRDRAMSize + 0x2754;
@@ -1474,6 +1505,8 @@ int savestates_load(void)
             case savestates_type_pj64_unc: ret = savestates_load_pj64_unc(dev, filepath); break;
             default: ret = 0; break;
         }
+        if (ret)
+            ra_glue_state_loaded(filepath, dev->rdram.dram, dev->rdram.dram_size);
         free(filepath);
         filepath = NULL;
     }
@@ -1501,6 +1534,10 @@ static void savestates_save_m64p_work(struct work_struct *work)
     {
         main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Could not open state file: %s", save->filepath);
         free(save->data);
+        free(save->filepath);
+        free(save);
+        SDL_UnlockMutex(savestates_lock);
+        StateChanged(M64CORE_STATE_SAVECOMPLETE, 0);
         return;
     }
 
@@ -1510,6 +1547,10 @@ static void savestates_save_m64p_work(struct work_struct *work)
         main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Could not write data to state file: %s", save->filepath);
         gzclose(f);
         free(save->data);
+        free(save->filepath);
+        free(save);
+        SDL_UnlockMutex(savestates_lock);
+        StateChanged(M64CORE_STATE_SAVECOMPLETE, 0);
         return;
     }
 
@@ -1520,6 +1561,7 @@ static void savestates_save_m64p_work(struct work_struct *work)
     free(save);
 
     SDL_UnlockMutex(savestates_lock);
+    StateChanged(M64CORE_STATE_SAVECOMPLETE, 1);
 }
 
 static int savestates_save_m64p(const struct device* dev, char *filepath)
@@ -1538,6 +1580,7 @@ static int savestates_save_m64p(const struct device* dev, char *filepath)
     save = malloc(sizeof(*save));
     if (!save) {
         main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Insufficient memory to save state.");
+        StateChanged(M64CORE_STATE_SAVECOMPLETE, 0);
         return 0;
     }
 
@@ -1556,6 +1599,7 @@ static int savestates_save_m64p(const struct device* dev, char *filepath)
         free(save->filepath);
         free(save);
         main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Insufficient memory to save state.");
+        StateChanged(M64CORE_STATE_SAVECOMPLETE, 0);
         return 0;
     }
 
@@ -2151,6 +2195,7 @@ static int savestates_save_pj64_zip(const struct device* dev, char *filepath)
             zipCloseFileInZip(zipfile); // This may fail, but we don't care
             zipClose(zipfile, "");
         }
+        StateChanged(M64CORE_STATE_SAVECOMPLETE, 1);
         return 1;
 }
 
@@ -2167,17 +2212,20 @@ static int savestates_save_pj64_unc(const struct device* dev, char *filepath)
     if (f == NULL)
     {
         main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Could not create PJ64 state file: %s", filepath);
+        StateChanged(M64CORE_STATE_SAVECOMPLETE, 0);
         return 0;
     }
 
     if (!savestates_save_pj64(dev, filepath, f, write_data_to_file))
     {
         fclose(f);
+        StateChanged(M64CORE_STATE_SAVECOMPLETE, 0);
         return 0;
     }
 
     main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Saved state to: %s", namefrompath(filepath));
     fclose(f);
+    StateChanged(M64CORE_STATE_SAVECOMPLETE, 1);
     return 1;
 }
 
@@ -2207,13 +2255,16 @@ int savestates_save(void)
             case savestates_type_m64p: ret = savestates_save_m64p(dev, filepath); break;
             case savestates_type_pj64_zip: ret = savestates_save_pj64_zip(dev, filepath); break;
             case savestates_type_pj64_unc: ret = savestates_save_pj64_unc(dev, filepath); break;
-            default: ret = 0; break;
+            default: ret = 0; StateChanged(M64CORE_STATE_SAVECOMPLETE, ret); break;
         }
+        if (ret)
+            ra_glue_state_saved(filepath, dev->rdram.dram, dev->rdram.dram_size);
         free(filepath);
     }
-
-    // deliver callback to indicate completion of state saving operation
-    StateChanged(M64CORE_STATE_SAVECOMPLETE, ret);
+    else
+    {
+        StateChanged(M64CORE_STATE_SAVECOMPLETE, ret);
+    }
 
     savestates_clear_job();
     return ret;

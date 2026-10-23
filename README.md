@@ -18,7 +18,7 @@
 
 - **Wave Race Shindou English translation compatibility** — the verified translation now inherits the original Shindou ROM-database defaults, including Count per Op **3**, and existing installations refresh their bundled database. Explicit per-game overrides remain unchanged. Gameplay at the manual setting of 3 is device-confirmed; automatic-default behavior and save/reopen still need device verification.
 
-- **RetroAchievements support** — vendored rcheevos with native glue and a JNA bridge, a settings screen, password sign-in with session-token capture, and hardcore mode enforced across save states, slots, GameShark and cheats.
+- **RetroAchievements support** — vendored rcheevos with native glue and a JNA bridge, a settings screen, password sign-in with session-token capture, and hardcore mode enforced across loading save states and slots, GameShark and cheats.
 - **Gallery, orientation and theme fixes** — orientation changes are handled in place, the gallery keeps its draw-behind-system-bars behaviour across rotation, stale service broadcasts after gallery recreation are fixed (issue #1), the theme quick-switch crash from stacked `activity.recreate()` is fixed, and every dialog and popup now follows the app theme.
 - **Large ROM support** — ROMs larger than 64 MB are accepted, fixing the B3313 new-save crash (issue #3).
 - **Per-game GPU driver control** — corrected per-game driver labelling plus a per-game "force stock driver" option.
@@ -100,7 +100,7 @@ This is what lets the Cart Hack **work and save**, despite placing writable Expa
 - **Driver benchmark mode** — toggleable timed benchmark that measures average FPS to compare Turnip against system drivers.
 - **ParaLLEl-RDP** Vulkan renderer with upscaling, texture filtering, and modern RDP accuracy.
 - **All classic plugins**: GLideN64, glide64mk2, GLN64, Rice, Angrylion, plus HLE/cxd4/parallel RSPs.
-- **RetroAchievements** — sign in from the app and track achievements while you play, with hardcore mode enforced on save states, slots, cheats, GameShark and fast-forward.
+- **RetroAchievements** — sign in from the app, see unlocks, server problems, the session's mode, active challenges, achievement progress and leaderboard attempts on screen while you play and open the game's achievement list from the in-game menu, with unlocks and leaderboard entries made offline sent after the next sign-in and hardcore mode enforced on loading save states and slots, cheats, GameShark and game speed (normal speed only: no fast-forward, slow motion, frame advance or audio sync; resumed games and netplay run in casual mode).
 - **Netplay & Cloud Sync**: Local and room-based netplay, Google Drive cloud backup, touchscreen/controller profiles, and 7z/zip ROM support.
 - **In-app update checker** — checks for new releases directly from GitHub and notifies you when an update is available.
 

@@ -21,6 +21,7 @@
 #ifndef RA_GLUE_H
 #define RA_GLUE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "m64p_types.h"
@@ -38,16 +39,32 @@ EXPORT void ra_glue_shutdown(void);
  */
 EXPORT void ra_glue_set_java_bridge(uintptr_t server_call, uintptr_t event, uintptr_t async_result);
 
-/* Emulation loop hooks (called from the emu thread). */
+/* Emulation hooks: do_frame and idle run on the emu thread; reset runs on the
+ * thread that resets the core (the app's main thread), waiting while either runs. */
 EXPORT void ra_glue_do_frame(void);
 EXPORT void ra_glue_idle(void);
 EXPORT void ra_glue_reset(void);
 
-/* Hardcore mode. Set before ra_glue_load_game() (or at session start): rcheevos
- * defers a mid-session change until the next reset (main_reset -> ra_glue_reset),
- * so enabling it later stalls achievement processing until a reset occurs. */
+/* Save-state hooks: savestates.c calls them on the emu thread when the core's
+ * save or load function returns success (M64P and PJ64 zip saves return it
+ * even when writing the file fails), with the console RAM at that moment, so
+ * that each state keeps rcheevos's progress (see ra_glue.c). Java never calls
+ * them, so they need no EXPORT. */
+void ra_glue_state_saved(const char* state_path, const uint32_t* rdram, size_t rdram_size);
+void ra_glue_state_loaded(const char* state_path, const uint32_t* rdram, size_t rdram_size);
+
+/* Hardcore mode. Enable it before ra_glue_load_game() (or at session start):
+ * once a game is loaded, rcheevos stops processing achievements after it is
+ * enabled until the next reset (main_reset -> ra_glue_reset). Disabling takes
+ * effect at once, before or after the game has loaded. */
 EXPORT void ra_glue_set_hardcore(int enabled);
 EXPORT int ra_glue_get_hardcore(void);
+
+/* Keeps the unlocks and leaderboard entries the server has not answered in the
+ * file at path, and sends those of the signed-in player again after each
+ * sign-in (see ra_glue.c). NULL or "" keeps none. Set it before signing in,
+ * and from one process only. Returns 0 when out of memory. */
+EXPORT int ra_glue_set_unsent_path(const char* path);
 
 /* Session management. Returns 1 if the async operation was started. */
 EXPORT int ra_glue_login_password(const char* username, const char* password);
@@ -67,11 +84,16 @@ EXPORT int ra_glue_get_user_token(char* buffer, int buffer_size);
 
 EXPORT int ra_glue_get_game_name(char* buffer, int buffer_size);
 EXPORT int ra_glue_get_summary_json(char* buffer, int buffer_size);
+/* Waits for a frame, idle work, a reset or a state's progress restore that is
+ * running, so it must not be called from a callback the glue makes during one. */
 EXPORT int ra_glue_get_achievements_json(char* buffer, int buffer_size);
 
-/* Achieved-progress persistence (per game, driven by Java).
+/* The loaded game's progress as one blob. The app does not use these: it keeps
+ * progress with each save state (ra_glue_state_saved).
  * serialize: returns bytes written (> 0), or -1 on failure / buffer too small.
- * deserialize: returns 1 on success, 0 on failure. */
+ * deserialize: returns 1 on success, 0 on failure. Unlike ra_glue_state_loaded
+ * it does not take the lock that frames, idle work, resets and the achievement
+ * list take, so it must not run beside them on another thread. */
 EXPORT int ra_glue_serialize_progress(uint8_t* buffer, int buffer_size);
 EXPORT int ra_glue_deserialize_progress(const uint8_t* buffer, int buffer_size);
 

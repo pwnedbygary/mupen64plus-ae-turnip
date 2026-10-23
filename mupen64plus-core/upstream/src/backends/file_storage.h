@@ -29,8 +29,11 @@ struct file_storage
 {
     uint8_t* data;
     size_t size;
+    size_t offset;
     const char* filename;
     int first_access;
+    /* don't truncate the file on first save: keep any data past size */
+    int keep_trailing_data;
 };
 
 
