@@ -1568,12 +1568,41 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `CoreInterface.java:207-211`), whose listener is the service (`CoreService.java:1271`). So until
   this change the result toast was made on that thread, and on Android 6 to 10 it never showed
   (see the `Toast` REFERENCE under "Save states and Resume under hardcore"); from Android 11 it
-  shows either way. Not verified on a device running Android 6 to 10.
+  shows either way. Not verified on a device running Android 6 to 10; see the emulator run below.
 - OBSERVED (device, 2026-10-21): each part of the toast's new route has shown on the Retroid
   Pocket 6: a notice posted through that method (the resume notice) and a toast made by the same
   `Notifier.showToast` with a format argument ("Saving slot 0…", `CoreService.java:511`); see
   "Device verification (debug build `3.0.338 017e3557`, Retroid Pocket 6, 2026-10-21)". This
-  change itself was not run on a device, and no recorded run mentions "Benchmark mode".
+  change itself was not run on a device.
+- OBSERVED (Android 10 x86_64 emulator, 2026-10-23, one run of each build): the parallel plugin
+  does not start on this emulator (Granite: "VK_KHR_16bit_storage for SSBOs is not supported!
+  This is a minimum requirement for paraLLEl-RDP."), so two test builds of `017042299` dropped the
+  parallel-plugin check from the benchmark's condition (`CoreService.java:913-914`) and ran it
+  with Glide64. Both also had the ae-bridge fix of PR #20 (branch
+  `fix/non-arm64-game-start-crash`), without which every game start crashes on x86_64. The build
+  with `CoreService.java` as it was before this change (from `1530dde6d`) logged the result,
+  "Benchmark: avg 15.7 FPS ()", on the emulation thread, the one that had attached the plugins.
+  No toast window showed in the 10 seconds until the game was closed, none of six screenshots
+  taken from about 0.4 to 4.6 seconds after the line shows a toast, and the emulator's log has no
+  line that mentions a toast. The build with this change logged the result, "Benchmark: avg 15.9
+  FPS ()", on that thread too. The window list, read about every 0.3 seconds, showed a toast
+  window from 0.2 to 1.8 seconds after the line, allowing for the emulator's clock (0.4 seconds
+  behind the PC's, measured two to three minutes after the runs); a screenshot shows the toast's
+  text, "Benchmark: avg 15.9 FPS ()"; and 2.0 seconds after the line, by the emulator's own clock,
+  its notification service logged "Toast already killed" for the app.
+- REFERENCE (AOSP `android-10.0.0_r1`): the notification service tells the app's toast to show,
+  and after its time, 2 seconds for a short toast, tells it to hide and drops it from its queue
+  (`NotificationManagerService.java:303,5981-5982,6003-6014,6048,6057-6066`). The toast's show
+  and hide steps run as messages on the looper of the thread that made it: the show step keeps
+  the view and adds its window, and the hide step, if a view was kept, removes it and reports
+  back, and the service logs "Toast already killed" for a toast no longer in its queue
+  (`Toast.java:457-460,467-520,539-560`; `NotificationManagerService.java:2355-2371`).
+- DERIVED: `Notifier.showToast` makes a short toast (`Notifier.java:95`), so the log line 2.0
+  seconds after the result is the result toast being taken down after it showed, timed by the
+  emulator's clock alone. So on Android 10 the result toast shows with this change and did not
+  before it, as the `Toast` REFERENCE under "Save states and Resume under hardcore" predicts. The
+  test builds ran the benchmark with Glide64, because this emulator cannot run the parallel
+  plugin, each build ran once, and nothing ran on a device with Android 6 to 10.
 - OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes
   with every unit test. In `javap -c -p` of the compiled classes, `finishBenchmark` passes the
   result and the driver's name as two format arguments, the method's lambda hands them on to
