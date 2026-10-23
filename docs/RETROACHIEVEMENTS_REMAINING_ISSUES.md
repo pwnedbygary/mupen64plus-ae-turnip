@@ -184,6 +184,46 @@ token-handling items and the remaining device-verification gaps.
   network off (see "Unlocks kept until the server answers"); leaderboard attempts; the challenge,
   progress and leaderboard lines; and the mode notice after a slow start.
 
+## Device verification (debug APK `1193373b` with the reset fix, Retroid Pocket 6, 2026-10-23)
+- OBSERVED (adb): at 00:40 the debug APK built for the reset fix, sha256
+  `1193373ba0470264992d4cef894b5518ae0dc2cdc500415bb62f75d44945a7fc` (the file was later
+  overwritten by another build), was installed in place with `adb install -r`, after the app's
+  saves were copied off; they matched the copy afterwards (26 files). `aapt2` gave its version
+  name as `3.0.338 fde9c41c`, the short hash of the commit it was built on
+  (`version_common.gradle:12,19`), as the fix was not yet committed. At 01:12 the installed APK
+  still had that sha256 (`sha256sum` on the device) and that version name, last updated at
+  00:40:22 (`dumpsys package`), in the install folder that the app's log shows the session's
+  process using. RetroAchievements was on and hardcore off. DERIVED: the APK runs the code of
+  `1530dde6d`: the edits made after it was built were to comments and docs, and the core
+  libraries rebuilt after them kept its build IDs.
+- OBSERVED (device; times are the app log's, from the device's clock): Mario Tennis started from a
+  view intent at 00:40:30, and emulation paused at 00:40:53.709 as the in-game menu opened. Reset
+  in the menu (00:41:17.673) opened the confirmation dialog. When it was confirmed, the main thread
+  logged the app's reset call (`CoreFragment.java:901-909`; `CoreService.java:615-618`) and then
+  the dialog's window being taken down, both at 00:41:29.270, and emulation continued at
+  00:41:29.701. A screenshot taken after the reset shows the Nintendo logo; before it the game was
+  past the logo, in its intro, which shows behind the confirmation dialog. The achievement list,
+  opened at 00:42:00.869, showed "Casual: 1 of 97 unlocked" and its rows. A quit broadcast sent
+  from adb closed the game at 00:42:13 (`CoreService.java:233-254`). The screenshots' file times
+  come from the PC's clock; the screenshot that shows the confirmation dialog has a file time 1.19
+  seconds earlier than the log's time for choosing Reset.
+- DERIVED: the PC's clock was more than 1.1 seconds behind the device's at 00:41, as the dialog
+  opens only after the log line for choosing Reset (`GameActivity.java:948,1014-1015`;
+  `CoreFragment.java:877-899`) and the PC writes a screenshot's file only after the screen is
+  captured; so this record orders the screenshots by what they show, not by their file times. The
+  reset ran while emulation was paused, so the emulator thread was in the core's pause loop, which
+  runs idle work after each 10 ms wait (see "Paused emulation"), while the main thread reset the
+  achievements and asked the core for a soft reset (`CoreInterface.java:894-897`; `main.c:802-816`),
+  which the emulator thread carries out once emulation goes on (`device.c:284-289`). The reset call
+  returned within about a millisecond, and the game and the list worked afterwards. One reset shows
+  no hang; it does not show that the race is gone. The host test shows that for a reset during a
+  frame (see "Threads in the glue"). No host test resets the game while the emulator thread is in
+  idle work, and this run does not show that case either, as nothing records whether the reset met
+  one of the pause loop's idle calls. That a reset and idle work cannot overlap rests on both taking
+  the same lock (`ra_glue.c:991-1009`).
+- Not covered, among others: a reset while a frame or idle work raises an event; the reset button
+  mapping; a reset in hardcore.
+
 ## Deferred items from commit `8f14880ef` (login/token handling)
 Reference: that commit's message lists these as nonblocking. The issue #15 section addresses all
 four: "Sign-in order" three of them, and "User-Agent" the hardcoded User-Agent version. The saved
@@ -557,13 +597,19 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   the rest of the reset then overlaps the rest of the frame or comes after it; a hide is lost
   when the frame clears the achievement's pending events after the reset has set it
   (`rc_client.c:6213`). A copy without the lock in frames fails this run and the frame run of the
-  list.
+  list. No run resets the game while the emulator thread is in idle work; that case rests on
+  `ra_glue_idle` taking the same lock (`ra_glue.c:991-999`).
 - OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes with
   every unit test. `ra_glue.c` was recompiled for all four ABIs with empty ndk-build stderr logs;
   in each ABI's object `ra_glue_reset` calls `pthread_mutex_lock`, `rc_client_reset` and
   `pthread_mutex_unlock` in that order (on arm64 the lock goes through a helper the compiler
   outlined), and each packaged core library has the build ID of the library linked from that
-  object. Not verified on a device.
+  object.
+- OBSERVED (device, 2026-10-23): a reset from the in-game menu while emulation was paused started
+  the game again at the Nintendo logo, and the achievement list opened afterwards (see "Device
+  verification (debug APK `1193373b` with the reset fix, Retroid Pocket 6, 2026-10-23)"). Not yet
+  verified on device: a reset while a frame or idle work raises an event, and a reset from the
+  reset button mapping.
 - DERIVED: the app keeps the header's rule. rcheevos unloads the game when `ra_glue_load_game`
   replaces it (`ra_glue.c:1058-1059`), on logout (`rc_client.c:887-888,894`), and on a reset whose
   media belongs to another game (`rc_client.c:6643-6652`). The app reaches none of these during a
@@ -1496,18 +1542,18 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   swaps buffers from the core's screen update in its frame interrupt (`vi_controller.c:179`;
   `mupen64plus-video-parallel/upstream/gfx_m64p.c:281-284`; `parallel_imp.cpp:134,144`;
   `glguts.c:400`). The plugin's swap is the core's `VidExt_GL_SwapBuffers` (`glguts.c:296`), which
-  calls the swap that ae-bridge gives the core (`vidext.c:84-86,684-688`; `ae_bridge.cpp:577-581`;
-  `CoreInterface.java:578`), and that swap counts frames and calls back into Java on that thread
-  (`ae_bridge.cpp:397-407,453-460`; `CoreInterface.java:207-211`), whose listener is the service
-  (`CoreService.java:1271`). So until this change the result toast was made on that thread, and
-  on Android 6 to 10 it never showed (see the `Toast` REFERENCE under "Save states and Resume
-  under hardcore"); from Android 11 it shows either way. Not verified on a device running
-  Android 6 to 10.
+  calls the swap that ae-bridge gives the core (`CoreInterface.java:578`; `ae_bridge.cpp:577-581`;
+  `frontend.c:401-406`; `vidext.c:84-86,684-688`; `ae_bridge.h:70`), and that swap counts frames
+  and calls back into Java on that thread (`ae_bridge.cpp:397-407,453-460`;
+  `CoreInterface.java:207-211`), whose listener is the service (`CoreService.java:1271`). So until
+  this change the result toast was made on that thread, and on Android 6 to 10 it never showed
+  (see the `Toast` REFERENCE under "Save states and Resume under hardcore"); from Android 11 it
+  shows either way. Not verified on a device running Android 6 to 10.
 - OBSERVED (device, 2026-10-21): each part of the toast's new route has shown on the Retroid
   Pocket 6: a notice posted through that method (the resume notice) and a toast made by the same
   `Notifier.showToast` with a format argument ("Saving slot 0…", `CoreService.java:511`); see
   "Device verification (debug build `3.0.338 017e3557`, Retroid Pocket 6, 2026-10-21)". This
-  change itself was not run on a device, and no recorded run has used "Benchmark mode".
+  change itself was not run on a device, and no recorded run mentions "Benchmark mode".
 - OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes
   with every unit test. In `javap -c -p` of the compiled classes, `finishBenchmark` passes the
   result and the driver's name as two format arguments, the method's lambda hands them on to
