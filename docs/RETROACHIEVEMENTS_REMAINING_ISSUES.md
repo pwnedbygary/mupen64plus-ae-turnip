@@ -885,8 +885,8 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   save states. While not strictly required, this is highly recommended as it's important for
   debugging complex achievement logic and ensures proper functionality in casual mode."
 - OBSERVED: the core calls `ra_glue_state_saved` after a save and `ra_glue_state_loaded` after a
-  load, only when the save or load function reports success, with the state's path and the
-  console RAM (`savestates.c:1478-1479,2221-2222`; declared without `EXPORT`, `ra_glue.h:48-54`).
+  load, only when the save or load function returns success, with the state's path and the
+  console RAM (`savestates.c:1478-1479,2230-2231`; declared without `EXPORT`, `ra_glue.h:48-54`).
   Both run on the emulator thread, which runs the core's save and load jobs
   (`interrupt.c:554-556,654-656`). A save writes the loaded game's progress, as rcheevos
   serializes it (`ra_glue.c:1464-1484`), to
@@ -897,13 +897,15 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   nothing to keep, as with achievements off or before the game has loaded, the save removes the
   old file (`ra_glue.c:1511-1530`). So a state saved before the game has loaded keeps no
   progress, even while progress from a state loaded earlier waits for the game (next bullet).
-- OBSERVED: an M64P save reports success once it has passed the file write to `queue_work`, even
-  if that write then fails to open or write the file (`savestates.c:1492-1523,1939-1942`). The
+- OBSERVED: an M64P save returns success once it has passed the file write to `queue_work`, even
+  if that write then fails to open or write the file (`savestates.c:1492-1525,1944-1947`). The
   app's core build, `mupen64plus-core/mupen64plus-core.mk`, does not define `M64P_PARALLEL` or
   compile `workqueue.c` (only upstream's `projects/unix/Makefile:162` defines it), so `queue_work`
-  runs the write at once, before the save hook (`workqueue.h:42-63`). A PJ64 zip save also reports
-  success when its write fails (`savestates.c:2133-2164`), but the app saves only M64P states
-  (`CoreInterface.java:834,850` pass type 1, `savestates_type_m64p` in `savestates.h:35-40`).
+  runs the write at once, before the save hook (`workqueue.h:42-63`). A PJ64 zip save also returns
+  success when its write fails (`savestates.c:2138-2170`), but the app saves only M64P states
+  (`CoreInterface.java:834,850` pass type 1, `savestates_type_m64p` in `savestates.h:35-40`). So
+  the hook still runs after a failed write, though the app is now told that the save failed (see
+  "Failed save-state writes").
 - OBSERVED: a load reads that file and applies it only if the RAM size and the CRC-32 in it match
   the RAM the core has just restored (`ra_glue.c:1428-1461`). Otherwise, or without a file, rcheevos
   is given no progress, which starts every count from zero (`ra_glue.c:1487-1492`;
@@ -1509,11 +1511,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   empty.
 
 ### Failed save-state writes
-- OBSERVED: before this change, an M64P save that could not open its file, or could not write all
+- OBSERVED: before `4ad1f8b16`, an M64P save that could not open its file, or could not write all
   of it, returned without releasing `savestates_lock` and without freeing the state's path and
   work item (`savestates.c:1503-1517` at `7f2379e26`). REFERENCE: in upstream mupen64plus-core's
   `master` (`3be6336a`) the same two returns keep the lock, though there they also report the
-  failure to the front end (`src/main/savestates.c:1525-1541` there).
+  failure to the front end (`src/main/savestates.c:1525-1541` at `3be6336a`).
 - OBSERVED: the lock is a pthread mutex made with default attributes
   (`ndkLibs/SDL2_stub/SDL.h:221-224,460-496,521-532`). REFERENCE: bionic's default mutex type is
   `PTHREAD_MUTEX_NORMAL` (NDK 26.1.10909125, `sysroot/usr/include/pthread.h:46,53`), and POSIX
@@ -1526,26 +1528,80 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - DERIVED: so after one failed write, as with full storage or a state folder that is gone, the
   emulator thread's next M64P save, or its next load of an M64P state that exists, waited for
   itself and the game froze. Not seen on a device.
-- OBSERVED: both returns now free the path and the work item and release the lock, as a
-  successful write does (`savestates.c:1503-1531`).
-- OBSERVED, unchanged: a failed write is still reported as a saved state (see "Achievement
-  progress kept with save states"). DERIVED: so the app also marks a failed auto save as
-  complete, unless it cannot create the marker file either, as when the folder is gone
-  (`CoreService.java:325-342`).
+- OBSERVED: since `4ad1f8b16`, both returns free the path and the work item and release the lock,
+  as a successful write does (`savestates.c:1503-1533`).
+- OBSERVED: before this change, a failed write was still reported to the front end as a saved
+  state: `savestates_save` reported what the save function returned (`savestates.c:2214-2227` at
+  `55c9b3d9c`), and an M64P save returns success once its write is queued (see "Achievement
+  progress kept with save states"). DERIVED: so the app also marked a failed auto save complete,
+  unless it could not create the marker file either, as when the folder is gone. Resume picks the
+  newest auto save file that has a marker (`CoreService.java:325-342,719`;
+  `GameDataManager.java:29,40-75`), so after a failed write it would pick the cut-short file, whose
+  load then fails (`savestates.c:288-300`); after a failed open there is no file for it to pick.
+- OBSERVED: this change applies upstream mupen64plus-core's `8b75435b6d` (2024-07-01, "savestates:
+  Only notify SAVECOMPLETE once save is actually done"). Each save function now tells the front end
+  itself whether it saved the state, and `savestates_save` tells it only for a type it does not
+  know or when it has no path for the state (`savestates.c:2221-2237`). An M64P write tells it 0
+  after a failed open or a short `gzwrite` and 1 once `gzwrite` has taken the whole state, and an
+  M64P save that gets no memory for the write tells it 0 (`savestates.c:1510,1523,1534,1553,1572`).
+  REFERENCE (upstream, `src/main/savestates.c:1529,1539,1549-1550` at `3be6336a`): upstream reports
+  a failed write while it still holds the lock, as its failure returns keep it (see the first
+  bullet). OBSERVED: here the report comes after the lock is released, as it does on the path
+  through `gzclose` in both (`savestates.c:1509-1510,1522-1523,1533-1534`).
+- OBSERVED: neither this core's write nor upstream's checks what `gzclose` returns
+  (`savestates.c:1527`; upstream's `src/main/savestates.c:1543` at `3be6336a`). REFERENCE (NDK
+  26.1.10909125, `sysroot/usr/include/zlib.h:1683-1693`): `gzclose` writes the output that zlib
+  still holds and returns `Z_ERRNO` when a file operation fails. OBSERVED (host build):
+  in a scratch program that includes the test described below, a 4 KiB state written to
+  `/dev/full`, all of which zlib held until `gzclose`, was reported as saved, with "Saved state to:
+  full" (GCC 16.2.1 and clang 23.1.3, host zlib-ng-compat 2.3.3).
+- OBSERVED: the PJ64 saves report too: an uncompressed one 0 when it cannot create or fill its file
+  and 1 otherwise, without checking `fclose`, and a zip one 1 on every path, as it returns 1 on
+  every path (`savestates.c:2138-2170,2177-2200`; `fclose` at `:2197`). The app saves only M64P
+  states (see "Achievement progress kept with save states").
+- DERIVED: so the app now marks an auto save complete only when the core's write has taken the
+  whole state, and Resume passes over one whose open or write failed. An auto save whose end
+  cannot be written when `gzclose` runs, as on nearly full storage, is still reported as saved and
+  marked complete, and Resume would pick it (see "Open items").
+- DERIVED: for an M64P save the report of 1 now reaches the front end just before
+  `savestates_save` calls the progress hook: the write reports and returns, `savestates_save_m64p`
+  returns 1 and `savestates_save` calls the hook, all on the emulator thread
+  (`savestates.c:1534,1944-1947,2230-2231`; `workqueue.h:59-63`). Apart from creating the marker,
+  nothing the app does when it hears comes between them: its listener posts the rest to another
+  thread (`CoreService.java:325-354`). On its exit path the app also asks the core to stop, 500 ms
+  after the report or earlier, as its watchdog asks every 500 ms from the start of the save
+  (`:312-316,1647-1665`); a request to stop only sets a flag (`main.c:1974-2003`;
+  `device.c:272-276`) that nothing between the report and the hook reads, and `gen_interrupt` runs
+  a pending save job even with that flag set (`interrupt.c:542-550,652-658`). So the new order
+  adds one way to get a complete auto save without its progress file: a process killed between the
+  report and the hook. A progress write that fails gives the same in either order, as the glue then
+  removes the old progress file (`ra_glue.c:1413-1420`). Either way that auto save loads with every
+  count at zero (see "Achievement progress kept with save states").
 - OBSERVED (host build): `tools/test-savestate-lock.sh` builds `tools/tests/savestate-lock-test.c`,
   which includes `savestates.c` and hands it states through `queue_work` as `savestates_save_m64p`
-  does (`savestates.c:1939-1940`): one written and read back, one to a missing folder, 1 MiB that
+  does (`savestates.c:1944-1945`): one written and read back, one to a missing folder, 1 MiB that
   zlib cannot shrink written to `/dev/full`, and one more written. After each, the lock must be
-  free. It passes with GCC 16.2.1 and clang 23.1.3, and in a scratch build under clang ASan,
-  UBSan and LeakSanitizer with no reports. With the `savestates.c` from before this change it
-  stops at the missing folder, with the lock still held, and LeakSanitizer reports the path and
-  the work item (98 bytes in 2 allocations, with `TMPDIR` unset); a copy that releases the lock
-  only after a failed open stops at `/dev/full`.
-- OBSERVED (host build): `./gradlew :app:assembleDebug` recompiled `savestates.o` for all four
-  ABIs with empty ndk-build stderr logs, and each packaged core library has the build ID of the
-  one that was linked. In the arm64 object, the failed open, the failed write and the successful
-  write all end in one shared tail that frees the three allocations and then jumps to
-  `SDL_UnlockMutex` (NDK `llvm-objdump -d -r`).
+  free, and the write must have told the front end once, with the lock free, 1 for a written state
+  and 0 for a failed one. The test calls the write directly, so `savestates_save` itself, the
+  out-of-memory reports and the PJ64 saves are checked only by reading them. It passes with GCC
+  16.2.1 and clang 23.1.3, and in a scratch build under clang ASan, UBSan and LeakSanitizer with no
+  reports. With the `savestates.c` from before `4ad1f8b16`, the first run fails its report check
+  and the test stops at the missing folder, with the lock still held, and LeakSanitizer reports the
+  path and the work item (98 bytes in 2 allocations, with `TMPDIR` unset); a copy of it that
+  releases the lock only after a failed open stops at `/dev/full`. With the one from before this
+  change every run fails its report check, and a copy of the new one that reports a failed write
+  before releasing the lock fails only the two failed writes.
+- OBSERVED (host build): for `4ad1f8b16`, `./gradlew :app:assembleDebug` recompiled `savestates.o`
+  for all four ABIs with empty ndk-build stderr logs, each packaged core library had the build ID
+  of the one that was linked, and in the arm64 object the failed open, the failed write and the
+  successful write all ended in one shared tail that freed the three allocations and then jumped
+  to `SDL_UnlockMutex`. For this change,
+  `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` recompiled `savestates.o` and the
+  other two files that include `ra_glue.h` (`main.o`, `ra_glue.o`), whose comment this change
+  corrects, for all four ABIs with empty ndk-build stderr logs; each packaged core library has the
+  build ID of the one that was linked, and the 31 unit tests pass. In the arm64 object the shared
+  tail now calls `SDL_UnlockMutex` and then jumps to `StateChanged` with 1 on the path through
+  `gzclose` and 0 after a failed open or write (NDK `llvm-objdump -d -r`).
 
 ### Benchmark result toast
 - OBSERVED: with "Benchmark mode" on in the display settings (`preferences_display.xml:136-140`;
@@ -1938,3 +1994,10 @@ parent and its first public release (see D) and the core's database patches (see
   idle call. An independent reviewer's scratch stress test reported them under ThreadSanitizer;
   they were not repeated here. They are older than this branch: the two HTTP threads came with
   `4df6051aa`. Not fixed here: rcheevos is vendored.
+- DERIVED: the core's M64P write reports a state as saved once `gzwrite` has taken all of it, and
+  does not check `gzclose`, which writes what zlib still holds (see "Failed save-state writes").
+  So when that last write fails, as it can on nearly full storage, the app marks the auto save
+  complete, and Resume would pick it over an older auto save although its end is missing. This is
+  older than this branch, and upstream `master` has it too; the PJ64 uncompressed save leaves
+  `fclose` unchecked the same way, though the app makes only M64P states. Not seen on a device.
+  Not fixed here: checking `gzclose` would go beyond upstream's change.

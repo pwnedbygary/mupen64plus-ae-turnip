@@ -46,7 +46,7 @@ EXPORT void ra_glue_idle(void);
 EXPORT void ra_glue_reset(void);
 
 /* Save-state hooks: savestates.c calls them on the emu thread when the core's
- * save or load of a state reports success (M64P and PJ64 zip saves report it
+ * save or load function returns success (M64P and PJ64 zip saves return it
  * even when writing the file fails), with the console RAM at that moment, so
  * that each state keeps rcheevos's progress (see ra_glue.c). Java never calls
  * them, so they need no EXPORT. */

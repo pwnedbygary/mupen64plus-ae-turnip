@@ -1,10 +1,18 @@
-/* Host check that a failed save state write releases the save-state lock.
+/* Host check that a save state write releases the save-state lock and reports
+ * how it went.
  *
  * The app's core build does not define M64P_PARALLEL, so queue_work runs the
  * write on the emulation thread that asked for the save (workqueue.h). That
  * thread's next M64P save, or its next load of an M64P state that exists,
  * takes the same lock, a default pthread mutex, so a failed write that kept
  * the lock left the thread waiting for itself.
+ *
+ * Once it has released the lock, the write tells the front end
+ * (M64CORE_STATE_SAVECOMPLETE) 1 if gzwrite took the whole state and 0 if the
+ * file could not be opened or written; gzclose, which writes what zlib still
+ * holds, is not checked. The app marks an auto save complete only when told 1.
+ * The core used to report success as soon as the write was queued, even if it
+ * then failed.
  *
  * The test includes savestates.c to reach its static write function. The
  * first run writes a state, the next two make the write fail (a missing
@@ -43,6 +51,20 @@ void DebugMessage(int level, const char *message, ...)
     (void)message;
 }
 
+static int g_reports, g_report_value, g_report_lock_free;
+
+/* The front end's state callback, which the app runs on the emulation thread. */
+void StateChanged(m64p_core_param param_type, int new_value)
+{
+    if (param_type != M64CORE_STATE_SAVECOMPLETE)
+        return;
+    g_reports++;
+    g_report_value = new_value;
+    g_report_lock_free = SDL_TryLockMutex(savestates_lock) == 0;
+    if (g_report_lock_free)
+        SDL_UnlockMutex(savestates_lock);
+}
+
 /* Bytes zlib cannot shrink, so a large enough block makes it write to the
  * file before gzwrite returns. */
 static char *state_bytes(size_t size)
@@ -67,6 +89,9 @@ static void save_state(const char *path, size_t size)
     save->data = state_bytes(size);
     save->size = size;
     g_message[0] = '\0';
+    g_reports = 0;
+    g_report_value = -1;
+    g_report_lock_free = 0;
     init_work(&save->work, savestates_save_m64p_work);
     queue_work(&save->work);
 }
@@ -79,6 +104,14 @@ static void check_lock_free(const char *run)
         exit(1);
     }
     SDL_UnlockMutex(savestates_lock);
+}
+
+/* One report, made once the lock was free, of whether the state was saved. */
+static void check_report(int saved)
+{
+    CHECK(g_reports == 1);
+    CHECK(g_report_value == saved);
+    CHECK(g_report_lock_free);
 }
 
 static void report(const char *run, int failures_before)
@@ -140,12 +173,14 @@ int main(void)
     check_lock_free("state written");
     CHECK(strcmp(g_message, "Saved state to: written.st0") == 0);
     CHECK(file_holds_state(written, size));
+    check_report(1);
     report("state written", before);
 
     before = g_failures;
     save_state(missing, size);
     check_lock_free("folder missing");
     CHECK(starts_with(g_message, "Could not open state file"));
+    check_report(0);
     report("folder missing", before);
 
     if (access("/dev/full", W_OK) == 0) {
@@ -153,6 +188,7 @@ int main(void)
         save_state("/dev/full", size);
         check_lock_free("device full");
         CHECK(starts_with(g_message, "Could not write data to state file"));
+        check_report(0);
         report("device full", before);
     } else {
         printf("device full: skipped, no /dev/full\n");
@@ -163,6 +199,7 @@ int main(void)
     check_lock_free("state written after the failures");
     CHECK(strcmp(g_message, "Saved state to: after.st0") == 0);
     CHECK(file_holds_state(after, size));
+    check_report(1);
     report("state written after the failures", before);
 
     savestates_deinit();
