@@ -71,7 +71,10 @@
  * must wait until the restore has ended. The thirteenth run holds it when a
  * frame primes the challenge, while another thread resets the game, which
  * changes the same achievements: the reset must wait until the frame has
- * ended, so the challenge indicator's last event hides it.
+ * ended, so the challenge indicator's last event hides it. The fourteenth
+ * run holds it in the idle work that finishes the load, as the eleventh run
+ * does, while another thread resets the game: the reset must wait until that
+ * idle work has ended.
  *
  * The next runs check the progress kept with save states. The game's fourth
  * achievement unlocks after PROGRESS_HITS frames with the byte at
@@ -1103,15 +1106,15 @@ static void* reset_during_hold(void* unused)
     return NULL;
 }
 
-/* The achievement list asked for while the game finishes loading, in a frame or, while emulation
- * is paused, in idle work: rcheevos checks the game's addresses there outside its mutex, so the
- * list must wait until that work has ended. */
-static void run_list_while_loading(int paused, const char* name)
+/* The achievement list asked for, or the game reset, while the game finishes loading in a frame
+ * or, while emulation is paused, in idle work: rcheevos checks the game's addresses there outside
+ * its mutex, so the list and the reset must wait until that work has ended. */
+static void run_while_loading(int paused, void* (*call)(void*), const char* name)
 {
     const int failures_before = g_failures;
     uint8_t* rdram = NULL;
     void* base;
-    pthread_t list_thread;
+    pthread_t call_thread;
 
     g_mem_base = NULL;
     base = create_memory(&rdram);
@@ -1119,14 +1122,14 @@ static void run_list_while_loading(int paused, const char* name)
     begin_session(0);
     rc_client_enable_logging(s_client, RC_CLIENT_LOG_LEVEL_WARN, hold_validation);
     reset_hold();
-    pthread_create(&list_thread, NULL, build_list_during_hold, NULL);
+    pthread_create(&call_thread, NULL, call, NULL);
     if (paused) {
         ra_glue_idle();
     } else {
         ra_glue_do_frame();
     }
     atomic_store_explicit(&g_frame_done, 1, memory_order_release);
-    pthread_join(list_thread, NULL);
+    pthread_join(call_thread, NULL);
     answer_requests();
 
     CHECK(g_num_results == 2 && g_results[1] == RC_OK);
@@ -1766,10 +1769,13 @@ int main(void)
     run_paused();
     run_shutdown_during_retry();
     run_leaderboard_attempts();
-    run_list_while_loading(0, "achievement list asked for while a frame loads the game");
-    run_list_while_loading(1, "achievement list asked for while idle work loads the game");
+    run_while_loading(0, build_list_during_hold,
+                      "achievement list asked for while a frame loads the game");
+    run_while_loading(1, build_list_during_hold,
+                      "achievement list asked for while idle work loads the game");
     run_list_while_restoring();
     run_reset_during_frame();
+    run_while_loading(1, reset_during_hold, "reset while idle work loads the game");
     run_progress_with_states();
     run_progress_while_loading(0, "hit count of a state loaded while the game loads");
     run_progress_while_loading(1, "no hit count after a reset while the game loads");

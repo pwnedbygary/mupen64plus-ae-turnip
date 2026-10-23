@@ -209,18 +209,19 @@ token-handling items and the remaining device-verification gaps.
   seconds earlier than the log's time for choosing Reset.
 - DERIVED: the PC's clock was more than 1.1 seconds behind the device's at 00:41, as the dialog
   opens only after the log line for choosing Reset (`GameActivity.java:948,1014-1015`;
-  `CoreFragment.java:877-899`) and the PC writes a screenshot's file only after the screen is
-  captured; so this record orders the screenshots by what they show, not by their file times. The
-  reset ran while emulation was paused, so the emulator thread was in the core's pause loop, which
-  runs idle work after each 10 ms wait (see "Paused emulation"), while the main thread reset the
-  achievements and asked the core for a soft reset (`CoreInterface.java:894-897`; `main.c:802-816`),
-  which the emulator thread carries out once emulation goes on (`device.c:284-289`). The reset call
-  returned within about a millisecond, and the game and the list worked afterwards. One reset shows
-  no hang; it does not show that the race is gone. The host test shows that for a reset during a
-  frame (see "Threads in the glue"). No host test resets the game while the emulator thread is in
-  idle work, and this run does not show that case either, as nothing records whether the reset met
-  one of the pause loop's idle calls. That a reset and idle work cannot overlap rests on both taking
-  the same lock (`ra_glue.c:991-1009`).
+  `CoreFragment.java:877-899`) and a screenshot's file time is that of its last write, which
+  follows the capture; so this record orders the screenshots by what they show, not by their file
+  times. The reset ran while emulation was paused, so the emulator thread was in the core's pause
+  loop, which runs idle work after each 10 ms wait (see "Paused emulation"), while the main thread
+  reset the achievements and asked the core for a soft reset (`CoreInterface.java:894-897`;
+  `main.c:802-816`), which the emulator thread carries out once emulation goes on
+  (`device.c:284-289`). The reset call returned within about a millisecond, and the game and the
+  list worked afterwards. One reset shows no hang; it does not show that the race is gone. The
+  host test shows that for a reset during a frame and, in a run added later, for a reset during
+  the idle work that finishes a game's load (see "Threads in the glue"). This run does not show
+  the idle-work case, as nothing records whether the reset met one of the pause loop's idle calls;
+  that a reset and idle work cannot overlap rests on both taking the same lock
+  (`ra_glue.c:991-1009`).
 - Not covered, among others: a reset while a frame or idle work raises an event; the reset button
   mapping; a reset in hardcore.
 
@@ -588,7 +589,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   game's pending events (`rc_client.c:6421`). The runs with nine reports also show both threads
   refreshing the achievement's display and clearing its pending events
   (`rc_client.c:4100,4103,4158`; `:6213`), and both writing the test's own count and copy of the
-  last indicator event from their event callbacks (`ra-session-test.c:303-304`). The new run's
+  last indicator event from their event callbacks (`ra-session-test.c:306-307`). The new run's
   checks vary too. With symbolizing off (`TSAN_OPTIONS=symbolize=0`), three runs each failed the
   reset-waited and last-event checks, as without ThreadSanitizer. With symbolizing on, four runs
   all passed the reset-waited check; two of them failed the checks that the indicator showed and
@@ -597,8 +598,27 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   the rest of the reset then overlaps the rest of the frame or comes after it; a hide is lost
   when the frame clears the achievement's pending events after the reset has set it
   (`rc_client.c:6213`). A copy without the lock in frames fails this run and the frame run of the
-  list. No run resets the game while the emulator thread is in idle work; that case rests on
-  `ra_glue_idle` taking the same lock (`ra_glue.c:991-999`).
+  list. None of those runs reset the game while the emulator thread was in idle work; the next
+  bullet adds one that does.
+- OBSERVED (host build): a run added later resets the game while the emulator thread is in idle
+  work. As in the idle-work run of the list, the log hook holds the emulator thread where the idle
+  work that finishes the game's load checks the game's addresses, after rcheevos has set the game
+  and released its mutex (`rc_client.c:1815-1823,1861`; `:1304,1310`), while another thread resets
+  the game. The reset must return only after the hold has ended, and the load must still mark the
+  achievement at the bad address as unsupported. All twenty-six runs pass with GCC 16.2.1 and clang
+  23.1.3, and under clang ASan, UBSan, LeakSanitizer and ThreadSanitizer, which report only what
+  the bullet above names. A copy without the lock in `ra_glue_reset`, and the glue of `4ad1f8b16`,
+  fail the new run's check that the reset waited and the two checks of the frame run named above;
+  a copy without the lock in `ra_glue_idle` fails the new run's check that the reset waited and the
+  idle-work run of the list. Each of these copies also fails an older run; what the new run adds
+  is a reset made during idle work, and the races ThreadSanitizer reports for it. Under
+  ThreadSanitizer the copy without the lock in `ra_glue_reset` failed the new run's check that the
+  reset waited in all eleven runs, seven with symbolizing on and four with it off. With symbolizing
+  on, the frame run's checks vary, as the bullet above records: three of the seven runs failed some
+  of them; with it off, all four did. In the seven symbolized runs the new run reported the reset
+  reading the game (`rc_client.c:6643`) that the load sets (`:1817`) each time, and reading an
+  achievement's state (`:4866`) that the load's address check writes (`:1304`) six times. DERIVED:
+  a reset and idle work take turns, as a reset and a frame do.
 - OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes with
   every unit test. `ra_glue.c` was recompiled for all four ABIs with empty ndk-build stderr logs;
   in each ABI's object `ra_glue_reset` calls `pthread_mutex_lock`, `rc_client_reset` and
