@@ -665,7 +665,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   pause sends at most one, the first that falls due, and only if frames ran since the last ping.
   The calls run on the emulator thread while the core's memory exists, like `ra_glue_do_frame`,
   and end before the client is destroyed: stopping emulation clears the pause
-  (`main.c:1990-1994`), the pause loop runs inside `emuStart` (`CoreService.java:926`), and the
+  (`main.c:1991-1995`), the pause loop runs inside `emuStart` (`CoreService.java:926`), and the
   service destroys the client only after `emuStart` returns, or kills the process (see "Threads
   in the glue").
 - DERIVED: outside netplay, the achievement dialog opens only from the in-game menu, which pauses
@@ -1609,6 +1609,52 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `Notifier.showToast(Context, int, Object...)`, the cheats and resume notices pass an empty
   array, and no class of `CoreService` calls the `Notifier.showToast` that takes a string.
 
+### Controller Pak saves of players 2 to 4
+- OBSERVED: the core keeps the four Controller Paks in one 128 KB file
+  (`main.c:164-167,1025-1028,1635`). Each player's pak is a 32 KB part of it, with a storage of its
+  own whose save goes to the file's storage, and only the paks use that kind of storage
+  (`main.c:1742-1748`; `file_storage.c:125-131,154-159`). The in-game menu has a pak choice for
+  each of the four players (`GameActivity.java:997-1004`). A game writes a pak 32 bytes at a time
+  (`game_controller.c:36,137`), and each write copies the bytes into that player's part and saves
+  their range (`mempak.c:184-192`). The file's storage writes the whole file on the session's
+  first save and only the given range after that (`file_storage.c:38,102-110`), and when the game
+  closes the core only frees it (`main.c:1922,1962`; `file_storage.c:74-78`).
+- OBSERVED: before this change, a part's save passed the range at the pak's own address, without
+  the part's place in the file (`file_storage.c:125-129` at `801d6b18d`). That code was the same
+  where this branch starts (`d9779061b`).
+- DERIVED: so after a session's first save to that file, a write to the pak of player 2, 3 or 4
+  saved player 1's current bytes at the same address instead, which did player 1's pak no harm,
+  and its own bytes never reached the file. The game still read them back until it closed; then
+  they were lost. When a session's first save was a write to one of those paks, the whole file
+  was written with it, but the writes after it were not, so only that first 32-byte write reached
+  the file. Not seen on a device.
+- REFERENCE: upstream mupen64plus-core fixed this in `3c2955c910d5` (Rosalie Wanders, 2026-01-08,
+  "Fix memory pak from player 2-4 not saving correctly"): the storage gets an `offset` field, a
+  part's save adds it to the range, and the core sets it for each pak. The app's core was copied
+  from mupen64plus-ae's fork at `3c4182f7473b` (`mupen64plus-core/upstream/.gitrepo`), which is
+  still the head of that fork's `master` and lacks the fix.
+- OBSERVED: this change applies those three hunks unchanged (`file_storage.h:32`;
+  `file_storage.c:125-131`; `main.c:1745`). Nothing fills that struct by position, which a new
+  field would break, and the paks' storages, the only ones whose save reads the field, set it.
+- OBSERVED (host build): `tools/test-mempak-save.sh` builds `tools/tests/mempak-save-test.c` with
+  the core's `file_storage.c`, `mempak.c` and file helpers. The test sets up the four paks as
+  `main_run` does, writes 32-byte blocks to each pak after the session's first save, compares the
+  file with the bytes it should hold, and reads the blocks back as the next session would. It
+  passes with GCC 16.2.1 and clang 23.1.3, and in a scratch build under clang ASan, UBSan and
+  LeakSanitizer with no reports. With `file_storage.c` and `file_storage.h` from before this
+  change, and the test's line that sets the offset removed, as that struct had no such field, it
+  fails with both compilers: the file's parts for players 2 to 4 differ from what they should
+  hold, and their blocks read back as the old file's bytes. A copy of the fix whose save leaves
+  out the offset, and a copy of the test that never sets it, fail the same way (GCC).
+- OBSERVED (host build): `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes with
+  every unit test. The build after the code change recompiled `file_storage.o` and `main.o`, the
+  only core files that include `file_storage.h`, for all four ABIs with empty ndk-build stderr
+  logs, and each packaged core library has the build ID of the one that was linked. In the arm64
+  object, a part's save loads the offset together with the file's storage and adds it to the
+  range's start before it jumps to the file's save (NDK `llvm-objdump -d`).
+- Not yet verified on device: two players saving to their Controller Paks in one session, and the
+  saves still there after the game is started again.
+
 ### Compliance checklist
 Each requirement of RetroAchievements' compliance page (revision `361119b677dc`) and its state on
 this branch. MET means the code and the host checks meet it, as DERIVED from the evidence cited
@@ -1675,7 +1721,7 @@ B. Hardcore rules
   off, for Resume and netplay (`:416,1366`; see "Hardcore session start"). DERIVED: a changed
   setting applies to the next game.
 - MET (no memory editors, debuggers, scripting or input playback): OBSERVED: the core's debugger
-  is built only with `DBG` (`main.c:83,898,1879,1903,1998`), which none of the core's Android
+  is built only with `DBG` (`main.c:83,898,1880,1904,1999`), which none of the core's Android
   build files define (`Android.mk`, `Application.mk`, `mupen64plus-core.mk` and `build.gradle` in
   `mupen64plus-core`), and the app's Java sources mention no memory editor, Lua scripting or movie
   playback. The core exports `DebugMemGetPointer`, which returns a pointer to the console's RAM,
