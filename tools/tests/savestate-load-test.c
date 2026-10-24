@@ -111,7 +111,7 @@ void poweron_rumblepak(struct rumblepak* rpk) { (void)rpk; }
 void poweron_transferpak(struct transferpak* tpk) { (void)tpk; }
 void set_rumble_reg(struct rumblepak* rpk, uint8_t value) { (void)rpk; (void)value; }
 void setup_channels_format(struct pif* pif) { (void)pif; }
-size_t setup_pif_channel(struct pif_channel* channel, uint8_t* buf) { (void)channel; (void)buf; return 0; }
+size_t setup_pif_channel(struct pif_channel* channel, uint8_t* buf, size_t size) { (void)channel; (void)buf; (void)size; return 0; }
 void disable_pif_channel(struct pif_channel* channel) { (void)channel; }
 static void vi_changed(void) { }
 

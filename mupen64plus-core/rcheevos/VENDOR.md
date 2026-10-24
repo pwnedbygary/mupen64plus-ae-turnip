@@ -17,3 +17,12 @@ Vendored contents:
 Not vendored: `rc_libretro.c`, `rc_client_external.c`,
 `rc_client_raintegration.c` (not needed; the glue uses the plain
 `rc_client_*` API).
+
+`src/rhash/md5.h` declares `md5_append` with an `int` length, while the
+core's `upstream/subprojects/md5/md5.h` has declared `unsigned int` since
+upstream mupen64plus-core `316757d459`. `md5_state_t` is the same in both
+headers, and the two types are passed the same way on all four Android ABIs,
+so rcheevos' calls work with the core's function. The old `md5_append`
+returned at once for a negative length; the core's now takes one as a length
+of 2 to 4 GB, so no call may pass one. Keep the vendored header as rcheevos
+has it.
