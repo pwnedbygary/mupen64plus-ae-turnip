@@ -52,11 +52,13 @@ unsigned int sram_dma_read(void* opaque, const uint8_t* dram, uint32_t dram_addr
 
     cart_addr &= SRAM_ADDR_MASK;
 
-    for (i = 0; i < length && (cart_addr+i) < SRAM_SIZE; ++i) {
+    for (i = 0; i < length && (cart_addr+i) < SRAM_SIZE && (dram_addr+i) < sram->rdram->dram_size; ++i) {
         mem[(cart_addr+i)^S8] = dram[(dram_addr+i)^S8];
     }
 
-    sram->istorage->save(sram->storage, cart_addr, length);
+    if (i > 0) {
+        sram->istorage->save(sram->storage, cart_addr, i);
+    }
 
     return /* length / 8 */0x1000;
 }
@@ -69,7 +71,7 @@ unsigned int sram_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr, uin
 
     cart_addr &= SRAM_ADDR_MASK;
 
-    for (i = 0; i < length && (dram_addr+i) < sram->rdram->dram_size; ++i) {
+    for (i = 0; i < length && (cart_addr+i) < SRAM_SIZE && (dram_addr+i) < sram->rdram->dram_size; ++i) {
         dram[(dram_addr+i)^S8] = mem[(cart_addr+i)^S8];
     }
 
@@ -83,6 +85,11 @@ void read_sram(void* opaque, uint32_t address, uint32_t* value)
 
     address &= SRAM_ADDR_MASK;
 
+    if (address > SRAM_SIZE - sizeof(*value)) {
+        *value = 0;
+        return;
+    }
+
     *value = *(uint32_t*)(mem + address);
 }
 
@@ -92,6 +99,10 @@ void write_sram(void* opaque, uint32_t address, uint32_t value, uint32_t mask)
     uint8_t* mem = sram->istorage->data(sram->storage);
 
     address &= SRAM_ADDR_MASK;
+
+    if (address > SRAM_SIZE - sizeof(value)) {
+        return;
+    }
 
     masked_write((uint32_t*)(mem + address), value, mask);
 
