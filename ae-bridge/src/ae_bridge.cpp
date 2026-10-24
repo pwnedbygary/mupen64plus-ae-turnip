@@ -64,6 +64,11 @@ static int setupCustomVulkanDriver()
 
 	return customVulkanProcAddr ? 1 : 0;
 }
+#else
+// Only arm64 builds link libadrenotools, but Java calls this on every game start.
+extern "C" DECLSPEC void setCustomVulkanDriver(const char*, const char*, const char*)
+{
+}
 #endif
 
 
