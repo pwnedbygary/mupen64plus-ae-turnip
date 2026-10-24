@@ -77,7 +77,7 @@ void write_is_viewer(void* opaque, uint32_t address, uint32_t value, uint32_t ma
                 size_t index = (newline - is_viewer->output_buffer) + 1;
                 *newline = '\0';
                 DebugMessage(M64MSG_INFO, "IS64: %s", is_viewer->output_buffer);
-                memcpy(&is_viewer->output_buffer, &is_viewer->output_buffer[index], IS_BUFFER_SIZE - index);
+                memmove(&is_viewer->output_buffer, &is_viewer->output_buffer[index], IS_BUFFER_SIZE - index);
                 is_viewer->buffer_pos -= index;
                 newline = memchr(is_viewer->output_buffer, '\n', is_viewer->buffer_pos);
             }
