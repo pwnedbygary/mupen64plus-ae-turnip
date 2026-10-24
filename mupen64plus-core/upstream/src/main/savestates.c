@@ -1565,7 +1565,17 @@ static void savestates_save_m64p_work(struct work_struct *work)
         return;
     }
 
-    gzclose(f);
+    if (gzclose(f) != Z_OK)
+    {
+        main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Could not write data to state file: %s", save->filepath);
+        free(save->data);
+        free(save->filepath);
+        free(save);
+        SDL_UnlockMutex(savestates_lock);
+        StateChanged(M64CORE_STATE_SAVECOMPLETE, 0);
+        return;
+    }
+
     main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Saved state to: %s", namefrompath(save->filepath));
     free(save->data);
     free(save->filepath);
@@ -2238,8 +2248,14 @@ static int savestates_save_pj64_unc(const struct device* dev, char *filepath)
         return 0;
     }
 
+    if (fclose(f) != 0)
+    {
+        main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Could not write data to PJ64 state file: %s", filepath);
+        StateChanged(M64CORE_STATE_SAVECOMPLETE, 0);
+        return 0;
+    }
+
     main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Saved state to: %s", namefrompath(filepath));
-    fclose(f);
     StateChanged(M64CORE_STATE_SAVECOMPLETE, 1);
     return 1;
 }
