@@ -112,6 +112,7 @@ LOCAL_SRC_FILES :=                                              \
     $(SRCDIR)/device/r4300/cached_interp.c                      \
     $(SRCDIR)/device/r4300/cp0.c                                \
     $(SRCDIR)/device/r4300/cp1.c                                \
+    $(SRCDIR)/device/r4300/cp2.c                                \
     $(SRCDIR)/device/r4300/instr_counters.c                     \
     $(SRCDIR)/device/r4300/interrupt.c                          \
     $(SRCDIR)/device/rcp/mi/mi_controller.c                     \
