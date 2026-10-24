@@ -7,8 +7,8 @@ evidence rules, explicit staging, or the no-reuse-of-PASS rule.
 For the N64DD investigation, `docs/LOCAL_AGENT_INSTRUCTIONS.md` (plus
 `docs/N64DD_NEXT_TEST_RUNBOOK.md` and `docs/DEVELOPMENT_PROCESS.md`) remains
 authoritative for that scope. This file adds the Turnip UI / device-test /
-signing lessons mined from the theme-preset crash-fix sessions, and the rule
-for sharing the test device with other agent sessions (section 3).
+signing lessons mined from the theme-preset crash-fix sessions, and points to
+the rule for sharing the test device with other agent sessions (section 3).
 
 ## 1. Canonical toolchain and builds (verify, do not invent)
 
@@ -63,62 +63,41 @@ for sharing the test device with other agent sessions (section 3).
 
 ### Sharing the RP6 with other agent sessions
 
-- The RP6 (model `Retroid_Pocket_6` in `adb devices -l`, over USB or Wi-Fi)
-  is shared with other agent sessions, such as the Phobos ones. Gary's rule
-  (2026-10-23), which covers N64DD work too: before any use of it, log
-  captures included, ask every other live agent session and wait for each
-  answer, "clear" or the time it will be done; then take
-  `~/phobos-work/rp6.lock` and tell the same sessions when you take it and
-  when you release it. If the answer is a time, wait until then or for a
-  later "clear"; if a session does not answer, ask Gary, as silence is not
-  "clear". A message to a busy session reaches it only when its turn ends.
-- Keep the RP6's serial number out of this public repository (files, commit
-  messages, pull request text), as Gary does not want it published: name the
-  RP6 by its model instead. If you find it in older files or history, do not
-  copy it, and leave removing it to Gary.
-- In OpenChamber, `projects.list`, then `session.list` with each `projectId`
-  and `withStatus` (raise `limit`, which is 10 by default), find the
-  sessions, and `session.send` asks them. Skip sessions that have a
-  `parentID`: they are subagents of another session.
-- The lock file holds the PID of a live process that keeps it (a PID that no
-  longer runs means the file is stale and may be removed), and a directory
-  there means a watcher script holds it; wait while it is held. Take it by
-  writing a long-lived holder's PID with `set -o noclobber`, so that you
-  cannot overwrite a script that takes it at the same moment. To release,
-  remove the file only if it still holds your PID, then stop that process.
-  The lock lasts only as long as its holder runs. From the main checkout,
-  `../mupen64plus-ae-turnip-evidence/scripts/rp6-lock.sh take|release`,
-  outside the repo, does both; its holder exits after 35 minutes, so longer
-  work needs a holder of its own.
-- While you hold it, touch only this app's packages
+- The RP6 (model `Retroid_Pocket_6` in `adb devices -l`, read through the
+  shared-device rule's filter, which drops the serial column) is shared with
+  other agent sessions. Before any use of it, N64DD work and log captures
+  included, follow that rule, which is outside this repository: "Shared
+  devices", section 9 of `~/LLM-Projects/AGENTS.md` (also section 10 of
+  `~/.config/opencode/AGENTS.md`). In short: ask every other active session,
+  hold `~/phobos-work/rp6.lock`, tell the same sessions when you take and
+  release it, share the one adb server, and leave the RP6 as you found it.
+- This repository is public: name the RP6 by its model, never by its serial
+  number, in files, commit messages and pull request text. If you find the
+  serial in older files or history, do not copy it, and leave removing it to
+  Gary.
+- While you hold the lock, touch only this app's packages
   (`org.mupen64plusae.turnip.pwnedbygary` and its `.debug` variant) and the
-  files you made, and name the RP6's transport in every adb command with
-  `-s`: other devices on the adb server are not part of this work, so never
-  touch them. If anything other than the frontend (`com.nendo.argosy`) is in
-  front, this app included unless you opened it yourself, Gary may be using
-  the RP6: do not switch away; wait or ask him.
-- Never run `adb kill-server`, `disconnect` or `reconnect` on the shared adb
-  server (port 5037), through which the other sessions reach the RP6, and
-  never send the RP6 `tcpip`, `usb` or `reboot` through any server. A second
-  adb server (for an emulator, say) can take the USB devices it finds, the
-  RP6 included, from the shared one. Start such a server with
-  `adb -P <port> --one-device <serial that no device has> start-server`,
-  which keeps it off every USB device, and stop it with
-  `adb -P <port> kill-server`; `start-server` does nothing if a server
-  already runs on that port.
-- Before you release the lock, put back every setting you changed, to the
-  value you found: `screen_off_timeout` normally reads 600000 (10 min), and
-  the Phobos runs raise it to 7200000 while they hold the RP6. Never clear
-  the RP6's logcat (`adb logcat -c`): its buffers hold other apps' history.
-  Note the device's time instead, and read the log from it with
+  files you made. If anything other than the frontend (`com.nendo.argosy`) is
+  in front, this app included unless you opened it yourself, Gary may be
+  using the RP6: do not switch away; wait or ask him.
+- On the RP6 the `.debug` variant keeps its saves under `files/GameData` in
+  its data folder, which `adb shell run-as` can read: that is what to back up
+  before an install or a game can write it. If its game data is set to an
+  external folder, the app copies the game's saves from there when a game
+  starts and back when it ends, so back that folder up too. `run-as` cannot
+  read the release package, which is not debuggable: leave a release install
+  that you did not make alone.
+- Never clear the RP6's logcat (`adb logcat -c`): its buffers hold other apps'
+  history. Note the device's time instead, and read the log from it with
   `adb logcat -t '<time>'`, which prints the lines since then and exits;
-  `-T '<time>'` keeps printing new lines, so use it only for a capture that
-  you stop before you release the lock.
+  `-T '<time>'` keeps printing, which makes it a capture, a long use under the
+  rule.
 
 ### Testing gotchas
 
-- ADB path varies (documented Mac example: `~/Downloads/platform-tools/adb`).
-  Verify availability; do not assume PATH. Install with `adb install -r`;
+- Use only the adb binary that runs the shared adb server, `/usr/bin/adb` on
+  this PC. Install with `adb -s <address> install -r`, with the RP6's Wi-Fi
+  address from the shared-device rule (over USB, `-d` or `-t <id>` instead);
   never uninstall/clear data to hide evidence.
 - Disable auto-sleep for the session (put back what you found) and wake
   before each capture. Symptoms of a slept display: empty hierarchy + ~395-byte
