@@ -278,7 +278,8 @@ unsigned int cart_rom_dma_read(void* opaque, const uint8_t* dram, uint32_t dram_
         struct cart_rom* cart_rom = (struct cart_rom*)opaque;
         size_t i;
         uint8_t* mem = cart_rom->rom;
-        if (cart_addr + length <= cart_rom->rom_size) {
+        if (cart_addr + length <= cart_rom->rom_size
+         && dram_addr + length <= cart_rom->r4300->rdram->dram_size) {
             for (i = 0; i < length; ++i) {
                 mem[(cart_addr+i)^S8] = dram[(dram_addr+i)^S8];
             }
