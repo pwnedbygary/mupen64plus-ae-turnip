@@ -5159,8 +5159,9 @@ persistence in `cart_rom.c` (`:82`, used at `:251` and `:285`).
   static in `callbacks.c`, so this does not reset it. `g_dev` is 63,467,520
   bytes (about 60.5 MiB) in this build's arm64 core (`llvm-nm -S`), 34 MiB
   of it the dynarec's code buffer, and this writes all of it at start-up,
-  as upstream does. DERIVED, not measured: the game's process then holds
-  that memory from the start, where it used to take it as it was used.
+  as upstream does. DERIVED: the game's process then holds that memory from
+  the start, where it used to take it as it was used; the device checks
+  below measured it.
 
 **Not taken.** Not needed here: `650ce048d5`, which stops `init_device`
 reading the cartridge's media byte when no cartridge is loaded, as this
@@ -5209,7 +5210,93 @@ Each of the 28 commits compiles for all four ABIs (every C file under
 library, with the NDK's clang, syntax only), and the Android debug build with
 all of them passes its 31 unit tests.
 
-**Not verified on a device.** No 64DD game ran with this change, and no code
-ran from uncached RDRAM. Next for the N64DD track: boot a 64DD game on the
-RP6 and check its saves, and measure the game process's memory use, under
-the shared-device rule.
+**Device checks.** OBSERVED on a Retroid Pocket 6 (Android 13) on 2026-10-24,
+under the shared-device rule: the F-Zero X Expansion Kit boots the same with
+this change as with `master`'s code. In the game settings of F-Zero X (USA),
+cartridge MD5 `753437D0D8ADA1D12F3F9CF0F0A5171F`, 64DD support was turned on
+and the app's file picker set the prototype USA IPL
+(`N64DD IPLROM [Proto] [USA].n64`) and the English Expansion Kit disk, an
+SDK-format image of 64,931,840 bytes, with the Parallel profile (Parallel
+video and RSP plugins, dynarec). The game was started twice with the build
+installed then (`3.0.338 83fff39b`, built from `83fff39ba`, whose code is
+`master`'s), then once with this change's debug build (`3.0.338 21f6aebb`,
+APK SHA-256 `ab6695fb`, built from `21f6aebbc`; the commits after it change
+only documentation). The first boot with `master`'s code gave the 40-second
+screenshot and the memory reading, the second its log capture and 14-second
+screenshot. With both builds the title screen with the 64DD logo showed 14
+seconds after the start and the attract race by 40 seconds. A log capture
+of each build's start, begun before the game, shows the same start-up lines
+(the IPL and disk copied, runtime policy 1, "Failed to load DD Disk save",
+as no disk save existed yet, "DD Disk: ... - 64931840 - SDK", the IPL
+loaded, the dynarec started), the same three "DD ASIC CMD not yet
+implemented" warnings, and the same 33,073 lines of 64DD activity, in the
+same order and with the same addresses and values: 21,271 register reads
+and 862 register writes, 10,276 transfers from the 64DD into RDRAM, 75
+requests to copy 64 bytes from RDRAM into its microsequencer RAM at
+`0x05000580`, which the core does not emulate and skips
+(`dd_controller.c:560-564`), 464 C2 reads, 121 blocks read (the core logs
+a block at its first sector, `disk.c:348-349`) and 4 single-word reads of
+the IPL ROM. The game asked for a seek-read 75 times and never for a
+seek-write (`dd_controller.c:40-41`). Neither capture logs a refused sector
+or a disk error, no disk save file appeared, and the SRAM file's contents
+were unchanged. In the second boot with `master`'s code the core logged
+"Emulation paused." 11 ms after it started; the boot with this change
+logged no pause, and the first boot's log, read afterwards, has no
+"Emulation continued." when the game resumed. In both captured boots the
+app asked the core to pause 133 to 135 ms before the core started, and the
+core refuses a pause until emulation runs (`frontend.c:298-300`;
+`main.c:1896`). DERIVED: a start-up race, not a difference between the
+builds. The pause that took effect came from the app's periodic action,
+which pauses the core again every 500 ms while the app counts it as paused
+(`CoreService.java:1625-1645`). The service first posts it 500 ms ahead as
+it starts (`:1279-1280`, just after "onStartCommand", logged at
+03:14:43.629 and 03:19:22.397), so its second run fell due about a second
+later: as the core started with `master`'s code, and about 30 ms before
+the core started with this change, so the core refused it. Its first run
+came before the app asked for the pause, and its third after the game
+resumed. OBSERVED: the capture with this change also shows an SELinux
+`execstack` denial for the game's process (`permissive=1`), logged while
+the app attached the video plugin on the core's thread
+(`CoreInterface.java:648-676`). Other captures show the same denial at the
+same step: with `3.0.338 83fff39b` on 2026-10-24 at 04:12:44, and with
+builds installed before this branch's commits were made, on 2026-10-22 at
+22:43:55 and 23:13:51 and on 2026-10-23 at 10:52:05
+(`exit-autosave-2026-10-24-rp6/log-old-stall-3.txt:166`;
+`app-log/logcat-from-2026-10-22.txt:1004,2149,3883`). DERIVED: so it
+predates this change. Its cause is UNKNOWN, as every arm64 library in both
+APKs has a non-executable stack. Only the capture with this change logs the
+app process's own start-up warnings; DERIVED: the install had restarted
+that process. Memory about 98 seconds after the start: PSS 484,810 kB with
+`master`'s code and 517,262 kB with this change, 32 MiB more (VmRSS 464,552
+and 499,472 kB). On a Red Magic 9S phone (Android 16) on 2026-10-23, Mario
+Tennis ran with this change, resumed an auto save written by `master`'s
+build and one of its own, and 40 seconds after the start used 32 to 35 MiB
+more than with `master`'s build (PSS 253.6 to 254.5 MiB against 219.6 to
+221.5 MiB). About 31.8 MiB of that is in the core library's .bss: its 32
+MiB executable mapping was all in memory with this change, against 2.2 MiB
+with `master`'s (29.8 MiB more), and the mapping after it is 2 MiB larger
+and has 2 MiB more in memory (22,428 against 20,380 kB). DERIVED from those
+sizes: they are the dynarec's code buffer and its padding. On the RP6 the
+earlier build, the saves and the settings were put back afterwards and
+checked against what was there before (`check-notes-2026-10-24.txt`). The
+core logs its 64DD activity at verbose level, about 33,000 lines in a
+boot's first 6 seconds, and the first boot's log, read afterwards, starts
+after the game had started. DERIVED: logcat's main buffer does not keep a
+boot's first lines, so only a capture started before the game
+(`adb logcat -T`) keeps them. The screenshots, captures, memory readings
+and notes are outside the repository, in
+`../mupen64plus-ae-turnip-evidence/`: `device-2026-10-23-pr21/` and
+`device-2026-10-23-pr21-phone/` for these checks, and
+`exit-autosave-2026-10-24-rp6/` and `app-log/` for the other captures
+named above.
+
+**Not covered on a device.** A 64DD game writing to its disk, a D64 image
+(the size change above stays DERIVED), a MAME-format image, a disk-only
+game, the refusal of an out-of-range sector, the WritableROM persistence,
+the pure and cached interpreters, whose COP0 and TLB decoding changed in
+`89ac8da3bf` and `85e715947c` (every boot used the dynarec), the ARM32, x86
+and x64 dynarec backends, and code running from uncached RDRAM (`ea7baa45fc`;
+DERIVED: none ran there in these boots, as `master`'s dynarec ends the
+process at such code and its boots ran on). Next for the N64DD track: a
+64DD game that writes to its disk and reopens it, a D64 image and a
+disk-only game, on the RP6 under the shared-device rule.
