@@ -1626,9 +1626,9 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         @Override
         public void run() {
             //If we are paused and we are still somehow swapping buffers
-            //then pause again. This can happen if the user pauses the emulator
-            //before it's done starting.
-            if(mIsPaused)
+            //then pause again, as when the user pauses before it's done starting.
+            //Not while shutting down: the core must run to write a queued save and stop.
+            if(mIsPaused && !mIsShuttingDown)
             {
                 mCoreInterface.emuPause();
             }
