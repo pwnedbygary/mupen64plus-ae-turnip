@@ -845,7 +845,7 @@ static int savestates_load_m64p(struct device* dev, char *filepath)
                 dev->dd.regs[DD_ASIC_CUR_SECTOR] = GETDATA(curr, uint32_t);
                 dev->dd.regs[DD_ASIC_HARD_RESET] = GETDATA(curr, uint32_t);
                 dev->dd.regs[DD_ASIC_C1_S0] = GETDATA(curr, uint32_t);
-                dev->dd.regs[DD_ASIC_HOST_SECBYTE] = GETDATA(curr, uint32_t);
+                dev->dd.regs[DD_ASIC_HOST_SECBYTE] = GETDATA(curr, uint32_t) & 0xff;
                 dev->dd.regs[DD_ASIC_C1_S2] = GETDATA(curr, uint32_t);
                 dev->dd.regs[DD_ASIC_SEC_BYTE] = GETDATA(curr, uint32_t);
                 dev->dd.regs[DD_ASIC_C1_S4] = GETDATA(curr, uint32_t);
@@ -865,7 +865,7 @@ static int savestates_load_m64p(struct device* dev, char *filepath)
                 dev->dd.bm_write = (unsigned char)GETDATA(curr, uint32_t);
                 dev->dd.bm_reset_held = (unsigned char)GETDATA(curr, uint32_t);
                 curr += sizeof(uint32_t); /* was bm_block */
-                dev->dd.bm_zone = GETDATA(curr, uint32_t);
+                dev->dd.bm_zone = GETDATA(curr, uint32_t) & 0xf;
                 curr += sizeof(uint32_t); /* was bm_track_offset */
             }
             else {
