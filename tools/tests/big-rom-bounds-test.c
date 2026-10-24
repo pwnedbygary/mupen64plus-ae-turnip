@@ -31,6 +31,7 @@
 #include "device/r4300/interrupt.h"
 #include "device/r4300/r4300_core.h"
 #include "device/rcp/pi/pi_controller.h"
+#include "device/rdram/rdram.h"
 #include "main/main.h"
 #include "osal/files.h"
 
@@ -115,6 +116,18 @@ static int g_failures;
 /* ROM buffer with 4 canary bytes on either side of the cart image. */
 static uint8_t* g_buf;
 
+/* cart_rom_dma_write() stops at the end of RDRAM, whose size it reads
+ * through cart_rom->r4300->rdram. */
+static struct rdram g_rdram;
+static struct r4300_core g_r4300;
+
+static void set_rdram_size(struct cart_rom* cr, size_t dram_size)
+{
+    g_rdram.dram_size = dram_size;
+    g_r4300.rdram = &g_rdram;
+    cr->r4300 = &g_r4300;
+}
+
 /* RDRAM byte-swizzle helpers: mirror the emulator convention so that a
  * big-endian 32-bit word survives a round trip through the ^S8 mapping. */
 static void swizzle_write(uint8_t* buf, uint32_t addr, uint32_t value)
@@ -159,6 +172,7 @@ static void test_dma_last_word(void)
     memset(&cr, 0, sizeof(cr));
     cr.rom = rom();
     cr.rom_size = TEST_ROM_SIZE;
+    set_rdram_size(&cr, sizeof(dram));
 
     swizzle_write(rom(), TEST_ROM_SIZE - 4, 0x5A5A5A5A);
     memset(dram, 0, sizeof(dram));
@@ -227,6 +241,7 @@ static void test_dma_rom_to_rdram(void)
     memset(&cr, 0, sizeof(cr));
     cr.rom = rom();
     cr.rom_size = TEST_ROM_SIZE;
+    set_rdram_size(&cr, sizeof(dram));
 
     swizzle_write(rom(), 0x0000000, 0x11111111);        /* wrapped offset */
     swizzle_write(rom(), 0x04000000, 0x22222222);       /* true offset    */
@@ -235,6 +250,29 @@ static void test_dma_rom_to_rdram(void)
     cart_rom_dma_write(&cr, dram, 0, MM_CART_ROM + 0x04000000, 4);
 
     CHECK(swizzle_read(dram, 0) == 0x22222222);
+}
+
+/* PI DMA ROM -> RDRAM must stop at the end of RDRAM. */
+static void test_dma_stops_at_rdram_end(void)
+{
+    struct cart_rom cr;
+    uint8_t dram[16];
+
+    memset(&cr, 0, sizeof(cr));
+    cr.rom = rom();
+    cr.rom_size = TEST_ROM_SIZE;
+    set_rdram_size(&cr, 8);
+
+    swizzle_write(rom(), 0x05000000, 0x11111111);
+    swizzle_write(rom(), 0x05000004, 0x22222222);
+    swizzle_write(rom(), 0x05000008, 0x33333333);
+    memset(dram, 0xAA, sizeof(dram));
+
+    cart_rom_dma_write(&cr, dram, 0, MM_CART_ROM + 0x05000000, 12);
+
+    CHECK(swizzle_read(dram, 0) == 0x11111111);
+    CHECK(swizzle_read(dram, 4) == 0x22222222);
+    CHECK(swizzle_read(dram, 8) == 0xAAAAAAAA);
 }
 
 /* CPU reads use rom_address(); a read above 64MB must return the true
@@ -292,6 +330,7 @@ int main(void)
     memset(&ROM_SETTINGS, 0, sizeof(ROM_SETTINGS));
 
     test_dma_rom_to_rdram();
+    test_dma_stops_at_rdram_end();
     test_cpu_read();
     test_writable_dma_into_rom();
     test_dma_last_word();

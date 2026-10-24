@@ -27,7 +27,7 @@ uint32_t *mem_base_u32(void *base, uint32_t address)
     return cart;
 }
 void md5_init(md5_state_t *state) { (void)state; }
-void md5_append(md5_state_t *state, const md5_byte_t *data, int length)
+void md5_append(md5_state_t *state, const md5_byte_t *data, unsigned int length)
 { (void)state; (void)data; (void)length; }
 void md5_finish(md5_state_t *state, md5_byte_t digest[16])
 { (void)state; memcpy(digest, selected_digest, 16); }
