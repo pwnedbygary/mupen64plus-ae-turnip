@@ -2054,7 +2054,10 @@ static void TLBWR_new(int pcaddr, int count)
   UPDATE_COUNT_IN
   state->pcaddr = pcaddr;
   cp0_update_count(r4300);
-  state->cp0_regs[CP0_RANDOM_REG] = (state->cp0_regs[CP0_COUNT_REG]/r4300->cp0.count_per_op % (32 - state->cp0_regs[CP0_WIRED_REG])) + state->cp0_regs[CP0_WIRED_REG];
+  if(state->cp0_regs[CP0_WIRED_REG]>=32)
+    state->cp0_regs[CP0_RANDOM_REG] = state->cp0_regs[CP0_COUNT_REG]/r4300->cp0.count_per_op % 64;
+  else
+    state->cp0_regs[CP0_RANDOM_REG] = (state->cp0_regs[CP0_COUNT_REG]/r4300->cp0.count_per_op % (32 - state->cp0_regs[CP0_WIRED_REG])) + state->cp0_regs[CP0_WIRED_REG];
   if(state->cp0_regs[CP0_RANDOM_REG]>=32)
   {
     cached_interp_TLBWR();
