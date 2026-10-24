@@ -225,6 +225,49 @@ token-handling items and the remaining device-verification gaps.
 - Not covered, among others: a reset while a frame or idle work raises an event; the reset button
   mapping; a reset in hardcore.
 
+## Device verification (debug build `3.0.338 83fff39b`, Retroid Pocket 6, 2026-10-23 evening)
+- OBSERVED (adb): at 19:31 the debug APK built from `83fff39ba`, the last commit of pull request
+  #19, sha256 `c1eb745f20df54fa26d0aa4c37926c58db0cccd5e3303755bd552027cc75aec7`, was installed in
+  place with `adb install -r` over the build installed for the reset check above (version name
+  `3.0.338 fde9c41c`, last updated at 00:40:22), after the app's saves were copied off (27 files).
+  `dumpsys package` then gave its version name as `3.0.338 83fff39b` and its last update as
+  19:31:50, and the installed `base.apk` had the same sha256. Before the install, RetroAchievements
+  was on and hardcore off. After the run, the files it added were removed, the auto save and its
+  marker that the app's cleanup deleted were put back, and the saves matched the copy again
+  (27 files). OBSERVED (git): the merge of pull request #19, `665e56c0d`, has the same files as
+  `83fff39ba`.
+- OBSERVED (device; times are the device's clock): Mario Tennis started from a view intent at
+  19:31:51. "Save slot" in the in-game menu (19:32:49.195) made the core log "Saved state to: Mario
+  Tennis (U) [!].st0" at 19:32:49.737, and at the end of the run, before the saves were put back,
+  the slot folder held that state (1,197,024 bytes) and its progress file under `.ra-progress`
+  (13,728 bytes). "Load slot" (19:33:30.464) made the core log "State loaded from: Mario Tennis (U)
+  [!].st0" at 19:33:30.934. Exit (19:34:04.705) opened the confirmation dialog; once it was
+  confirmed, the app asked for the auto save `2026-10-23-19-34-15.v2.sav` (19:34:15.981), and at
+  19:34:16.614 the core logged "Saved state to" for it and the app logged "Save completed", both on
+  the same thread. In the device's listing of the folder, the auto save (1,062,668 bytes), its
+  `.complete` marker (0 bytes) and its progress file (13,728 bytes) all have the modification time
+  19:34:16.61. The app's cleanup then deleted the oldest auto save, `2026-10-20-17-17-46.v2.sav`,
+  which had no progress file. In the gallery, Resume ("Start from last automatic save") started
+  the game again, and the core logged "State loaded from: 2026-10-23-19-34-15.v2.sav" at
+  19:35:19.010; emulation went on. A quit broadcast sent from adb closed the game at 19:35:52
+  (`CoreService.java:233-254`). From the start to the quit, the app's log has no line containing
+  "Could not", "Unable to save file", "Invalid event queue", "Invalid Project64 state" or `FATAL`;
+  when the core cannot open the file of an M64P state that it saves, or `gzwrite` takes less than
+  all of it, its message contains "Could not" (`savestates.c:1537,1549`). If `gzclose` cannot
+  write the state's end, the core still logs "Saved state to" (see "Failed save-state writes").
+- DERIVED: the app creates an auto save's `.complete` marker only when the core reports the save
+  as done with 1 (`CoreService.java:325-342`), and since `9f176c815` an M64P write makes that
+  report itself, after `gzclose` (`savestates.c:1559-1566`). So on the device the write reported
+  1, on the thread that wrote the state, and the app marked the auto save complete; Resume, which
+  loads the newest auto save that has a marker (`GameDataManager.java:40-75`), then loaded it. The
+  core logs "State loaded from" for an M64P state only after the check of its event queue that
+  `83fff39ba` added (`savestates.c:323-328,985`), so two M64P states that the core had saved
+  passed that check on the device.
+- Not covered, among others: hardcore mode; a save-state write that fails; Project64 states and
+  damaged ones; Game Boy saves through the Transfer Pak; Controller Pak saves; whether the loads
+  brought back achievement counts, which the app does not log; the cleanup deleting a progress
+  file, as the auto save it deleted had none.
+
 ## Deferred items from commit `8f14880ef` (login/token handling)
 Reference: that commit's message lists these as nonblocking. The issue #15 section addresses all
 four: "Sign-in order" three of them, and "User-Agent" the hardcoded User-Agent version. The saved
@@ -1602,6 +1645,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   build ID of the one that was linked, and the 31 unit tests passed. In the arm64 object the shared
   tail then called `SDL_UnlockMutex` and jumped to `StateChanged` with 1 on the path through
   `gzclose` and 0 after a failed open or write (NDK `llvm-objdump -d -r`).
+- OBSERVED (device, 2026-10-23): in the build of `83fff39ba`, which has `9f176c815`, the auto save
+  written at exit got its `.complete` marker and Resume loaded it (see the device verification of
+  the evening of 2026-10-23). Not yet verified on device: a write that fails, after which the auto
+  save should get no marker.
 
 ### Damaged save states
 - OBSERVED: outside hardcore mode and netplay, a Project64 state reaches the core's loader through
@@ -1707,9 +1754,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `savestates.o` for all four ABIs with empty ndk-build stderr logs; each packaged core library has
   the build ID of the one that was linked and holds "Invalid event queue in savestate", and the 31
   unit tests pass.
+- OBSERVED (device, 2026-10-23): the build of `83fff39ba` loaded a slot state and an auto save
+  that it had saved, and logged each as loaded, which it does only after the check of the event
+  queue (`savestates.c:323-328,985`; see the device verification of the evening of 2026-10-23).
 - Not yet verified on device: loading a Project64 state with the magic number 0x23D8A6C8 through
-  any of the loads above, and loading the core's own M64P states with the check of their event
-  queue.
+  any of the loads above.
 
 ### Benchmark result toast
 - OBSERVED: with "Benchmark mode" on in the display settings (`preferences_display.xml:136-140`;
