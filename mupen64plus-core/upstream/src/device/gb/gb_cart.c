@@ -54,7 +54,7 @@ enum gbcart_extra_devices
 /* various helper functions for ram, rom, or MBC uses */
 
 
-static void read_rom(const void* rom_storage, const struct storage_backend_interface* irom_storage, uint16_t address, uint8_t* data, size_t size)
+static void read_rom(const void* rom_storage, const struct storage_backend_interface* irom_storage, uint32_t address, uint8_t* data, size_t size)
 {
     assert(size > 0);
 
@@ -68,7 +68,7 @@ static void read_rom(const void* rom_storage, const struct storage_backend_inter
 }
 
 
-static void read_ram(const void* ram_storage, const struct storage_backend_interface* iram_storage, unsigned int enabled, uint16_t address, uint8_t* data, size_t size, uint8_t mask)
+static void read_ram(const void* ram_storage, const struct storage_backend_interface* iram_storage, unsigned int enabled, uint32_t address, uint8_t* data, size_t size, uint8_t mask)
 {
     size_t i;
     assert(size > 0);
@@ -240,7 +240,7 @@ static int write_gb_cart_mbc1(struct gb_cart* gb_cart, uint16_t address, const u
     /* 0x2000-0x3fff: ROM bank select (low 5 bits) */
     case (0x2000 >> 13):
         bank = value & 0x1f;
-        gb_cart->rom_bank = (gb_cart->rom_bank & ~UINT8_C(0x1f)) | (bank == 0) ? 1 : bank;
+        gb_cart->rom_bank = (gb_cart->rom_bank & ~UINT8_C(0x1f)) | ((bank == 0) ? 1 : bank);
         DebugMessage(M64MSG_VERBOSE, "MBC1 set rom bank %02x", gb_cart->rom_bank);
         break;
 

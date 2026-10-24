@@ -5073,3 +5073,230 @@ fall back to the current configuration in `usesLandscapeLayout()` in multi-windo
 `android:orientation` on the landscape layout's `FrameLayout` and `videoRenderWidthNative` (used only in
 the log line);
 integer-scale mode on a new branch from `master` after this branch merges.
+
+## Upstream core fixes (pull request A): what changed for the N64DD track (2026-10-23)
+
+**Scope and baseline.** Branch `fix/upstream-core-fixes` from `master`
+`86283dc8d`. The core under `mupen64plus-core/upstream` follows the
+mupen64plus-ae fork of mupen64plus-core (`.gitrepo` pin `3c4182f7473b`),
+which last took upstream's changes in 2022. This change cherry-picks 28 of
+upstream's bug and safety fixes, one commit each, naming the upstream commit
+and how it was adapted to this core, and updates four host tests that the
+fixes broke. The user chose to take upstream's 64DD bounds fix but keep this
+core's other 64DD code, and asked for this note. Nothing in
+`mupen64plus-rsp-parallel` changes, so the correction scoped to internal
+Parallel-RSP DMA reads (`dd_policy.cpp`, `parallel.cpp`, `rsp/cp0.cpp`) is
+untouched, and so are `src/device/dd/boot_policy.h` and the WritableROM
+persistence in `cart_rom.c` (`:82`, used at `:251` and `:285`).
+
+**What changes for 64DD and DMA code.**
+- `cbab344eed` "dd: reject sector transfers outside disk image": each sector
+  transfer is checked against the disk image's size before a pointer is
+  formed (`disk.c`, `get_disk_data`); one outside it is refused with "DD
+  sector exceeds disk image size", and a D64 LBA past `MAX_LBA` is refused.
+  `load_dd_disk` now gives a D64 image's storage the expanded size
+  (`offset_ram + size_ram`). This core keeps its `dd_on_pi_cart_addr_write`
+  in `dd_controller.c` and the `keep_trailing_data = 0` lines that
+  `55c9b3d9c` added to both save-storage cases of `load_dd_disk`. DERIVED
+  from the code, not run on a device: a D64's storage used to keep the
+  file's size, so a full-disk save (the app sets `SaveDiskFormat` 0,
+  `NativeConfigFiles.java:118`) was first written at that size but with the
+  system data changed to claim the whole RAM area, and the reload's size
+  check refused it ("Invalid D64 Disk size") when the D64's RAM area was
+  partial or absent; it is now first written at the expanded size and
+  reloads. The first review of this change checked `disk.c`'s part on the
+  host with such images: a save at the file's size fails the size check,
+  and one at the expanded size passes it. A save written the old way still
+  fails that check unless a later write reached the end of the RAM area,
+  since each write after the first goes to its sector's place in the file
+  and can extend it (`file_storage.c:113`; `util.c:87-103`). MAME and SDK
+  images keep the file's size.
+- Still open, as in upstream master: a save state can set the 64DD sector
+  size register past `0xff`, as `savestates.c:847` restores it without the
+  mask that a register write applies (`dd_controller.c:506`), and
+  `read_sector` and `write_sector` then copy that many bytes to or from the
+  256-byte `ds_buf` (`dd_controller.c:166-194`; `dd_controller.h:73`).
+  `cbab344eed` bounds only the disk image's side.
+- `5340dafcc0` RSP DMA overflows (`rsp_core.c`, the core's SP DMA): the RDRAM
+  index is masked per byte, to 16 MB (`0xffffff`) where upstream masks to
+  8 MB, as this core always allocates 16 MB of RDRAM (mupen64plus-ae
+  `9913c099`); the framebuffer hooks run only below 8 MB. Parallel-RSP's
+  DMA-read correction is not part of this.
+- `264ce1e495`: PI DMAs from cartridge ROM, SRAM and FlashRAM to RDRAM stop
+  at the end of RDRAM, apart from the 8-byte DMA that reads FlashRAM's
+  silicon ID, and a DMA from RDRAM into SRAM stops at the end of SRAM. Still
+  unbounded here, as in upstream master: that silicon-ID DMA, which writes
+  its two words at its RDRAM address, masked only to 24 bits
+  (`pi_controller.c:95`), so up to 4 bytes past this core's 16 MB of RDRAM;
+  the reads from the SRAM and FlashRAM buffers in DMAs to RDRAM; the reads
+  from RDRAM in DMAs into SRAM and FlashRAM; the SRAM save after a DMA from
+  RDRAM, which is given the DMA's whole length; CPU reads and writes of SRAM
+  offsets from 32 KB up (the address is masked to 64 KB); and the FlashRAM
+  program and sector-erase offsets (`sram.c:55-59,73,84-98`;
+  `flashram.c:62-64,85-89,192-196,213,232-233`). This core's own WritableROM
+  code bounds a DMA from RDRAM into cartridge ROM by the ROM's size, but
+  reads RDRAM without a bound too (`cart_rom.c:281-283`). `277b9059b8`
+  guards `dma_pi_write` against an underflow.
+- `89ac8da3bf` and `85e715947c`: COP0 opcodes with the high bit set decode
+  as TLB instructions (pure interpreter), and unknown TLB instructions run as
+  no-ops (pure interpreter, and `idec.c`, which the cached interpreter uses).
+  The dynarec decodes on its own and is not affected.
+- Dynarec fixes `f5d74c935c`, `ea7baa45fc`, `454113f9cc`, `bb2fd3e8e9`,
+  `f836e5d750`, `1b8c708fdb` and `c5226d6938` change `new_dynarec.c` and the
+  ARM, ARM64 and x64 assemblers; none touches the DD block-boundary code,
+  and `tools/test-dd-dynarec-boundary.sh` passes. The x86 assembler
+  (`assem_x86.c`) gets none of the guards that `bb2fd3e8e9`, `f836e5d750`
+  and `1b8c708fdb` add to the other three, as in upstream master.
+  `ea7baa45fc` compiles code that runs from uncached RDRAM (`0xa0000000` up
+  to `0xa07fffff`), where the dynarec used to end the process ("Compile at
+  bogus memory address", then `exit(1)`). `c5226d6938` also changes
+  `new_dynarec.h`, `recomp_dbg.c` and `struct r4300_core`, whose code buffer
+  becomes `extra_memory_buffer`, 4 KB-aligned with 2 MB of padding, with
+  `extra_memory` a pointer into it (`r4300_core.h:183-184`): the 32 MiB
+  region that `docs/DDSTART9_RSP_OWNERSHIP_ANALYSIS.md:56-57` matches to
+  `extra_memory` now lies in that buffer.
+- `8a8286caa6` zeroes `g_dev` in `CoreStartup`. The DD runtime policy is a
+  static in `callbacks.c`, so this does not reset it. `g_dev` is 63,467,520
+  bytes (about 60.5 MiB) in this build's arm64 core (`llvm-nm -S`), 34 MiB
+  of it the dynarec's code buffer, and this writes all of it at start-up,
+  as upstream does. DERIVED: the game's process then holds that memory from
+  the start, where it used to take it as it was used; the device checks
+  below measured it.
+
+**Not taken.** Not needed here: `650ce048d5`, which stops `init_device`
+reading the cartridge's media byte when no cartridge is loaded, as this
+core's `init_device` never reads that byte (its boot policy picks the boot
+ROM from `dd_rom_size` and the `M64P_DD_COMBO_CART_BOOT` switch,
+`device.c:203-211`); `eb59aa8bfa`, whose leaks are in code this core lacks;
+and `8b75435b6d`, `c5dfc44764`, `4f71d580e8`, `902bc60f56` and
+`3c2955c910`, which `master` already has from pull request #19. Left for the
+rest of the sync: `e6f8882701` and `1c3d9326a2` (TLB index bounds, below);
+`0484755f44` and `b954248ad7` (they need upstream's RDRAM rework);
+`29e7414f02` (needs an earlier upstream FPU change); `e6c32ffdfe` and
+`90ed6cd74e` (upstream's ROM size limit; this core keeps its 256 MB limit
+from issue #3).
+
+**TLB index bounds, already open at `master`.** An Index write above 31 only
+asks the emulator to stop (`mips_instructions.def:1240-1246`), and Wired is
+stored as written (`:1263-1264`). TLBWI then writes TLB entry `Index & 0x3F`
+(`:1206`), TLBWR an entry computed from Count and Wired with no bound
+(`:1195-1197`), and the dynarec's `TLBWI_new` and `TLBWR_new` index with six
+bits (`new_dynarec.c:1963-2017,2041-2049` with this change, 59 lines earlier
+at `master`), all in a 32-entry array. A save state restores Index and Wired
+with no check (`savestates.c:468,1067`). DERIVED in this change's review,
+from the code, not run: a TLBWI later in the same dynarec block still writes
+past the array, and after a state with such values loads, so can a TLBWI or
+TLBWR in any engine, so the fix should bound `TLBWrite`, `TLBWI_new` and
+`TLBWR_new` whether or not the emulator stops.
+
+**Host checks actually run** (Linux; GCC 16.2.1 and clang 23.1.3). Every
+`tools/test-*.sh` at `master` and with this change, with both compilers and
+with NDK 26.1.10909125 for `test-dd-arm64-syntax.sh` (it takes
+`ANDROID_NDK_HOME` first, and its pass message names 26.1.10909125 whichever
+NDK it used): the same results once four tests were updated for the fixes.
+At `master` and
+here, `test-dd-rsp-mac` fails (exit 8; it checks a capture script's text),
+`test-p07-verifier` is skipped (77, no captures), and with clang
+`test-dd-core-imem-dma` and `test-dd-startup` fail (clang 23's
+`-Wunused-but-set-global` in `dd-core-imem-dma-test.c`). The test updates:
+`big-rom-bounds-test.c` gives the cartridge an RDRAM size and checks that a
+DMA stops at the end of RDRAM (that check fails with `master`'s
+`cart_rom.c`); `savestate-load-test.c` and `wave-race-native.c` follow new
+signatures (`setup_pif_channel`, `md5_append`); and
+`new-dynarec-boundary-test.c` builds with a stand-in `<windows.h>`
+(`tools/tests/win32/`), which `new_dynarec.c` now includes under `WIN32`.
+Each of the 28 commits compiles for all four ABIs (every C file under
+`mupen64plus-core/upstream` that the Android build compiles into the core
+library, with the NDK's clang, syntax only), and the Android debug build with
+all of them passes its 31 unit tests.
+
+**Device checks.** OBSERVED on a Retroid Pocket 6 (Android 13) on 2026-10-24,
+under the shared-device rule: the F-Zero X Expansion Kit boots the same with
+this change as with `master`'s code. In the game settings of F-Zero X (USA),
+cartridge MD5 `753437D0D8ADA1D12F3F9CF0F0A5171F`, 64DD support was turned on
+and the app's file picker set the prototype USA IPL
+(`N64DD IPLROM [Proto] [USA].n64`) and the English Expansion Kit disk, an
+SDK-format image of 64,931,840 bytes, with the Parallel profile (Parallel
+video and RSP plugins, dynarec). The game was started twice with the build
+installed then (`3.0.338 83fff39b`, built from `83fff39ba`, whose code is
+`master`'s), then once with this change's debug build (`3.0.338 21f6aebb`,
+APK SHA-256 `ab6695fb`, built from `21f6aebbc`; the commits after it change
+only documentation). The first boot with `master`'s code gave the 40-second
+screenshot and the memory reading, the second its log capture and 14-second
+screenshot. With both builds the title screen with the 64DD logo showed 14
+seconds after the start and the attract race by 40 seconds. A log capture
+of each build's start, begun before the game, shows the same start-up lines
+(the IPL and disk copied, runtime policy 1, "Failed to load DD Disk save",
+as no disk save existed yet, "DD Disk: ... - 64931840 - SDK", the IPL
+loaded, the dynarec started), the same three "DD ASIC CMD not yet
+implemented" warnings, and the same 33,073 lines of 64DD activity, in the
+same order and with the same addresses and values: 21,271 register reads
+and 862 register writes, 10,276 transfers from the 64DD into RDRAM, 75
+requests to copy 64 bytes from RDRAM into its microsequencer RAM at
+`0x05000580`, which the core does not emulate and skips
+(`dd_controller.c:560-564`), 464 C2 reads, 121 blocks read (the core logs
+a block at its first sector, `disk.c:348-349`) and 4 single-word reads of
+the IPL ROM. The game asked for a seek-read 75 times and never for a
+seek-write (`dd_controller.c:40-41`). Neither capture logs a refused sector
+or a disk error, no disk save file appeared, and the SRAM file's contents
+were unchanged. In the second boot with `master`'s code the core logged
+"Emulation paused." 11 ms after it started; the boot with this change
+logged no pause, and the first boot's log, read afterwards, has no
+"Emulation continued." when the game resumed. In both captured boots the
+app asked the core to pause 133 to 135 ms before the core started, and the
+core refuses a pause until emulation runs (`frontend.c:298-300`;
+`main.c:1896`). DERIVED: a start-up race, not a difference between the
+builds. The pause that took effect came from the app's periodic action,
+which pauses the core again every 500 ms while the app counts it as paused
+(`CoreService.java:1625-1645`). The service first posts it 500 ms ahead as
+it starts (`:1279-1280`, just after "onStartCommand", logged at
+03:14:43.629 and 03:19:22.397), so its second run fell due about a second
+later: as the core started with `master`'s code, and about 30 ms before
+the core started with this change, so the core refused it. Its first run
+came before the app asked for the pause, and its third after the game
+resumed. OBSERVED: the capture with this change also shows an SELinux
+`execstack` denial for the game's process (`permissive=1`), logged while
+the app attached the video plugin on the core's thread
+(`CoreInterface.java:648-676`). Other captures show the same denial at the
+same step: with `3.0.338 83fff39b` on 2026-10-24 at 04:12:44, and with
+builds installed before this branch's commits were made, on 2026-10-22 at
+22:43:55 and 23:13:51 and on 2026-10-23 at 10:52:05
+(`exit-autosave-2026-10-24-rp6/log-old-stall-3.txt:166`;
+`app-log/logcat-from-2026-10-22.txt:1004,2149,3883`). DERIVED: so it
+predates this change. Its cause is UNKNOWN, as every arm64 library in both
+APKs has a non-executable stack. Only the capture with this change logs the
+app process's own start-up warnings; DERIVED: the install had restarted
+that process. Memory about 98 seconds after the start: PSS 484,810 kB with
+`master`'s code and 517,262 kB with this change, 32 MiB more (VmRSS 464,552
+and 499,472 kB). On a Red Magic 9S phone (Android 16) on 2026-10-23, Mario
+Tennis ran with this change, resumed an auto save written by `master`'s
+build and one of its own, and 40 seconds after the start used 32 to 35 MiB
+more than with `master`'s build (PSS 253.6 to 254.5 MiB against 219.6 to
+221.5 MiB). About 31.8 MiB of that is in the core library's .bss: its 32
+MiB executable mapping was all in memory with this change, against 2.2 MiB
+with `master`'s (29.8 MiB more), and the mapping after it is 2 MiB larger
+and has 2 MiB more in memory (22,428 against 20,380 kB). DERIVED from those
+sizes: they are the dynarec's code buffer and its padding. On the RP6 the
+earlier build, the saves and the settings were put back afterwards and
+checked against what was there before (`check-notes-2026-10-24.txt`). The
+core logs its 64DD activity at verbose level, about 33,000 lines in a
+boot's first 6 seconds, and the first boot's log, read afterwards, starts
+after the game had started. DERIVED: logcat's main buffer does not keep a
+boot's first lines, so only a capture started before the game
+(`adb logcat -T`) keeps them. The screenshots, captures, memory readings
+and notes are outside the repository, in
+`../mupen64plus-ae-turnip-evidence/`: `device-2026-10-23-pr21/` and
+`device-2026-10-23-pr21-phone/` for these checks, and
+`exit-autosave-2026-10-24-rp6/` and `app-log/` for the other captures
+named above.
+
+**Not covered on a device.** A 64DD game writing to its disk, a D64 image
+(the size change above stays DERIVED), a MAME-format image, a disk-only
+game, the refusal of an out-of-range sector, the WritableROM persistence,
+the pure and cached interpreters, whose COP0 and TLB decoding changed in
+`89ac8da3bf` and `85e715947c` (every boot used the dynarec), the ARM32, x86
+and x64 dynarec backends, and code running from uncached RDRAM (`ea7baa45fc`;
+DERIVED: none ran there in these boots, as `master`'s dynarec ends the
+process at such code and its boots ran on). Next for the N64DD track: a
+64DD game that writes to its disk and reopens it, a D64 image and a
+disk-only game, on the RP6 under the shared-device rule.

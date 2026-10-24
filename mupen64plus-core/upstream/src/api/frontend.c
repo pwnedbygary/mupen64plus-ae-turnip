@@ -82,6 +82,9 @@ EXPORT m64p_error CALL CoreStartup(int APIVersion, const char *ConfigPath, const
         return startup_failure(M64ERR_INCOMPATIBLE);
     }
 
+    /* Initialize the main device structure to all zeros */
+    memset(&g_dev, 0, sizeof(struct device));
+
     /* set up the default (dummy) plugins */
     plugin_connect(M64PLUGIN_GFX, NULL);
     plugin_connect(M64PLUGIN_AUDIO, NULL);
@@ -193,7 +196,8 @@ EXPORT m64p_error CALL CoreDoCommand(m64p_command Command, int ParamInt, void *P
         case M64CMD_ROM_OPEN:
             if (g_EmulatorRunning || l_ROMOpen)
                 return M64ERR_INVALID_STATE;
-            if (ParamPtr == NULL || ParamInt < 4096)
+            // ROM buffer size must be divisible by 4 to avoid out-of-bounds read in swap_copy_rom (v64/n64 formats)
+            if (ParamPtr == NULL || ParamInt < 4096 || ParamInt > CART_ROM_MAX_SIZE)
                 return M64ERR_INPUT_ASSERT;
             rval = open_rom((const unsigned char *) ParamPtr, ParamInt);
             if (rval == M64ERR_SUCCESS)
