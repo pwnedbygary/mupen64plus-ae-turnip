@@ -53,11 +53,14 @@ extern m64p_error VidExtFuncGLSetAttr(m64p_GLattr Attr, int Value);
 extern m64p_error VidExtFuncGLGetAttr(m64p_GLattr Attr, int *pValue);
 extern m64p_error VidExtFuncGLSwapBuf(void);
 extern uint32_t VidExtFuncGLGetDefaultFramebuffer(void);
+extern m64p_error VidExtFuncInitWithRenderMode(m64p_render_mode RenderMode);
+extern m64p_error VidExtFuncVKGetSurface(void** Surface, void* Instance);
+extern m64p_error VidExtFuncVKGetInstanceExtensions(const char** Extensions[], uint32_t* NumExtensions);
 extern void vsyncEnabled(int enabled);
 extern void pauseEmulator();
 extern void resumeEmulator();
 
-m64p_video_extension_functions vidExtFunctions = {14,
+m64p_video_extension_functions vidExtFunctions = {17,
                                                   VidExtFuncInit,
                                                   VidExtFuncQuit,
                                                   VidExtFuncListModes,
@@ -71,7 +74,10 @@ m64p_video_extension_functions vidExtFunctions = {14,
                                                   VidExtFuncSetCaption,
                                                   VidExtFuncToggleFS,
                                                   VidExtFuncResizeWindow,
-                                                  VidExtFuncGLGetDefaultFramebuffer};
+                                                  VidExtFuncGLGetDefaultFramebuffer,
+                                                  VidExtFuncInitWithRenderMode,
+                                                  VidExtFuncVKGetSurface,
+                                                  VidExtFuncVKGetInstanceExtensions};
 #ifdef __cplusplus
 }
 #endif

@@ -559,6 +559,26 @@ extern DECLSPEC uint32_t VidExtFuncGLGetDefaultFramebuffer(void)
     return 0;
 }
 
+// The app's surface is set up for OpenGL ES only, so Vulkan is not offered.
+extern DECLSPEC m64p_error VidExtFuncInitWithRenderMode(m64p_render_mode RenderMode)
+{
+    if (RenderMode != M64P_RENDER_OPENGL) {
+        return M64ERR_UNSUPPORTED;
+    }
+
+    return VidExtFuncInit();
+}
+
+extern DECLSPEC m64p_error VidExtFuncVKGetSurface(void**, void*)
+{
+    return M64ERR_UNSUPPORTED;
+}
+
+extern DECLSPEC m64p_error VidExtFuncVKGetInstanceExtensions(const char**[], uint32_t*)
+{
+    return M64ERR_UNSUPPORTED;
+}
+
 extern "C" DECLSPEC void FPSEnabled(int recalc)
 {
     FPSRecalcPeriod = recalc;
@@ -583,7 +603,10 @@ extern "C" DECLSPEC void overrideAeVidExtFuncs(void)
 {
 	CoreHandle = dlopen("libmupen64plus-core.so", RTLD_NOW);
 	CoreOverrideVidExt = (ptr_CoreOverrideVidExt) dlsym(CoreHandle, "CoreOverrideVidExt");
-	CoreOverrideVidExt(&vidExtFunctions);
+	m64p_error result = CoreOverrideVidExt(&vidExtFunctions);
+	if (result != M64ERR_SUCCESS) {
+		LOGE("CoreOverrideVidExt failed with error %d", result);
+	}
 }
 
 void checkLibraryError(const char* message)
