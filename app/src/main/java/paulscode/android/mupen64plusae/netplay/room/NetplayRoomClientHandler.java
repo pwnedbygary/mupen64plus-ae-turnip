@@ -56,7 +56,10 @@ class NetplayRoomClientHandler
 
     static final int MAX_PLAYERS = 4;
 
-    static final int NETPLAY_VERSION = 3;
+    // Rooms from the official mupen64plus-ae app and from this app's older builds use versions
+    // up to 3. This app's netplay follows upstream mupen64plus-core's and cannot play with
+    // theirs, so its versions start at 1001.
+    static final int NETPLAY_VERSION = 1001;
 
     private final String mDeviceName;
     private final String mRomMd5;
