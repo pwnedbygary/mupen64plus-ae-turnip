@@ -5510,3 +5510,131 @@ every player on this build; the Transfer Pak, Controller Paks and Project64
 states; a 64DD game writing to its disk; a 1.9 state loaded by an older
 build; games other than these two; and the ARM32, x86 and x64 dynarec
 backends.
+
+## Core memory-safety fixes (pull request C): what changed for the N64DD track (2026-10-24)
+
+**Scope and baseline.** Branch `fix/core-memory-safety` from master at
+`153751b8a`, which merged pull request B (#25). It fixes the gaps that pull
+request A (#21) lists as shared with upstream master (SRAM and FlashRAM, the
+64DD sector size, the TLB, the IS-Viewer and the x86 dynarec) and in this
+core's own WritableROM code, the unchecked `gzclose` from the open items of
+`docs/RETROACHIEVEMENTS_REMAINING_ISSUES.md`, and the pak-type table, which
+no earlier note records. That is twelve commits of this app's and upstream's
+two TLB commits that pull request B left out, `e6f8882701` and `1c3d9326a2`,
+taken with `-x` after the commit that bounds the TLB writes, with the
+dynarec's matching change to Random between them. A last commit adds the
+host tests and this note, and updates
+`docs/RETROACHIEVEMENTS_REMAINING_ISSUES.md`.
+
+**What changes.**
+- SRAM (`sram.c`). This core keeps 32 KB of SRAM but masks addresses to 64 KB.
+  A DMA into SRAM, which already stopped at SRAM's end, now also stops at the
+  end of RDRAM and saves only what it copied; a DMA out of SRAM now also stops
+  at SRAM's end; a CPU read past 32 KB reads 0 and a write there is dropped.
+- FlashRAM (`flashram.c`). A sector erase or page program that would go past
+  the 128 KB chip is refused with a warning; the silicon-ID DMA writes its two
+  words only if they fit in RDRAM; a DMA out of the chip stops at its end, and
+  the page-buffer DMA stops at the end of RDRAM.
+- WritableROM (`cart_rom.c`). A DMA from RDRAM into a writable cartridge ROM
+  now also needs its whole read to fit in RDRAM.
+- IS-Viewer (`is_viewer.c`). The copy that moves the rest of the buffer to its
+  start uses `memmove`, as the two ranges overlap.
+- x86 dynarec (`assem_x86.c`). As upstream's `bb2fd3e8e9`, `f836e5d750` and
+  `1b8c708fdb` (pull request A) did for the ARM, ARM64 and x64 assemblers:
+  `set_jump_target` skips a NULL jump; `do_invstub` skips a stub that has no
+  address register, which indexed an 8-entry table with -1; and
+  `emit_writeword` skips a store that has no source register, which it built
+  into a register-to-register move.
+- Save states (`savestates.c`). A state's 64DD sector size is masked to 8
+  bits, as a register write keeps it, and its zone to 4 bits, the range a seek
+  computes, so a damaged state cannot make a sector transfer overrun `ds_buf`
+  or index past `zone_sec_size`. An M64P save
+  now checks what `gzclose` returns, and a PJ64 uncompressed one `fclose`, and
+  reports a failure to the front end; a PJ64 zip save still reports 1.
+- Pak types (`main.c`). The table of pak types gets an entry for the Bio Pak,
+  and a pak type outside 1-6 is treated as none: a negative value or one above
+  6 was read past the table, and a 0 read an entry that nothing set.
+- TLB. A TLB write to an entry past the 32 the TLB has does nothing
+  (`mips_instructions.def`). With that bound, upstream's `e6f8882701` gives
+  TLBWR its Random for a Wired of 32 or more, and `1c3d9326a2` lets the Index
+  register hold 32 to 63 instead of stopping the emulator. The dynarec's TLBWI
+  and TLBWR run the interpreter's instructions for an index of 32 or more, and
+  its TLBWR uses upstream's Random (`new_dynarec.c`).
+
+Nothing in `src/device/dd/`, `callbacks.c` (the DD runtime policy) or
+`mupen64plus-rsp-parallel` changes.
+
+**Host checks actually run.** The two new tests,
+`tools/test-cart-save-bounds.sh` (SRAM and FlashRAM accesses against a
+stand-in save storage and RDRAM with guard bytes, and the IS-Viewer's copy)
+and `tools/test-tlb-write.sh` (TLBWI and TLBWR in the interpreter, with Index
+or Wired past the TLB), and the three updated ones (`test-big-rom-bounds`,
+`test-savestate-load`, `test-savestate-lock`) pass with GCC 16.2.1 and clang
+23.1.3; `test-cart-save-bounds.sh` runs under AddressSanitizer when the
+compiler has it, and `test-savestate-lock` also passes when built with
+clang's AddressSanitizer, UndefinedBehaviorSanitizer and LeakSanitizer. With
+the same test files and `master`'s core, each fails only at its new checks:
+the SRAM and FlashRAM bounds, including the SRAM DMAs that copy nothing and
+must save nothing, with AddressSanitizer stopping at the IS-Viewer's
+overlapping `memcpy`; the TLB writes past the TLB, then a divide by zero at a
+Wired of 32; the writable-ROM DMA past RDRAM; the 64DD sector size and zone;
+and the failed `gzclose`. The writable-ROM DMA that ends exactly at the end
+of RDRAM must be taken: it passes with `master`'s core and fails only with
+`<` in place of the fix's `<=`. In `test-tlb-write`, only the 32-entry bound
+comes from the hardware; which entry an Index of 32-63 or a Wired of 32 or
+more picks follows upstream's `e6f8882701` and `1c3d9326a2`. No host test
+exercises three of the changes. The pak table is static and is filled in
+`main_run` (`main.c:137,1635-1672`), so a test would have to stub most of
+`main.c`; it was checked by reading and compiling. No host test runs the
+dynarec's TLB code: `test-tlb-write` builds only the pure interpreter, and
+`test-dd-dynarec-boundary` and `test-dd-arm64-syntax`, which compile
+`new_dynarec.c` for arm64, never call `TLBWI_new` or `TLBWR_new`. So the
+dynarec's TLBWI and TLBWR hand-offs and its Random were checked only by
+reading and compiling, and the device run below reached no Index or Wired of
+32 or more. The x86
+changes were compiled and linked for the x86 ABI only; nothing ran them. The
+full host suite, run on `master` and on this branch's first version, whose
+core differs from this one only in the two x86 lines that no host test
+builds, gives the same exit codes with both compilers for every test they
+share: all pass except `test-dd-rsp-mac` (8) and `test-p07-verifier` (77),
+and, with clang, `test-dd-core-imem-dma` and `test-dd-startup`, which clang
+23 stops at an unused variable in their test (fixed on `master` by #26).
+Every commit's core compiles, syntax only, with the clang of NDK 26.1.10909125
+for the four ABIs and the core's flags, with no errors: each commit of the
+first version in full, and for the three commits whose trees are new here
+(the moved dynarec change and the two x86 ones), the files that include what
+they change (`new_dynarec.c`, `pure_interp.c`, `cached_interp.c`), also with
+`-Wall -Wextra`. Those give the same warnings as at the commit before each,
+except one more on x86 from the `do_invstub` guard (`-Wsign-compare`, the
+same one upstream's x64 guard gives at `assem_x64.c:3068`).
+`./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` (wrapper
+Gradle 8.4, JDK 17.0.20.1) builds and the 35 unit tests pass. On the first
+version the core's only build warnings were the four kinds that `master`
+has; on this one the build recompiled `new_dynarec.c` for x86 with no
+warning.
+
+**Device checks.** On the Retroid Pocket 6 (Android 13), on 2026-10-24 from
+23:08 to 23:14, with the debug build of this branch's first version,
+`6c5649583` (APK `b46e2ea6`; this commit's tests and docs, which the APK does
+not hold, were still uncommitted). Its tree is that of `464c8eea0` here: the
+review that followed reworded commits and moved one, which left the tip's
+tree unchanged (only the moved dynarec commit has a new, intermediate tree),
+and added the two x86 commits after it, which change no code the arm64 build
+compiles: this version's debug build has a byte-identical core library for
+arm64-v8a, armeabi-v7a and x86_64, and a different one only for x86. With
+the tested build, Mario Tennis resumed an auto save that an older build
+wrote; a
+slot save and its load worked; the auto save written at exit was reported
+saved, got its `.complete` marker and loaded again with Resume; and the log
+had no "Could not" line. F-Zero X with its 64DD disk booted to its attract
+race, and its 64DD log lines equal those of pull request B's build (33,076
+lines); 98 s in, its process used 522,042 kB PSS, against 522,765 kB with
+pull request B's build. The saves, settings and earlier build were put back
+and checked against a backup. Evidence:
+`../mupen64plus-ae-turnip-evidence/device-2026-10-24-prc/NOTES.md`.
+
+**Not covered on a device.** A save state whose file fails to close, as on
+full storage; games that reach SRAM past 32 KB or FlashRAM past its end, or
+use a TLB index or Wired value of 32 or more (none known); the x86 dynarec;
+the Bio Pak, which the app's settings do not offer; IS-Viewer output, which
+only homebrew writes; and a damaged save state's 64DD values.

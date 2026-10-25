@@ -23,7 +23,9 @@
  * M64P state must restore nothing: neither the first register the loader
  * restores nor the first word of RDRAM may change. It also loads an M64P
  * state saved by the core as version 1.9, which keeps the COP0 and COP2
- * latches, and as version 1.8, which does not.
+ * latches, and as version 1.8, which does not, and one of a 64DD game whose
+ * sector size register and zone hold more than the hardware keeps, which the
+ * loader must mask.
  */
 #include <stdarg.h>
 #include <sys/time.h> /* the SDL stub calls gettimeofday without including it */
@@ -332,6 +334,46 @@ static void check_m64p_latches(struct device *dev, const char *run, unsigned cha
     report(run, before);
 }
 
+/* A 64DD disk, whose ID an M64P state names. */
+static uint8_t g_test_disk[DD_DISK_ID_OFFSET + 4];
+static uint8_t* test_disk_data(const void* disk) { (void)disk; return g_test_disk; }
+static size_t test_disk_size(const void* disk) { (void)disk; return sizeof(g_test_disk); }
+static void test_disk_save(void* disk, size_t start, size_t size) { (void)disk; (void)start; (void)size; }
+static const struct storage_backend_interface g_test_idisk = {
+    test_disk_data, test_disk_size, test_disk_save
+};
+
+/* Saves an M64P state of a 64DD game whose sector size register and zone
+ * hold more than the hardware keeps, and loads it back. A register write
+ * keeps the sector size to 8 bits and a seek keeps the zone to 0-15, and a
+ * load must do the same, as both index the 64DD's buffers and tables. */
+static void check_m64p_dd_masks(struct device *dev)
+{
+    int before = g_failures;
+
+    memset(g_next_queue, 0, sizeof(g_next_queue));
+    g_next_queue[0] = VI_INT;
+    g_next_queue[1] = 1000;
+    g_next_queue[2] = 0xffffffff;
+    memcpy(g_test_disk + DD_DISK_ID_OFFSET, "DISK", 4);
+    dev->dd.rom_size = 1;
+    dev->dd.idisk = &g_test_idisk;
+    dev->rdram.regs[0][RDRAM_CONFIG_REG] = 0;
+    dev->rdram.dram[0] = 0;
+    dev->dd.regs[DD_ASIC_HOST_SECBYTE] = 0x12345;
+    dev->dd.bm_zone = 0x13;
+    CHECK(savestates_save_m64p(dev, g_m64p_path) == 1);
+    dev->dd.regs[DD_ASIC_HOST_SECBYTE] = 0;
+    dev->dd.bm_zone = 0;
+    load_m64p(dev, 1, "");
+    CHECK(dev->dd.regs[DD_ASIC_HOST_SECBYTE] == 0x45);
+    CHECK(dev->dd.bm_zone == 0x3);
+    dev->dd.rom_size = 0;
+    dev->dd.idisk = NULL;
+    report("M64P state of a 64DD game keeps the sector size to 8 bits and the zone to 0-15",
+           before);
+}
+
 int main(void)
 {
     const char *tmp = getenv("TMPDIR");
@@ -380,6 +422,7 @@ int main(void)
                    "Could not read Mupen64Plus savestate 1.0 data");
     check_m64p_latches(dev, "M64P 1.9 state restores the COP0 and COP2 latches", 9);
     check_m64p_latches(dev, "M64P 1.8 state loads and leaves the latches as they were", 8);
+    check_m64p_dd_masks(dev);
 
     savestates_deinit();
     return g_failures != 0;

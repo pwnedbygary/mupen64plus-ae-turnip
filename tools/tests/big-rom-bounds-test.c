@@ -6,7 +6,8 @@
  *
  *   - PI DMA ROM -> RDRAM  (cart_rom_dma_write)
  *   - CPU read             (read_cart_rom)
- *   - PI DMA RDRAM -> ROM  (cart_rom_dma_read, WritableROM path)
+ *   - PI DMA RDRAM -> ROM  (cart_rom_dma_read, WritableROM path), which
+ *                            must also fit in RDRAM
  *
  * Expectations are derived from the N64 cartridge address map
  * (true ROM offset = cart address - MM_CART_ROM, MM_CART_ROM = 0x10000000)
@@ -308,6 +309,7 @@ static void test_writable_dma_into_rom(void)
     memset(&cr, 0, sizeof(cr));
     cr.rom = rom();
     cr.rom_size = TEST_ROM_SIZE;
+    set_rdram_size(&cr, sizeof(dram));
 
     swizzle_write(rom(), 0x0000000, 0xCCCCCCCC);        /* wrapped offset */
     swizzle_write(rom(), 0x04000000, 0xDDDDDDDD);       /* true offset    */
@@ -319,6 +321,59 @@ static void test_writable_dma_into_rom(void)
 
     CHECK(swizzle_read(rom(), 0x04000000) == 0x12345678);
     CHECK(swizzle_read(rom(), 0x0000000) == 0xCCCCCCCC);
+}
+
+/* WritableROM PI DMA RDRAM -> ROM must not read past the end of RDRAM: a
+ * DMA that does not fit in it is refused and leaves the ROM as it was. */
+static void test_writable_dma_past_rdram_end(void)
+{
+    struct cart_rom cr;
+    uint8_t dram[16];
+
+    memset(&cr, 0, sizeof(cr));
+    cr.rom = rom();
+    cr.rom_size = TEST_ROM_SIZE;
+    set_rdram_size(&cr, 8);
+
+    swizzle_write(rom(), 0x05000000, 0xEEEEEEEE);
+    swizzle_write(rom(), 0x05000004, 0xEEEEEEEE);
+    swizzle_write(rom(), 0x05000008, 0xEEEEEEEE);
+    swizzle_write(dram, 0, 0x01010101);
+    swizzle_write(dram, 4, 0x02020202);
+    swizzle_write(dram, 8, 0x03030303);
+
+    ROM_SETTINGS.writablecartrom = 1;
+    cart_rom_dma_read(&cr, dram, 0, MM_CART_ROM + 0x05000000, 12);
+    ROM_SETTINGS.writablecartrom = 0;
+
+    CHECK(swizzle_read(rom(), 0x05000000) == 0xEEEEEEEE);
+    CHECK(swizzle_read(rom(), 0x05000004) == 0xEEEEEEEE);
+    CHECK(swizzle_read(rom(), 0x05000008) == 0xEEEEEEEE);
+}
+
+/* WritableROM PI DMA RDRAM -> ROM that ends exactly at the end of RDRAM
+ * fits in it and is taken whole. */
+static void test_writable_dma_to_rdram_end(void)
+{
+    struct cart_rom cr;
+    uint8_t dram[16];
+
+    memset(&cr, 0, sizeof(cr));
+    cr.rom = rom();
+    cr.rom_size = TEST_ROM_SIZE;
+    set_rdram_size(&cr, 8);
+
+    swizzle_write(rom(), 0x05000010, 0xEEEEEEEE);
+    swizzle_write(rom(), 0x05000014, 0xEEEEEEEE);
+    swizzle_write(dram, 0, 0x01010101);
+    swizzle_write(dram, 4, 0x02020202);
+
+    ROM_SETTINGS.writablecartrom = 1;
+    cart_rom_dma_read(&cr, dram, 0, MM_CART_ROM + 0x05000010, 8);
+    ROM_SETTINGS.writablecartrom = 0;
+
+    CHECK(swizzle_read(rom(), 0x05000010) == 0x01010101);
+    CHECK(swizzle_read(rom(), 0x05000014) == 0x02020202);
 }
 
 int main(void)
@@ -333,6 +388,8 @@ int main(void)
     test_dma_stops_at_rdram_end();
     test_cpu_read();
     test_writable_dma_into_rom();
+    test_writable_dma_past_rdram_end();
+    test_writable_dma_to_rdram_end();
     test_dma_last_word();
     test_cpu_below_64mb_boundary();
     test_memory_layout();
