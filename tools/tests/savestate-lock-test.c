@@ -8,15 +8,17 @@
  * the lock left the thread waiting for itself.
  *
  * Once it has released the lock, the write tells the front end
- * (M64CORE_STATE_SAVECOMPLETE) 1 if gzwrite took the whole state and 0 if the
- * file could not be opened or written; gzclose, which writes what zlib still
- * holds, is not checked. The app marks an auto save complete only when told 1.
+ * (M64CORE_STATE_SAVECOMPLETE) 1 if the whole state was written and 0 if the
+ * file could not be opened or written, including when gzclose cannot write
+ * what zlib still holds. The app marks an auto save complete only when told 1.
  * The core used to report success as soon as the write was queued, even if it
- * then failed.
+ * then failed, and later did not check gzclose.
  *
  * The test includes savestates.c to reach its static write function. The
- * first run writes a state, the next two make the write fail (a missing
- * folder, then a full device), and the last checks that saving still works.
+ * first run writes a state, the next three make the write fail (a missing
+ * folder, then a full device, with a state large enough that gzwrite fails
+ * and with one small enough that only gzclose does), and the last checks that
+ * saving still works.
  */
 #include <stdarg.h>
 #include <sys/time.h> /* the SDL stub calls gettimeofday without including it */
@@ -190,6 +192,14 @@ int main(void)
         CHECK(starts_with(g_message, "Could not write data to state file"));
         check_report(0);
         report("device full", before);
+
+        /* zlib holds a state this small until gzclose writes it. */
+        before = g_failures;
+        save_state("/dev/full", 4096);
+        check_lock_free("device full when the file is closed");
+        CHECK(starts_with(g_message, "Could not write data to state file"));
+        check_report(0);
+        report("device full when the file is closed", before);
     } else {
         printf("device full: skipped, no /dev/full\n");
     }

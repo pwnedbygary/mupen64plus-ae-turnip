@@ -60,6 +60,7 @@ static const u_int invalidate_block_reg[8] = {
 static void set_jump_target(int addr,int target)
 {
   u_char *ptr=(u_char *)addr;
+  if(ptr==NULL) return;
   if(*ptr==0x0f)
   {
     assert(ptr[1]>=0x80&&ptr[1]<=0x8f);
@@ -2079,6 +2080,7 @@ static void emit_xchg(int rs, int rt)
 }
 static void emit_writeword(int rt, int addr)
 {
+  if(rt<0) return;
   assem_debug("movl %%%s,%x",regname[rt],addr);
   output_byte(0x89);
   output_modrm(0,5,rt);
@@ -2660,6 +2662,7 @@ static void emit_extjump2(int addr, int target, int linker)
 
 static void do_invstub(int n)
 {
+  if(stubs[n][4]==-1) return;
   set_jump_target(stubs[n][1],(int)out);
   emit_call(invalidate_block_reg[stubs[n][4]]);
   emit_jmp(stubs[n][2]); // return address

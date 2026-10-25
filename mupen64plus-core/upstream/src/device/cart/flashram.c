@@ -60,8 +60,13 @@ static void flashram_command(struct flashram* flashram, uint32_t command)
         /* do chip/sector erase */
         if (flashram->mode == FLASHRAM_MODE_SECTOR_ERASE) {
             offset = (flashram->erase_page & 0xff80) * 128;
-            memset(mem + offset, 0xff, 128*128);
-            flashram->istorage->save(flashram->storage, offset, 128*128);
+            if (offset <= FLASHRAM_SIZE - 128*128) {
+                memset(mem + offset, 0xff, 128*128);
+                flashram->istorage->save(flashram->storage, offset, 128*128);
+            }
+            else {
+                DebugMessage(M64MSG_WARNING, "Flashram sector erase past the end of the chip: page %x", flashram->erase_page);
+            }
         }
         else if (flashram->mode == FLASHRAM_MODE_CHIP_ERASE){
             memset(mem, 0xff, FLASHRAM_SIZE);
@@ -83,10 +88,15 @@ static void flashram_command(struct flashram* flashram, uint32_t command)
 
         /* program selected page */
         offset = (command & 0xffff) * 128;
-        for (i = 0; i < 128; ++i) {
-            mem[(offset+i)^S8] = flashram->page_buf[i];
+        if (offset <= FLASHRAM_SIZE - 128) {
+            for (i = 0; i < 128; ++i) {
+                mem[(offset+i)^S8] = flashram->page_buf[i];
+            }
+            flashram->istorage->save(flashram->storage, offset, 128);
         }
-        flashram->istorage->save(flashram->storage, offset, 128);
+        else {
+            DebugMessage(M64MSG_WARNING, "Flashram page program past the end of the chip: page %" PRIX32, command & 0xffff);
+        }
 
         /* clear program busy flag, set program success flag, transition to status mode */
         flashram->status &= ~UINT32_C(0x01);
@@ -191,8 +201,10 @@ unsigned int flashram_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr,
 
     if ((cart_addr & 0x1ffff) == 0x00000 && length == 8 && flashram->mode == FLASHRAM_MODE_READ_SILICON_ID) {
         /* read Silicon ID using DMA */
-        ((uint32_t*)dram)[dram_addr/4+0] = flashram->silicon_id[0];
-        ((uint32_t*)dram)[dram_addr/4+1] = flashram->silicon_id[1];
+        if (dram_addr/4*4 + 8 <= flashram->rdram->dram_size) {
+            ((uint32_t*)dram)[dram_addr/4+0] = flashram->silicon_id[0];
+            ((uint32_t*)dram)[dram_addr/4+1] = flashram->silicon_id[1];
+        }
     }
     else if ((cart_addr & 0x1ffff) < 0x10000 && flashram->mode == FLASHRAM_MODE_READ_ARRAY) {
 
@@ -209,7 +221,7 @@ unsigned int flashram_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr,
         }
 
         /* do actual DMA */
-        for(i = 0; i < length && (dram_addr+i) < flashram->rdram->dram_size; ++i) {
+        for(i = 0; i < length && (cart_addr+i) < FLASHRAM_SIZE && (dram_addr+i) < flashram->rdram->dram_size; ++i) {
             dram[(dram_addr+i)^S8] = mem[(cart_addr+i)^S8];
         }
     }
@@ -229,7 +241,7 @@ unsigned int flashram_dma_read(void* opaque, const uint8_t* dram, uint32_t dram_
 
     if ((cart_addr & 0x1ffff) == 0x00000 && length == 128 && flashram->mode == FLASHRAM_MODE_PAGE_PROGRAM) {
         /* load page buf using DMA */
-        for(i = 0; i < length; ++i) {
+        for(i = 0; i < length && (dram_addr+i) < flashram->rdram->dram_size; ++i) {
             flashram->page_buf[i] = dram[(dram_addr+i)^S8];
         }
     }

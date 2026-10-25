@@ -134,7 +134,16 @@ enum { PAK_MAX_SIZE = 5 };
 static size_t l_paks_idx[GAME_CONTROLLERS_COUNT];
 static void* l_paks[GAME_CONTROLLERS_COUNT][PAK_MAX_SIZE];
 static const struct pak_interface* l_ipaks[PAK_MAX_SIZE];
-static size_t l_pak_type_idx[6];
+static size_t l_pak_type_idx[PLUGIN_BIO_PAK + 1];
+
+static size_t pak_type_idx(int plugin)
+{
+    if (plugin < PLUGIN_NONE || plugin > PLUGIN_BIO_PAK) {
+        plugin = PLUGIN_NONE;
+    }
+
+    return l_pak_type_idx[plugin];
+}
 
 /* PRNG state - used for Mempaks ID generation */
 static struct xoshiro256pp_state l_mpk_idgen;
@@ -1040,11 +1049,11 @@ void main_switch_next_pak(int control_id)
 void main_switch_plugin_pak(int control_id)
 {
     //Don't switch to the selected pak if it's not available for the game
-    if (l_ipaks[l_pak_type_idx[Controls[control_id].Plugin]] == NULL) {
+    if (l_ipaks[pak_type_idx(Controls[control_id].Plugin)] == NULL) {
         Controls[control_id].Plugin = PLUGIN_NONE;
     }
 
-    l_paks_idx[control_id] = l_pak_type_idx[Controls[control_id].Plugin];
+    l_paks_idx[control_id] = pak_type_idx(Controls[control_id].Plugin);
 
     main_switch_pak(control_id);
 }
@@ -1626,6 +1635,7 @@ m64p_error main_run(void)
     /* Fill-in l_pak_type_idx and l_ipaks according to game compatibility */
     k = 0;
     if (ROM_SETTINGS.biopak) {
+        l_pak_type_idx[PLUGIN_BIO_PAK] = k;
         l_ipaks[k++] = &g_ibiopak;
     }
     if (ROM_SETTINGS.mempak) {
@@ -1656,6 +1666,9 @@ m64p_error main_run(void)
     }
     if (!ROM_SETTINGS.transferpak) {
         l_pak_type_idx[PLUGIN_TRANSFER_PAK] = k;
+    }
+    if (!ROM_SETTINGS.biopak) {
+        l_pak_type_idx[PLUGIN_BIO_PAK] = k;
     }
 
     /* init GbCamera backend specified in the configuration file */
@@ -1757,7 +1770,7 @@ m64p_error main_run(void)
             l_paks_idx[i] = 0;
 
             //Don't use the selected pak if it's not available for the game, instead use NONE
-            if (l_ipaks[l_pak_type_idx[Controls[i].Plugin]] == NULL) {
+            if (l_ipaks[pak_type_idx(Controls[i].Plugin)] == NULL) {
                 Controls[i].Plugin = PLUGIN_NONE;
             }
 
