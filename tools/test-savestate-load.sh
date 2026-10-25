@@ -4,9 +4,12 @@ cd "$(dirname "$0")/.."
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cc="${CC:-cc}"
+# savestates.c includes <minizip/unzip.h> and <minizip/zip.h>: the
+# subprojects folder makes those the core's copies, not the system's.
 includes=(
   -isystem mupen64plus-core/upstream/subprojects/md5
   -isystem mupen64plus-core/upstream/subprojects/minizip
+  -isystem mupen64plus-core/upstream/subprojects
   -isystem ndkLibs/SDL2_stub
   -I mupen64plus-core/upstream/src
 )
