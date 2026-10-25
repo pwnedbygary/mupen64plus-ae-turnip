@@ -51,7 +51,7 @@ public class NetplayRoomServerHandler {
     private final OnServerRoomData mOnServerRoomData;
 
     // True if we registered to this room
-    private boolean mRegisteredToRoom = false;
+    private volatile boolean mRegisteredToRoom = false;
 
     // True if we are running
     private boolean mRunning = true;
@@ -277,7 +277,7 @@ public class NetplayRoomServerHandler {
         synchronized (mSocketOutputSync) {
 
             try {
-                mRegisteredToRoom = true;
+                mRegisteredToRoom = false;
                 mSendBuffer.reset();
                 mSendBuffer.putInt(NetplayRoomClientHandler.ID_LEAVE_ROOM);
                 mSocketOutputStream.write(mSendBuffer.array(), 0, mSendBuffer.position());

@@ -147,7 +147,7 @@ public class NetplayRoomServer {
     }
 
     public void registerService() {
-        if (mServerSocket == null) {
+        if (mServerSocket == null || !mRunning) {
             return;
         }
 

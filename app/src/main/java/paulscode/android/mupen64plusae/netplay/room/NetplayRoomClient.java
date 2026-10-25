@@ -9,6 +9,7 @@ import android.util.Log;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import paulscode.android.mupen64plusae.util.Utility;
 
@@ -49,6 +50,9 @@ public class NetplayRoomClient {
 
     // NSD discovery listener
     private NsdManager.DiscoveryListener mDiscoveryListener;
+
+    // Cleared once room discovery is stopped
+    private final AtomicBoolean mDiscovering = new AtomicBoolean(true);
 
     private final WifiManager.MulticastLock mMulticastLock;
 
@@ -192,7 +196,12 @@ public class NetplayRoomClient {
             @Override
             public void onStopDiscoveryFailed(String serviceType, int errorCode) {
                 Log.e(TAG, "NSD Discovery failed: Error code:" + errorCode);
-                mNsdManager.stopServiceDiscovery(this);
+
+                try {
+                    mNsdManager.stopServiceDiscovery(this);
+                } catch (IllegalArgumentException e) {
+                    e.printStackTrace();
+                }
             }
         };
     }
@@ -204,6 +213,7 @@ public class NetplayRoomClient {
 
     public void stopListening()
     {
+        stopDiscovery();
         MulticastLocks.release(mMulticastLock);
     }
 
@@ -212,6 +222,21 @@ public class NetplayRoomClient {
             serverHandler.leaveRoomAsync();
         }
 
+        stopDiscovery();
         MulticastLocks.release(mMulticastLock);
+    }
+
+    private void stopDiscovery()
+    {
+        if (!mDiscovering.getAndSet(false)) {
+            return;
+        }
+
+        try {
+            mNsdManager.stopServiceDiscovery(mDiscoveryListener);
+        } catch (IllegalArgumentException e) {
+            // Discovery that failed to start has no listener registered
+            e.printStackTrace();
+        }
     }
 }

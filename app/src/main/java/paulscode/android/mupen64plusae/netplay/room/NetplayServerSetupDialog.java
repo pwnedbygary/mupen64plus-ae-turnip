@@ -194,6 +194,10 @@ public class NetplayServerSetupDialog extends DialogFragment
         setCancelable(false);
 
         cancelButton.setOnClickListener(v -> {
+            if (mNetplayRoomService != null) {
+                mNetplayRoomService.stopServer();
+            }
+
             if (mActivity instanceof OnClientDialogActionListener) {
                 ((OnClientDialogActionListener) mActivity).cancel();
             } else {
