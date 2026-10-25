@@ -105,11 +105,12 @@ public class NetplayRoomClient {
         // but it works
         Utility.executeShellCommand( "ping", "-c", "-1", address.getHostAddress() );
 
+        final int serverId = mClients.size();
         NetplayRoomServerHandler roomClient = new NetplayRoomServerHandler(mDeviceName, address, port,
                 new NetplayRoomServerHandler.OnServerRoomData() {
                     @Override
                     public void onServerRoomData(int netplayVersion, String serverName, String romMd5) {
-                        mOnServerData.onValidServerFound(netplayVersion, mClients.size() - 1, serverName, romMd5);
+                        mOnServerData.onValidServerFound(netplayVersion, serverId, serverName, romMd5);
                     }
 
                     @Override
