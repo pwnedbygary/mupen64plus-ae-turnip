@@ -27,7 +27,6 @@ rsp_plugin_functions rsp;
 
 static unsigned int event_type;
 static unsigned int event_delay;
-static unsigned int framebuffer_reads;
 static unsigned int framebuffer_writes;
 
 void DebugMessage(int level, const char *message, ...)
@@ -47,7 +46,6 @@ void pre_framebuffer_read(struct fb *fb, uint32_t address)
 {
     (void) fb;
     (void) address;
-    ++framebuffer_reads;
 }
 
 void post_framebuffer_write(struct fb *fb, uint32_t address, uint32_t length)
@@ -160,7 +158,6 @@ static void reset_machine(void)
 
     event_type = 0;
     event_delay = 0;
-    framebuffer_reads = 0;
     framebuffer_writes = 0;
 }
 

@@ -5198,7 +5198,9 @@ At `master` and
 here, `test-dd-rsp-mac` fails (exit 8; it checks a capture script's text),
 `test-p07-verifier` is skipped (77, no captures), and with clang
 `test-dd-core-imem-dma` and `test-dd-startup` fail (clang 23's
-`-Wunused-but-set-global` in `dd-core-imem-dma-test.c`). The test updates:
+`-Wunused-but-set-global` in `dd-core-imem-dma-test.c`; a later change
+removes the unused `framebuffer_reads` counter, and both then pass with
+clang 23). The test updates:
 `big-rom-bounds-test.c` gives the cartridge an RDRAM size and checks that a
 DMA stops at the end of RDRAM (that check fails with `master`'s
 `cart_rom.c`); `savestate-load-test.c` and `wave-race-native.c` follow new
@@ -5433,7 +5435,9 @@ C takes after bounding the TLB writes.
   fails (exit 8; it checks a capture script's text), `test-p07-verifier` is
   skipped (77, no captures), and with clang `test-dd-core-imem-dma` and
   `test-dd-startup` fail (clang 23's `-Wunused-but-set-global` in
-  `dd-core-imem-dma-test.c`). The test updates: `savestate-load-test.c` gets
+  `dd-core-imem-dma-test.c`; a later change removes the unused
+  `framebuffer_reads` counter, and both then pass with clang 23). The test
+  updates: `savestate-load-test.c` gets
   stand-ins for `ConfigSetParameter` and `g_CoreConfig`, which `savestates.c`
   calls since `673aa48d1d`, and for the two latch accessors, and two checks:
   a 1.9 state saved by the core restores the COP0 and COP2 latches, and a 1.8
