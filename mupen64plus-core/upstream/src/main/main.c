@@ -468,6 +468,26 @@ static void main_set_speedlimiter(int enable)
     l_MainSpeedLimit = enable ? 1 : 0;
 }
 
+void main_speedlimiter_toggle(void)
+{
+    if (netplay_is_init())
+        return;
+
+    l_MainSpeedLimit = !l_MainSpeedLimit;
+    main_set_speedlimiter(l_MainSpeedLimit);
+
+    if (l_MainSpeedLimit) /* fix naturally occuring audio desync */
+    {
+        main_toggle_pause();
+        SDL_Delay(1000);
+        main_toggle_pause();
+        main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Speed limiter enabled");
+    }
+
+    else
+        main_message(M64MSG_STATUS, OSD_BOTTOM_LEFT, "Speed limiter disabled");
+}
+
 static int main_is_paused(void)
 {
     return (g_EmulatorRunning && g_rom_pause);
@@ -635,6 +655,7 @@ m64p_error main_core_state_query(m64p_core_param param, int *rval)
             *rval = event_gameshark_active();
             break;
         // these are only used for callbacks; they cannot be queried or set
+        case M64CORE_SCREENSHOT_CAPTURED:
         case M64CORE_STATE_LOADCOMPLETE:
         case M64CORE_STATE_SAVECOMPLETE:
             return M64ERR_INPUT_INVALID;
@@ -821,25 +842,31 @@ m64p_error main_reset(int do_hard_reset)
 
 static void video_plugin_render_callback(int bScreenRedrawn)
 {
+#ifdef M64P_OSD
     int bOSD = ConfigGetParamBool(g_CoreConfig, "OnScreenDisplay");
+#endif /* M64P_OSD */
 
     // if the flag is set to take a screenshot, then grab it now
     if (l_TakeScreenshot != 0)
     {
         // if the OSD is enabled, and the screen has not been recently redrawn, then we cannot take a screenshot now because
         // it contains the OSD text.  Wait until the next redraw
+#ifdef M64P_OSD
         if (!bOSD || bScreenRedrawn)
+#endif /* M64P_OSD */
         {
             TakeScreenshot(l_TakeScreenshot - 1);  // current frame number +1 is in l_TakeScreenshot
             l_TakeScreenshot = 0; // reset flag
         }
     }
 
+#ifdef M64P_OSD
     // if the OSD is enabled, then draw it now
     if (bOSD)
     {
         osd_render();
     }
+#endif /* M64P_OSD */
 
     // if the input plugin specified a render callback, call it now
     if(input.renderCallback)
@@ -1564,14 +1591,11 @@ m64p_error main_run(void)
     if (count_per_scanline_override <= 0) {
         count_per_scanline_override = ROM_SETTINGS.countPerScanlineOverride;
     }
-
-    rdram_size = (disable_extra_mem == 0) ? RDRAM_8MB_SIZE : RDRAM_4MB_SIZE;
-
     if (count_per_op <= 0)
         count_per_op = ROM_SETTINGS.countperop;
 
-    if (count_per_op_denom_pot > 11)
-        count_per_op_denom_pot = 11;
+    if (count_per_op_denom_pot > 20)
+        count_per_op_denom_pot = 20;
 
     si_dma_duration = ConfigGetParamInt(g_CoreConfig, "SiDmaDuration");
     if (si_dma_duration < 0)
@@ -1579,6 +1603,8 @@ m64p_error main_run(void)
 
     //During netplay, player 1 is the source of truth for these settings
     netplay_sync_settings(&count_per_op, &count_per_op_denom_pot, &disable_extra_mem, &si_dma_duration, &emumode, &no_compiled_jump);
+
+    rdram_size = (disable_extra_mem == 0) ? RDRAM_8MB_SIZE : RDRAM_4MB_SIZE;
 
     /* Writable-ROM persistence must be off during netplay: a player with an
      * existing .cart_ram would inject different cart ROM content than an
@@ -1869,6 +1895,9 @@ m64p_error main_run(void)
     /* set up the SDL key repeat and event filter to catch keyboard/joystick commands for the core */
     event_initialize();
 
+    /* initialize frame counter */
+    l_CurrentFrame = 0;
+
     /* initialize the on-screen display */
     if (ConfigGetParamBool(g_CoreConfig, "OnScreenDisplay"))
     {
@@ -1931,6 +1960,9 @@ m64p_error main_run(void)
     close_dd_disk(&dd_disk);
     close_cart_rom(&g_dev.cart.cart_rom);
 
+    /* reset pif */
+    close_pif();
+
     if (ConfigGetParamBool(g_CoreConfig, "OnScreenDisplay"))
     {
         osd_exit();
@@ -1969,6 +2001,9 @@ on_gfx_open_failure:
     close_file_storage(&eep);
     close_file_storage(&mpk);
     close_dd_disk(&dd_disk);
+
+    /* reset pif */
+    close_pif();
 
     return M64ERR_PLUGIN_FAIL;
 }
@@ -2014,8 +2049,11 @@ void main_stop(void)
 
 m64p_error open_pif(const unsigned char* pifimage, unsigned int size)
 {
-    md5_byte_t pif_ntsc_md5[] = {0x49, 0x21, 0xD5, 0xF2, 0x16, 0x5D, 0xEE, 0x6E, 0x24, 0x96, 0xF4, 0x38, 0x8C, 0x4C, 0x81, 0xDA};
-    md5_byte_t pif_pal_md5[]  = {0x2B, 0x6E, 0xEC, 0x58, 0x6F, 0xAA, 0x43, 0xF3, 0x46, 0x23, 0x33, 0xB8, 0x44, 0x83, 0x45, 0x54};
+    md5_byte_t old_pif_ntsc_md5[] = {0x49, 0x21, 0xD5, 0xF2, 0x16, 0x5D, 0xEE, 0x6E, 0x24, 0x96, 0xF4, 0x38, 0x8C, 0x4C, 0x81, 0xDA};
+    md5_byte_t old_pif_pal_md5[]  = {0x2B, 0x6E, 0xEC, 0x58, 0x6F, 0xAA, 0x43, 0xF3, 0x46, 0x23, 0x33, 0xB8, 0x44, 0x83, 0x45, 0x54};
+
+    md5_byte_t pif_ntsc_md5[] = {0x5C, 0x12, 0x4E, 0x79, 0x48, 0xAD, 0xA8, 0x5D, 0xA6, 0x03, 0xA5, 0x22, 0x78, 0x29, 0x40, 0xD0};
+    md5_byte_t pif_pal_md5[]  = {0xD4, 0x23, 0x2D, 0xC9, 0x35, 0xCA, 0xD0, 0x65, 0x0A, 0xC2, 0x66, 0x4D, 0x52, 0x28, 0x1F, 0x3A};
 
     uint32_t *dst32 = mem_base_u32(g_mem_base, MM_PIF_MEM);
     uint32_t *src32 = (uint32_t*) pifimage;
@@ -2026,10 +2064,16 @@ m64p_error open_pif(const unsigned char* pifimage, unsigned int size)
     md5_append(&state, (const md5_byte_t*)pifimage, size);
     md5_finish(&state, digest);
 
-    if (memcmp(digest, pif_ntsc_md5, 16) == 0)
+    if (memcmp(digest, old_pif_ntsc_md5, 16) == 0 ||
+        memcmp(digest, pif_ntsc_md5, 16) == 0)
+    {
         DebugMessage(M64MSG_INFO, "Using NTSC PIF ROM");
-    else if (memcmp(digest, pif_pal_md5, 16) == 0)
+    }
+    else if (memcmp(digest, old_pif_pal_md5, 16) == 0 ||
+             memcmp(digest, pif_pal_md5, 16) == 0)
+    {
         DebugMessage(M64MSG_INFO, "Using PAL PIF ROM");
+    }
     else
     {
         DebugMessage(M64MSG_ERROR, "Invalid PIF ROM");
@@ -2040,5 +2084,11 @@ m64p_error open_pif(const unsigned char* pifimage, unsigned int size)
         *dst32++ = big32(*src32++);
 
     g_start_address = UINT32_C(0xbfc00000);
+    return M64ERR_SUCCESS;
+}
+
+m64p_error close_pif(void)
+{
+    g_start_address = UINT32_C(0xa4000040);
     return M64ERR_SUCCESS;
 }

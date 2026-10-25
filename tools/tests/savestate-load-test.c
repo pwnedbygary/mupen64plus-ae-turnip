@@ -21,7 +21,9 @@
  * queues come from a stand-in, and loads them back, and it writes states of
  * version 1.0, whose queue is only as long as the file, by hand. A refused
  * M64P state must restore nothing: neither the first register the loader
- * restores nor the first word of RDRAM may change.
+ * restores nor the first word of RDRAM may change. It also loads an M64P
+ * state saved by the core as version 1.9, which keeps the COP0 and COP2
+ * latches, and as version 1.8, which does not.
  */
 #include <stdarg.h>
 #include <sys/time.h> /* the SDL stub calls gettimeofday without including it */
@@ -69,14 +71,27 @@ CONTROL Controls[NUM_CONTROLLER];
 gfx_plugin_functions gfx;
 input_plugin_functions input;
 m64p_rom_settings ROM_SETTINGS;
+m64p_handle g_CoreConfig;
 
 static uint32_t g_cp0_regs[CP0_REGS_COUNT], g_last_addr, g_pc, g_fcr0, g_fcr31;
 static unsigned int g_next_interrupt, g_llbit, g_next_vi;
 static int64_t g_regs[32], g_mult_hi, g_mult_lo;
+static uint64_t g_cp0_latch, g_cp2_latch;
 static cp1_reg g_cp1_regs[32];
 static int g_queue_loads;
 
+m64p_error ConfigSetParameter(m64p_handle handle, const char *name, m64p_type type, const void *value)
+{
+    (void)handle;
+    (void)name;
+    (void)type;
+    (void)value;
+    return M64ERR_SUCCESS;
+}
+
 uint32_t* r4300_cp0_regs(struct cp0* cp0) { (void)cp0; return g_cp0_regs; }
+uint64_t* r4300_cp0_latch(struct cp0* cp0) { (void)cp0; return &g_cp0_latch; }
+uint64_t* r4300_cp2_latch(struct cp2* cp2) { (void)cp2; return &g_cp2_latch; }
 uint32_t* r4300_cp0_last_addr(struct cp0* cp0) { (void)cp0; return &g_last_addr; }
 unsigned int* r4300_cp0_next_interrupt(struct cp0* cp0) { (void)cp0; return &g_next_interrupt; }
 uint32_t* r4300_cp1_fcr0(struct cp1* cp1) { (void)cp1; return &g_fcr0; }
@@ -259,6 +274,64 @@ static void check_m64p_1_0(struct device *dev, const char *run, size_t queue_byt
     report(run, before);
 }
 
+/* Rewrites the M64P state at g_m64p_path with another minor version. Its
+ * header is the magic, the version as major (2 bytes), minor and patch, and
+ * the ROM's MD5. */
+static void set_m64p_minor_version(unsigned char minor)
+{
+    const size_t capacity = 32 * 1024 * 1024;
+    unsigned char *data = malloc(capacity);
+    size_t size = 0;
+    int n = 0;
+    gzFile f = gzopen(g_m64p_path, "rb");
+
+    CHECK(data != NULL && f != NULL);
+    if (data != NULL && f != NULL) {
+        while ((n = gzread(f, data + size, (unsigned int)(capacity - size))) > 0)
+            size += (size_t)n;
+    }
+    if (f != NULL)
+        gzclose(f);
+    CHECK(n == 0 && size > 44 && size < capacity && data[9] == 1);
+    if (data != NULL && n == 0 && size > 44 && size < capacity) {
+        data[10] = minor;
+        f = gzopen(g_m64p_path, "wb");
+        CHECK(f != NULL && gzwrite(f, data, (unsigned int)size) == (int)size);
+        if (f != NULL)
+            gzclose(f);
+    }
+    free(data);
+}
+
+/* Saves an M64P state, relabels it with the given minor version and loads it
+ * back over other latch values. Version 1.9 added the COP0 and COP2 latches,
+ * so a 1.9 state restores them and a 1.8 state leaves them. A 1.8 core wrote
+ * zeros where the latches now go, so the 1.8 state is saved with zero
+ * latches. */
+static void check_m64p_latches(struct device *dev, const char *run, unsigned char minor)
+{
+    const uint64_t cp0_latch = UINT64_C(0x1122334455667788);
+    const uint64_t cp2_latch = UINT64_C(0x99aabbccddeeff00);
+    int before = g_failures;
+
+    memset(g_next_queue, 0, sizeof(g_next_queue));
+    g_next_queue[0] = VI_INT;
+    g_next_queue[1] = 1000;
+    g_next_queue[2] = 0xffffffff;
+    dev->rdram.regs[0][RDRAM_CONFIG_REG] = 0;
+    dev->rdram.dram[0] = 0;
+    g_cp0_latch = minor >= 9 ? cp0_latch : 0;
+    g_cp2_latch = minor >= 9 ? cp2_latch : 0;
+    CHECK(savestates_save_m64p(dev, g_m64p_path) == 1);
+    set_m64p_minor_version(minor);
+    g_cp0_latch = 1;
+    g_cp2_latch = 2;
+    load_m64p(dev, 1, "");
+    CHECK(g_cp0_latch == (minor >= 9 ? cp0_latch : 1));
+    CHECK(g_cp2_latch == (minor >= 9 ? cp2_latch : 2));
+    report(run, before);
+}
+
 int main(void)
 {
     const char *tmp = getenv("TMPDIR");
@@ -305,6 +378,8 @@ int main(void)
                    "Invalid event queue in savestate");
     check_m64p_1_0(dev, "M64P 1.0 state whose queue stops inside an entry is refused", 6, 0,
                    "Could not read Mupen64Plus savestate 1.0 data");
+    check_m64p_latches(dev, "M64P 1.9 state restores the COP0 and COP2 latches", 9);
+    check_m64p_latches(dev, "M64P 1.8 state loads and leaves the latches as they were", 8);
 
     savestates_deinit();
     return g_failures != 0;

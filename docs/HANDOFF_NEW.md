@@ -5300,3 +5300,213 @@ DERIVED: none ran there in these boots, as `master`'s dynarec ends the
 process at such code and its boots ran on). Next for the N64DD track: a
 64DD game that writes to its disk and reopens it, a D64 image and a
 disk-only game, on the RP6 under the shared-device rule.
+
+## Rest of the upstream core sync (pull request B): what changed for the N64DD track (2026-10-24)
+
+**Scope and baseline.** Branch `sync/upstream-core-rest` from `master`
+`354a643f4`. Pull request A (#21) took 28 of upstream mupen64plus-core's bug
+and safety fixes; this change takes the rest of what the user chose from
+upstream's commits since this core's fork point: 125 commits, cherry-picked
+one each in upstream's order with `-x`, each naming how it was adapted to this
+core where it was. Three app commits sit among them, each where it is first
+needed: one builds upstream's new `cp2.c` (`mupen64plus-core.mk`), one gives
+the core the three video-extension functions upstream added, which ae-bridge
+answers for OpenGL ES only (`ae_bridge.cpp`), and one puts the core's
+`subprojects` folder on the makefile's include path before `d747ccee85`
+includes minizip's headers by folder. A last commit updates the ROM database
+asset, its asset version, the citations in
+`docs/RETROACHIEVEMENTS_REMAINING_ISSUES.md` and the host tests that the picks
+and the new asset version broke, and adds this note. Upstream master was
+`3be6336a1d` (2026-10-19) when this was made and still was on 2026-10-24
+(`git ls-remote`). The user chose to keep the app's save file names, this
+core's 64DD code (upstream's 64DD bounds fix came with pull request A) and its
+256 MB ROM limit (issue #3), and to match upstream's netplay exactly, so every
+player in a netplay session needs a build with this change; `netplay.c` now
+differs from upstream master only in starting one thread the SDL 1 way
+(below). No pick touches
+`src/device/dd/`, `callbacks.c` (the DD runtime policy) or `cart_rom.c` (the
+WritableROM persistence), and nothing in `mupen64plus-rsp-parallel` changes.
+
+**What changes for 64DD-relevant code.**
+- Memory map and RDRAM. `eff3231cc2` maps all of `0x00000000-0x03efffff` to
+  RDRAM (`device.c:146`), where only the installed 4 or 8 MB was mapped, and
+  `0484755f44` makes reads past the installed size return 0; writes there are
+  dropped (`rdram.c:245-263`). `b954248ad7` reworks how the RDRAM and RI
+  registers are set up at power-on and how a read is corrupted while RDRAM is
+  not calibrated (`rdram.c`, `ri_controller.h`). It also removes the check
+  that compared the RDRAM size IPL3 found (read from `s4`) with the
+  configured size and logged "IPL3 detected %u MB of RDRAM != %u MB"
+  (`rdram.c:210` at `master`), which `c2a5d01018`, earlier in the series, had
+  made a warning: the core no longer logs it. This core's `rdram.c` now
+  differs from upstream master only in clearing all 16 MB of its RDRAM
+  buffer. DERIVED: any RDRAM probing by the 64DD IPL would go through these
+  paths.
+- Register mirroring. `a70a6cca5a` decodes the registers of the MI, VI, AI,
+  PI, RI, SI, RSP and RDP from their low address bits only, so their mirrors
+  reach them; the PI's register index is now `(address & 0x3f) >> 2`
+  (`pi_controller.h:91`). This core's call to `dd_on_pi_cart_addr_write` for
+  `PI_CART_ADDR_REG` in `write_pi_regs` is unchanged and still reached
+  (`pi_controller.c:182`). The 64DD's own registers are not mirrored.
+- RSP registers. `07d85c1b21`, `c65c330381`, `d6a2668b6e`, `b272296ba6` and
+  `d8cb2faa9e` change what the CPU sees of the RSP: the BREAK bit in its
+  status register, reads and writes of its PC, a write that sets and clears
+  the same status bit, and the DMA registers after a DMA ends (`rsp_core.c`).
+  `docs/DDSTART9_RSP_OWNERSHIP_ANALYSIS.md` predates them. Parallel-RSP's
+  DMA-read correction is not touched.
+- PIF. `808de5fd61` accepts the newer NTSC and PAL PIF ROM dumps besides the
+  old ones, takes a PIF ROM of 1984 to 2048 bytes in steps of 4
+  (`frontend.c:230`), and resets the start address to `0xa4000040` when
+  emulation stops (`close_pif`, `main.c:2090`). The app never sends the core a
+  PIF ROM (`M64CMD_PIF_OPEN` appears only in `CoreTypes.java:111`).
+- CPU. Upstream's 2023 accuracy work on the interpreters: COP2 in the new
+  `cp2.c`, DMFC0 and DMTC0, BREAK and RESERVED, the COP0 latch, the unused
+  COP0 registers and COP1's invalid-operation flag, ported to the cached
+  interpreter, with dynarec fixes such as `29e7414f02` (FPU crashes).
+- Save states. `1cfc935355` makes this core's save states version 1.9, which
+  append the COP0 and COP2 latches after the 1.8 data
+  (`savestates.c:910-914,1985-1987`); a 1.8 state still loads, without them.
+  The 64DD part of a state is unchanged. A build without this change compares
+  only the major version (`savestates.c:250` at `master`); DERIVED from the
+  code, not run: it would load a 1.9 state without its latches.
+- Video extension. `761b34443a` makes the core take a front end's
+  video-extension table only with all 17 functions, and turn the extension
+  off otherwise; ae-bridge now gives all 17 and refuses Vulkan.
+- ROM database. The asset is the core's `data/mupen64plus.ini` after the
+  picks, and the app's Wave Race 64 translation entry, at asset version 15 so
+  that existing installs extract it again
+  (`ExtractAssetsOrCleanupTask.java:70`). Every line the series adds to the
+  core's file is upstream's. The file still differs from upstream master's in
+  the mupen64plus-ae fork's own differences, which predate the series (its own
+  keys and entries, such as 22 `CountPerScanlineOverride` lines and the F-Zero
+  X Expansion Kit cart hack, and three upstream lines it lacks: Army Men -
+  Sarge's Heroes 2's `CountPerOp=1`, Perfect Dark Plus [h1]'s `RefMD5` and WWF
+  No Mercy V1.1's MD5), and in lacking upstream's 64DD entries, which were not
+  taken (below).
+
+**Not taken.** For the N64DD track: upstream's 64DD rework, LuigiBlood's 2023
+interrupt, timing, command, write-protection, motor and reset changes
+(`b9ab45b6d3`, `55bbb8b35f`, `52126e388c`, `688b377a08`, `e6de7ce92a`,
+`3d78a03203`, `dcde00f929`, `4a95cdfb3e`, `bdef7ee26d`, `e177bb4488`,
+`e23eab7980`, `0e4e8a6016`, `9948ded64f`, `0575a68df0`, `1bf2950001`,
+`43c17dfa2c`, and the header fixes `ae752c2b40` and `5be2389388`), of which
+`e6de7ce92a` removes `dd_on_pi_cart_addr_write` and `43c17dfa2c` shortens
+the extra-cycle timing that depends on the motor state ("for stability"),
+saying it fixes the F-Zero X Expansion Kit's "insanely weird & slow loading
+times"; `abbd8768cd`, which picks the development region for development
+disks; `1f932e4910`, which adds `M64CMD_DISK_OPEN` and `M64CMD_DISK_CLOSE`
+(front-end API 2.1.5, so this core stays at 2.1.4, and the app would have to
+send them); and the ROM database's 64DD entries (`fd6e73efca`,
+`614c363d90`). Not taken for other reasons:
+upstream's MD5-based save names (`631e15f8e1`, `d552a40a72`, `2f8c4a3aea`,
+`77847dbce9`); its ROM size limit (`e6c32ffdfe`, `90ed6cd74e`, `463698989e`);
+`eb59aa8bfa`, whose leaks are in code this core lacks, and `650ce048d5`, as
+this core's `init_device` never reads the cartridge's media byte;
+`71b8d64cc4`, superseded by the later IS-Viewer code this core already has;
+`542a3723b2` and `dea7dfd603` ("main: require SDL2", "api: require SDL2"),
+which remove the SDL 1 code that the core is built with here, as the app
+builds it against its own SDL stub (`ndkLibs/SDL2_stub`, version 1.5, also
+used by the glide64mk2 and rice plugins), and `3e388e5f0f`, which rewrites the
+SDL 2 window code that the core does not build here: with them the core no
+longer compiled for Android (undeclared SDL 2 types and functions), so
+`vidext.c`, `eventloop.c`, `netplay.c`, `workqueue.c` and `osd.c` keep their
+SDL 1 branches; build files for MSVC (`a9df0c988a`) and upstream's CI (9
+commits); the dynarec's Apple Silicon support (`3af70b7c9f`), of no use on
+Android; and the TLB fixes `e6f8882701` and `1c3d9326a2`, which pull request
+C takes after bounding the TLB writes.
+`6722999adc` brings along `string_replace_chars` from `2f8c4a3aea`, unchanged.
+
+**Host checks actually run** (Linux; GCC 16.2.1 and clang 23.1.3; NDK
+26.1.10909125; Gradle wrapper 8.4 with JDK 17.0.20.1).
+- Each commit: every C file under `mupen64plus-core/upstream` that the Android
+  build compiles into the core library (78, or 79 once a commit has `cp2.c`,
+  and on armeabi-v7a also `arm_cpu_features.c`), syntax only, with the NDK's
+  clang and the makefile's flags for all four ABIs, at `master`'s core and at
+  each of the 125 picks (33 picks change no compiled source and were
+  skipped): no errors, except at picks 17 to 20 and 27, which carry
+  upstream's own breaks in `mips_instructions.def` that upstream fixed in the
+  commits after them, `7911877113` ("remove unrequired bracket") and
+  `54bd9af818` ("fix build"). With the three SDL commits named above, every
+  commit from `542a3723b2` on failed (undeclared SDL 2 types, and SDL 2
+  functions that would not have linked).
+- Every `tools/test-*.sh` at `master` (an export of `354a643f4`) and with this
+  change, with both compilers: the same results. At both, `test-dd-rsp-mac`
+  fails (exit 8; it checks a capture script's text), `test-p07-verifier` is
+  skipped (77, no captures), and with clang `test-dd-core-imem-dma` and
+  `test-dd-startup` fail (clang 23's `-Wunused-but-set-global` in
+  `dd-core-imem-dma-test.c`). The test updates: `savestate-load-test.c` gets
+  stand-ins for `ConfigSetParameter` and `g_CoreConfig`, which `savestates.c`
+  calls since `673aa48d1d`, and for the two latch accessors, and two checks:
+  a 1.9 state saved by the core restores the COP0 and COP2 latches, and a 1.8
+  state loads and leaves them (built with `master`'s `savestates.c`, the first
+  fails and the second passes; with a copy that loads the latches from 1.8,
+  the second fails). The 1.8 state is the 1.9 one relabelled and saved with
+  zero latches, as `master`'s `savestates.c:1608` zeroes the whole state
+  before filling it. `test-savestate-load.sh` and `test-savestate-lock.sh`
+  put the core's `subprojects` folder on the include path, as `savestates.c`
+  includes `<minizip/unzip.h>` and `<minizip/zip.h>` since `d747ccee85`:
+  without it, both compilers took the system's `/usr/include/minizip`
+  headers, and with those hidden in a private mount namespace the two tests
+  failed to compile; with it, they use the core's copies and pass.
+  `wave-race-host.java` wants asset version 15 and an install at 14
+  refreshed, and `tools/tests/win32/winsock2.h` stands in for the header that
+  `new_dynarec.c` includes under `WIN32` since `5648559750`.
+- `./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` passes its 31
+  unit tests. The core's ndk-build logs show no errors, and the per-commit
+  check finds each of their warnings at `master`'s core too, except that on
+  x86 and x86_64 the constant that `netplay.c:100` puts into a signed char
+  (`netplay.c:92` at `master`) is now upstream's DSCP value 128, where it was
+  184: the TOS byte the core sets on its UDP socket is 0x80, where it was
+  0xB8. ae-bridge's logs are empty. In
+  the APK (`3.0.338 21a78c82`, SHA-256 `564c2751`), the core library exports
+  exactly the 107 names of `api_export.ver` on all four ABIs, and its build
+  IDs are the linked ones.
+
+**Device checks.** OBSERVED on a Retroid Pocket 6 (Android 13) on 2026-10-24
+from 20:29 to 20:39 (the device's clock, as are the times below), holding the
+shared lock, with the debug APK `3.0.338 21a78c82` (SHA-256 `564c2751`), built
+from this branch with the last commit's changes in place (of them, the APK
+holds only the ROM database and its asset version). `21a78c82` was the commit
+below the last one until a rebase reworded four commit messages, leaving every
+tree as it was. It went on with
+`adb install -r` over `3.0.338 83fff39b`, after the app's saves (27 files) and
+settings were copied off, and its first start extracted the new ROM database.
+- Mario Tennis: Resume loaded the newest auto save, which an earlier build
+  wrote as a version 1.8 state (`2026-10-23-08-27-20.v2.sav`), at
+  20:31:18.999. A slot save wrote a version 1.9 state at 20:32:19.096, and
+  loading it logged "State loaded from" at 20:33:35.934. The two files'
+  headers give those versions. Exit wrote the auto save
+  `2026-10-24-20-34-15.v2.sav` with its `.complete` marker and progress file
+  ("Save completed", 20:34:16.086), and Resume loaded it at 20:34:52.777.
+- F-Zero X with its 64DD disk (the USA cartridge, the prototype USA IPL and
+  the English Expansion Kit disk): its game settings were written into its
+  settings file with the values that the app's file picker set on
+  2026-10-24, using the grants to the two files that the picker left, which
+  `dumpsys` still showed. The app copied the IPL and the disk, the core
+  logged "DD Disk: ... - 64931840 - SDK", the title screen showed the 64DD
+  logo at about 14 s, and the attract race ran at 40 s. Without times and
+  process IDs, its 64DD log lines (the `Core` lines that begin "DD REG",
+  "DD DMA", "DD ASIC", "DD ROM", "read C2:" or "LBA ") are identical to those
+  of the boot with pull request A's build on 2026-10-24: 33,076 lines each,
+  with 21,271 register reads, 862 register writes, 10,276 DMA writes from the
+  64DD to RDRAM, 75 64-byte DMA reads from RDRAM into the microsequencer RAM
+  (`0x05000580`, `dd_controller.h:74`), 464 C2 reads, 121 blocks begun, 4 IPL
+  ROM reads and the same three "DD ASIC CMD not yet implemented" warnings. No
+  disk save existed, and the game wrote none. PSS about 98 s after the start:
+  522,765 kB (517,262 kB with pull request A's build).
+- The app's logs of the run have no "Could not", "Invalid", "Failed to open",
+  "Unable to save", `FATAL`, "has died" or `AndroidRuntime` line, and the
+  system held no crash, native crash, ANR or tombstone record of the app
+  from that day.
+- Afterwards the earlier build went back on (its hash checked), the saves
+  matched the copy, F-Zero X's settings file was removed again, and the ROM
+  database and every settings file had their hashes from before the run.
+
+Evidence: `device-2026-10-24-prb/` in the evidence folder outside the repo.
+
+**Not covered on a device.** The pure and cached interpreters, where the CPU
+accuracy work above lands (each boot logged
+"Starting R4300 emulator: Dynamic Recompiler"); netplay, which now needs
+every player on this build; the Transfer Pak, Controller Paks and Project64
+states; a 64DD game writing to its disk; a 1.9 state loaded by an older
+build; games other than these two; and the ARM32, x86 and x64 dynarec
+backends.

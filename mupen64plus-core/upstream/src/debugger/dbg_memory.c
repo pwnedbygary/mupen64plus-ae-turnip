@@ -36,7 +36,7 @@
 #define ATTR_FMT(fmtpos, attrpos)
 #endif
 
-#if !defined(NO_ASM) && (defined(__i386__) || (defined(__x86_64__) && defined(__GNUC__)))
+#if !defined(NO_HOST_DISASSEMBLER) && !defined(NO_ASM) && (defined(__i386__) || (defined(__x86_64__) && defined(__GNUC__)))
 
 /* we must define PACKAGE so that bfd.h (which is included from dis-asm.h) doesn't throw an error */
 #define PACKAGE "mupen64plus-core"
@@ -97,9 +97,23 @@ static int read_memory_func(bfd_vma memaddr, bfd_byte *myaddr, unsigned int leng
     return (0);
 }
 
+#ifdef USE_LIBBFD_GE_2_39
+static int fprintf_styled_nop(void *out __attribute__((unused)),
+                              enum disassembler_style s __attribute__((unused)),
+                              const char *fmt __attribute__((unused)),
+                              ...)
+{
+  return 0;
+}
+#endif
+
 void init_host_disassembler(void)
 {
+#ifdef USE_LIBBFD_GE_2_39
+    INIT_DISASSEMBLE_INFO(dis_info, stderr, process_opcode_out, fprintf_styled_nop);
+#else
     INIT_DISASSEMBLE_INFO(dis_info, stderr, process_opcode_out);
+#endif
     dis_info.fprintf_func = (fprintf_ftype) process_opcode_out;
     dis_info.stream = stderr;
     dis_info.bytes_per_line=1;
@@ -210,7 +224,7 @@ int get_has_recompiled(struct r4300_core* r4300, uint32_t addr)
     unsigned char *assemb, *end_addr;
 
     if (r4300->emumode != EMUMODE_DYNAREC || r4300->cached_interp.blocks[addr>>12] == NULL)
-        return FALSE;
+        return 0;
 
     assemb = (r4300->cached_interp.blocks[addr>>12]->code) +
         (r4300->cached_interp.blocks[addr>>12]->block[(addr&0xFFF)/4].local_addr);
@@ -222,9 +236,9 @@ int get_has_recompiled(struct r4300_core* r4300, uint32_t addr)
     else
         end_addr += r4300->cached_interp.blocks[addr>>12]->block[(addr&0xFFF)/4+1].local_addr;
     if(assemb==end_addr)
-        return FALSE;
+        return 0;
 
-    return TRUE;
+    return 1;
 }
 
 #else

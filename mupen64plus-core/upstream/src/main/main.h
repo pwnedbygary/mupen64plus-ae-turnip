@@ -79,6 +79,7 @@ void main_advance_one(void);
 void main_speedup(int percent);
 void main_speeddown(int percent);
 void main_set_fastforward(int enable);
+void main_speedlimiter_toggle(void);
 
 void main_take_next_screenshot(void);
 
@@ -103,6 +104,7 @@ int        main_volume_get_muted(void);
 m64p_error main_reset(int do_hard_reset);
 
 m64p_error open_pif(const unsigned char* pifimage, unsigned int size);
+m64p_error close_pif(void);
 
 #endif /* __MAIN_H__ */
 

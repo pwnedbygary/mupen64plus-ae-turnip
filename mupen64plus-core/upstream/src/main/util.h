@@ -208,11 +208,23 @@ char* combinepath(const char* first, const char *second);
     String utilities
  **********************/
 
+/* strpbrk_reverse
+ * Looks for an instance of ANY of the characters in 'needles' in 'haystack',
+ * starting from the end of 'haystack'. Returns a pointer to the last position
+ * of some character on 'needles' on 'haystack'. If not found, returns NULL.
+ */
+char* strpbrk_reverse(const char* needles, char* haystack, size_t haystack_len);
+
 /** trim
  *    Removes leading and trailing whitespace from str. Function modifies str
  *    and also returns modified string.
  */
 char *trim(char *str);
+
+ /* Replaces all occurences of any char in chars with r in string.
+  * returns amount of replaced chars
+  */
+int string_replace_chars(char *str, const char *chars, const char r);
 
 /* Converts an string to an integer.
  * Returns 1 on success, 0 on failure. 'result' is undefined on failure.

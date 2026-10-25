@@ -16,6 +16,7 @@ LOCAL_DISABLE_FATAL_LINKER_WARNINGS := true
 LOCAL_C_INCLUDES :=                       \
     $(LOCAL_PATH)/$(SUBLIBS)/md5          \
     $(LOCAL_PATH)/$(SUBLIBS)/minizip      \
+    $(LOCAL_PATH)/$(SUBLIBS)              \
     $(LOCAL_PATH)/$(SUBLIBS)/xxhash       \
     $(LOCAL_PATH)/$(SRCDIR)               \
     $(LOCAL_PATH)/rcheevos/include        \
@@ -112,6 +113,7 @@ LOCAL_SRC_FILES :=                                              \
     $(SRCDIR)/device/r4300/cached_interp.c                      \
     $(SRCDIR)/device/r4300/cp0.c                                \
     $(SRCDIR)/device/r4300/cp1.c                                \
+    $(SRCDIR)/device/r4300/cp2.c                                \
     $(SRCDIR)/device/r4300/instr_counters.c                     \
     $(SRCDIR)/device/r4300/interrupt.c                          \
     $(SRCDIR)/device/rcp/mi/mi_controller.c                     \

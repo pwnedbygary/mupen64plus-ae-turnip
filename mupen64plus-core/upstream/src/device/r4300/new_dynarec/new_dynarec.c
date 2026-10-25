@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h> // needed for u_int, u_char, etc
 #include <assert.h>
 
 #define max(a,b) \
@@ -33,13 +34,13 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <winsock2.h>
 #include <windows.h>
 #else
 #include <unistd.h>
 #endif
 
 #if defined(__APPLE__)
-#include <sys/types.h> // needed for u_int, u_char, etc
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 
@@ -308,7 +309,9 @@ unsigned int stop_after_jal;
 static u_int start;
 static u_int *source;
 static u_int pagelimit;
+#ifndef NDEBUG
 static char insn[MAXBLOCK][10];
+#endif
 static u_char itype[MAXBLOCK];
 static u_char opcode[MAXBLOCK];
 static u_char opcode2[MAXBLOCK];
@@ -2404,7 +2407,7 @@ static void tlb_speed_hacks()
 /**** Linker ****/
 u_int verify_dirty(struct ll_entry * head)
 {
-  void *source;
+  void *source = NULL;
   if((int)head->start>=0xa0000000&&(int)head->start<0xa07fffff) {
     source=(void *)((uintptr_t)g_dev.rdram.dram+head->start-0xa0000000);
   }else if((int)head->start>=0xa4000000&&(int)head->start<0xa4001000) {
@@ -3037,7 +3040,9 @@ void clean_blocks(u_int page)
             }
           }
           else if((signed int)head->vaddr>=(signed int)0xC0000000) {
+#ifndef NDEBUG
             uintptr_t map_value=g_dev.r4300.new_dynarec_hot_state.memory_map[head->vaddr>>12];
+#endif
             start=head->start>>12;
             end=(head->start+head->length-1)>>12;
             for(i=start;i<=end;i++) {
@@ -4635,7 +4640,7 @@ static void do_ccstub(int n)
           emit_loadreg(rs2[i],s2l);
       #endif
       int hr=0;
-      int addr,alt,ntaddr;
+      int addr=0,alt=0,ntaddr=0;
       while(hr<HOST_REGS)
       {
         if(hr!=EXCLUDE_REG && hr!=HOST_CCREG &&
@@ -5480,7 +5485,7 @@ static void cop1_assemble(int i,struct regstat *i_regs)
     signed char fs=get_reg(i_regs->regmap,FSREG);
     if(tl>=0) {
       u_int copr=(source[i]>>11)&0x1f;
-      if(copr==0) emit_readword((intptr_t)&g_dev.r4300.new_dynarec_hot_state.fcr0,tl);
+      if(copr==0) emit_readword((intptr_t)&g_dev.r4300.new_dynarec_hot_state.cp1_fcr0,tl);
       if(copr==31)
       {
           if(fs>=0) emit_mov(fs,tl);
@@ -6508,7 +6513,7 @@ static void store_assemble(int i,struct regstat *i_regs)
 
 static void storelr_assemble(int i,struct regstat *i_regs)
 {
-  signed char s,th,tl,real_addr,addr,temp,temp2,map=-1;
+  signed char s,th,tl,real_addr,addr,temp,temp2=0,map=-1;
   int offset,type=0,memtarget=0,c=0;
   intptr_t jaddr=0;
   u_int hr,reglist=0;
@@ -6572,8 +6577,8 @@ static void storelr_assemble(int i,struct regstat *i_regs)
 
   if(!c||memtarget)
   {
-    intptr_t case1,case2,case3;
-    intptr_t done0,done1,done2;
+    intptr_t case1=0,case2=0,case3=0;
+    intptr_t done0=0,done1=0,done2=0;
 
 #if NEW_DYNAREC >= NEW_DYNAREC_ARM
     assert(map>=0);
@@ -7014,7 +7019,9 @@ static void float_assemble(int i,struct regstat *i_regs)
 
 static void syscall_assemble(int i,struct regstat *i_regs)
 {
+#ifndef NDEBUG
   signed char ccreg=get_reg(i_regs->regmap,CCREG);
+#endif
   assert(ccreg==HOST_CCREG);
   assert(!is_delayslot);
   emit_movimm(start+i*4,0); // Get PC
@@ -7238,7 +7245,7 @@ static void rjump_assemble(int i,struct regstat *i_regs)
   signed char *i_regmap=i_regs->regmap;
   #endif
   int temp;
-  int rs,cc;
+  int rs;
   rs=get_reg(branch_regs[i].regmap,rs1[i]);
   assert(rs>=0);
   if((rs1[i]==rt1[i+1]||rs1[i]==rt2[i+1])&&(rs1[i]!=0)) {
@@ -7292,7 +7299,9 @@ static void rjump_assemble(int i,struct regstat *i_regs)
     emit_prefetch(hash_table[((return_address>>16)^return_address)&0xFFFF]);
     #endif
   }
-  cc=get_reg(branch_regs[i].regmap,CCREG);
+#ifndef NDEBUG
+  int cc=get_reg(branch_regs[i].regmap,CCREG);
+#endif
   assert(cc==HOST_CCREG);
   #ifdef USE_MINI_HT
   int rh=get_reg(branch_regs[i].regmap,RHASH);
@@ -8284,7 +8293,7 @@ static void pagespan_assemble(int i,struct regstat *i_regs)
     s1h=s2h=-1;
   }
   int hr=0;
-  int addr,alt,ntaddr;
+  int addr,alt=0,ntaddr=0;
   if(i_regs->regmap[HOST_BTREG]<0) {addr=HOST_BTREG;}
   else {
     while(hr<HOST_REGS)
@@ -8768,8 +8777,7 @@ void new_dynarec_init(void)
 #else
 #if defined(WIN32)
   DWORD dummy;
-  BOOL res=VirtualProtect((void*)g_dev.r4300.extra_memory, 33554432, PAGE_EXECUTE_READWRITE, &dummy);
-  assert(res!=0);
+  VirtualProtect((void*)g_dev.r4300.extra_memory, 33554432, PAGE_EXECUTE_READWRITE, &dummy);
   base_addr = base_addr_rx = (void*)g_dev.r4300.extra_memory;
 #else
   mprotect ((u_char *)g_dev.r4300.extra_memory, 1<<TARGET_SIZE_2,
@@ -11600,7 +11608,9 @@ int new_recompile_block(int addr)
   copy_size+=((slen*4)+4);
   //DebugMessage(M64MSG_VERBOSE, "Currently used memory for copy: %d",copy_size);
 
+#if !defined(NDEBUG) || NEW_DYNAREC >= NEW_DYNAREC_ARM
   uintptr_t beginning=(uintptr_t)out;
+#endif
   if((u_int)addr&1) {
     ds=1;
     pagespan_ds();

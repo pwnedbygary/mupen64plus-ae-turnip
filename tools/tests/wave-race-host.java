@@ -49,16 +49,16 @@ class WaveRaceHost {
         versionsField.setAccessible(true);
         @SuppressWarnings("unchecked")
         Map<String,Integer> versions = (Map<String,Integer>)versionsField.get(null);
-        check(Integer.valueOf(14).equals(versions.get(KEY)), "DB asset version must be 14");
+        check(Integer.valueOf(15).equals(versions.get(KEY)), "DB asset version must be 15");
         for (Map.Entry<String,Integer> entry : versions.entrySet()) {
             String name = entry.getKey().substring("mupen64plus_data/".length());
             Files.copy(Paths.get(args[1], entry.getKey()), installed.resolve(name));
             prefs.edit().putInt(entry.getKey(), entry.getValue()).apply();
         }
         Path installedDb = installed.resolve("mupen64plus.ini");
-        Files.writeString(installedDb, "; stale installed version 13\n");
-        prefs.edit().putInt(KEY,13).putInt("appVersion",332).apply();
-        check(!ExtractAssetsOrCleanupTask.areAllAssetsValid(prefs,"mupen64plus_data",installed.toString()), "same-app-version installed 13 must invalidate");
+        Files.writeString(installedDb, "; stale installed version 14\n");
+        prefs.edit().putInt(KEY,14).putInt("appVersion",332).apply();
+        check(!ExtractAssetsOrCleanupTask.areAllAssetsValid(prefs,"mupen64plus_data",installed.toString()), "same-app-version installed 14 must invalidate");
         AssetManager manager = new AssetManager(args[1]);
         ExtractAssetsOrCleanupTask task = new ExtractAssetsOrCleanupTask(context, manager, null, null, "mupen64plus_data", installed.toString(),
             new ExtractAssetsOrCleanupTask.ExtractAssetsListener() {
@@ -72,14 +72,14 @@ class WaveRaceHost {
         extract.invoke(task, failures,"mupen64plus_data",installed.toString());
         check(failures.isEmpty() && manager.opens == 1, "only stale database extracted");
         check(Files.mismatch(asset,installedDb) == -1, "installed bytes match bundled database");
-        check(prefs.getInt(KEY,0) == 14 && prefs.getInt("appVersion",0) == 332, "DB refresh independently of app version");
-        check(ExtractAssetsOrCleanupTask.areAllAssetsValid(prefs,"mupen64plus_data",installed.toString()), "version 14 valid");
+        check(prefs.getInt(KEY,0) == 15 && prefs.getInt("appVersion",0) == 332, "DB refresh independently of app version");
+        check(ExtractAssetsOrCleanupTask.areAllAssetsValid(prefs,"mupen64plus_data",installed.toString()), "version 15 valid");
         extract.invoke(task, failures,"mupen64plus_data",installed.toString());
-        check(manager.opens == 1, "version 14 must not re-extract");
+        check(manager.opens == 1, "version 15 must not re-extract");
         Files.delete(installedDb);
-        check(!ExtractAssetsOrCleanupTask.areAllAssetsValid(prefs,"mupen64plus_data",installed.toString()), "missing file invalid even at 14");
+        check(!ExtractAssetsOrCleanupTask.areAllAssetsValid(prefs,"mupen64plus_data",installed.toString()), "missing file invalid even at 15");
         extract.invoke(task, failures,"mupen64plus_data",installed.toString());
         check(failures.isEmpty() && manager.opens == 2 && Files.mismatch(asset,installedDb) == -1, "missing file repaired");
-        System.out.println("PASS production asset gate/extraction: installed 13 -> 14, appVersion unchanged, no refresh at 14, missing file repair");
+        System.out.println("PASS production asset gate/extraction: installed 14 -> 15, appVersion unchanged, no refresh at 15, missing file repair");
     }
 }
