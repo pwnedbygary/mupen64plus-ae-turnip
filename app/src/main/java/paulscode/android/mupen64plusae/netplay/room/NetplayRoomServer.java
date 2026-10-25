@@ -71,6 +71,9 @@ public class NetplayRoomServer {
     // True if we are running
     private boolean mRunning = true;
 
+    // True from asking NSD to register the room until withdrawing it; main thread only
+    private boolean mRegistered = false;
+
     // Device name
     private final String mDeviceName;
 
@@ -189,12 +192,21 @@ public class NetplayRoomServer {
 
         mNsdManager = (NsdManager) mContext.getSystemService(Context.NSD_SERVICE);
         mNsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, mRegistrationListener);
+        mRegistered = true;
         mHandler.postDelayed(this::unregisterService, 2000);
     }
 
     private void unregisterService()
     {
-        mNsdManager.unregisterService(mRegistrationListener);
+        if (mRegistered) {
+            mRegistered = false;
+            try {
+                mNsdManager.unregisterService(mRegistrationListener);
+            } catch (IllegalArgumentException e) {
+                // NsdManager drops the listener when a registration fails
+                Log.w(TAG, "NSD registration had failed, nothing to unregister");
+            }
+        }
 
         if (mRunning) {
             mHandler.postDelayed(this::registerService, 2000);
@@ -280,6 +292,9 @@ public class NetplayRoomServer {
         } catch (IOException e) {
             e.printStackTrace();
         }
+
+        mHandler.removeCallbacksAndMessages(null);
+        mHandler.post(this::unregisterService);
 
         MulticastLocks.release(mMulticastLock);
     }
