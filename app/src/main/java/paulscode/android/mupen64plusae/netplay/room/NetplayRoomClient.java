@@ -136,10 +136,8 @@ public class NetplayRoomClient {
         mDeviceName = deviceName;
         mOnServerData = onServerData;
 
-        WifiManager wifi = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        mMulticastLock = wifi.createMulticastLock("multicastLock");
-        mMulticastLock.setReferenceCounted(true);
-        mMulticastLock.acquire();
+        mMulticastLock = MulticastLocks.acquire(
+                (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE));
 
         initializeDiscoveryListener();
 
@@ -206,7 +204,7 @@ public class NetplayRoomClient {
 
     public void stopListening()
     {
-        mMulticastLock.release();
+        MulticastLocks.release(mMulticastLock);
     }
 
     public void leaveServer() {
@@ -214,6 +212,6 @@ public class NetplayRoomClient {
             serverHandler.leaveRoomAsync();
         }
 
-        mMulticastLock.release();
+        MulticastLocks.release(mMulticastLock);
     }
 }
