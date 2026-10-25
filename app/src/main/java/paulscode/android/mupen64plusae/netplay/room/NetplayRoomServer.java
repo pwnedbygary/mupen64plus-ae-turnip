@@ -120,10 +120,8 @@ public class NetplayRoomServer {
 
         NetplayRoomClientHandler.resetPlayers();
 
-        WifiManager wifi = (WifiManager) mContext.getApplicationContext().getSystemService(WIFI_SERVICE);
-        mMulticastLock = wifi.createMulticastLock("multicastLock");
-        mMulticastLock.setReferenceCounted(true);
-        mMulticastLock.acquire();
+        mMulticastLock = MulticastLocks.acquire(
+                (WifiManager) mContext.getApplicationContext().getSystemService(WIFI_SERVICE));
 
         AppData appData = new AppData(context);
         GlobalPrefs globalPrefs = new GlobalPrefs(context, appData);
@@ -283,7 +281,7 @@ public class NetplayRoomServer {
             e.printStackTrace();
         }
 
-        mMulticastLock.release();
+        MulticastLocks.release(mMulticastLock);
     }
 
     public void updateServerPort(int serverPort)
