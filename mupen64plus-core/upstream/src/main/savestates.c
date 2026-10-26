@@ -170,13 +170,16 @@ static void savestates_clear_job(void)
     savestates_set_job(savestates_job_nothing, savestates_type_unknown, NULL);
 }
 
+/* A state's fields sit at any byte offset, so they are copied out with memcpy
+ * rather than read through a pointer to their type. */
 #define GETARRAY(buff, type, count) \
     (to_little_endian_buffer(buff, sizeof(type),count), \
      buff += count*sizeof(type), \
-     (type *)(buff-count*sizeof(type)))
+     (void *)(buff-count*sizeof(type)))
 #define COPYARRAY(dst, buff, type, count) \
     memcpy(dst, GETARRAY(buff, type, count), sizeof(type)*count)
-#define GETDATA(buff, type) *GETARRAY(buff, type, 1)
+#define GETDATA(buff, type) \
+    (*(type *)memcpy(&(type){0}, GETARRAY(buff, type, 1), sizeof(type)))
 #define PUTARRAY(src, buff, type, count) \
     memcpy(buff, src, sizeof(type)*count); \
     to_little_endian_buffer(buff, sizeof(type), count); \

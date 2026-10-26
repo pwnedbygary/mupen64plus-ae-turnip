@@ -5675,3 +5675,66 @@ fixture checks need the private captures under `.fzxwork/p07-final/` (or
 `P07_CAPTURE_ROOT`), and this PC has none.
 
 **Next.** A run on a Mac would confirm 14/14 there.
+
+## Save-state loads copy each field out with `memcpy` (2026-10-25)
+
+**Scope and baseline.** Branch `fix/savestate-unaligned-reads` from master at
+`0abbd33aa`. The read macros in `mupen64plus-core/upstream/src/main/savestates.c`
+and `tools/test-savestate-load.sh` change, with this note. Nothing in
+`src/device/dd/`, `callbacks.c` or the RSP plugins changes.
+
+**Cause.** The loaders read a state's fields with `GETDATA` and `COPYARRAY`,
+which cast the state buffer to a pointer of the field's type (`GETARRAY`) at
+whatever offset the field has. An M64P state packs its fields back to back:
+in its main part, 8-byte fields follow an odd number of 4-byte ones, and the
+fields that later versions add put bytes and arrays of odd sizes between
+wider ones. So many of those pointers are misaligned, which is undefined
+behaviour in C. With `-fsanitize=alignment` reporting and going on, the load
+test on master's core reports misaligned reads at 51 places with GCC 16.2.1
+and 54 with clang 23.1.3 (clang also checks the pointer that `COPYARRAY` hands
+to `memcpy`), at `savestates.c:468-914`, all in the M64P loader. Line numbers
+in this section are master's; this change adds three lines above them. No
+fault on a device is known.
+
+**Change.** `GETARRAY` returns a `void *`, and `GETDATA` copies the field into
+a compound literal of its type with `memcpy` and reads that; `COPYARRAY` now
+hands `memcpy` that `void *`. Upstream's `ALIGNED_GETDATA`, which already
+copied through a union for the 1.2 format's misaligned extra fields, is left
+as it is. The load test now builds with `-fsanitize=alignment
+-fno-sanitize-recover=alignment` where the compiler takes both, as
+`test-cart-save-bounds.sh` does with AddressSanitizer, so a misaligned read
+fails it; without them it runs as before and says so.
+
+**Host checks actually run.** With the new test and master's core, both
+compilers stop at the first misaligned read: GCC at `savestates.c:470` (an
+`int64_t` through `GETDATA`), clang at `:468` (a `COPYARRAY` of `int64_t`).
+With this change, its 16 checks pass with both, alignment check on, and so
+does every other `tools/test-*.sh` except `test-p07-verifier`, which skips
+(77) as designed. With a stand-in compiler that refuses
+`-fno-sanitize-recover`, the test falls back to its plain build and passes.
+The test runs the Project64 loader (a state the core saved)
+and M64P states of versions 1.0, 1.8 and 1.9 (the version the core writes), a
+64DD game's included. It does not run the 1.2 format's extra fields, 9 read
+through `GETDATA`, which this change rewrites, and 23 through
+`ALIGNED_GETDATA`, nor the two `GETDATA` reads under `NEW_DYNAREC` (lines 525
+and 879), which every Android ABI builds and the host test does not; those
+use the same expansion, for the same types, as reads that it runs.
+`savestates.c` also compiles, with the command line ndk-build
+uses for the core (NDK 26.1.10909125's clang) plus `-Wall -Wextra`, for
+arm64-v8a, armeabi-v7a, x86 and x86_64, with the same 56 warnings as master's
+for each. The code generated for x86 is the same as master's. On armeabi-v7a,
+one `ldm` that loaded an 8-byte Project64 field becomes two `ldr`; `ldm`
+needs 4-byte alignment, which those fields have, so it did not fault before.
+Not run: a device. The change should not alter behaviour; the arm64-v8a,
+armeabi-v7a and x86_64 code differs from master's and was compared only by
+its load instructions.
+
+**Left as they are.** The Project64 loader's stores into its `char
+buffer[1024]`, and `interrupt.c`'s `load_eventqueue_infos`, which reads its
+`char` queue as `unsigned int`, use offsets that are multiples of 4 into local
+arrays that the review found 4-aligned in today's builds; the load test
+replaces `load_eventqueue_infos` with a stand-in, so the sanitizer does not
+check it. On a big-endian build, `swap_buffer` also accesses the state
+through typed pointers, and `ALIGNED_GETDATA` does not swap its fields' bytes.
+
+**Next.** Nothing for the N64DD track.
