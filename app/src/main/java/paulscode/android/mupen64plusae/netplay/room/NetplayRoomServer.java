@@ -66,7 +66,7 @@ public class NetplayRoomServer {
     private final WifiManager.MulticastLock mMulticastLock;
 
     // Service name used for NSD
-    private String mNsdServiceName;
+    private volatile String mNsdServiceName;
 
     // True if we are running
     private volatile boolean mRunning = true;

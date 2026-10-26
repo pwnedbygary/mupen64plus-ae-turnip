@@ -67,7 +67,7 @@ class NetplayRoomClientHandler
     private final String mRspPlugin;
     private final int mRegId;
     private static int mPlayerNumber = 0;
-    private int mServerPort;
+    private volatile int mServerPort;
 
     private final OnClientRegistered mOnClientRegistered;
 
