@@ -66,10 +66,10 @@ public class NetplayRoomServer {
     private final WifiManager.MulticastLock mMulticastLock;
 
     // Service name used for NSD
-    private String mNsdServiceName;
+    private volatile String mNsdServiceName;
 
     // True if we are running
-    private boolean mRunning = true;
+    private volatile boolean mRunning = true;
 
     // True from asking NSD to register the room until withdrawing it; main thread only
     private boolean mRegistered = false;
@@ -103,6 +103,7 @@ public class NetplayRoomServer {
     // Handler for registering for the NSD service repeatedly
     private final Handler mHandler = new Handler(Looper.getMainLooper());
 
+    // Guards mClients and mRegistrationIds, which the TCP server thread adds to
     private final Object mClientSyncObject = new Object();
 
     /**
@@ -221,12 +222,15 @@ public class NetplayRoomServer {
         while (mRunning) {
             try {
                 // Get a valid registration ID that doesn't exist yet
-                int regId = rand.nextInt();
-                while (mRegistrationIds.contains(regId) && mRunning) {
+                int regId;
+                synchronized (mClientSyncObject) {
                     regId = rand.nextInt();
-                }
+                    while (mRegistrationIds.contains(regId) && mRunning) {
+                        regId = rand.nextInt();
+                    }
 
-                mRegistrationIds.add(regId);
+                    mRegistrationIds.add(regId);
+                }
 
                 Socket socketAccepted = mServerSocket.accept();
 
@@ -268,15 +272,19 @@ public class NetplayRoomServer {
         Random rand = new Random();
 
         int regId = rand.nextInt();
-        mRegistrationIds.add(regId);
+        synchronized (mClientSyncObject) {
+            mRegistrationIds.add(regId);
+        }
 
         return regId;
     }
 
     public void start()
     {
-        for (NetplayRoomClientHandler client : mClients) {
-            client.sendStartAsync();
+        synchronized (mClientSyncObject) {
+            for (NetplayRoomClientHandler client : mClients) {
+                client.sendStartAsync();
+            }
         }
 
         stopServer();

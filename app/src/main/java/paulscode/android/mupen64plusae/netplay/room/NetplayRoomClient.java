@@ -59,7 +59,7 @@ public class NetplayRoomClient {
     // Device name
     private final String mDeviceName;
 
-    // List of found servers
+    // List of found servers; connection threads add to it, so lock it to use it
     private final ArrayList<NetplayRoomServerHandler> mClients = new ArrayList<>();
 
     private final OnServerFound mOnServerData;
@@ -105,7 +105,10 @@ public class NetplayRoomClient {
         // but it works
         Utility.executeShellCommand( "ping", "-c", "-1", address.getHostAddress() );
 
-        final int serverId = mClients.size();
+        final int serverId;
+        synchronized (mClients) {
+            serverId = mClients.size();
+        }
         NetplayRoomServerHandler roomClient = new NetplayRoomServerHandler(mDeviceName, address, port,
                 new NetplayRoomServerHandler.OnServerRoomData() {
                     @Override
@@ -126,9 +129,11 @@ public class NetplayRoomClient {
                     }
                 });
 
-        if (!mClients.contains(roomClient)) {
-            roomClient.connectAsync();
-            mClients.add(roomClient);
+        synchronized (mClients) {
+            if (!mClients.contains(roomClient)) {
+                roomClient.connectAsync();
+                mClients.add(roomClient);
+            }
         }
     }
 
@@ -209,7 +214,9 @@ public class NetplayRoomClient {
 
     public void registerServer(int serverId)
     {
-        mClients.get(serverId).registerToRoomAsync();
+        synchronized (mClients) {
+            mClients.get(serverId).registerToRoomAsync();
+        }
     }
 
     public void stopListening()
@@ -219,8 +226,10 @@ public class NetplayRoomClient {
     }
 
     public void leaveServer() {
-        for (NetplayRoomServerHandler serverHandler : mClients) {
-            serverHandler.leaveRoomAsync();
+        synchronized (mClients) {
+            for (NetplayRoomServerHandler serverHandler : mClients) {
+                serverHandler.leaveRoomAsync();
+            }
         }
 
         stopDiscovery();
