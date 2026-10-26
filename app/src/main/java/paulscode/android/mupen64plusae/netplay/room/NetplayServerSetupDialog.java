@@ -127,9 +127,13 @@ public class NetplayServerSetupDialog extends DialogFragment
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // Keep this instance, and with it the room server, when the activity is recreated for a
+        // configuration change: onCreateDialog() relies on it to build the server only once
+        setRetainInstance(true);
         setStyle(DialogFragment.STYLE_NORMAL, R.style.Theme_Mupen64plusaeTheme);
     }
 

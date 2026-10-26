@@ -79,6 +79,10 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
 
     private LinearLayout mLinearLayoutCodeEntry;
 
+    private Button mEnterIpButton;
+
+    private Button mEnterCodeButton;
+
     private boolean mWaiting = false;
     private boolean mManualEntry = false;
     private boolean mCodeEntry = false;
@@ -104,9 +108,13 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // Keep this instance, and with it the room client, when the activity is recreated for a
+        // configuration change: onCreateDialog() relies on it to build the client only once
+        setRetainInstance(true);
         setStyle(DialogFragment.STYLE_NORMAL, R.style.Theme_Mupen64plusaeTheme);
     }
 
@@ -135,12 +143,16 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
         mLinearLayoutWaiting = dialogView.findViewById(R.id.linearLayoutWaiting);
         mLinearLayoutManualEntry = dialogView.findViewById(R.id.linearLayoutManualEntry);
         mLinearLayoutCodeEntry = dialogView.findViewById(R.id.linearLayoutCodeEntry);
+        mEnterIpButton = dialogView.findViewById(R.id.buttonEnterIp);
+        mEnterCodeButton = dialogView.findViewById(R.id.buttonEnterCode);
 
         if (mWaiting) {
             mLinearLayoutWaiting.setVisibility(View.VISIBLE);
             mServerListView.setVisibility(View.GONE);
             mLinearLayoutManualEntry.setVisibility(View.GONE);
             mLinearLayoutCodeEntry.setVisibility(View.GONE);
+            mEnterIpButton.setVisibility(View.GONE);
+            mEnterCodeButton.setVisibility(View.GONE);
         } else {
             mLinearLayoutWaiting.setVisibility(View.GONE);
 
@@ -148,10 +160,14 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
                 mLinearLayoutManualEntry.setVisibility(View.VISIBLE);
                 mServerListView.setVisibility(View.GONE);
                 mLinearLayoutCodeEntry.setVisibility(View.GONE);
+                mEnterCodeButton.setVisibility(View.GONE);
+                mEnterIpButton.setText(R.string.netplay_connect);
             } else if (mCodeEntry){
                 mLinearLayoutCodeEntry.setVisibility(View.VISIBLE);
                 mServerListView.setVisibility(View.GONE);
                 mLinearLayoutManualEntry.setVisibility(View.GONE);
+                mEnterIpButton.setVisibility(View.GONE);
+                mEnterCodeButton.setText(R.string.netplay_connect);
             } else {
                 mServerListView.setVisibility(View.VISIBLE);
                 mLinearLayoutManualEntry.setVisibility(View.GONE);
@@ -164,8 +180,6 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
         mServerListView.setOnItemClickListener(this);
 
         Button cancelButton = dialogView.findViewById(R.id.buttonCancel);
-        Button enterIp = dialogView.findViewById(R.id.buttonEnterIp);
-        Button enterCode = dialogView.findViewById(R.id.buttonEnterCode);
 
         EditText manualIp = dialogView.findViewById(R.id.ipAddressEditText);
         EditText manualPort = dialogView.findViewById(R.id.portEditText);
@@ -208,8 +222,8 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
                             ((OnServerDialogActionListener) mActivity).connect(regId, player, videoPlugin, rspPlugin, address, port);
                             mServerListView.setVisibility(View.GONE);
                             mLinearLayoutWaiting.setVisibility(View.VISIBLE);
-                            enterIp.setVisibility(View.GONE);
-                            enterCode.setVisibility(View.GONE);
+                            mEnterIpButton.setVisibility(View.GONE);
+                            mEnterCodeButton.setVisibility(View.GONE);
                             mWaiting = true;
                         });
                     }
@@ -245,21 +259,21 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
             }
         });
 
-        enterIp.setOnClickListener(v -> {
+        mEnterIpButton.setOnClickListener(v -> {
 
             // Turn this button into a connect button when it's pressed
             if (!mManualEntry) {
                 mManualEntry = true;
                 mServerListView.setVisibility(View.GONE);
-                enterCode.setVisibility(View.GONE);
+                mEnterCodeButton.setVisibility(View.GONE);
                 mLinearLayoutManualEntry.setVisibility(View.VISIBLE);
-                enterIp.setText(R.string.netplay_connect);
+                mEnterIpButton.setText(R.string.netplay_connect);
             } else {
                 mManualEntry = false;
                 mServerListView.setVisibility(View.VISIBLE);
-                enterCode.setVisibility(View.VISIBLE);
+                mEnterCodeButton.setVisibility(View.VISIBLE);
                 mLinearLayoutManualEntry.setVisibility(View.GONE);
-                enterIp.setText(R.string.netplay_enterIp);
+                mEnterIpButton.setText(R.string.netplay_enterIp);
 
                 if (mRoomClient != null) {
 
@@ -278,21 +292,21 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
             }
         });
 
-        enterCode.setOnClickListener(v -> {
+        mEnterCodeButton.setOnClickListener(v -> {
 
             // Turn this button into a connect button when it's pressed
             if (!mCodeEntry) {
                 mCodeEntry = true;
                 mServerListView.setVisibility(View.GONE);
-                enterIp.setVisibility(View.GONE);
+                mEnterIpButton.setVisibility(View.GONE);
                 mLinearLayoutCodeEntry.setVisibility(View.VISIBLE);
-                enterCode.setText(R.string.netplay_connect);
+                mEnterCodeButton.setText(R.string.netplay_connect);
             } else {
                 mCodeEntry = false;
                 mServerListView.setVisibility(View.VISIBLE);
-                enterIp.setVisibility(View.VISIBLE);
+                mEnterIpButton.setVisibility(View.VISIBLE);
                 mLinearLayoutCodeEntry.setVisibility(View.GONE);
-                enterCode.setText(R.string.netplay_enterCode);
+                mEnterCodeButton.setText(R.string.netplay_enterCode);
 
                 if (mRoomClient != null) {
 
