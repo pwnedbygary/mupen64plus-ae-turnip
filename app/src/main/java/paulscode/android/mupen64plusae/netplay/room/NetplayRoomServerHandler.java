@@ -65,8 +65,9 @@ public class NetplayRoomServerHandler {
     // Client socket
     private Socket mClientSocket;
 
-    // Output socket stream
-    private OutputStream mSocketOutputStream;
+    // Output socket stream; connect() sets it after the socket and the send buffer's mark, so a
+    // thread that sees it also sees both
+    private volatile OutputStream mSocketOutputStream;
 
     // Output socket synchronization object
     private final Object mSocketOutputSync = new Object();
