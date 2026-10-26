@@ -5642,3 +5642,36 @@ full storage; games that reach SRAM past 32 KB or FlashRAM past its end, or
 use a TLB index or Wired value of 32 or more (none known); the x86 dynarec;
 the Bio Pak, which the app's settings do not offer; IS-Viewer output, which
 only homebrew writes; and a damaged save state's 64DD values.
+
+## Host test `test-dd-rsp-mac` on Linux (2026-10-25)
+
+**Scope and baseline.** Branch `fix/test-dd-rsp-mac-linux` from master at
+`a4b5b85be`. Only `tools/test-dd-rsp-mac.sh` and this note change; the
+orchestrator that it tests, `tools/capture-dd-rsp-mac.sh`, does not.
+
+**Cause.** The test's stand-in for `shasum` ran `/usr/bin/shasum`, where macOS
+keeps it. Arch Linux's perl puts `shasum` in `/usr/bin/core_perl`, so on this
+PC the stand-in failed with "/usr/bin/shasum: No such file or directory", the
+orchestrator stopped at "APK SHA-256 mismatch (actual= expected=...)" before
+`adb install -r`, and the eight checks that need a later step failed. That is
+the 6 passed / 8 failed (exit 8) that the earlier sections here record on
+Linux; pull requests A's and B's "(exit 8; it checks a capture script's
+text)" misstate the cause. The macOS run in the "macOS builds" section passed
+all 14.
+
+**Change.** The test looks up `shasum` on `PATH` and writes that path into the
+stand-in, or stops with "ERROR: shasum not found on PATH" (exit 1).
+
+**Host checks actually run** (this PC: GNU bash 5.3.20, perl's `shasum` with
+Digest::SHA 6.04). With master's test: 6 passed / 8 failed (exit 8), and a
+copy that keeps its temporary folder shows the `shasum` error in the success
+run's `adb-errors.txt` and the hash mismatch in its output. With this
+branch's: 14 passed / 0 failed (exit 0);
+with `PATH=/usr/bin:/bin`, which has no `shasum`, the new error, exit 1 and no
+temporary folder left behind. `bash -n` passes, and `shellcheck -S warning`
+reports only SC1007 on line 5 (`CDPATH= cd`), which master has too. Not run:
+macOS. `tools/test-p07-verifier.sh` still exits 77 here, as designed: its
+fixture checks need the private captures under `.fzxwork/p07-final/` (or
+`P07_CAPTURE_ROOT`), and this PC has none.
+
+**Next.** A run on a Mac would confirm 14/14 there.

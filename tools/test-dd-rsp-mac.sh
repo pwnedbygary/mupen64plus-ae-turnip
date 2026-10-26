@@ -105,10 +105,12 @@ case "${1:-}" in
 esac
 exit 1
 EOF
-cat > "$FAKE_SHASUM" <<'EOF'
-#!/bin/bash
-/usr/bin/shasum "$@"
-EOF
+# macOS keeps shasum in /usr/bin; Arch Linux keeps perl's in /usr/bin/core_perl.
+REAL_SHASUM=$(command -v shasum) || {
+    printf 'ERROR: shasum not found on PATH\n' >&2
+    exit 1
+}
+printf '#!/bin/bash\nexec %q "$@"\n' "$REAL_SHASUM" > "$FAKE_SHASUM"
 cat > "$FAKE_DITTO" <<'EOF'
 #!/bin/bash
 destination=${@: -1}
