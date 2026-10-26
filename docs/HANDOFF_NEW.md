@@ -5738,3 +5738,88 @@ check it. On a big-endian build, `swap_buffer` also accesses the state
 through typed pointers, and `ALIGNED_GETDATA` does not swap its fields' bytes.
 
 **Next.** Nothing for the N64DD track.
+
+## Project64 zip states on 32-bit Android builds (2026-10-26)
+
+**Scope and baseline.** Branch `fix/minizip-32bit-seek` from master at
+`d4a8740f2`. One define in `mupen64plus-core/mupen64plus-core.mk` changes, a
+comment is added to `mupen64plus-core/Android.mk`, a new host test
+(`tools/test-minizip-android.sh` with `tools/tests/minizip-android-test.c`)
+checks the define, and this note is added. No source file of the core or of
+minizip changes, and nothing in `src/device/dd/`, `callbacks.c` or the RSP
+plugins.
+
+**Cause.** The core opens Project64 zip states with minizip's `unzOpen`
+(`savestates.c:1371`), which starts by seeking to the end of the file to find
+the zip's directory (`unzip.c:330-334`). Such a state reaches the core through
+"Load from file…", for which the core finds the format from the file's first
+bytes (`savestates.c:1442-1443,1494`), and through a slot load when the slot
+holds `<header name>.pj<slot>.zip` but no state of the core's own
+(`:96-97,1461-1471`). The app built minizip with `-DIOAPI_NO_64`, so minizip
+called `ftello` and `fseeko` (`ioapi.c:17-21`). But minizip's `ioapi.h`
+defines `__USE_FILE_OFFSET64` before it includes `stdio.h`, and then bionic
+declares `ftello` and `fseeko` only from API 24, as names for `ftello64` and
+`fseeko64` (NDK 26.1.10909125's `sysroot/usr/include/stdio.h:219-226`), while
+the app builds for API 23 (`build_common/version_common.gradle:9`). So minizip
+called both without a declaration, which `build_common/native_common.mk:57`
+lets through as a warning (`ioapi.c:144,190`, on every ABI). Its seeks then
+passed a 64-bit offset to bionic's plain `fseeko`, which exists at every API
+level and on 32-bit ABIs takes a 32-bit offset. Under qemu, on armeabi-v7a a
+seek to the end of a zip left the file at a stray position and writing a zip
+failed, and on x86 the seek landed at the start of the file; on both,
+`unzOpen` could not open the zip. DERIVED: so a 32-bit Android device could
+not load a Project64 zip state. On arm64-v8a and x86_64, where that `fseeko`
+takes a 64-bit offset, the calls happened to work. The app saves only M64P
+states (`CoreInterface.java:834,850`), so it never wrote a zip state.
+
+**Change.** `-DIOAPI_NO_64` becomes `-DUSE_FILE32API`, with which `ioapi.h`
+maps the 64-bit calls that `ioapi.c` then makes to `fopen`, `ftell` and
+`fseek` (`ioapi.h:48-51`; `ioapi.c:22-25`), which bionic declares at every
+API level. On 32-bit ABIs that limits minizip to files under 2 GB; a
+Project64 state is at most 8,398,684 bytes. ndk-build makes a module's
+objects depend on its `Android.mk`, not on `mupen64plus-core.mk`, which that
+file includes (`build/core/definitions.mk:42-44,1286` in NDK 26.1.10909125).
+In a separate checkout of master with a full build, applying the new define
+alone and running `./gradlew :app:assembleDebug` left minizip's objects as
+they were, and the packaged libraries still imported `fseeko` and `ftello`.
+So the change also adds a comment to `mupen64plus-core/Android.mk` that says
+so. With that file changed too, the same build compiled every object of the
+core again for all four ABIs, and the packaged libraries no longer imported
+`fseeko` or `ftello`. DERIVED: git writes `Android.mk` anew when it checks out
+this change, so an existing build does the same. CI builds from a clean
+checkout.
+
+**Host checks actually run.** `tools/test-minizip-android.sh` builds the test
+with minizip's three source files for API 23 and the defines in the main
+`LOCAL_CFLAGS` list of `mupen64plus-core.mk` (not those that an ABI's own
+block adds below it), using NDK 26.1.10909125 from the SDK, where Gradle
+finds it (`ANDROID_NDK_HOME` points at NDK 30 on this PC), as static
+executables for armeabi-v7a, x86, arm64-v8a and x86_64. It runs each under
+qemu 11.1.2's user-mode emulation, in a new PID namespace, as 32-bit bionic
+refuses a PID above 65535. It checks that minizip calls no function without
+a declaration, that a zip holding 70,000 bytes is written, that a seek to
+the end of the file lands there, and that the zip reads back as written.
+With master's makefile all four ABIs fail the first check; on armeabi-v7a
+and x86 the seek to the end of the 843-byte zip left the file at
+1,082,232,844 and at 0, the zip did not read back, and on armeabi-v7a
+writing it failed too. With this change every check passes on all four
+ABIs. Without qemu or user namespaces the test skips (77); without that NDK
+in the SDK it stops with exit status 2.
+`./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` (wrapper Gradle
+8.4, JDK 17.0.20.1): BUILD SUCCESSFUL, and the 35 unit tests pass. ndk-build
+compiled the core for all four ABIs, and `ioapi.c`'s two warnings are gone
+from its build; `fb.c`'s two remain on every ABI, and `netplay.c`'s one on
+x86 and x86_64. The packaged core libraries import `fseek` and `ftell` but no
+longer `fseeko` or `ftello`, which a full build of master in a separate
+checkout imports on all four ABIs, and they have the linked libraries' build
+IDs. Every `tools/test-*.sh` passes with GCC 16.2.1 and clang 23.1.3, except
+`test-p07-verifier`, which skips (77) as designed. In the full build of
+master, the compilers report one other call without a declaration across all
+of the app's native modules: `memset` in rsp-cxd4's `vu/add.c:165`, which
+clang builds with the C library's own type.
+
+**Not run.** A device: the RP6 runs the arm64-v8a library, where the old
+calls happened to work, and no 32-bit device or emulator ran the app. No
+Project64 zip state was loaded in the app.
+
+**Next.** Nothing for the N64DD track.
