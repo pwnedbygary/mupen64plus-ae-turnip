@@ -140,10 +140,13 @@ LOCAL_SRC_FILES :=                                              \
     #$(SRCDIR)/debugger/dbg_decoder.c                           \
     #$(SRCDIR)/debugger/dbg_memory.c                            \
 
+# minizip's ioapi.h defines __USE_FILE_OFFSET64, which hides bionic's ftello
+# and fseeko below API 24, so minizip uses ftell and fseek instead
+# (USE_FILE32API), which on 32-bit ABIs limit it to files under 2 GB.
 LOCAL_CFLAGS :=         \
     $(COMMON_CFLAGS)    \
     -DANDROID           \
-    -DIOAPI_NO_64       \
+    -DUSE_FILE32API     \
     -DNOCRYPT           \
     -DNOUNCRYPT         \
     -DM64P_NETPLAY=1    \
