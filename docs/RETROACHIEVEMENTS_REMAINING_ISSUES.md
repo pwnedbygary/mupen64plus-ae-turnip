@@ -269,6 +269,61 @@ token-handling items and the remaining device-verification gaps.
   brought back achievement counts, which the app does not log; the cleanup deleting a progress
   file, as the auto save it deleted had none.
 
+## Device verification (debug build of `b0d6375a8`, Retroid Pocket 6, 2026-10-26 evening)
+- OBSERVED (adb): at 21:51:43 the debug APK built from the files of `b0d6375a8`, the code commit
+  of pull request #37, sha256 `538817036eb46183c77bd77478c9ef2ad73e513353a6e1d38f1de5064a4b47ba`,
+  was installed in place with `adb install -r` over the build of the check above (version name
+  `3.0.338 83fff39b`; its installed `base.apk` had the sha256 given there), after the app's data
+  folder was copied off (60 files). The APK was built before that commit was made, so its version
+  name, `3.0.338 72d68426`, names the commit it is based on
+  (`build_common/version_common.gradle:12,16-21`). Before the run, RetroAchievements was on and
+  hardcore off, and the settings held a user name, a password and a token. At 21:56:55 a build of
+  pull request #38 was installed for a speed check, and at 21:58:28 this build again, for the same
+  check; the settings checks below came before 21:56:55. After the runs, the build found on the
+  device was installed again, and the data folder matched the copy byte for byte (60 files).
+- OBSERVED (device; times are the device's clock): Mario Tennis was started through
+  `SplashActivity` with its gallery path in the ROM path extra. The app's main process started at
+  21:51:43.903, the game's process (`:EmulationProcess`) at 21:51:45.427, and the core logged
+  "Starting R4300 emulator: Dynamic Recompiler" at 21:51:46.956. About 20 s after the game
+  started, the settings file had been written again (at 21:51, 3,656 bytes; 3,724 before) and
+  held no password; the token was still there, and a hash of its entry was unchanged. The log
+  saved for this game (21:51:32-21:53:21) has lines from `CoreService` in the game's process
+  (21:51:45-21:51:47) and no line with "login" in it.
+- DERIVED: the password is deleted in three places only: by a sign-in in the game's process
+  (`CoreService.java:1541`), by the broadcast's receiver (`RaCredentialSync.java:75`), which that
+  sign-in sends (`CoreService.java:1546`, the only sender), and by Connect
+  (`LoginPreference.java:138`), whose screen was not open. So the game's sign-in returned a token
+  and deleted the password, and the token it saved was the one already saved.
+- DERIVED: the game most likely signed in with the token at the first try. A saved token is tried
+  first (`RaSignInRules.java:26-34`, `CoreService.java:1373-1388`), and the password only after a
+  failed sign-in, which logs a warning with "login error" in it (`CoreService.java:1515-1528`); a
+  successful sign-in logs nothing (`CoreService.java:1529-1547`). The app clears its own earlier
+  lines from the device's log when `SplashActivity` starts (`SplashActivity.java:153`,
+  `DeviceUtil.java:177-180`), which it did at 21:51:44, before the game, and next only after this
+  log was saved. This rests on a line that is missing, so it is not proof.
+- OBSERVED (device): after the game was left through the in-game menu (Exit, then OK), the main
+  process was still running. The gallery, opened through `SplashActivity` again, and then the
+  RetroAchievements settings ran in it. The Password row showed the change's new summary ("It is
+  deleted once a sign-in returns a session token..."). Hardcore mode was switched on and then off;
+  each change wrote the settings file (3,655 bytes at 21:55, 3,656 bytes at 21:56), which still
+  held no password and the same token. The row that checks the sign-in (Connect) was then tapped
+  twice. Its notice was not captured: `dumpsys notification` listed no toast, and no screenshot was
+  taken, to keep the user name out of this record. The settings were unchanged after the first tap.
+  The saved logs, from 21:51:32 to 21:53:21 and from 21:56:53 to 22:00:00, have no `FATAL` or
+  `AndroidRuntime` line; the second covers the build of pull request #38 from 21:56:55 and this
+  build again from 21:58:28. No log was saved for the time between.
+- DERIVED: the main process read the settings, password included, when `SplashActivity` started
+  (`SplashActivity.java:156-157`, through `AppData.java:364` and `GlobalPrefs.java:486`), before
+  the game's process existed. A process reads the file again only with `MODE_MULTI_PROCESS`, which
+  the app does not use, and writes its whole copy whenever it saves a value (see "Sign-in order"),
+  so the two Hardcore saves would have brought the password back had the main process's copy
+  still held it. Both came before Connect was tapped, and apart from Connect only the receiver
+  deletes it in that copy (`RaCredentialSync.java:61-79`, registered in every process at
+  `AppMupen64Plus.java:33`), so the main process received the broadcast.
+- Not covered, among others: Connect's result; the sign-in fallbacks (a rejected token retried with
+  the password, a wrong password beside a valid token, neither working); a rejected token without a
+  password; hardcore mode during play; the start on Android 6 to 12L.
+
 ## Deferred items from commit `8f14880ef` (login/token handling)
 Reference: that commit's message lists these as nonblocking. The issue #15 section addresses all
 four: "Sign-in order" three of them, and "User-Agent" the hardcoded User-Agent version. The saved
@@ -1161,11 +1216,15 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `passwordTheOtherProcessKeptStays`, `passwordBroughtBackBesideTheSameTokenIsDeleted`,
   `copyThatAlreadyMatchesIsNotSaved` and `passwordIsNeverDeletedWithoutAToken`. No host test sends
   or receives the broadcast.
+- OBSERVED (device, 2026-10-26): in the build of `b0d6375a8`, the password was gone and the token
+  unchanged about 20 s after a game started, and still after two later saves in the main process.
+  The device verification of the evening of 2026-10-26 derives from this that the game's sign-in
+  deleted the password and, as the main process had read the password before the game started,
+  that the main process received the broadcast.
 - Not yet verified on device: a valid token with a wrong password signs in; a wrong token with the
   right password signs in and saves a new token; with neither a valid token nor the right
-  password, enforcement releases. Also unverified: a game's sign-in and Connect delete the
-  password; the gallery receives the broadcast, and the password stays deleted after a later
-  Settings change; Connect signs in with only the token; a rejected token without a password
+  password, enforcement releases. Also unverified: Connect deletes the password and signs in with
+  only the token (its notice was not captured on the device); a rejected token without a password
   shows the "enter your password" notice; the app starts on Android 6 to 12L, where the receiver
   is registered with a permission.
 
