@@ -1,9 +1,9 @@
 package paulscode.android.mupen64plusae.jni;
 
-/** Which saved credential a game session signs in to RetroAchievements with. */
-final class RaSignInRules {
+/** Which saved credential a RetroAchievements sign-in uses, and which one it keeps afterwards. */
+public final class RaSignInRules {
 
-    enum Credential { TOKEN, PASSWORD, NONE }
+    public enum Credential { TOKEN, PASSWORD, NONE }
 
     // Must match rc_error.h. The server answers a token that does not match the user name with
     // RC_INVALID_CREDENTIALS, and an expired token, which it replaces, with RC_EXPIRED_TOKEN.
@@ -44,9 +44,52 @@ final class RaSignInRules {
      * @return the credential to try next, or NONE if signing in has failed for this session.
      */
     static Credential nextCredential(Credential failed, int result, String password) {
-        boolean tokenRejected = failed == Credential.TOKEN
+        return tokenRejected(failed, result) && !isEmpty(password)
+                ? Credential.PASSWORD : Credential.NONE;
+    }
+
+    /**
+     * Whether the server rejected the saved session token, which only a sign-in with the password
+     * replaces.
+     *
+     * @param failed the credential of the sign-in that failed
+     * @param result the rc_client result code of that sign-in
+     */
+    public static boolean tokenRejected(Credential failed, int result) {
+        return failed == Credential.TOKEN
                 && (result == RC_INVALID_CREDENTIALS || result == RC_EXPIRED_TOKEN);
-        return tokenRejected && !isEmpty(password) ? Credential.PASSWORD : Credential.NONE;
+    }
+
+    /**
+     * Picks the credential for the Connect check in Settings: the saved password, as Connect is
+     * there to check what was typed in Settings, or the session token when no password is saved.
+     *
+     * @param username the saved user name
+     * @param password the saved password
+     * @param token the saved session token
+     * @return the credential to sign in with, or NONE if the user name or both credentials are
+     * missing.
+     */
+    public static Credential connectCredential(String username, String password, String token) {
+        if (isEmpty(username)) {
+            return Credential.NONE;
+        }
+        if (!isEmpty(password)) {
+            return Credential.PASSWORD;
+        }
+        return isEmpty(token) ? Credential.NONE : Credential.TOKEN;
+    }
+
+    /**
+     * Whether a successful sign-in deletes the saved password. Only a sign-in that returned a
+     * session token does: later sign-ins use that token, and need the password again only if the
+     * server rejects it.
+     *
+     * @param newToken the session token the sign-in returned
+     * @param password the saved password
+     */
+    public static boolean forgetsPassword(String newToken, String password) {
+        return !isEmpty(newToken) && !isEmpty(password);
     }
 
     private static boolean isEmpty(String value) {

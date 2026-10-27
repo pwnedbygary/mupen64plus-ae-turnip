@@ -19,27 +19,33 @@ package paulscode.android.mupen64plusae.preference;
 import android.app.Activity;
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.content.SharedPreferences;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.WindowManager;
 
+import androidx.preference.EditTextPreference;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceManager;
 
 import paulscode.android.mupen64plusae.R;
 import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
+import paulscode.android.mupen64plusae.jni.RaSignInRules;
 import paulscode.android.mupen64plusae.jni.RetroAchievementsManager;
 import paulscode.android.mupen64plusae.persistent.AppData;
 import paulscode.android.mupen64plusae.persistent.GlobalPrefs;
 
 /**
  * "Connect" row on the RetroAchievements screen. Attempts a login with the entered
- * credentials and reports the server's answer, so the user is not left guessing whether
- * their username and password are correct. On success the session token is stored, so
- * subsequent game sessions can log in without the password.
+ * credentials, or with the saved session token once the password has been deleted, and
+ * reports the server's answer, so the user is not left guessing whether their username and
+ * password are correct. On success the session token is stored and the password deleted, so
+ * subsequent game sessions log in with the token.
  */
 public class LoginPreference extends Preference implements RetroAchievementsManager.Listener
 {
+    private RaSignInRules.Credential mCredential = RaSignInRules.Credential.NONE;
+
     public LoginPreference( Context context )
     {
         super( context );
@@ -72,8 +78,11 @@ public class LoginPreference extends Preference implements RetroAchievementsMana
         GlobalPrefs prefs = new GlobalPrefs( context, new AppData( context ) );
         String username = prefs.retroAchievementsUsername;
         String password = prefs.retroAchievementsPassword;
+        String token = prefs.retroAchievementsToken;
 
-        if( TextUtils.isEmpty( username ) || TextUtils.isEmpty( password ) )
+        RaSignInRules.Credential credential =
+                RaSignInRules.connectCredential( username, password, token );
+        if( credential == RaSignInRules.Credential.NONE )
         {
             show( context, context.getString( R.string.retroAchievementsConnect_missing ) );
             return;
@@ -87,8 +96,12 @@ public class LoginPreference extends Preference implements RetroAchievementsMana
             return;
         }
 
+        mCredential = credential;
         ra.addListener( this );
-        if( !ra.login( username, password ) )
+        boolean started = credential == RaSignInRules.Credential.PASSWORD
+                ? ra.login( username, password )
+                : ra.loginWithToken( username, token );
+        if( !started )
         {
             ra.removeListener( this );
             show( context, context.getString( R.string.retroAchievementsConnect_error,
@@ -114,10 +127,22 @@ public class LoginPreference extends Preference implements RetroAchievementsMana
             String token = ra.getUserToken();
             if( !TextUtils.isEmpty( token ) )
             {
-                PreferenceManager.getDefaultSharedPreferences( context )
-                        .edit()
-                        .putString( GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_TOKEN, token )
-                        .commit();
+                SharedPreferences preferences =
+                        PreferenceManager.getDefaultSharedPreferences( context );
+                boolean forgetPassword = RaSignInRules.forgetsPassword( token, preferences
+                        .getString( GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_PASSWORD, null ) );
+                SharedPreferences.Editor editor = preferences.edit()
+                        .putString( GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_TOKEN, token );
+                if( forgetPassword )
+                {
+                    editor.remove( GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_PASSWORD );
+                }
+                editor.commit();
+
+                if( forgetPassword )
+                {
+                    clearPasswordField();
+                }
             }
 
             String name = ra.getUserName();
@@ -128,10 +153,28 @@ public class LoginPreference extends Preference implements RetroAchievementsMana
             }
             show( context, context.getString( R.string.retroAchievementsConnect_ok, name ) );
         }
+        else if( RaSignInRules.tokenRejected( mCredential, result ) )
+        {
+            show( context, context.getString( R.string.retroAchievementsConnect_error,
+                    context.getString( R.string.ra_passwordNeeded ) ) );
+        }
         else
         {
             show( context, context.getString( R.string.retroAchievementsConnect_error,
                     errorMessage != null ? errorMessage : "" ) );
+        }
+    }
+
+    // The field keeps the text it last showed, and confirming its dialog would save the deleted
+    // password again.
+    private void clearPasswordField()
+    {
+        PreferenceManager manager = getPreferenceManager();
+        Preference field = manager != null
+                ? manager.findPreference( GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_PASSWORD ) : null;
+        if( field instanceof EditTextPreference )
+        {
+            ( (EditTextPreference) field ).setText( null );
         }
     }
 

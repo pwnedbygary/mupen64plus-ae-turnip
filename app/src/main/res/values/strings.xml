@@ -272,6 +272,7 @@
     <string name="ra_sessionCasual">RetroAchievements: casual mode</string>
     <string name="ra_sessionOff">RetroAchievements is off for this session: %1$s</string>
     <string name="ra_noSignIn">no sign-in is saved in Settings</string>
+    <string name="ra_passwordNeeded">the saved sign-in was rejected; enter your password in Settings again</string>
     <string name="ra_noGameMd5">the game\'s MD5 is not known</string>
     <string name="ra_clientNotStarted">the achievements client could not start</string>
     <string name="ra_serverWarning">%1$s. %2$s</string>
@@ -322,7 +323,7 @@
     <string name="achievements_progress">%1$s, progress %2$s</string>
     <string name="achievements_challengeActive">%1$s, challenge active</string>
     <string name="retroAchievementsPassword_title">Password</string>
-    <string name="retroAchievementsPassword_summary">Your retroachievements.org password. Once a sign-in has saved a session token, games use that token and need the password only if the server rejects it.</string>
+    <string name="retroAchievementsPassword_summary">Your retroachievements.org password. It is deleted once a sign-in returns a session token, which later sign-ins use; enter it again only if RetroAchievements rejects that token.</string>
     <string name="retroAchievementsHardcore_title">Hardcore mode</string>
     <string name="retroAchievementsHardcore_summary">Disables loading save states, cheats, fast-forward, slow motion, frame advance and audio sync while achievements are active. Resumed games and netplay run in casual mode.</string>
 

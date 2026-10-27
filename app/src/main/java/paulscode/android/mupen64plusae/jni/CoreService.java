@@ -28,6 +28,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.graphics.drawable.BitmapDrawable;
 import android.net.Uri;
 import android.os.Binder;
@@ -72,6 +73,7 @@ import paulscode.android.mupen64plusae.persistent.GamePrefs;
 import androidx.preference.PreferenceManager;
 
 import paulscode.android.mupen64plusae.persistent.GlobalPrefs;
+import paulscode.android.mupen64plusae.persistent.RaCredentialSync;
 import paulscode.android.mupen64plusae.task.SyncToGoogleDriveService;
 import paulscode.android.mupen64plusae.util.CountryCode;
 import paulscode.android.mupen64plusae.util.FileUtil;
@@ -1512,10 +1514,13 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
     private void onRaLoginResult(RetroAchievementsManager ra, int result, String errorMessage) {
         if (result != RetroAchievementsManager.RESULT_OK) {
             Log.w(TAG, "RetroAchievements " + mRaLoginCredential + " login error: " + errorMessage);
-            mRaLoginCredential = RaSignInRules.nextCredential(mRaLoginCredential, result,
+            RaSignInRules.Credential failed = mRaLoginCredential;
+            mRaLoginCredential = RaSignInRules.nextCredential(failed, result,
                     mGlobalPrefs.retroAchievementsPassword);
             if (mRaLoginCredential == RaSignInRules.Credential.NONE) {
-                failRaSession(raFailureReason(result, errorMessage));
+                failRaSession(RaSignInRules.tokenRejected(failed, result)
+                        ? getString(R.string.ra_passwordNeeded)
+                        : raFailureReason(result, errorMessage));
             } else {
                 beginRaLogin(ra);
             }
@@ -1525,11 +1530,20 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
 
         // Synchronous commit: the emulation process can be killed before an apply() is written.
         String token = ra.getUserToken();
-        if (!TextUtils.isEmpty(token) && !token.equals(mGlobalPrefs.retroAchievementsToken)) {
-            PreferenceManager.getDefaultSharedPreferences(this)
+        boolean forgetPassword = RaSignInRules.forgetsPassword(token,
+                mGlobalPrefs.retroAchievementsPassword);
+        if (forgetPassword || (!TextUtils.isEmpty(token)
+                && !token.equals(mGlobalPrefs.retroAchievementsToken))) {
+            SharedPreferences.Editor editor = PreferenceManager.getDefaultSharedPreferences(this)
                     .edit()
-                    .putString(GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_TOKEN, token)
-                    .commit();
+                    .putString(GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_TOKEN, token);
+            if (forgetPassword) {
+                editor.remove(GlobalPrefs.KEY_RETRO_ACHIEVEMENTS_PASSWORD);
+            }
+            editor.commit();
+            // Otherwise the main process's copy of the settings brings the old token and the
+            // password back the next time it saves a setting.
+            RaCredentialSync.send(this, token, forgetPassword);
         }
 
         if (!ra.loadGame(mRaGameMd5)) {
