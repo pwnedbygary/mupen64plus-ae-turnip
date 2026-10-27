@@ -129,12 +129,38 @@
                 android:inputType="none"
                 android:textIsSelectable="true"
                 android:hint="@string/netplay_code" />
+            <TextView
+                android:id="@+id/textCodeAddressTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_below="@id/textCodeValue"
+                android:layout_alignParentStart="true"
+                android:layout_margin="10dp"
+                android:textAppearance="?android:attr/textAppearanceMedium"
+                android:text="@string/netplay_publicAddress" />
+            <TextView
+                android:id="@+id/textCodeAddress"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="10dp"
+                android:layout_below="@id/textCodeValue"
+                android:layout_toEndOf="@id/textCodeAddressTitle"
+                android:textAppearance="?android:attr/textAppearanceMedium"
+                android:textIsSelectable="true" />
         </RelativeLayout>
+
+        <TextView
+            android:id="@+id/textCodeMessage"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/codeLayout"
+            android:layout_margin="10dp"
+            android:textAppearance="?android:attr/textAppearanceMedium" />
 
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_below="@id/codeLayout"
+            android:layout_below="@id/textCodeMessage"
             android:orientation="vertical" >
 
             <TextView

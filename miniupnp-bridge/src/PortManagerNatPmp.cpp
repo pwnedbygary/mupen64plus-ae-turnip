@@ -32,6 +32,7 @@ void PortManagerNatPmp::Terminate()
 	closenatpmp(&m_natpmp);
 
 	m_portList.clear();
+	m_publicAddressReceived = false;
 }
 
 bool PortManagerNatPmp::Initialize(int gatewayIp)
@@ -43,6 +44,7 @@ bool PortManagerNatPmp::Initialize(int gatewayIp)
 	int r;
 
 	bool initFinished = false;
+	m_publicAddressReceived = false;
 	int retCode = initnatpmp(&m_natpmp, 1, gatewayIp);
 
 	if( retCode < 0) {
@@ -76,6 +78,7 @@ bool PortManagerNatPmp::Initialize(int gatewayIp)
 
 				} else if(r!=NATPMP_TRYAGAIN) {
 					m_publicAddress = response.pnu.publicaddress.addr;
+					m_publicAddressReceived = true;
 					m_currentNatPmpState = Ssendmap;
 
 					__android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "Public address received");
@@ -228,6 +231,17 @@ void PortManagerNatPmp::Clear()
 	}
 }
 
+std::string PortManagerNatPmp::GetPublicAddress()
+{
+	char address[INET_ADDRSTRLEN];
+
+	if (!m_publicAddressReceived || inet_ntop(AF_INET, &m_publicAddress, address, sizeof(address)) == nullptr) {
+		return "";
+	}
+
+	return address;
+}
+
 extern "C" __attribute__((visibility("default"))) void NATPMP_Init(int gatewayIp)
 {
 	g_PortManagerNatPmp.Initialize(gatewayIp);
@@ -249,5 +263,13 @@ extern "C" __attribute__((visibility("default"))) bool NATPMP_Remove(const char*
 {
 	__android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "NATPMP_Remove(%s, %d)", protocol, port);
 	return g_PortManagerNatPmp.Remove(protocol, port);
+}
+
+extern "C" __attribute__((visibility("default"))) const char* NATPMP_GetPublicAddress()
+{
+	// Valid until the next call; JNA copies it into a Java string
+	static std::string publicAddress;
+	publicAddress = g_PortManagerNatPmp.GetPublicAddress();
+	return publicAddress.c_str();
 }
 

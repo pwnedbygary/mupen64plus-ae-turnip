@@ -35,6 +35,7 @@ import paulscode.android.mupen64plusae.R;
 import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
 import paulscode.android.mupen64plusae.ui.UiTheme;
 
+import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
@@ -93,14 +94,16 @@ public class NetplayServerSetupDialog extends DialogFragment
 
     private NetplayRoomServer mNetplayRoomService = null;
 
-    private OnlineNetplayHandler mOnlineNetplayHandler = null;
-
     private String mNetplayCode = "";
+    private String mNetplayAddress = "";
+    private String mNetplayMessage = "";
 
     private Button mGetCodeButton;
     private Button mAdvancedButton;
     private LinearLayout mServerLayout;
     private EditText mCodeTextView;
+    private TextView mCodeAddressView;
+    private TextView mCodeMessageView;
     private RelativeLayout mCodeLayout;
 
     // Activity holding this fragment
@@ -170,15 +173,15 @@ public class NetplayServerSetupDialog extends DialogFragment
         mServerLayout = dialogView.findViewById(R.id.serverLayout);
         mCodeLayout = dialogView.findViewById(R.id.codeLayout);
         mCodeTextView = dialogView.findViewById(R.id.textCodeValue);
-        mCodeTextView.setText(mNetplayCode);
         mCodeTextView.setInputType(InputType.TYPE_NULL);
         mCodeTextView.setTextIsSelectable(true);
         mCodeTextView.setKeyListener(null);
+        mCodeAddressView = dialogView.findViewById(R.id.textCodeAddress);
+        mCodeMessageView = dialogView.findViewById(R.id.textCodeMessage);
 
         mServerLayout.setVisibility(mShowingAdvanced ? View.VISIBLE : View.GONE);
         mAdvancedButton.setVisibility(mShowingAdvanced ? View.GONE : View.VISIBLE);
-        mCodeLayout.setVisibility(mShowingCode ? View.VISIBLE : View.GONE);
-        mGetCodeButton.setVisibility(mShowingCode ? View.GONE : View.VISIBLE);
+        showCode();
 
         TextView serverAddress = dialogView.findViewById(R.id.textHostAddress);
         TextView port1 = dialogView.findViewById(R.id.textPort1);
@@ -260,23 +263,6 @@ public class NetplayServerSetupDialog extends DialogFragment
                                 e.printStackTrace();
                             }
                         }
-
-                        @Override
-                        public void onRoomCode(long roomCode) {
-                            mShowingCode = true;
-
-                            mActivity.runOnUiThread(() -> {
-                                mCodeLayout.setVisibility(View.VISIBLE);
-
-                                if (TextUtils.isEmpty(mNetplayCode)) {
-                                    mNetplayCode += roomCode;
-                                }
-                                mCodeTextView.setText(mNetplayCode);
-                                mGetCodeButton.setVisibility(View.GONE);
-                            });
-
-                            Log.i(TAG, "Received room code: " + roomCode);
-                        }
                     });
 
             int registrationId = mNetplayRoomService.registerPlayerOne();
@@ -322,10 +308,6 @@ public class NetplayServerSetupDialog extends DialogFragment
             if (mActivity instanceof OnClientDialogActionListener) {
                 OnClientDialogActionListener listener = (OnClientDialogActionListener)mActivity;
                 mNetplayRoomService.start();
-
-                if (mOnlineNetplayHandler != null) {
-                    mOnlineNetplayHandler.notifyGameStartedAsync();
-                }
                 listener.start();
             } else {
                 Log.e(TAG, "Invalid activity, expected OnClientDialogActionListener");
@@ -339,7 +321,7 @@ public class NetplayServerSetupDialog extends DialogFragment
 
                 // Show an error if it takes too long to get a code
                 mHandler.postDelayed(() -> {
-                    if (TextUtils.isEmpty(mNetplayCode)) {
+                    if (!mShowingCode) {
                         Notifier.showToast(mActivity, R.string.netplay_codeRetrieveFailure);
                     }
                 }, 20000);
@@ -414,51 +396,65 @@ public class NetplayServerSetupDialog extends DialogFragment
         }
     }
 
+    private void showCode()
+    {
+        mCodeTextView.setText(mNetplayCode);
+        mCodeAddressView.setText(mNetplayAddress);
+        mCodeMessageView.setText(mNetplayMessage);
+        mCodeLayout.setVisibility(TextUtils.isEmpty(mNetplayCode) ? View.GONE : View.VISIBLE);
+        mCodeMessageView.setVisibility(TextUtils.isEmpty(mNetplayMessage) ? View.GONE : View.VISIBLE);
+        mGetCodeButton.setVisibility(mShowingCode ? View.GONE : View.VISIBLE);
+    }
+
     /**
      * Callback when a UDP port has been mapped
      * @param tcpPort1 Port for room server
      * @param tcpPort2 Port for TCP netplay server
      * @param udpPort2 Port for UDP netplay server
+     * @param publicAddress Public IPv4 address the router reported, empty if it reported none,
+     *                      or null if the ports were not mapped automatically or mapping failed
      */
-    public void onUpnpPortsObtained(int tcpPort1, int tcpPort2, int udpPort2)
+    public void onUpnpPortsObtained(int tcpPort1, int tcpPort2, int udpPort2, String publicAddress)
     {
         Log.i(TAG, "Mapped ports through UPnP: " + tcpPort1 + " " + tcpPort2 + " " + udpPort2);
 
-        // Run on a separate thread since the UPNP service doesn't work right if we block
-        if (mOnlineNetplayHandler == null && tcpPort1 != -1) {
-            Thread onlineNetplayThread = new Thread(() -> {
-                try {
-                    mOnlineNetplayHandler = new OnlineNetplayHandler(InetAddress.getByName("np.zurita.me"),
-                            37520, tcpPort1, -1,
-                            new OnlineNetplayHandler.OnOnlineNetplayData() {
-
-                                @Override
-                                public void onInitSessionResponse(boolean success) {
-                                    if (!success) {
-                                        mActivity.runOnUiThread(() ->Notifier.showToast(mActivity, R.string.netplay_serverVersionMismatch));
-                                    }
-                                }
-
-                                @Override
-                                public void onRoomData(InetAddress address1, int port) {
-                                    // Nothing to do here
-                                }
-                            });
-                    mOnlineNetplayHandler.connectAndRequestCode();
-
-                } catch (UnknownHostException e) {
-                    e.printStackTrace();
-                }
-            });
-            onlineNetplayThread.setDaemon(true);
-            onlineNetplayThread.start();
-
-            mNetplayRoomService.updateServerPort(tcpPort2);
-        }
-
-        if (tcpPort1 == -1)
+        // -1 when mapping failed, 0 when the room server could not open its socket
+        if (tcpPort1 <= 0)
         {
             mActivity.runOnUiThread(() -> Notifier.showToast(mActivity, R.string.netplay_codeRetrieveFailure));
+            return;
         }
+
+        mNetplayRoomService.updateServerPort(tcpPort2);
+
+        Inet4Address routerAddress = publicAddress != null ? NetplayCode.parseAddress(publicAddress) : null;
+        boolean addressIsPublic = routerAddress != null && NetplayCode.isPublic(routerAddress);
+
+        if (publicAddress != null) {
+            Log.i(TAG, routerAddress == null ? "Router reported no IPv4 address" :
+                    "Router reported a public address: " + addressIsPublic);
+        }
+
+        mActivity.runOnUiThread(() -> {
+            if (publicAddress == null) {
+                mNetplayCode = "";
+                mNetplayAddress = "";
+                mNetplayMessage = mActivity.getString(R.string.netplay_sharePublicAddress, String.valueOf(tcpPort1));
+            } else if (routerAddress == null) {
+                mNetplayCode = "";
+                mNetplayAddress = "";
+                mNetplayMessage = mActivity.getString(R.string.netplay_noRouterAddress, String.valueOf(tcpPort1));
+            } else if (addressIsPublic) {
+                mNetplayCode = NetplayCode.toDisplayForm(NetplayCode.encode(routerAddress, tcpPort1));
+                mNetplayAddress = routerAddress.getHostAddress() + ":" + tcpPort1;
+                mNetplayMessage = "";
+            } else {
+                mNetplayCode = "";
+                mNetplayAddress = "";
+                mNetplayMessage = mActivity.getString(R.string.netplay_noPublicAddress);
+            }
+            mShowingCode = true;
+            showCode();
+        });
     }
 }

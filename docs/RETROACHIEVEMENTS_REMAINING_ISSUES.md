@@ -2311,8 +2311,9 @@ F. Transparency and legality
   telemetry is retained.
 - USER (retention periods): OBSERVED: the policy can give no retention period for
   RetroAchievements, which publishes none, or for `coverart.zurita.me` and `np.zurita.me`, which
-  no privacy policy covers. Nor does RetroAchievements publish where its servers are; the policy
-  names Cloudflare (US), which serves it.
+  no privacy policy covers; release V339 uses both, the current code only `coverart.zurita.me`.
+  Nor does RetroAchievements publish where its servers are; the policy names Cloudflare (US),
+  which serves it.
 - USER (old store text): OBSERVED: `doc/publish/listing.txt` and its translations still hold the
   parent app's store text, which names `www.paulscode.com`. It says "99¢ IS FOR DONATIONS ONLY"
   (`listing.txt:20`) and explains the Internet permission with "The internet is used to send

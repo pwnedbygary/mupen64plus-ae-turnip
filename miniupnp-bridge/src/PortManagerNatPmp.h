@@ -46,6 +46,9 @@ public:
 	// Removes any lingering mapped ports created by the app
 	void Clear();
 
+	// Get the public address the router reported during initialization, empty if none was received
+	std::string GetPublicAddress();
+
 private:
 	struct InternalPort
 	{
@@ -70,6 +73,8 @@ private:
 	NatpmpState m_currentNatPmpState = Sinit;
 
 	in_addr m_publicAddress;
+
+	bool m_publicAddressReceived = false;
 
 	int m_leaseDuration = 43200;
 

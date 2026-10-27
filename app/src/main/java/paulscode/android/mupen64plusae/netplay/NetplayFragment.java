@@ -53,8 +53,10 @@ public class NetplayFragment extends Fragment implements NetplayService.NetplayS
          * @param tcpPort1 Port for room server
          * @param tcpPort2 Port for TCP netplay server
          * @param udpPort2 Port for UDP netplay server
+         * @param publicAddress Public IPv4 address the router reported, empty if it reported none,
+         *                      or null if the ports were not mapped automatically or mapping failed
          */
-        void onUpnpPortsObtained(int tcpPort1, int tcpPort2, int udpPort2);
+        void onUpnpPortsObtained(int tcpPort1, int tcpPort2, int udpPort2, String publicAddress);
     }
 
     public static class DataViewModel extends ViewModel {
@@ -169,15 +171,17 @@ public class NetplayFragment extends Fragment implements NetplayService.NetplayS
      * @param tcpPort1 Port for room server
      * @param tcpPort2 Port for TCP netplay server
      * @param udpPort2 Port for UDP netplay server
+     * @param publicAddress Public IPv4 address the router reported, empty if it reported none,
+     *                      or null if the ports were not mapped automatically or mapping failed
      */
-    public void onUpnpPortsObtained(int tcpPort1, int tcpPort2, int udpPort2)
+    public void onUpnpPortsObtained(int tcpPort1, int tcpPort2, int udpPort2, String publicAddress)
     {
         try {
             Activity activity = requireActivity();
 
             if (activity instanceof NetplayListener) {
                 NetplayListener listner = (NetplayListener)activity;
-                listner.onUpnpPortsObtained(tcpPort1, tcpPort2, udpPort2);
+                listner.onUpnpPortsObtained(tcpPort1, tcpPort2, udpPort2, publicAddress);
             }
         } catch (IllegalStateException e) {
             e.printStackTrace();

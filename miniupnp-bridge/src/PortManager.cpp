@@ -32,6 +32,7 @@
 #include <string>
 #include <thread>
 #include <mutex>
+#include <arpa/inet.h>
 
 #include <android/log.h>
 #include <libnatpmp/natpmp.h>
@@ -423,6 +424,35 @@ bool PortManager::RefreshPortList()
 	return true;
 }
 
+std::string PortManager::GetExternalIPAddress()
+{
+	char externalAddress[16] = "";
+	struct in_addr address;
+
+	if (m_InitState != UPNP_INITSTATE_DONE)
+	{
+		__android_log_print(ANDROID_LOG_WARN, "miniupnp-bridge", "PortManager::GetExternalIPAddress - the init was not done !");
+		return "";
+	}
+
+	int r = UPNP_GetExternalIPAddress(urls->controlURL, datas->first.servicetype, externalAddress);
+	if (r != UPNPCOMMAND_SUCCESS)
+	{
+		__android_log_print(ANDROID_LOG_ERROR, "miniupnp-bridge", "GetExternalIPAddress failed (error: %i)", r);
+		return "";
+	}
+
+	// A router without an internet connection can report an empty address
+	if (inet_pton(AF_INET, externalAddress, &address) != 1)
+	{
+		__android_log_print(ANDROID_LOG_WARN, "miniupnp-bridge", "External IP address is not a valid IPv4 address");
+		return "";
+	}
+
+	__android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "External IP address received");
+	return externalAddress;
+}
+
 extern "C" __attribute__((visibility("default"))) void UPnPInit(int timeout)
 {
 	if (g_PortManager.GetInitState() == UPNP_INITSTATE_NONE) {
@@ -468,4 +498,12 @@ extern "C" __attribute__((visibility("default"))) bool UPnP_Remove(const char* p
 	}
 
 	return currentTry < maxTries;
+}
+
+extern "C" __attribute__((visibility("default"))) const char* UPnP_GetExternalAddress()
+{
+	// Valid until the next call; JNA copies it into a Java string
+	static std::string externalAddress;
+	externalAddress = g_PortManager.GetExternalIPAddress();
+	return externalAddress.c_str();
 }
