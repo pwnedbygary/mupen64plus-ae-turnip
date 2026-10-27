@@ -36,7 +36,7 @@ void PortManagerNatPmp::Terminate()
 
 bool PortManagerNatPmp::Initialize(int gatewayIp)
 {
-	__android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "PortManagerNatPmp::Initialize(%d)", gatewayIp);
+	__android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "PortManagerNatPmp::Initialize()");
 
 	natpmpresp_t response;
 
@@ -78,10 +78,7 @@ bool PortManagerNatPmp::Initialize(int gatewayIp)
 					m_publicAddress = response.pnu.publicaddress.addr;
 					m_currentNatPmpState = Ssendmap;
 
-					char str[INET_ADDRSTRLEN];
-					inet_ntop(AF_INET, &m_publicAddress, str, INET_ADDRSTRLEN);
-
-					__android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "Public address: %s", str);
+					__android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "Public address received");
 				}
 
 				break;

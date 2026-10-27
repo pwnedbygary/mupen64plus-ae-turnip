@@ -126,7 +126,7 @@ bool PortManager::Initialize(const unsigned int timeout)
 			if (strstr(dev->st, "InternetGatewayDevice"))
 				break;
 
-			__android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "Found UPnP device: [desc: %s] [st: %s]", dev->descURL, dev->st);
+			__android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "Found UPnP device: [st: %s]", dev->st);
 
 			dev = dev->pNext;
 		}
@@ -138,7 +138,7 @@ bool PortManager::Initialize(const unsigned int timeout)
 			return false;
 		}
 
-        __android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "UPnP device: [desc: %s] [st: %s]", dev->descURL, dev->st);
+        __android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "UPnP device: [st: %s]", dev->st);
 
 		descXML = (char*)miniwget(dev->descURL, &descXMLsize, dev->scope_id, &descXMLstatus);
 		if (descXML)
@@ -152,7 +152,7 @@ bool PortManager::Initialize(const unsigned int timeout)
 		char lanaddr[64] = "unset";
 		UPNP_GetValidIGD(devlist, urls, datas, lanaddr, sizeof(lanaddr)); //possible "status" values, 0 = NO IGD found, 1 = A valid connected IGD has been found, 2 = A valid IGD has been found but it reported as not connected, 3 = an UPnP device has been found but was not recognized as an IGD
 		m_lanip = std::string(lanaddr);
-        __android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "Detected LAN IP: %s", m_lanip.c_str());
+        __android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "LAN IP %s", m_lanip == "unset" ? "not detected" : "detected");
 
 		// Additional Info
 		char connectionType[64] = "";

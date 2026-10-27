@@ -115,7 +115,8 @@ public class NetplayRoomServerHandler {
             clientThread.start();
 
         } catch (IOException e) {
-            e.printStackTrace();
+            // The exception's message can name both addresses.
+            Log.e(TAG, "Unable to connect: " + e.getClass().getSimpleName());
         }
 
         getRoomData();
@@ -160,7 +161,7 @@ public class NetplayRoomServerHandler {
         String serverDeviceName = getStringFromBuffer(NetplayRoomClientHandler.DEVICE_NAME_MAX);
         String serverRomMd5 = getStringFromBuffer(NetplayRoomClientHandler.ROM_MD5_MAX);
 
-        Log.i(TAG, "Netplay version=" + netplayVersion + " Device name=" + serverDeviceName + " md5=" + serverRomMd5);
+        Log.i(TAG, "Netplay version=" + netplayVersion + " md5=" + serverRomMd5);
 
         mOnServerRoomData.onServerRoomData(netplayVersion, serverDeviceName, serverRomMd5);
     }

@@ -385,7 +385,7 @@ public class NetplayService extends Service
                             int addressInt = addressBuffer.getInt();
 
                             if (addressInt != 0 && gatewayAddress instanceof Inet4Address) {
-                                Log.i(TAG, "Received gateway address=" + gatewayAddress);
+                                Log.i(TAG, "Received gateway address");
 
                                 actuallyMapPorts(addressInt);
 
