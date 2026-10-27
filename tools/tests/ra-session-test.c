@@ -88,7 +88,7 @@
  * count, so loading it later starts from zero. Without a client, a save must
  * remove the progress file of an earlier save of that state.
  *
- * The last runs check the unlocks and leaderboard entries kept in the file
+ * Later runs check the unlocks and leaderboard entries kept in the file
  * named with ra_glue_set_unsent_path() until the server answers them. An unlock
  * that gets the app's answer for a server it cannot reach, and an entry that a
  * proxy answers with an HTTP 503 page, must be in the file when the session
@@ -100,6 +100,12 @@
  * rcheevos would retry, the unlock must stay and the next must wait for a later
  * sign-in. Unlocks and entries the server records or refuses during the
  * session must not stay in the file.
+ *
+ * The last run checks the cheat codes that the ROM database lists for the
+ * game, which main_run() adds when emulation starts. In a hardcore session
+ * they must stay on until the app turns them off, as the requested mode stays
+ * on after a sign-in or game load has failed, and ra_glue_shutdown() must turn
+ * them on again.
  *
  * ra_glue.c and memory.c are included from the production sources, and
  * tools/test-ra-session.sh links the rcheevos sources the core builds.
@@ -1733,6 +1739,26 @@ static void run_unsent_answered_in_session(void)
                    failures_before);
 }
 
+/* The ROM database's cheat codes stay on in a hardcore session until the app
+ * turns them off, and ra_glue_shutdown() turns them on again. */
+static void run_database_codes(void)
+{
+    const int failures_before = g_failures;
+    uint8_t* rdram = NULL;
+    void* base;
+
+    CHECK(ra_glue_get_database_codes() == 1);
+    base = start_session(1, 1, 0, &rdram);
+    CHECK(ra_glue_get_hardcore() == 1);
+    CHECK(ra_glue_get_database_codes() == 1);
+    ra_glue_set_database_codes(0);
+    CHECK(ra_glue_get_database_codes() == 0);
+    ra_glue_shutdown();
+    CHECK(ra_glue_get_database_codes() == 1);
+    end_session(base, "ROM database cheat codes off only when the app turns them off",
+                failures_before);
+}
+
 static void remove_state_dir(void)
 {
     static const char* const names[] = { "progress.st0", "resume.sav", "earlier.st2", "later.st3",
@@ -1790,6 +1816,7 @@ int main(void)
     run_unsent_answer(ANSWER_UNAVAILABLE,
                       "unlock from an earlier session kept while the server is unavailable");
     run_unsent_answered_in_session();
+    run_database_codes();
     remove_state_dir();
 
     if (g_failures != 0) {

@@ -55,8 +55,10 @@ typedef void (*ra_java_async_result_t)(int result, const char* error_message);
  * s_pending_lock, and the unlocks and entries the server has not answered by
  * s_unsent_lock. s_hardcore is the mode the app asked for, which it enforces
  * through ra_glue_get_hardcore(); it is atomic because the app sets it on the
- * main thread and may turn it off on the emu thread. s_last_error is a
- * best-effort diagnostic.
+ * main thread and may turn it off on the emu thread. s_database_codes is atomic
+ * because the app turns the codes off on the emu thread and ra_glue_shutdown()
+ * turns them on again on the main thread. s_last_error is a best-effort
+ * diagnostic.
  */
 static rc_client_t* s_client = NULL;
 static pthread_mutex_t s_pending_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -66,6 +68,7 @@ static pthread_mutex_t s_pending_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t s_frame_lock = PTHREAD_MUTEX_INITIALIZER;
 static int s_next_request_id = 1;
 static atomic_int s_hardcore = 0;
+static atomic_int s_database_codes = 1;
 static char s_last_error[512];
 
 static ra_java_server_call_t s_java_server_call = NULL;
@@ -969,6 +972,7 @@ void ra_glue_shutdown(void)
   s_resending = 0;
   pthread_mutex_unlock(&s_unsent_lock);
   atomic_store(&s_hardcore, 0);
+  atomic_store(&s_database_codes, 1);
   s_last_error[0] = '\0';
   free(s_pending_progress);
   s_pending_progress = NULL;
@@ -1019,6 +1023,16 @@ void ra_glue_set_hardcore(int enabled)
 int ra_glue_get_hardcore(void)
 {
   return atomic_load(&s_hardcore);
+}
+
+void ra_glue_set_database_codes(int enabled)
+{
+  atomic_store(&s_database_codes, enabled ? 1 : 0);
+}
+
+int ra_glue_get_database_codes(void)
+{
+  return atomic_load(&s_database_codes);
 }
 
 int ra_glue_login_password(const char* username, const char* password)

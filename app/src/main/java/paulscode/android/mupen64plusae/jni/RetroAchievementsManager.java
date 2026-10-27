@@ -292,6 +292,21 @@ public class RetroAchievementsManager {
         return mInitialized && mCore.ra_glue_get_hardcore() != 0;
     }
 
+    /**
+     * Turns on or off the cheat codes that the core's ROM database lists for the game, which the
+     * core adds when emulation starts. Shutting the client down turns them on again.
+     */
+    public void setDatabaseCodes(boolean enabled) {
+        if (mInitialized) {
+            mCore.ra_glue_set_database_codes(enabled ? 1 : 0);
+        }
+    }
+
+    /** @return true if the core's ROM database lists cheat codes for the open game. */
+    public boolean hasDatabaseCodes() {
+        return mCore.ra_glue_has_database_codes() != 0;
+    }
+
     // ---- native -> Java bridge ------------------------------------------
 
     private void onServerCall(int requestId, String url, String postData, String contentType) {

@@ -36,6 +36,7 @@
 #include "api/config.h"
 #include "api/m64p_config.h"
 #include "api/m64p_types.h"
+#include "api/ra_glue.h"
 #include "device/device.h"
 #include "device/memory/memory.h"
 #include "main.h"
@@ -861,6 +862,11 @@ romdatabase_entry* ini_search_by_crc(unsigned int crc1, unsigned int crc2)
     }
 
     return found_entry;
+}
+
+int ra_glue_has_database_codes(void)
+{
+    return ROM_PARAMS.cheats != NULL;
 }
 
 

@@ -899,6 +899,15 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
                             }
                         }
                     }
+
+                    // The core adds its ROM database's codes when emulation starts, on this thread.
+                    if (isRaHardcore()) {
+                        RetroAchievementsManager ra = RetroAchievementsManager.getInstance();
+                        ra.setDatabaseCodes(false);
+                        if (ra.hasDatabaseCodes()) {
+                            showToastFromEmulationThread(R.string.ra_hardcoreFixesBlocked);
+                        }
+                    }
                 }
 
                 if (mListener != null) {

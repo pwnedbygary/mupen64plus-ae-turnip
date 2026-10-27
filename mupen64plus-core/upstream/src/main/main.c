@@ -1621,7 +1621,11 @@ m64p_error main_run(void)
     if (netplay_is_init())
         ROM_SETTINGS.writablecartrom = 0;
 
-    cheat_add_hacks(&g_cheat_ctx, ROM_PARAMS.cheats);
+    /* RetroAchievements' hardcore mode allows no cheat engine (see ra_glue.h). */
+    if (ra_glue_get_database_codes())
+        cheat_add_hacks(&g_cheat_ctx, ROM_PARAMS.cheats);
+    else if (ROM_PARAMS.cheats != NULL)
+        DebugMessage(M64MSG_INFO, "RetroAchievements hardcore mode: the ROM database's cheat codes are off");
 
     /* do byte-swapping if it hasn't been done yet */
 #if !defined(M64P_BIG_ENDIAN)

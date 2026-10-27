@@ -107,6 +107,10 @@ public interface CoreLibrary extends Library {
 
     int ra_glue_get_hardcore();
 
+    void ra_glue_set_database_codes(int enabled);
+
+    int ra_glue_has_database_codes();
+
     int ra_glue_set_unsent_path(String path);
 
     int ra_glue_login_password(String username, String password);
