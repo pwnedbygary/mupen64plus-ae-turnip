@@ -120,6 +120,12 @@
             <item
                 android:id="@+id/menuItem_credits"
                 android:title="@string/menuItem_credits"/>
+            <item
+                android:id="@+id/menuItem_privacyPolicy"
+                android:title="@string/menuItem_privacyPolicy"/>
+            <item
+                android:id="@+id/menuItem_licenses"
+                android:title="@string/menuItem_licenses"/>
         </menu>
     </item>
     <item
