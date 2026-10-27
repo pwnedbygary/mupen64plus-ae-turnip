@@ -32,7 +32,8 @@ The source code of a release is this repository at that tag. Each release page a
 "Source code" downloads of the tag. The tag contains the source of every native library that
 the build compiles, the copies of the upstream projects, and the build scripts. For the
 prebuilt libraries in [Prebuilt libraries](#prebuilt-libraries), the repository does not
-record how they were built, and it does not contain the source of `libSDL2_net.so`.
+record how they were built, and it does not contain the source of `libSDL2_net.so` or of the
+libpng 1.6.34 inside `libfreetype.so`.
 
 ## Parts that are not open source
 
@@ -63,7 +64,8 @@ table lists each component in them. The full text of each notice in the last col
 | MD5 code by L. Peter Deutsch | `libmupen64plus-core.so` | `Zlib` | Not recorded | Header of `mupen64plus-core/upstream/subprojects/md5/md5.c` |
 | xxHash (0.8.3 in the core, 0.8.0 in GLideN64 and Glide64mk2) | `libmupen64plus-core.so`, `libmupen64plus-video-GLideN64.so`, `libmupen64plus-video-glide64mk2*.so` (ARM only) | `BSD-2-Clause` | <https://github.com/Cyan4973/xxHash> | Headers of `mupen64plus-core/upstream/subprojects/xxhash/xxhash.h`, `mupen64plus-video-gliden64/upstream/src/xxHash/xxhash.h`, `mupen64plus-video-glide64mk2/upstream/src/Neon/xxhash.h` |
 | CIC-NUS-6105 code by X-Scale | `libmupen64plus-core.so` | `BSD-2-Clause` | Not recorded | Header of `mupen64plus-core/upstream/src/device/pif/n64_cic_nus_6105.c` |
-| libpng 1.6.34, prebuilt static library | `libmupen64plus-core.so`, `libmupen64plus-video-GLideN64.so`, `libmupen64plus-video-rice.so` | `Libpng` | <https://github.com/pnggroup/libpng> | `ndkLibs/png/LICENSE` |
+| libpng 1.6.59, built from source as a static library | `libmupen64plus-core.so`, `libmupen64plus-video-rice.so` | `libpng-2.0` | <https://github.com/pnggroup/libpng>, tag `v1.6.59` | `ndkLibs/png/LICENSE` |
+| libpng 1.6.34, inside the prebuilt `libfreetype.so` (GLideN64 uses this copy) | `libfreetype.so` | `Libpng` | <https://github.com/pnggroup/libpng>, tag `v1.6.34` | `ndkLibs/png/LICENSE` at commit `9bcca07a6`; the current file is libpng 1.6.59's |
 | SDL_net, prebuilt (the headers in this repository are version 2.0.1) | `libSDL2_net.so` | `Zlib` | <https://github.com/libsdl-org/SDL_net> | Header of `ndkLibs/SDL_net/include/SDL_net.h` |
 | libadrenotools | `libae-bridge.so`; hook libraries `libfile_redirect_hook.so`, `libgsl_alloc_hook.so`, `libhook_impl.so`, `libmain_hook.so` | `BSD-2-Clause` | <https://github.com/bylaws/libadrenotools> | `adrenotools/LICENSE` |
 | liblinkernsbypass | `libae-bridge.so`, `libhook_impl.so` | `BSD-2-Clause` | <https://github.com/bylaws/liblinkernsbypass> | `adrenotools/lib/linkernsbypass/LICENSE` |
@@ -114,18 +116,18 @@ libraries that these libraries use. Android provides them.
 ### Prebuilt libraries
 
 These libraries are committed to `ndkLibs/libs/` as binaries. The build copies them into the
-app. The repository does not record how they were built. For `libSDL2_net.so`, it does not
-contain the source either. This is to be fixed later.
+app. The repository does not record how they were built. For `libSDL2_net.so`, and for the
+libpng 1.6.34 in `libfreetype.so` and `libpng.a`, it does not contain the source either. This
+is to be fixed later.
 
 | Prebuilt library | Last committed | Source in this repository | What is missing |
 |---|---|---|---|
 | `libSDL2_net.so` | 19 December 2021 | Headers only (`ndkLibs/SDL_net/include/`) | The source and the build recipe |
-| `libfreetype.so` | 19 December 2021 | Android's FreeType tree (`ndkLibs/freetype/`) | The build recipe: `ndkLibs/freetype/Android.mk` builds a library named `libft2` |
+| `libfreetype.so` | 19 December 2021 | Android's FreeType tree (`ndkLibs/freetype/`) | The build recipe: `ndkLibs/freetype/Android.mk` builds a library named `libft2`. The source of the libpng 1.6.34 inside it: `ndkLibs/png/` now holds libpng 1.6.59 |
 | `libsoundtouch.so`, `libsoundtouch_fp.so` | 19 December 2021 | SoundTouch 2.2 (`ndkLibs/soundtouch/`) | A working build recipe: the paths in `ndkLibs/soundtouch/Android.mk` do not resolve from where the file is |
 | `libnatpmp.so` | 22 December 2021 | libnatpmp (`ndkLibs/libnatpmp/`) | The build recipe: `ndkLibs/libnatpmp/CMakeLists.txt` builds a static library |
 | `libminiupnp-build.so` | 19 December 2021 | miniupnpc 2.2.2 and `ndkLibs/miniupnp-build/Android.mk` | A record that the binary was built from this source |
-| `libpng.a` (static, inside three libraries) | 19 December 2021 | libpng 1.6.34 (`ndkLibs/png/`) | The build recipe; the binary's version string is 1.6.34 |
-| `libEGLLoader.a` (static, inside two libraries) | 19 December 2021 | `ndkLibs/GL/GL/EGLLoader.cpp` and `ndkLibs/GL/GL/Android.mk` | A record that the binary was built from this source |
+| `libpng.a` (static; GLideN64 links it, but takes its `png_*` functions from `libfreetype.so`) | 19 December 2021 | None: `ndkLibs/png/` now holds libpng 1.6.59, which the core and Rice use | The source (the binary's version string is 1.6.34) and the build recipe |
 
 ## Java and Kotlin libraries
 
@@ -611,8 +613,147 @@ Mesa's `gl.h` header, used by EGLLoader in `libae-bridge.so` and `libmupen64plus
  * OTHER DEALINGS IN THE SOFTWARE.
 ```
 
+<!-- notice: libpng-1-6-59 -->
+libpng 1.6.59, a static library inside `libmupen64plus-core.so` and `libmupen64plus-video-rice.so`. Source: `libpng-1.6.59/LICENSE` in <https://download.sourceforge.net/libpng/libpng-1.6.59.tar.xz> (archive SHA-256 `d80dd2a38a37f803cb9b6ac7b14bd6e74ddc3b654780a8380bdf93523fdb4389`), lines 1-134; the same file is `ndkLibs/png/LICENSE` in this repository.
+```text
+COPYRIGHT NOTICE, DISCLAIMER, and LICENSE
+=========================================
+
+PNG Reference Library License version 2
+---------------------------------------
+
+ * Copyright (c) 1995-2026 The PNG Reference Library Authors.
+ * Copyright (c) 2018-2026 Cosmin Truta.
+ * Copyright (c) 2000-2002, 2004, 2006-2018 Glenn Randers-Pehrson.
+ * Copyright (c) 1996-1997 Andreas Dilger.
+ * Copyright (c) 1995-1996 Guy Eric Schalnat, Group 42, Inc.
+
+The software is supplied "as is", without warranty of any kind,
+express or implied, including, without limitation, the warranties
+of merchantability, fitness for a particular purpose, title, and
+non-infringement.  In no event shall the Copyright owners, or
+anyone distributing the software, be liable for any damages or
+other liability, whether in contract, tort or otherwise, arising
+from, out of, or in connection with the software, or the use or
+other dealings in the software, even if advised of the possibility
+of such damage.
+
+Permission is hereby granted to use, copy, modify, and distribute
+this software, or portions hereof, for any purpose, without fee,
+subject to the following restrictions:
+
+ 1. The origin of this software must not be misrepresented; you
+    must not claim that you wrote the original software.  If you
+    use this software in a product, an acknowledgment in the product
+    documentation would be appreciated, but is not required.
+
+ 2. Altered source versions must be plainly marked as such, and must
+    not be misrepresented as being the original software.
+
+ 3. This Copyright notice may not be removed or altered from any
+    source or altered source distribution.
+
+
+PNG Reference Library License version 1 (for libpng 0.5 through 1.6.35)
+-----------------------------------------------------------------------
+
+libpng versions 1.0.7, July 1, 2000, through 1.6.35, July 15, 2018 are
+Copyright (c) 2000-2002, 2004, 2006-2018 Glenn Randers-Pehrson, are
+derived from libpng-1.0.6, and are distributed according to the same
+disclaimer and license as libpng-1.0.6 with the following individuals
+added to the list of Contributing Authors:
+
+    Simon-Pierre Cadieux
+    Eric S. Raymond
+    Mans Rullgard
+    Cosmin Truta
+    Gilles Vollant
+    James Yu
+    Mandar Sahastrabuddhe
+    Google Inc.
+    Vadim Barkov
+
+and with the following additions to the disclaimer:
+
+    There is no warranty against interference with your enjoyment of
+    the library or against infringement.  There is no warranty that our
+    efforts or the library will fulfill any of your particular purposes
+    or needs.  This library is provided with all faults, and the entire
+    risk of satisfactory quality, performance, accuracy, and effort is
+    with the user.
+
+Some files in the "contrib" directory and some configure-generated
+files that are distributed with libpng have other copyright owners, and
+are released under other open source licenses.
+
+libpng versions 0.97, January 1998, through 1.0.6, March 20, 2000, are
+Copyright (c) 1998-2000 Glenn Randers-Pehrson, are derived from
+libpng-0.96, and are distributed according to the same disclaimer and
+license as libpng-0.96, with the following individuals added to the
+list of Contributing Authors:
+
+    Tom Lane
+    Glenn Randers-Pehrson
+    Willem van Schaik
+
+libpng versions 0.89, June 1996, through 0.96, May 1997, are
+Copyright (c) 1996-1997 Andreas Dilger, are derived from libpng-0.88,
+and are distributed according to the same disclaimer and license as
+libpng-0.88, with the following individuals added to the list of
+Contributing Authors:
+
+    John Bowler
+    Kevin Bracey
+    Sam Bushell
+    Magnus Holmgren
+    Greg Roelofs
+    Tom Tanner
+
+Some files in the "scripts" directory have other copyright owners,
+but are released under this license.
+
+libpng versions 0.5, May 1995, through 0.88, January 1996, are
+Copyright (c) 1995-1996 Guy Eric Schalnat, Group 42, Inc.
+
+For the purposes of this copyright and license, "Contributing Authors"
+is defined as the following set of individuals:
+
+    Andreas Dilger
+    Dave Martindale
+    Guy Eric Schalnat
+    Paul Schmidt
+    Tim Wegner
+
+The PNG Reference Library is supplied "AS IS".  The Contributing
+Authors and Group 42, Inc. disclaim all warranties, expressed or
+implied, including, without limitation, the warranties of
+merchantability and of fitness for any purpose.  The Contributing
+Authors and Group 42, Inc. assume no liability for direct, indirect,
+incidental, special, exemplary, or consequential damages, which may
+result from the use of the PNG Reference Library, even if advised of
+the possibility of such damage.
+
+Permission is hereby granted to use, copy, modify, and distribute this
+source code, or portions hereof, for any purpose, without fee, subject
+to the following restrictions:
+
+ 1. The origin of this source code must not be misrepresented.
+
+ 2. Altered versions must be plainly marked as such and must not
+    be misrepresented as being the original source.
+
+ 3. This Copyright notice may not be removed or altered from any
+    source or altered source distribution.
+
+The Contributing Authors and Group 42, Inc. specifically permit,
+without fee, and encourage the use of this source code as a component
+to supporting the PNG file format in commercial products.  If you use
+this source code in a product, acknowledgment is not required but would
+be appreciated.
+```
+
 <!-- notice: libpng -->
-libpng 1.6.34, a static library inside `libmupen64plus-core.so`, `libmupen64plus-video-GLideN64.so` and `libmupen64plus-video-rice.so`. Source: `ndkLibs/png/LICENSE`, lines 1-133, at `9bcca07a6`.
+libpng 1.6.34, inside the prebuilt `libfreetype.so`, whose `png_*` functions GLideN64 calls. Source: `ndkLibs/png/LICENSE`, lines 1-133, at `9bcca07a6`.
 ```text
 
 This copy of the libpng notices is provided for your convenience.  In case of
@@ -2122,5 +2263,8 @@ these ways that matter for this page:
   is the text of the block above for xxHash 0.8.0, and its minizip and MD5 notices are the
   blocks above. It has no `skipset.h` or `ints.h`, so Mark Adler's two notices above do not
   apply to it.
+- Its core and Rice contain libpng 1.6.34, from the prebuilt `libpng.a`, instead of libpng
+  1.6.59. Its notice is the block above for libpng 1.6.34. The tag `V339` holds a libpng
+  1.6.34 source tree in `ndkLibs/png/`.
 - Its `mupen64plus.ini` game database is an older version.
 - It does not have the trophy icon, `ic_trophy.xml`, which was added on 21 October 2026.
