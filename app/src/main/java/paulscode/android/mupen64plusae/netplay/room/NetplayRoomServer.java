@@ -189,7 +189,7 @@ public class NetplayRoomServer {
         serviceInfo.setHost(DeviceUtil.getIPAddress());
         serviceInfo.setAttribute("dummy", "dummy");
 
-        Log.i(TAG, "NS registering: " + serviceInfo.toString());
+        Log.i(TAG, "NS registering: " + serviceInfo.getServiceName() + " port=" + serviceInfo.getPort());
 
         mNsdManager = (NsdManager) mContext.getSystemService(Context.NSD_SERVICE);
         mNsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, mRegistrationListener);

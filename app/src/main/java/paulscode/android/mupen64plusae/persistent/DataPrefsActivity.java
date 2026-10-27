@@ -123,7 +123,7 @@ public class DataPrefsActivity extends AppCompatPreferenceActivity implements On
                                 task.getResult(com.google.android.gms.common.api.ApiException.class);
                         if (account != null) {
                             Notifier.showToast(DataPrefsActivity.this, R.string.alreadyHaveGoogleDrivePermissions);
-                            Log.i("DataPrefs", "Sign in success: " + account.getEmail());
+                            Log.i("DataPrefs", "Sign in success");
                         }
                     } catch (Exception e) {
                         Log.e("DataPrefs", "Sign in error: " + e.getMessage(), e);
@@ -328,7 +328,7 @@ public class DataPrefsActivity extends AppCompatPreferenceActivity implements On
 
         if (account != null && GoogleSignIn.hasPermissions(account, driveFileScope, emailScope)) {
             Notifier.showToast(this, R.string.alreadyHaveGoogleDrivePermissions);
-            Log.i("DataPrefs", "Already have permission: " + account.getEmail());
+            Log.i("DataPrefs", "Already have permission");
             return;
         }
 

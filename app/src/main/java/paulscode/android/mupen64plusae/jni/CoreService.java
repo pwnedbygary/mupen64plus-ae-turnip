@@ -632,7 +632,7 @@ public class CoreService extends Service implements CoreInterface.OnFpsChangedLi
         }
 
         if (!mNetplayInitSuccess) {
-            Log.e(TAG, "Netplay init unsuccessful host=" + address.getHostAddress() + " port=" + port);
+            Log.e(TAG, "Netplay init unsuccessful port=" + port);
         }
     }
 

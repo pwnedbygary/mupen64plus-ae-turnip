@@ -128,7 +128,8 @@ public class OnlineNetplayHandler {
             clientThread.start();
 
         } catch (IOException e) {
-            e.printStackTrace();
+            // The exception's message can name both addresses.
+            Log.e(TAG, "Unable to connect: " + e.getClass().getSimpleName());
         }
     }
 
@@ -273,7 +274,7 @@ public class OnlineNetplayHandler {
         final int numIpAddressChars = 46;
         String hostname = getStringFromBuffer(numIpAddressChars);
         int port = mReceiveBuffer.getInt();
-        Log.i(TAG, "Got room data, ip=" + hostname + " port=" + port);
+        Log.i(TAG, "Got room data, port=" + port);
         InetAddress address = port != -1 ? InetAddress.getByName(hostname) : null;
         mOnOnlineNetplayData.onRoomData(address, port);
     }
@@ -313,7 +314,8 @@ public class OnlineNetplayHandler {
                     }
                 }
             } catch (IOException e) {
-                e.printStackTrace();
+                // An UnknownHostException's message names the host.
+                Log.e(TAG, "Online netplay TCP client error: " + e.getClass().getSimpleName());
                 mRunning = false;
                 break;
             }

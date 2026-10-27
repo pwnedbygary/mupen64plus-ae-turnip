@@ -74,8 +74,7 @@ public class NetplayRoomClient {
 
         @Override
         public void onServiceResolved(NsdServiceInfo serviceInfo) {
-            Log.i(TAG, "Resolve Succeeded. host=" + serviceInfo.getHost().getHostAddress() +
-                    " port=" + serviceInfo.getPort());
+            Log.i(TAG, "Resolve Succeeded. port=" + serviceInfo.getPort());
             connectToServer(serviceInfo.getHost(), serviceInfo.getPort());
         }
     }
@@ -89,7 +88,8 @@ public class NetplayRoomClient {
                 InetAddress address = InetAddress.getByName(hostname);
                 connectToServer(address, port);
             } catch (UnknownHostException e) {
-                e.printStackTrace();
+                // The exception's message names the host.
+                Log.e(TAG, "Unable to resolve the host");
             }
         });
         connectThread.setDaemon(true);
@@ -167,7 +167,7 @@ public class NetplayRoomClient {
 
             @Override
             public void onServiceFound(NsdServiceInfo service) {
-                Log.i(TAG, "NSD Service discovery success: " + service);
+                Log.i(TAG, "NSD Service discovery success: " + service.getServiceName());
                 if (!service.getServiceType().equals(NetplayRoomServer.DEFAULT_SERVICE_TYPE)) {
                     Log.i(TAG, "NSD Unknown Service Type: " + service.getServiceType());
                 } else if (service.getServiceName().contains(NetplayRoomServer.DEFAULT_SERVICE_NAME)){
@@ -180,7 +180,7 @@ public class NetplayRoomClient {
             public void onServiceLost(NsdServiceInfo service) {
                 // When the network service is no longer available.
                 // Internal bookkeeping code goes here.
-                Log.e(TAG, "NSD service lost: " + service);
+                Log.e(TAG, "NSD service lost: " + service.getServiceName());
             }
 
             @Override
