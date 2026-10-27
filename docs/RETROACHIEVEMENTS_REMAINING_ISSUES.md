@@ -2282,25 +2282,53 @@ E. Defaults and UX
 F. Transparency and legality
 - N/A (monetization): OBSERVED: neither the app's sources nor its Gradle files use a billing or
   ads library or ask for the billing permission.
-- USER (licenses and notices): OBSERVED: the README names the app's license and libadrenotools'
-  (`README.md:151-153`), and the app ships the core's license list in its assets
-  (`app/src/main/assets/mupen64plus_data/doc/LICENSES`), but no page lists every shipped core and
-  plugin with its license and upstream link; the in-app Credits entry opens a contributor roll
-  (`GalleryActivity.java:935-937`).
-- USER (privacy policy): none is published with the app. OBSERVED: besides RetroAchievements, the
-  app uses Google sign-in and the Google Drive API for its backups of game data
-  (`app/build.gradle:214-215,220`). REFERENCE: section G rejects a policy with contradictions,
-  such as "no third parties" while using social logins, so the policy has to name them.
+- MET (licenses and notices): OBSERVED: `LICENSES.md`, linked from the README
+  (`README.md:155,166`), lists each library the app ships and the third-party data, art and
+  fonts found in it, each with its license, its upstream link where known and where its text
+  is, and reproduces each license notice in full. It names the parts that are not open source,
+  angrylion-rdp-plus under MAME's non-commercial license and the Google Play services libraries,
+  and the art and data whose terms are unknown.
+- MET (non-commercial licenses): OBSERVED: angrylion-rdp-plus's is the only non-commercial
+  license among the known licenses of the parts the app ships (`LICENSES.md`, "Parts that are
+  not open source"; the terms of some art are unknown), and the app is free: it has no paid
+  features (see the monetization item above), and the README offers its releases as free
+  downloads from GitHub (`README.md:12,129`).
+- USER (license obligations for the shipped binaries): OBSERVED: the source of each release is
+  this repository at the release's tag (`LICENSES.md`, "Source code of each release"), except for
+  the prebuilt libraries: the repository does not record how they were built, and it does not
+  hold the source of `libSDL2_net.so` ("Prebuilt libraries"). One of them, SoundTouch, is
+  `LGPL-2.1-or-later` ("Native libraries"). The page's library table shows two combinations from
+  upstream: GLideN64's library is `GPL-2.0-only`, as its license file names version 2 and no
+  later one (`mupen64plus-video-gliden64/upstream/LICENSE:4`), and has `GPL-3.0` code (xBRZ);
+  angrylion-rdp-plus's library has MAME-licensed code with `GPL-2.0-or-later` glue
+  (`gfx_m64p.c`). USER: the maintainer has to settle whether these meet each license; the page
+  says the prebuilt libraries are to be fixed later.
+- MET (privacy policy): OBSERVED: `PRIVACY.md`, linked from the README
+  (`README.md:153`), says what the app sends to each service, Google sign-in and
+  Drive among them, and where each service is and how long it keeps data, or that this is not
+  published ("Where the services are and how long they keep data"). The app sends its maintainer
+  nothing, as it has no analytics or crash reporting ("What the app does not do"), so no
+  telemetry is retained.
+- USER (retention periods): OBSERVED: the policy can give no retention period for
+  RetroAchievements, which publishes none, or for `coverart.zurita.me` and `np.zurita.me`, which
+  no privacy policy covers. Nor does RetroAchievements publish where its servers are; the policy
+  names Cloudflare (US), which serves it.
+- USER (old store text): OBSERVED: `doc/publish/listing.txt` and its translations still hold the
+  parent app's store text, which names `www.paulscode.com`. It says "99¢ IS FOR DONATIONS ONLY"
+  (`listing.txt:20`) and explains the Internet permission with "The internet is used to send
+  crash reports" (`:35`). DERIVED: neither matches this app, which the README offers free from
+  GitHub and which has no crash reporting (`PRIVACY.md`, "What the app does not do"). REFERENCE:
+  section G rejects a privacy policy with contradictions. USER: update or remove those files
+  before applying.
 
 G. Auto-fail criteria: each is covered under B, C or F above.
 
 H. Banned emulators
 - N/A: the page bans only Afterplay.
 
-Before applying, the maintainer must publish a privacy policy (retention periods, server locations,
-GDPR, and the Google services named under F), publish a page that lists every shipped core and
-plugin with its license and upstream link, run the device checks the sections above list, and send
-the approval request to RetroAchievements; the page names no contact for it. The request must
+The privacy policy and the license page are published (see F). Before applying, the maintainer
+must settle the USER items under F, run the device checks the sections above list, and send the
+approval request to RetroAchievements; the page names no contact for it. The request must
 disclose `Mupen64PlusAE` and `Mupen64PlusAE/3.0 (Android)` (see "User-Agent") and should name the
 parent and its first public release (see D) and the core's database patches (see B).
 

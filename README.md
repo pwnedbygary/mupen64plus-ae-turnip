@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <b>100% Free & Open-Source</b> &bull; No Ads &bull; No Analytics &bull; No Pro Gates &bull; Free Cloud Saves & Netplay
+  <b>Free & Open-Source</b> &bull; No Ads &bull; No Analytics &bull; No Pro Gates &bull; Free Cloud Saves & Netplay
 </p>
 
 ---
@@ -18,7 +18,7 @@
 
 - **Wave Race Shindou English translation compatibility** — the verified translation now inherits the original Shindou ROM-database defaults, including Count per Op **3**, and existing installations refresh their bundled database. Explicit per-game overrides remain unchanged. Gameplay at the manual setting of 3 is device-confirmed; automatic-default behavior and save/reopen still need device verification.
 
-- **RetroAchievements support** — vendored rcheevos with native glue and a JNA bridge, a settings screen, password sign-in that keeps the session token and deletes the password, and hardcore mode enforced across loading save states and slots, GameShark and cheats.
+- **RetroAchievements support** — vendored rcheevos with native glue and a JNA bridge, a settings screen, password sign-in that keeps the session token, and hardcore mode enforced across loading save states and slots, GameShark and cheats.
 - **Gallery, orientation and theme fixes** — orientation changes are handled in place, the gallery keeps its draw-behind-system-bars behaviour across rotation, stale service broadcasts after gallery recreation are fixed (issue #1), the theme quick-switch crash from stacked `activity.recreate()` is fixed, and every dialog and popup now follows the app theme.
 - **Large ROM support** — ROMs larger than 64 MB are accepted, fixing the B3313 new-save crash (issue #3).
 - **Per-game GPU driver control** — corrected per-game driver labelling plus a per-game "force stock driver" option.
@@ -148,6 +148,20 @@ cd mupen64plus-ae-turnip
 
 ---
 
+## Privacy and licenses
+
+- [Privacy policy](PRIVACY.md): what the app sends, to whom and when, what stays on your
+  device, and how to delete it.
+- [Licenses](LICENSES.md): the app's license, and each third-party library, data file and
+  piece of art found in the app, with its license, its upstream link where known and the
+  full text of its notice.
+
+---
+
 ## License
 
-Licensed under the **GNU General Public License v3.0**, following Mupen64Plus-AE. The vendored [libadrenotools](https://github.com/bylaws/libadrenotools) is BSD-2-Clause (see `adrenotools/LICENSE`).
+Licensed under the **GNU General Public License v3.0** (see [`gpl-license`](gpl-license)),
+following Mupen64Plus-AE. The app also contains third-party code, data and art under other
+licenses, such as the vendored [libadrenotools](https://github.com/bylaws/libadrenotools)
+(BSD-2-Clause), and two parts that are not open source. [LICENSES.md](LICENSES.md) lists
+them.
