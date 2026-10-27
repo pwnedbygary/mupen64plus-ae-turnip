@@ -2321,9 +2321,12 @@ F. Transparency and legality
   `www.paulscode.com` (`doc/publish/listing.txt:20,35,46` at `058c34e21`). DERIVED: neither
   statement matched this app, which the README offers free from GitHub (`README.md:12,129`)
   and which has no crash reporting (`PRIVACY.md`, "What the app does not do"). REFERENCE:
-  section G rejects a privacy policy with contradictions. OBSERVED: the F-Droid description is
-  still the parent's (`fastlane/metadata/android/full_description.txt`): it names
-  `www.paulscode.com` for support and says nothing about data, permissions or price.
+  section G rejects a privacy policy with contradictions. OBSERVED: the F-Droid description
+  (`fastlane/metadata/android/en-US/full_description.txt`) describes this fork and names none
+  of the parent's sites: it sends help and questions to GitHub Discussions and bug reports to
+  GitHub issues, and links `PRIVACY.md` and `LICENSES.md`. Like `PRIVACY.md`, it says that the
+  app shows no ads and has no analytics or crash reporting. It leaves out Google Drive backup,
+  whose sign-in `PRIVACY.md` says is not confirmed, and says nothing about permissions or price.
 
 G. Auto-fail criteria: each is covered under B, C or F above.
 
