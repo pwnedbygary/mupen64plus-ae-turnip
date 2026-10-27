@@ -501,8 +501,6 @@ M64P_FPU_INLINE void c_f_s(uint32_t* fcr31, const float* source, const float* ta
     if ((isnan(*source) || isnan(*target)))
     {
         (*fcr31) &= ~FCR31_CMP_BIT;
-        (*fcr31) |= FCR31_CAUSE_INVALIDOP_BIT;
-        (*fcr31) |= FCR31_FLAG_INVALIDOP_BIT;
         return;
     }
 
@@ -750,7 +748,7 @@ M64P_FPU_INLINE void c_un_d(uint32_t* fcr31, const double* source, const double*
 
     if (isnan(*source) || isnan(*target))
     { 
-        (*fcr31) &= ~FCR31_CMP_BIT;
+        (*fcr31) |= FCR31_CMP_BIT;
         return;
     }
 

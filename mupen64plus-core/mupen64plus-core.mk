@@ -153,6 +153,12 @@ LOCAL_CFLAGS :=         \
     -DWITHOUT_SDL=1     \
     -DUSE_GLES=1
 
+# Fast math lets the compiler assume that no value is a NaN: isnan() is folded
+# to false, and a compare with a NaN can come out either way. That is wrong for
+# the interpreters' MIPS FPU compares and for rcheevos' achievement conditions
+# on floats.
+LOCAL_CFLAGS += -fno-fast-math
+
 LOCAL_LDFLAGS :=                                                    \
     $(COMMON_LDFLAGS)                                               \
     -Wl,-Bsymbolic                                                  \
