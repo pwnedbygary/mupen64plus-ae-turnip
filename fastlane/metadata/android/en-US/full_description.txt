@@ -1,0 +1,28 @@
+M64P Turnip is a Nintendo 64 emulator for Android. It is a fork of Mupen64Plus-AE (Mupen64Plus, Android Edition).
+
+Features:
+* Video plugins, including GLideN64 and the Vulkan renderer ParaLLEl-RDP.
+* Turnip GPU drivers for the Vulkan renderer. You can import a driver zip file, or download one in the app from public projects on GitHub.
+* RetroAchievements. It stays off until you turn it on and sign in.
+* Save states, a cheat editor, and controller and touchscreen profiles.
+* Netplay with other devices on your local network.
+* Games in zip files, and in 7z files on Android 7.0 or newer.
+* Color themes and presets.
+
+The app needs Android 6.0 or newer. Turnip drivers need a 64-bit ARM device with an Adreno GPU and Android 9 or newer.
+
+If a game has graphics glitches or runs slowly, try another video plugin. Some video plugins also have a frameskip setting.
+
+The app shows no ads. It has no analytics and no crash reporting.
+
+For help and questions, use GitHub Discussions:
+https://github.com/pwnedbygary/mupen64plus-ae-turnip/discussions
+
+To report a bug, use GitHub issues:
+https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues
+
+Privacy policy:
+https://github.com/pwnedbygary/mupen64plus-ae-turnip/blob/master/PRIVACY.md
+
+Licenses:
+https://github.com/pwnedbygary/mupen64plus-ae-turnip/blob/master/LICENSES.md
