@@ -2314,13 +2314,16 @@ F. Transparency and legality
   no privacy policy covers; only release V339 uses them.
   Nor does RetroAchievements publish where its servers are; the policy names Cloudflare (US),
   which serves it.
-- USER (old store text): OBSERVED: `doc/publish/listing.txt` and its translations still hold the
-  parent app's store text, which names `www.paulscode.com`. It says "99¢ IS FOR DONATIONS ONLY"
-  (`listing.txt:20`) and explains the Internet permission with "The internet is used to send
-  crash reports" (`:35`). DERIVED: neither matches this app, which the README offers free from
-  GitHub and which has no crash reporting (`PRIVACY.md`, "What the app does not do"). REFERENCE:
-  section G rejects a privacy policy with contradictions. USER: update or remove those files
-  before applying.
+- MET (old store listing): OBSERVED: the repository no longer holds the parent app's store
+  listing, `doc/publish/listing.txt` and its 22 translations, nor their entries in `.tx/config`
+  and `tools/pull-translations.sh`. The English listing said "99¢ IS FOR DONATIONS ONLY" and
+  explained the Internet permission with "The internet is used to send crash reports", and named
+  `www.paulscode.com` (`doc/publish/listing.txt:20,35,46` at `058c34e21`). DERIVED: neither
+  statement matched this app, which the README offers free from GitHub (`README.md:12,129`)
+  and which has no crash reporting (`PRIVACY.md`, "What the app does not do"). REFERENCE:
+  section G rejects a privacy policy with contradictions. OBSERVED: the F-Droid description is
+  still the parent's (`fastlane/metadata/android/full_description.txt`): it names
+  `www.paulscode.com` for support and says nothing about data, permissions or price.
 
 G. Auto-fail criteria: each is covered under B, C or F above.
 
