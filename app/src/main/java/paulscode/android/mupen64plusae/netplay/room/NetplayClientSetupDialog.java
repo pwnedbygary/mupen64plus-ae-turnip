@@ -28,7 +28,7 @@ import paulscode.android.mupen64plusae.dialog.ThemedAlertDialog;
 import paulscode.android.mupen64plusae.ui.UiTheme;
 
 import java.net.InetAddress;
-import java.net.UnknownHostException;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -68,8 +68,6 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
     private ServerListAdapter mServerListAdapter = null;
 
     private final ArrayList<NetplayServer> mServers = new ArrayList<>();
-
-    private OnlineNetplayHandler mOnlineNetplayHandler = null;
 
     private NetplayRoomClient mRoomClient = null;
 
@@ -238,10 +236,6 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
                     if (mActivity instanceof OnServerDialogActionListener)
                     {
                         mActivity.runOnUiThread(() -> ((OnServerDialogActionListener) mActivity).start());
-
-                        if (mOnlineNetplayHandler != null) {
-                            mOnlineNetplayHandler.notifyGameStartedAsync();
-                        }
                     }
                     else
                     {
@@ -309,55 +303,16 @@ public class NetplayClientSetupDialog extends DialogFragment implements AdapterV
                 mEnterCodeButton.setText(R.string.netplay_enterCode);
 
                 if (mRoomClient != null) {
+                    String codeString = manualCode.getText().toString();
 
-                    try {
-                        String codeString = manualCode.getText().toString();
+                    if (!TextUtils.isEmpty(codeString)) {
+                        InetSocketAddress host = NetplayCode.decode(codeString);
 
-                        if (!TextUtils.isEmpty(codeString)) {
-                            long code = Long.parseLong(codeString);
-
-                            Thread onlineNetplayThread = new Thread(() -> {
-
-                                try {
-                                    if (mOnlineNetplayHandler != null) {
-                                        mOnlineNetplayHandler.disconnect();
-                                    }
-                                    mOnlineNetplayHandler = new OnlineNetplayHandler(InetAddress.getByName("np.zurita.me"),
-                                            37520, -1, code,
-                                            new OnlineNetplayHandler.OnOnlineNetplayData() {
-
-                                                @Override
-                                                public void onInitSessionResponse(boolean success) {
-                                                    if (!success) {
-                                                        mActivity.runOnUiThread(() -> Notifier.showToast(mActivity, R.string.netplay_serverVersionMismatch));
-                                                    }
-                                                }
-
-                                                @Override
-                                                public void onRoomData(InetAddress address, int port) {
-                                                    if (mRoomClient != null && port != -1) {
-                                                        mRoomClient.connectToServer(address.getHostName(), port);
-                                                    }
-
-                                                    if (port == -1) {
-                                                        mActivity.runOnUiThread(() -> Notifier.showToast(mActivity, R.string.netplay_codeNotFound));
-                                                    }
-
-                                                    mOnlineNetplayHandler.disconnect();
-                                                }
-                                            });
-
-                                    mOnlineNetplayHandler.connectAndGetDataFromCode();
-
-                                } catch (UnknownHostException e) {
-                                    e.printStackTrace();
-                                }
-                            });
-                            onlineNetplayThread.setDaemon(true);
-                            onlineNetplayThread.start();
+                        if (host != null) {
+                            mRoomClient.connectToServer(host.getAddress().getHostAddress(), host.getPort());
+                        } else {
+                            Notifier.showToast(mActivity, R.string.netplay_codeNotValid);
                         }
-                    } catch (NumberFormatException e) {
-                        e.printStackTrace();
                     }
                 }
             }

@@ -873,7 +873,6 @@
    <string name="netplay_getCode">Получить код</string>
    <string name="netplay_enterCode">Введите код</string>
    <string name="netplay_code">Код</string>
-   <string name="netplay_codeNotFound">Код не найден!</string>
    <string name="netplay_codeRetrieveFailure">Не удалось получить код!</string>
    <string name="netplay_advanced">Расширенные</string>
    

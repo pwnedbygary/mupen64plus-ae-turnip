@@ -86,6 +86,9 @@ public:
 	// Retrieves port lists mapped by PPSSPP for current LAN IP & other's applications
 	bool RefreshPortList();
 
+	// Get the router's external IPv4 address, empty if UPnP isn't initialized or the router doesn't report a valid one
+	std::string GetExternalIPAddress();
+
 protected:
 	struct UPNPUrls* urls = NULL;
 	struct IGDdatas* datas = NULL;

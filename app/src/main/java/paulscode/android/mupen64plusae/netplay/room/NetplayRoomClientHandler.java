@@ -27,12 +27,6 @@ class NetplayRoomClientHandler
          * @param playerNumber Player number
          */
         void onClientLeave(int playerNumber);
-
-        /**
-         * Called when we a get a room code
-         * @param roomCode Room code
-         */
-        void onRoomCode(long roomCode);
     }
 
     static final String TAG = "ClientHandler";
@@ -40,7 +34,6 @@ class NetplayRoomClientHandler
     static final int ID_GET_ROOM_DATA = 0;
     static final int ID_REGISTER_TO_ROOM = 1;
     static final int ID_LEAVE_ROOM = 2;
-    static final int ID_ONLINE_NETPLAY_ROOM = 101;
     static final int ID_SEND_ROOM_DATA = 3;
     static final int ID_SEND_REGISTRATION_DATA = 4;
     static final int ID_SEND_START_PLAY = 5;
@@ -231,22 +224,6 @@ class NetplayRoomClientHandler
         }
     }
 
-    private void handleCode() throws IOException {
-        int offset = 0;
-        mReceiveBuffer.reset();
-        while (offset < ID_SIZE && mRunning) {
-            int bytesRead = mSocketInputStream.read(mReceiveBuffer.array(), offset, ID_SIZE - offset);
-            offset += bytesRead != -1 ? bytesRead : 0;
-            if (bytesRead == -1) {
-                mRunning = false;
-            }
-        }
-
-        int code = mReceiveBuffer.getInt();
-        long codeLong = code & 0xFFFFFFFFL;
-        mOnClientRegistered.onRoomCode(codeLong);
-    }
-
     public void sendStartAsync()
     {
         // Must run on a separate thread, running network operation on the main
@@ -300,9 +277,6 @@ class NetplayRoomClientHandler
                     }
                     else if (id == ID_LEAVE_ROOM) {
                         handleLeaveRoom();
-                    }
-                    else if (id == ID_ONLINE_NETPLAY_ROOM) {
-                        handleCode();
                     } else {
                         mRunning = false;
                     }

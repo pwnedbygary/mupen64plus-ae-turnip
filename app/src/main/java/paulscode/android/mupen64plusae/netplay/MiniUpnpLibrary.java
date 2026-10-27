@@ -43,6 +43,12 @@ public interface MiniUpnpLibrary extends Library {
     boolean UPnP_Remove(String protocol, int port);
 
     /**
+     * Get the router's external IPv4 address through UPnP
+     * @return Dotted address, or an empty string if UPnP is not initialized or the router reports none
+     */
+    String UPnP_GetExternalAddress();
+
+    /**
      * Initialize NAT PMP library
      */
     void NATPMP_Init(int gatewayIp);
@@ -67,4 +73,10 @@ public interface MiniUpnpLibrary extends Library {
      * @param port External port
      */
     boolean NATPMP_Remove(String protocol, int port);
+
+    /**
+     * Get the public IPv4 address the router reported when NAT-PMP was initialized
+     * @return Dotted address, or an empty string if none was received
+     */
+    String NATPMP_GetPublicAddress();
 }

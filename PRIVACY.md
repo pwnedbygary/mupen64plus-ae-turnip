@@ -8,10 +8,10 @@ Last updated: 27 October 2026
 
 - The app shows no ads. It has no analytics and no crash reporting.
 - The maintainer runs no server. The app sends nothing to the maintainer.
-- Some features send data to other services: RetroAchievements, two servers at
-  `zurita.me` (cover art and online netplay), Google Drive and GitHub. Cover art is on by
-  default. RetroAchievements and Google Drive backup are off until you turn them on.
-  Each feature is described below.
+- Some features send data to other services: RetroAchievements, a cover-art server at
+  `zurita.me`, Google Drive and GitHub. Release V339 also uses a netplay server at
+  `zurita.me`. Cover art is on by default. RetroAchievements and Google Drive backup are off
+  until you turn them on. Each feature is described below.
 - The app keeps your settings, saves and sign-in details on your device. They leave it only
   for the features below, for example when Drive backup uploads your saves.
 
@@ -61,6 +61,15 @@ next release and the test builds are made. V339 differs from it in these ways:
   only the file's extension.
 - When it joins a netplay game, it keeps looking for rooms on your local network for the
   whole game, and connects to each new room that it finds.
+- Its online netplay codes go through a server, `np.zurita.me` (port 37520). When you host
+  and tap **Get Code**, the app registers your room there. The server sees your public IP
+  address, gives your address and your room's port to anyone who enters your code, and is
+  told when the game starts. When you join with a code, the app sends the code to the server
+  and receives the host's IP address and port. The app got this address from Francisco
+  Zurita's commits, as it got the cover-art server's, and the two servers have the same IP
+  address. No privacy policy covers this server, and how long it keeps its logs is unknown.
+  V339's log can also contain the code of a room that you host. The current code makes codes
+  on your device, without a server (see "Online netplay codes").
 - It contains a library, `libhidapi.so`, that the app never uses. Builds of the current code
   leave it out.
 
@@ -133,17 +142,21 @@ To stop downloads during a scan, untick **Download cover art** on the scan scree
 
 ### Online netplay codes
 
-Online netplay lets you play with someone over the internet with a code.
+Online netplay lets you play with someone over the internet with a code. The app makes and
+reads codes on your device, without a server.
 
-- When you host and tap **Get Code**, the app connects to `np.zurita.me` (port 37520) and
-  registers your room. The server sees your public IP address. It gives your address and
-  your room's port to anyone who enters your code. The app also tells it when the game
-  starts.
-- When you join with a code, the app sends the code to `np.zurita.me` and receives the
-  host's IP address and port.
+- When you host and tap **Get Code**, the app asks your router to open ports for the game,
+  and asks the router for its public IP address (see "Port mapping on your router"). It then
+  shows a code made from that address and your room's port, with the address and port below
+  it. The code is your public IP address and port written another way: anyone who has your
+  code can work out your address.
+- When you join with a code, the app reads the host's IP address and port from the code and
+  connects to the host directly.
 
-The app also got `np.zurita.me` from Francisco Zurita's commits. It has the same address as
-the cover-art server. No privacy policy covers it, and how long it keeps its logs is unknown.
+When the app cannot make a code, for example when automatic port mapping is off, it shows no
+code, and it may ask you to share your public IP address and your room's port with the other
+players yourself. Release V339 uses a server for codes instead (see "How release V339
+differs").
 
 ### Playing with other people (netplay)
 
@@ -165,8 +178,9 @@ these announcements.
 ### Port mapping on your router
 
 When you host an online game and tap **Get Code**, the app asks your router to open three
-ports for the game. It uses NAT-PMP, or UPnP if NAT-PMP fails. With UPnP, the mappings are
-named "M64Plus Room", "M64Plus Core TCP" and "M64Plus Core UDP". A mapping lasts 12 hours.
+ports for the game. It uses NAT-PMP, or UPnP if NAT-PMP fails. It also asks the router for
+its public IP address, to make the code. With UPnP, the mappings are named "M64Plus Room",
+"M64Plus Core TCP" and "M64Plus Core UDP". A mapping lasts 12 hours.
 With UPnP, it has no time limit if your router accepts only permanent mappings. The app
 removes the mappings when the netplay session ends. If the app stops before that, they can
 stay until they expire or until you remove them in your router's settings.
@@ -231,8 +245,7 @@ names and Android's descriptors for them. It also has a **Share** button.
 
 If you share either one, it goes to the app that you choose. The app does not write your
 Google e-mail address, IP addresses or device names to the log, except in V339 (see above).
-The log can contain the file paths of your games, MD5 hashes of games, and the code of an
-online netplay room that you host (see "Online netplay codes" above).
+The log can contain the file paths of your games and MD5 hashes of games.
 
 ### Android TV home screen
 
@@ -244,7 +257,7 @@ screen. This stays on the device.
 | Service | Used for | Location | How long it keeps data |
 |---|---|---|---|
 | RetroAchievements | Achievements | Served through Cloudflare, Inc. (US). RetroAchievements does not publish where its servers are. | Not published. Its terms say "as long as necessary", and API usage logs "for a period deemed appropriate". |
-| `coverart.zurita.me` and `np.zurita.me` (addresses from Francisco Zurita's commits) | Cover art; online netplay codes | DigitalOcean, LLC (US); DigitalOcean lists the address in Clifton, New Jersey, US | Unknown. No privacy policy covers these servers. |
+| `coverart.zurita.me`, and `np.zurita.me` in release V339 (addresses from Francisco Zurita's commits) | Cover art; online netplay codes in release V339 | DigitalOcean, LLC (US); DigitalOcean lists the address in Clifton, New Jersey, US | Unknown. No privacy policy covers these servers. |
 | Google (sign-in and Drive) | Drive backup | "servers around the world" (Google) | Under Google's policy. Your backup files stay in your Drive until you delete them. |
 | GitHub | GPU drivers; update check | "your local region, the United States, and other countries" (GitHub) | Under GitHub's privacy statement. |
 | Other players; your router | Netplay | Direct connections, no server | Not applicable |

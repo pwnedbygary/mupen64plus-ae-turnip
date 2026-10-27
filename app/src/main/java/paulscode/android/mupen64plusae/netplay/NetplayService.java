@@ -85,8 +85,10 @@ public class NetplayService extends Service
          * @param tcpPort1 Port for room server
          * @param tcpPort2 Port for TCP netplay server
          * @param udpPort2 Port for UDP netplay server
+         * @param publicAddress Public IPv4 address the router reported, empty if it reported none,
+         *                      or null if the ports were not mapped automatically or mapping failed
          */
-        void onUpnpPortsObtained(int tcpPort1, int tcpPort2, int udpPort2);
+        void onUpnpPortsObtained(int tcpPort1, int tcpPort2, int udpPort2, String publicAddress);
     }
 
     private static final String TAG = "NetplayService";
@@ -304,7 +306,7 @@ public class NetplayService extends Service
 
         if (!mGlobalPrefs.useUpnpToMapNetplayPorts) {
             mNetplayServiceListener.onUpnpPortsObtained(mGlobalPrefs.netplayRoomTcpPort,
-                    mGlobalPrefs.netplayServerUdpTcpPort, mGlobalPrefs.netplayServerUdpTcpPort);
+                    mGlobalPrefs.netplayServerUdpTcpPort, mGlobalPrefs.netplayServerUdpTcpPort, null);
         }
     }
 
@@ -342,10 +344,13 @@ public class NetplayService extends Service
         }
 
         if (success) {
-            mNetplayServiceListener.onUpnpPortsObtained(mRoomPort, mTcpServer.getPort(), mTcpServer.getPort());
+            String publicAddress = mUsingUpnp ? mMiniUpnpLibrary.UPnP_GetExternalAddress() :
+                    mMiniUpnpLibrary.NATPMP_GetPublicAddress();
+            mNetplayServiceListener.onUpnpPortsObtained(mRoomPort, mTcpServer.getPort(), mTcpServer.getPort(),
+                    publicAddress != null ? publicAddress : "");
         } else {
             Log.w(TAG, "UPnP port forwading failed");
-            mNetplayServiceListener.onUpnpPortsObtained(-1, -1, -1);
+            mNetplayServiceListener.onUpnpPortsObtained(-1, -1, -1, null);
         }
     }
 
@@ -387,7 +392,13 @@ public class NetplayService extends Service
                             if (addressInt != 0 && gatewayAddress instanceof Inet4Address) {
                                 Log.i(TAG, "Received gateway address");
 
-                                actuallyMapPorts(addressInt);
+                                // ConnectivityManager calls this after mapPorts() has released
+                                // the lock: take it again so that the shutdown can't run meanwhile
+                                synchronized (mUpnpSyncObject) {
+                                    if (!mShuttingDown) {
+                                        actuallyMapPorts(addressInt);
+                                    }
+                                }
 
                                 break;
                             }

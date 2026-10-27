@@ -1612,12 +1612,14 @@ public class GameActivity extends AppCompatActivity implements PromptConfirmList
      * @param tcpPort1 Port for room server
      * @param tcpPort2 Port for TCP netplay server
      * @param udpPort2 Port for UDP netplay server
+     * @param publicAddress Public IPv4 address the router reported, empty if it reported none,
+     *                      or null if the ports were not mapped automatically or mapping failed
      */
     @Override
-    public void onUpnpPortsObtained(int tcpPort1, int tcpPort2, int udpPort2)
+    public void onUpnpPortsObtained(int tcpPort1, int tcpPort2, int udpPort2, String publicAddress)
     {
         if (mIsNetplayServer && mNetplayServerDialog != null) {
-            mNetplayServerDialog.onUpnpPortsObtained(tcpPort1, tcpPort2, udpPort2);
+            mNetplayServerDialog.onUpnpPortsObtained(tcpPort1, tcpPort2, udpPort2, publicAddress);
         }
     }
 }
