@@ -5823,3 +5823,125 @@ calls happened to work, and no 32-bit device or emulator ran the app. No
 Project64 zip state was loaded in the app.
 
 **Next.** Nothing for the N64DD track.
+
+## Fast math off for the core, and two FPU compare helpers fixed (2026-10-26)
+
+**Scope and baseline.** Branch `fix/core-float-nan` from master at
+`72d684268`. `mupen64plus-core/mupen64plus-core.mk` adds `-fno-fast-math` to
+the core's flags, the comment in `mupen64plus-core/Android.mk` grows by a
+sentence so that existing builds compile the core again, two compare helpers
+in `src/device/r4300/fpu.h` change, two new host tests check them
+(`tools/test-fpu-compare.sh` with `tools/tests/fpu-compare-test.c`, and
+`tools/test-float-android.sh`, which also builds
+`tools/tests/rcheevos-float-test.c`), and this note is added. Nothing in
+`src/device/dd/`, `callbacks.c` or the RSP plugins changes.
+
+**Cause.** The app's ndk-build modules, the core among them, are compiled
+with `-ffast-math` (`build_common/native_common.mk:40`, in `COMMON_CFLAGS` at
+`:56`), as are most of its CMake modules, which add it in their own
+`build.gradle`. Fast math lets the compiler assume that no value is a NaN.
+The core, which also builds rcheevos, then compares floats wrongly when one
+of them is a NaN:
+- The interpreters' MIPS FPU compares (`C.cond.S` and `C.cond.D`) call
+  `fpu.h`'s helpers: both the pure and the cached interpreter include
+  `mips_instructions.def` (`pure_interp.c:163`, `cached_interp.c:189`).
+  Built as the app's debug and release builds build the core, 128 of the
+  test's 640 checks fail on each of the four ABIs, with or without this
+  change's fix to the helpers. The app runs either interpreter when an
+  emulation profile picks it (`GamePrefs.java:471`,
+  `NativeConfigFiles.java:105`), and the cached one when GLideN64 is the
+  video plugin and the game's GLideN64 settings name `DisableFBInfo`
+  (`NativeConfigFiles.java:465-469`), as nine sections of the app's
+  `GLideN64.custom.ini` do, among them Pokémon Snap and Jet Force Gemini.
+  The dynarec compares with its own instructions and does not call these
+  helpers, as `INTERPRET_FCOMP` is not defined (`new_dynarec.c:151`; for
+  arm64, `assem_arm64.c:3949-4007`).
+- rcheevos' conditions that compare a float in memory with a constant. For a
+  NaN in memory compared with 100.0, a host build without fast math gives `<`,
+  `<=` and `!=` true and `=`, `>` and `>=` false. Built as the app's debug and
+  release builds build rcheevos, on all four ABIs, it gives `<=`, `=` and
+  `>=` true and `<`, `!=` and `>` false, as if the value were 100.0, for a
+  quiet NaN and for 0xFFFFFFFF alike. Normal numbers and both infinities give
+  the same results in the app's builds as in the host build. DERIVED: an
+  achievement whose condition reads such a float can unlock when it should
+  not, or fail to unlock when it should.
+
+Two of the helpers are wrong with a NaN whatever the flags. Built on the host
+without fast math, 8 of the 640 checks fail, with GCC 16.2.1 and clang 23.1.3.
+The line numbers are master's:
+- `c_f_s` (`fpu.h:497-510`) set FCR31's invalid-operation cause and flag bits
+  for a NaN, which for a quiet NaN only the signalling compares do, those
+  whose condition has bit 3 set; the test takes its expected results from the
+  condition's bits, not from `fpu.h`. The helpers test for a NaN with
+  `isnan()` and treat every NaN as a quiet one: they do not model signalling
+  NaNs, and neither does the test. The arm64 dynarec, too, only clears the
+  compare bit for `C.F` (`assem_arm64.c:3950-3953`).
+- `c_un_d` (`fpu.h:747-760`) cleared the compare bit when an operand is a
+  NaN, the one case in which "unordered" holds; `c_un_s` sets it.
+
+Upstream mupen64plus-core's master at `3be6336a1de6` has both helpers as they
+were here.
+
+**Change.** `LOCAL_CFLAGS += -fno-fast-math` follows the core's flag list
+(`mupen64plus-core.mk:156-160`). In ndk-build's dry runs of the core with
+`NDK_DEBUG=1` and with `NDK_DEBUG=0`, as Gradle runs it for the debug and the
+release build, each of the core's compile commands (110, 111, 109 and 109
+for arm64-v8a, armeabi-v7a, x86 and x86_64) lists `-ffast-math` and then
+`-fno-fast-math`, and the later flag wins. The release build's commands also
+pass `-flto`: they compile to LLVM bitcode, and the command that links the
+core, which passes `-ffast-math` and `-flto` but not `-fno-fast-math`,
+generates the code. The app's other native modules are unchanged. `c_f_s` no
+longer sets the invalid-operation bits, and `c_un_d` sets the compare bit for
+a NaN. As the entry above found, ndk-build compiles the core's objects again
+only when `mupen64plus-core/Android.mk` changes, so its comment now says that
+each flag change edits it. In a separate checkout of master with a full
+build (110, 111, 109 and 109 core objects for arm64-v8a, armeabi-v7a, x86 and
+x86_64), copying in this change's three edited files and running
+`./gradlew :app:assembleDebug` compiled every one of them again, with
+`-fno-fast-math` in each ABI's compile database.
+
+**Host checks actually run.** `tools/test-fpu-compare.sh` builds
+`fpu-compare-test.c` on the host, without fast math, and calls each compare
+helper, single and double, for all 16 conditions, with a NaN (0x7FC00000 and
+0x7FF8000000000000, quiet in the host's IEEE 754-2008 encoding) against 1.0
+both ways and with 1.0 against 1.0, 1.0 against 2.0 and 2.0 against 1.0,
+with the compare bit clear and set beforehand: 640 checks of the compare bit
+and the invalid-operation bits. It passes with GCC 16.2.1 and clang 23.1.3;
+with master's `fpu.h`, 8 checks fail. `tools/test-float-android.sh` runs
+ndk-build's dry run of the core for API 23 with NDK 26.1.10909125 from the
+SDK, for the debug and for the release build. From each it takes the compile
+command of the core's `cp1.c` and, from the command that links the core, the
+target and the `-O`, `-f` and `-m` flags. It compiles that test and the
+rcheevos test with the first and links them with the second, as static
+executables for armeabi-v7a, x86, arm64-v8a and x86_64, and runs each under
+qemu 11.1.2's user-mode emulation in a new PID namespace. It wants all 640
+checks to pass and the rcheevos test to print what a host build without fast
+math prints. With master's makefile, 128 checks fail and the rcheevos output
+differs on all four ABIs in both builds, with master's `fpu.h` and with this
+change's; with this change, everything passes in both builds on all four,
+with GCC and with clang building the host reference. Without qemu or user
+namespaces it skips (77); without that NDK in the SDK it stops with exit
+status 2.
+
+On this change's second snapshot, whose code the later edits (comments,
+tests and this note) do not change:
+`./gradlew :app:testDebugUnitTest --rerun :app:assembleDebug` (wrapper Gradle
+8.4, JDK 17.0.20.1) gave BUILD SUCCESSFUL, the 35 unit tests passed, and
+ndk-build compiled the core for all four ABIs; every `tools/test-*.sh` passed
+with GCC 16.2.1 and clang 23.1.3, except `test-p07-verifier`, which skips (77)
+as designed.
+
+**Device check.** On the Retroid Pocket 6, Mario Tennis (USA) ran on the
+dynarec with the debug APK built at 17:31 from this change's second snapshot,
+between two runs of a debug APK whose native code is master's (`b0d6375a8` on
+`fix/ra-forget-password`, which changes no native code). Over 60 seconds from
+20 seconds after the emulation process started, that process used 0.540 CPU
+seconds per second with this change, against 0.539 and 0.543 without it, and
+the game showed 59.8 frames per second in all three runs. Fast math is now
+off for all of the core's C code; the code that the dynarec generates is
+unchanged.
+
+**Not run.** The interpreters' speed with this change, and a game that
+compares a NaN.
+
+**Next.** Nothing for the N64DD track.
