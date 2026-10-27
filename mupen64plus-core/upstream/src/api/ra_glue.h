@@ -60,6 +60,21 @@ void ra_glue_state_loaded(const char* state_path, const uint32_t* rdram, size_t 
 EXPORT void ra_glue_set_hardcore(int enabled);
 EXPORT int ra_glue_get_hardcore(void);
 
+/* The cheat codes that the ROM database lists for the game (its Cheat keys),
+ * which main_run() adds when emulation starts. The app turns them off, before
+ * it starts emulation, for a session that runs in hardcore; the requested mode
+ * alone does not, as it stays on after a sign-in or game load has failed.
+ * ra_glue_shutdown() turns them on again. Java never calls
+ * ra_glue_get_database_codes(), so it needs no EXPORT. */
+EXPORT void ra_glue_set_database_codes(int enabled);
+int ra_glue_get_database_codes(void);
+
+/* Returns 1 if the ROM database lists such codes for the open ROM, which the app
+ * asks between opening the ROM and starting emulation. It is defined in rom.c,
+ * beside ROM_PARAMS, so the host tests that build ra_glue.c without rom.c need
+ * nothing more. */
+EXPORT int ra_glue_has_database_codes(void);
+
 /* Keeps the unlocks and leaderboard entries the server has not answered in the
  * file at path, and sends those of the signed-in player again after each
  * sign-in (see ra_glue.c). NULL or "" keeps none. Set it before signing in,

@@ -59,8 +59,8 @@ token-handling items and the remaining device-verification gaps.
   `759358FAD1ED5AE31DCB2001A07F2FE5`), and each showed "RetroAchievements: casual mode" and no
   other RetroAchievements notice (toasts read from `dumpsys notification`). DERIVED: none of this
   covers hardcore, and each of the 13 signed in and loaded the game: the app asks for the game only
-  after a sign-in succeeds (`CoreService.java:1514-1552`, the only `loadGame` call) and shows the
-  mode toast only once the game has loaded (`:1497-1511`).
+  after a sign-in succeeds (`CoreService.java:1523-1561`, the only `loadGame` call) and shows the
+  mode toast only once the game has loaded (`:1506-1520`).
 - OBSERVED (device): the in-game achievement list read "Casual: 0 of 97 unlocked" and "0 of 658
   points", showed the warning row "Warning: Unknown Emulator" ("Hardcore unlocks cannot be earned
   using this emulator."), and listed the achievements on screen, "Match Winner", "Intense Match"
@@ -103,7 +103,7 @@ token-handling items and the remaining device-verification gaps.
   (`rc_client.c:25`). The two later hardcore starts showed the same pair; in all three the event
   came 6.5 to 6.7 seconds after the session's service started. Neither softcore session showed
   the warning. DERIVED: each mode notice means the session signed in and loaded the game
-  (`CoreService.java:1497-1511,1514-1552`). The warning's timing matches "On-screen notices", and
+  (`CoreService.java:1506-1520,1523-1561`). The warning's timing matches "On-screen notices", and
   the server still treats `Mupen64Turnip` as an unknown emulator, as it will until
   RetroAchievements approves the name (see "Hardcore unlocks").
 - OBSERVED (device), hardcore: the speed item, and OK in the Game speed dialog, were refused with
@@ -152,14 +152,14 @@ token-handling items and the remaining device-verification gaps.
   4 minutes 22.5 seconds after the service started, the app logged the unlock event of
   achievement 48351, "Match Winner" ("Win a exhibition match.", 3 points), the only
   RetroAchievements event it logged in the session; it does not log progress or tracker updates
-  (`CoreService.java:1410-1413`). The device's system log, from 01:26:01 to 01:35:19, shows two
+  (`CoreService.java:1419-1422`). The device's system log, from 01:26:01 to 01:35:19, shows two
   toast windows from the app: one opening 1.2 seconds after the service started, and one opening
   26 ms after the unlock was logged and closing about four seconds later. Asked whether
   "Achievement unlocked: Match Winner (3 points)" popped up, the tester said it did. The app's
   file of unsent unlocks (`retroachievements-unsent.txt` in its no-backup folder,
-  `CoreService.java:1355`) was last written at 01:30:36.546 and then held only its comment line.
+  `CoreService.java:1364`) was last written at 01:30:36.546 and then held only its comment line.
   The app's log has no server error event and no "RA request failed" line
-  (`RetroAchievementsManager.java:300-304`) up to 01:54, when the tester closed the game. The
+  (`RetroAchievementsManager.java:315-319`) up to 01:54, when the tester closed the game. The
   tester's screenshot at 01:31:02, in the achievement list they opened at 01:30:43, shows
   "Match Winner" with a ticked box and "Unlocked, 3 points", and the other rows on screen
   "Locked".
@@ -167,14 +167,14 @@ token-handling items and the remaining device-verification gaps.
   log shows no activity started after the game at 01:26:13, so Settings was not opened before the
   read; no server warning arrived, which in hardcore came within seven seconds of each start (see
   the run of 2026-10-21); and the tester called it "a casual achievement". The first toast was
-  the mode notice (`CoreService.java:1506-1511`) and the second the unlock notice
-  (`:1415-1416,1441-1452`; `strings.xml:281`). The server recorded the unlock within about a
+  the mode notice (`CoreService.java:1515-1520`) and the second the unlock notice
+  (`:1424-1425,1450-1461`; `strings.xml:282`). The server recorded the unlock within about a
   third of a second: the glue keeps an unlock in that file from just before it is sent
-  (`ra_glue.c:548-552`), writes the file only when it keeps or drops one, so a write that leaves
-  none is a drop (`:406-437`), drops one only when the server records or refuses it
-  (`:620-623`), and counts an answer as a refusal only when rcheevos raises a server error for it
-  (`:478-482`; `rc_client.c:4669-4673`), which the app would have logged
-  (`CoreService.java:1411-1413`) and shown as a third toast (`:1427-1428,1454-1466,1569-1571`).
+  (`ra_glue.c:551-555`), writes the file only when it keeps or drops one, so a write that leaves
+  none is a drop (`:409-440`), drops one only when the server records or refuses it
+  (`:623-626`), and counts an answer as a refusal only when rcheevos raises a server error for it
+  (`:481-485`; `rc_client.c:4669-4673`), which the app would have logged
+  (`CoreService.java:1420-1422`) and shown as a third toast (`:1436-1437,1463-1475,1578-1580`).
   Winning a match is read from the game's memory, so achievements that read memory unlock on the
   device in softcore (see "Memory reads").
 - OBSERVED (device): the game was still open when these were read, its emulation paused since
@@ -221,7 +221,7 @@ token-handling items and the remaining device-verification gaps.
   the idle work that finishes a game's load (see "Threads in the glue"). This run does not show
   the idle-work case, as nothing records whether the reset met one of the pause loop's idle calls;
   that a reset and idle work cannot overlap rests on both taking the same lock
-  (`ra_glue.c:991-1009`).
+  (`ra_glue.c:995-1013`).
 - Not covered, among others: a reset while a frame or idle work raises an event; the reset button
   mapping; a reset in hardcore.
 
@@ -290,14 +290,14 @@ token-handling items and the remaining device-verification gaps.
   saved for this game (21:51:32-21:53:21) has lines from `CoreService` in the game's process
   (21:51:45-21:51:47) and no line with "login" in it.
 - DERIVED: the password is deleted in three places only: by a sign-in in the game's process
-  (`CoreService.java:1541`), by the broadcast's receiver (`RaCredentialSync.java:75`), which that
-  sign-in sends (`CoreService.java:1546`, the only sender), and by Connect
+  (`CoreService.java:1550`), by the broadcast's receiver (`RaCredentialSync.java:75`), which that
+  sign-in sends (`CoreService.java:1555`, the only sender), and by Connect
   (`LoginPreference.java:138`), whose screen was not open. So the game's sign-in returned a token
   and deleted the password, and the token it saved was the one already saved.
 - DERIVED: the game most likely signed in with the token at the first try. A saved token is tried
-  first (`RaSignInRules.java:26-34`, `CoreService.java:1373-1388`), and the password only after a
-  failed sign-in, which logs a warning with "login error" in it (`CoreService.java:1515-1528`); a
-  successful sign-in logs nothing (`CoreService.java:1529-1547`). The app clears its own earlier
+  first (`RaSignInRules.java:26-34`, `CoreService.java:1382-1397`), and the password only after a
+  failed sign-in, which logs a warning with "login error" in it (`CoreService.java:1524-1537`); a
+  successful sign-in logs nothing (`CoreService.java:1538-1556`). The app clears its own earlier
   lines from the device's log when `SplashActivity` starts (`SplashActivity.java:153`,
   `DeviceUtil.java:177-180`), which it did at 21:51:44, before the game, and next only after this
   log was saved. This rests on a line that is missing, so it is not proof.
@@ -389,10 +389,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED: every request, from a game session or from Connect in Settings, goes through
   `RetroAchievementsManager.request`, which sends `USER_AGENT`: rcheevos hands each request to the
   glue's `ra_glue_server_call`, which passes it to the manager, unless no request slot is free or
-  the client is shutting down; then it answers at once and nothing is sent (`ra_glue.c:518-579,926`;
-  `RetroAchievementsManager.java:297-299,423`; `LoginPreference.java:91,121`). `USER_AGENT` is
+  the client is shutting down; then it answers at once and nothing is sent (`ra_glue.c:521-582,929`;
+  `RetroAchievementsManager.java:312-314,438`; `LoginPreference.java:91,121`). `USER_AGENT` is
   now "Mupen64Turnip/", the leading number of the app's version name, and " (Android <release>)"
-  with `Build.VERSION.RELEASE` (`RetroAchievementsManager.java:63-64,382-391`). The build makes
+  with `Build.VERSION.RELEASE` (`RetroAchievementsManager.java:63-64,397-406`). The build makes
   the version name from the version and the git commit, as in `3.0.338 06aedfe1`
   (`version_common.gradle:11-12`). A version name without a leading number would give the
   version code instead, and an unknown release leaves the operating system out.
@@ -456,7 +456,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   day's checks did.
 - OBSERVED: the callback now treats the address as an offset into RDRAM. It refuses an address
   only while `g_mem_base` is NULL or at 16 MB and above, and reads from
-  `mem_base_u32(g_mem_base, MM_RDRAM_DRAM + address)` (`ra_glue.c:138-163`).
+  `mem_base_u32(g_mem_base, MM_RDRAM_DRAM + address)` (`ra_glue.c:141-166`).
 - REFERENCE: in RetroArch, address X is byte X of the core's RDRAM. Its Mupen64Plus-Next core
   (mupen64plus-libretro-nx `develop` `12edd2c74a51`, `libretro/libretro.c:2108-2112,2120-2124`)
   exposes `g_dev.rdram.dram` as system RAM with no memory map, and rcheevos `v12.5.0`
@@ -467,12 +467,12 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED: rcheevos checks a loaded game's addresses when the last load response arrives, on the
   thread that delivers it, unless background memory reads are off (`rc_client.c:1982-1983`,
   `:1997-2001`, `:2414-2418`); they are on by default (`rc_client.c:175`). The app delivers
-  responses on its HTTP thread (`RetroAchievementsManager.java:298,305`). `g_mem_base` is NULL
+  responses on its HTTP thread (`RetroAchievementsManager.java:313,320`). `g_mem_base` is NULL
   until `CoreStartup` (`main.c:111`; `frontend.c:108`), which the service runs on its handler
   thread (`CoreService.java:789`) after other start-up work, while the sign-in starts from
-  `onStartCommand` (`CoreService.java:1256,1380`) and the game loads as soon as it succeeds
-  (`CoreService.java:1549`); nothing orders the two. `CoreShutdown` frees that memory on the
-  handler thread (`CoreService.java:955`; `CoreInterface.java:738-740`; `frontend.c:138-139`).
+  `onStartCommand` (`CoreService.java:1265,1389`) and the game loads as soon as it succeeds
+  (`CoreService.java:1558`); nothing orders the two. `CoreShutdown` frees that memory on the
+  handler thread (`CoreService.java:964`; `CoreInterface.java:738-740`; `frontend.c:138-139`).
 - DERIVED: with the new callback alone (background reads still on), a session whose sign-in and
   game load finished before the core started would have every memory-reading achievement
   disabled, and a response handled while the core shut down could read freed memory. Before this
@@ -486,19 +486,19 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   the emulator thread during emulation, when the memory existed. HYPOTHESIS: an early finish
   would be rare, and likelier when the core is slow to start (a Raphnet adapter, or game data
   copied from external storage).
-- OBSERVED: `ra_glue_create` now turns background memory reads off (`ra_glue.c:934-937`). rcheevos
+- OBSERVED: `ra_glue_create` now turns background memory reads off (`ra_glue.c:937-940`). rcheevos
   then queues the rest of the game load, which applies the server's unlocks, checks the addresses
   and reports the result (`rc_client.c:1787-1923`, queued at `:1936-1950`), and runs it from
   `rc_client_idle` (`:6507-6531`), which `rc_client_do_frame` calls at its end even before a game
   is loaded (`:6490`). The emulator calls `ra_glue_do_frame` from `new_vi` (`main.c:1022`) on the
   handler thread, between `CoreStartup` and `CoreShutdown`. The load result now comes from that
   thread too, and the Java side still posts it to the main thread
-  (`RetroAchievementsManager.java:332-334`). DERIVED: rich presence, which rcheevos reads for each
+  (`RetroAchievementsManager.java:347-349`). DERIVED: rich presence, which rcheevos reads for each
   ping (`rc_client.c:5745-5752`), is read there as well.
-- OBSERVED: `ra_glue_idle` runs the same queued work (`ra_glue.c:991-999`;
+- OBSERVED: `ra_glue_idle` runs the same queued work (`ra_glue.c:995-1003`;
   `rc_client.c:6493-6536`), and the core's pause loop now calls it while emulation is paused (see
   "Paused emulation"). The comments keep it on the emulator thread with `ra_glue_do_frame`
-  (`ra_glue.c:10-17,934-936`).
+  (`ra_glue.c:10-17,937-939`).
 - OBSERVED (host C test): `tools/test-ra-memory.sh` builds the production `ra_glue.c` and
   `memory.c` and reads five addresses in each region of rcheevos's N64 map, one byte and, where
   they fit, four bytes at a time, in the full and the compressed memory base modes. It expects the
@@ -544,11 +544,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED: the achievement list holds pointers to rcheevos's live achievement data
   (`rc_client.c:4413`). rcheevos refreshes each one's progress text and bucket under its mutex
   while it builds the list (`:4306`), and the glue reads them after rcheevos has released it
-  (`:4433`; `ra_glue.c:1215-1223`). The emulator thread rewrites both outside the mutex when it
+  (`:4433`; `ra_glue.c:1229-1237`). The emulator thread rewrites both outside the mutex when it
   raises events for that achievement (`rc_client.c:6190-6193,6465-6467`), after a frame and also
   after a state's load: rcheevos restores the progress kept with the state under its mutex, then
   raises the restored events outside it (`:6882-6904`), and the glue restores it in the load hook
-  on the emulator thread (`savestates.c:1520`; `ra_glue.c:1545`). DERIVED: a list read during
+  on the emulator thread (`savestates.c:1520`; `ra_glue.c:1559`). DERIVED: a list read during
   play could show a row as it was a frame earlier, or progress text that was being rewritten.
 - OBSERVED: rcheevos makes a loaded game visible under its mutex (`rc_client.c:1815-1818`), and
   `rc_client_is_game_loaded` is true from then on (`:3106`), but it checks the game's addresses
@@ -565,7 +565,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   with more than one active set, it could also fill a group that was not counted, writing over the
   list's own pointers (`:4353-4357,4397-4431`). That needs a set with an address the check
   refuses, which with the core's memory present is only an address above `0x7FFFFF`, the end of
-  rcheevos's N64 map (`:1349-1350,1362`; `ra_glue.c:148-152`; see "Memory reads"). The overlay
+  rcheevos's N64 map (`:1349-1350,1362`; `ra_glue.c:151-155`; see "Memory reads"). The overlay
   reads the list when its activity is created (`GameActivity.java:417`;
   `RaIndicatorOverlay.java:69-70`). Outside netplay, that happens during play only when Android
   recreates the activity for a configuration change the manifest does not list; rotation is
@@ -574,45 +574,45 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   read the list (`GameActivity.java:643-676,780-790,1101-1112,1170`). Outside netplay, the dialog
   reads the list while emulation is paused (see "Paused emulation"). In netplay neither the menu
   nor `onStop` pauses emulation (`CoreService.java:448-456`; `main.c:510-511`), and achievements
-  run there in softcore (`CoreService.java:1364-1368`), so in netplay both reads could overlap a
+  run there in softcore (`CoreService.java:1373-1377`), so in netplay both reads could overlap a
   frame before this change too.
 - OBSERVED: the glue now holds one lock, `s_frame_lock`, while rcheevos runs a frame or its idle
   work, while the state-load hook restores a state's progress into the loaded game, while rcheevos
   resets the game (see the reset bullets below), and while the achievement list is built and read
-  (`ra_glue.c:63-66,981-999,1001-1009,1279-1286,1543-1546`). A list waits only while rcheevos
+  (`ra_glue.c:65-68,985-1003,1005-1013,1293-1300,1557-1560`). A list waits only while rcheevos
   processes a frame, does its idle work, resets the game or restores progress, not while the core
   emulates the frame, and those wait while a list is built. Only `ra_glue_do_frame`,
   `ra_glue_idle`, `ra_glue_reset`, `ra_glue_state_loaded` and the list getter take the lock, and
   they take it before any other: rcheevos takes its mutex under it, and the glue its request lock
-  when rcheevos sends a request (`ra_glue.c:523,539`). When the request sends an unlock or a
+  when rcheevos sends a request (`ra_glue.c:526,542`). When the request sends an unlock or a
   leaderboard entry that the file of unsent ones does not hold yet, the glue first rewrites that
-  file under its own lock (`ra_glue.c:406-423,548-552`; see "Unlocks kept until the server
+  file under its own lock (`ra_glue.c:409-426,551-555`; see "Unlocks kept until the server
   answers"), so a list can also wait for that write; for a retry of an entry the file holds, it
   only looks the entry up. The Java callbacks made under the frame lock only parse and post to the
   main thread or hand the request to the HTTP threads
-  (`RetroAchievementsManager.java:297-298,310-321,332-334`), and neither caller of the list
+  (`RetroAchievementsManager.java:312-313,325-336,347-349`), and neither caller of the list
   getter holds a lock (`AchievementsDialog.java:53`; `RaIndicatorOverlay.java:70`). `ra_glue.h`
   now says the getter waits for a frame, idle work, a reset or a restore that is running, so it
-  must not be called from a callback the glue makes during one (`ra_glue.h:87-89`), and the
+  must not be called from a callback the glue makes during one (`ra_glue.h:102-104`), and the
   `ra_glue.c` header names the lock (`ra_glue.c:17-19`). DERIVED: neither problem in the two
   bullets above can happen any more.
 - OBSERVED: rcheevos still refreshes an achievement's progress text and group without the lock,
   under its mutex, on the HTTP thread that delivers an unlock's answer: when the glue looks up
-  the title of an unlock the server refused (`rc_client.c:4673`; `ra_glue.c:755`;
+  the title of an unlock the server refused (`rc_client.c:4673`; `ra_glue.c:758`;
   `rc_client.c:4494-4496,4525`), and when rcheevos checks for mastery after an accepted one that
   leaves no achievements remaining (`:4731-4735`). Both refresh the achievement that was unlocked,
   for which the refresh clears the progress text and picks an unlocked group (`:4103-4115,4158`).
   Of those two fields the glue reads the text and whether the group is an active challenge, after
-  rcheevos releases its mutex (`ra_glue.c:1215,1223`). DERIVED: a list built meanwhile shows the
+  rcheevos releases its mutex (`ra_glue.c:1229,1237`). DERIVED: a list built meanwhile shows the
   same rows, as the list's own refresh has already cleared that text and an unlocked group is
   never an active challenge; only a race checker can tell. `ra_glue_deserialize_progress`, which
   the app does not call, restores progress without the lock, and `ra_glue.h` says it must not run
-  beside frames, idle work, resets or the list on another thread (`ra_glue.h:91-98`).
+  beside frames, idle work, resets or the list on another thread (`ra_glue.h:106-113`).
 - OBSERVED: the hardcore switch changes achievements only under rcheevos's mutex
   (`rc_client.c:1451-1504,6955-6967`), and raises nothing outside it while no game is loaded
-  (`:6970`). The app switches hardcore before it signs in (`CoreService.java:1368`), and turns it
+  (`:6970`). The app switches hardcore before it signs in (`CoreService.java:1377`), and turns it
   off on the emulation thread before emulation starts when the session resumes from the auto save
-  (`:415-421,721-725,928`). DERIVED: no game is loaded at either call, as a game's load finishes
+  (`:415-421,721-725,937`). DERIVED: no game is loaded at either call, as a game's load finishes
   only in a frame or idle work (see "Memory reads" and "Paused emulation"), so the switch needs
   no lock. A reset could never overlap a list, as it runs on the main thread, where the list is
   built (see the `ra_glue_reset` bullet below), but it could overlap a frame or idle work, so it
@@ -660,10 +660,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   emulator thread was in a frame or, while emulation was paused, in idle work, and the two threads
   could then change the same achievements at once and raise an event twice or lose one. This was
   older than this branch: `ra_glue_reset` came with `4df6051aa`.
-- OBSERVED: `ra_glue_reset` now holds `s_frame_lock` while rcheevos resets (`ra_glue.c:1001-1009`),
+- OBSERVED: `ra_glue_reset` now holds `s_frame_lock` while rcheevos resets (`ra_glue.c:1005-1013`),
   so a reset waits while rcheevos runs a frame, does its idle work or restores a state's progress,
   and those wait for a reset. The reset's events reach Java callbacks that only post to the main
-  thread (`RetroAchievementsManager.java:310-321`), so a reset on the main thread never waits for
+  thread (`RetroAchievementsManager.java:325-336`), so a reset on the main thread never waits for
   that thread. The core's own reset shortcuts would reset on the emulator thread, from the SDL
   event filter (`eventloop.c:395,651`) that its input check pumps (`main.c:313-318`), and that
   check runs before a frame's and idle work's RetroAchievements work, not inside it
@@ -671,8 +671,8 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `M64CMD_SEND_SDL_KEYDOWN` (`frontend.c:328-333`), which the app never sends (it only names the
   command, `CoreTypes.java:96-97`). DERIVED: no thread takes the lock twice, and on Android those
   shortcuts never fire anyway (see "Compliance checklist"). `ra_glue.h` says that the reset waits
-  (`ra_glue.h:42-43`), the getter's comment names resets (`:87-88`), and the `ra_glue.c` header
-  and the lock's comment name them (`ra_glue.c:17-19,63-65`). DERIVED: the overlap recorded until
+  (`ra_glue.h:42-43`), the getter's comment names resets (`:102-103`), and the `ra_glue.c` header
+  and the lock's comment name them (`ra_glue.c:17-19,65-67`). DERIVED: the overlap recorded until
   now under "Open items" can no longer happen.
 - OBSERVED (host build): a new run of the session test holds the emulator thread in the event
   callback when a frame primes the challenge, while another thread resets the game; the reset must
@@ -689,7 +689,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   game's pending events (`rc_client.c:6421`). The runs with nine reports also show both threads
   refreshing the achievement's display and clearing its pending events
   (`rc_client.c:4100,4103,4158`; `:6213`), and both writing the test's own count and copy of the
-  last indicator event from their event callbacks (`ra-session-test.c:306-307`). The new run's
+  last indicator event from their event callbacks (`ra-session-test.c:312-313`). The new run's
   checks vary too. With symbolizing off (`TSAN_OPTIONS=symbolize=0`), three runs each failed the
   reset-waited and last-event checks, as without ThreadSanitizer. With symbolizing on, four runs
   all passed the reset-waited check; two of them failed the checks that the indicator showed and
@@ -731,19 +731,19 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   verified on device: a reset while a frame or idle work raises an event, and a reset from the
   reset button mapping.
 - DERIVED: the app keeps the header's rule. rcheevos unloads the game when `ra_glue_load_game`
-  replaces it (`ra_glue.c:1058-1059`), on logout (`rc_client.c:887-888,894`), and on a reset whose
+  replaces it (`ra_glue.c:1072-1073`), on logout (`rc_client.c:887-888,894`), and on a reset whose
   media belongs to another game (`rc_client.c:6643-6652`). The app reaches none of these during a
   session: it loads one game per session, after the first successful sign-in
-  (`CoreService.java:1549`); nothing calls `RetroAchievementsManager.logout()`
+  (`CoreService.java:1558`); nothing calls `RetroAchievementsManager.logout()`
   (`RetroAchievementsManager.java:226-228`); and the glue never changes media, so the hash of the
   loaded game maps to that game (`rc_client.c:2329,2334-2335`; an unknown game keeps both at 0:
   `:2320,2427,2620-2622`). The client is destroyed by `ra_glue_shutdown` from
-  `CoreService.onDestroy` (`CoreService.java:1315,1403`), on the main thread like every caller of
-  the getters (`AchievementsDialog.java:50-53`; `CoreService.java:1507,1532`), and
+  `CoreService.onDestroy` (`CoreService.java:1324,1412`), on the main thread like every caller of
+  the getters (`AchievementsDialog.java:50-53`; `CoreService.java:1516,1541`), and
   `ra_glue_shutdown` waits for a server response that an HTTP thread is handling
-  (`ra_glue.c:951-958`). On a normal exit the service stops itself only after `emuStart` returns
-  (`CoreService.java:928,989,1580-1593`); its other exits call `forceExit`, which kills the
-  process right after asking the service to stop (`CoreService.java:1573-1577`).
+  (`ra_glue.c:954-961`). On a normal exit the service stops itself only after `emuStart` returns
+  (`CoreService.java:937,998,1589-1602`); its other exits call `forceExit`, which kills the
+  process right after asking the service to stop (`CoreService.java:1582-1586`).
 
 ### Paused emulation
 - OBSERVED: rcheevos expects `rc_client_idle` to be called while emulation is paused
@@ -765,7 +765,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   pause sends at most one, the first that falls due, and only if frames ran since the last ping.
   The calls run on the emulator thread while the core's memory exists, like `ra_glue_do_frame`,
   and end before the client is destroyed: stopping emulation clears the pause
-  (`main.c:2047-2051`), the pause loop runs inside `emuStart` (`CoreService.java:928`), and the
+  (`main.c:2051-2055`), the pause loop runs inside `emuStart` (`CoreService.java:937`), and the
   service destroys the client only after `emuStart` returns, or kills the process (see "Threads
   in the glue").
 - DERIVED: outside netplay, the achievement dialog opens only from the in-game menu, which pauses
@@ -801,10 +801,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 
 ### Network requests and shutdown
 - OBSERVED: the HTTP thread now hands each request to `RetroAchievementsManager.request()`
-  (`RetroAchievementsManager.java:297-308,417-454`). It answers a network failure (`IOException`)
+  (`RetroAchievementsManager.java:312-323,432-469`). It answers a network failure (`IOException`)
   with status -2 and "RA network error: <message>", as before, and any other runtime exception
   with status -2 and "RA request error: <exception>", so every request still gets one answer
-  (`:446-452`). Before, `onServerCall` caught only `IOException`. REFERENCE (AOSP
+  (`:461-467`). Before, `onServerCall` caught only `IOException`. REFERENCE (AOSP
   `android-14.0.0_r1`, `RuntimeInit.java:125-177,235`, `KillApplicationHandler`): an exception
   that leaves a thread reaches Android's default handler, which kills the process; the app sets no
   handler of its own. DERIVED: so any other exception during a request closed the emulation
@@ -822,17 +822,17 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   escaping (Gradle: 7 tests, 1 failed); every unit test passes now.
 - OBSERVED: `ra_glue_shutdown` now sets `s_shutting_down` under the request lock before it drops
   the pending requests and waits for answers being handled, and clears it after destroying the
-  client (`ra_glue.c:107-110,951-967`). While it is set, `ra_glue_server_call` gives a request no
+  client (`ra_glue.c:110-113,954-970`). While it is set, `ra_glue_server_call` gives a request no
   slot and answers it at once with status -1, `RC_API_SERVER_RESPONSE_CLIENT_ERROR`
-  (`ra_glue.c:523-525,558-576`), which rcheevos does not retry (`rc_client.c:629-631`): the unlock
+  (`ra_glue.c:526-528,561-579`), which rcheevos does not retry (`rc_client.c:629-631`): the unlock
   ends with a server error, and rcheevos frees its data (`rc_client.c:4669-4674,4753-4758`).
 - DERIVED: before, an answer handled during shutdown could send an immediate retry
   (`rc_client.c:4675-4680,5377-5382`) into a slot taken after the drop, and the answer to that
   retry could reach the destroyed client. Answering it with HTTP 503 instead would leave a retry
   scheduled that never runs, as `rc_client_destroy` neither runs nor frees scheduled work and
   unloading the game removes only its ping (`rc_client.c:191-227,3185-3198`). The app kills its
-  process right after the shutdown (`CoreService.java:1315-1317`) and removes its listener before
-  it (`:1402-1403`), so the server error shows no notice.
+  process right after the shutdown (`CoreService.java:1324-1326`) and removes its listener before
+  it (`:1411-1412`), so the server error shows no notice.
 - OBSERVED (host C test): the eighth run in `tools/tests/ra-session-test.c` answers an unlock with
   HTTP 503 on another thread and holds that thread just before rcheevos sends the unlock again,
   until `ra_glue_shutdown` has dropped the pending requests and waits for it. The new request must
@@ -882,7 +882,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   service's first (`mRaStartAttempted`), before the settings check, `initialize()`,
   `setHardcore`, login and `loadGame`.
 - DERIVED: a new `GameActivity` for the running game (notification intent,
-  `CoreService.java:1156-1175`, or resume broadcast, `:242-245`, after the old activity was
+  `CoreService.java:1165-1184`, or resume broadcast, `:242-245`, after the old activity was
   destroyed) starts the service again, via `GameActivity.onStart` (`GameActivity.java:665-671`),
   `CoreFragment.startCore` (`CoreFragment.java:395-404`) and `ActivityHelper.startCoreService`
   (`ActivityHelper.java:485-486`). That start no longer logs in again, reloads the game, clears
@@ -919,7 +919,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   If that auto save exists, `leaveRaHardcoreForResume` turns hardcore off on that thread and
   posts the notice "Resumed game: hardcore mode is off for this session" to the main thread
   (`:400-421`). The job then sets the frame limiter and the cheats (`:886-901`) and loads that
-  same file, only if it exists (`:909-912`). In `9e8066d30` a start that was not a restart (Resume
+  same file, only if it exists (`:918-921`). In `9e8066d30` a start that was not a restart (Resume
   or a long press), outside hardcore and with no auto save, asked the core to load the path that
   `getLatestAutoSave` returns when there is none (`GameDataManager.java:80`), which failed
   (`savestates.c:1496-1503`). The gallery's Resume and a long press on a game resume
@@ -939,8 +939,8 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   never showed. Not verified on a device running Android 6 to 10.
 - OBSERVED: with game data on external storage, a session that ends normally copies the game's
   data folder to that storage and, if the copy succeeds, deletes the local copy
-  (`CoreService.java:950-952,1014-1046`; the deletion `:1038-1043`), and the next session's job
-  copies it back (`:993-1012`). The auto saves are in that folder (`GamePrefs.java:764`).
+  (`CoreService.java:959-961,1023-1055`; the deletion `:1047-1052`), and the next session's job
+  copies it back (`:1002-1021`). The auto saves are in that folder (`GamePrefs.java:764`).
 - DERIVED: so the decision has to wait for that copy, and the job makes it before emulation
   starts, on the thread that then runs the emulator. rcheevos activates the game's achievements
   only in the emulator's frames (see "Memory reads"), so the switch reaches it first. The switch
@@ -951,18 +951,18 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   auto save made in hardcore can be resumed only in softcore; Start keeps hardcore.
 - DERIVED: rcheevos puts the current hardcore setting into its start-session request
   (`rc_client.c:2020`), which it sends as soon as the game's data arrive (`rc_client.c:2344-2351`),
-  on the HTTP thread that delivers them (`RetroAchievementsManager.java:305`). The sign-in starts
+  on the HTTP thread that delivers them (`RetroAchievementsManager.java:320`). The sign-in starts
   from `onStartCommand` and does not wait for the job, so that request can go out before the
   switch when the job is late, for example with a slow copy from external storage, a large
   texture-dump folder to delete first (`CoreService.java:713`) or a Raphnet adapter it waits for
-  (`:1611,1628`). The server then sees a session that started in hardcore switch to softcore,
+  (`:1620,1637`). The server then sees a session that started in hardcore switch to softcore,
   which the page allows: "Switching from hardcore mode to casual mode is allowed mid-session."
   (section B).
 - OBSERVED: `leaveRaHardcoreForResume` writes the glue's `s_hardcore` on the emulation thread,
   while the main thread reads it through `ra_glue_get_hardcore()` for every hardcore check
   (`CoreService.java:386-389`). It was a plain `int` (`ra_glue.c:49,471,478` at `7aa5bdb3e`),
   and a scratch ThreadSanitizer build in which one thread turns the mode off while another reads
-  it reported that data race; it is now atomic (`ra_glue.c:68,1011-1022`), and the same build
+  it reported that data race; it is now atomic (`ra_glue.c:70,1015-1026`), and the same build
   reports none. DERIVED: the mode only turns off during a session, so a stale read could only
   keep a hardcore check on for longer.
 - No automated test: `CoreService` is an Android service, and the app's unit tests run on the
@@ -989,13 +989,13 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   console RAM (`savestates.c:1519-1520,2291-2292`; declared without `EXPORT`, `ra_glue.h:48-54`).
   Both run on the emulator thread, which runs the core's save and load jobs
   (`interrupt.c:554-556,654-656`). A save writes the loaded game's progress, as rcheevos
-  serializes it (`ra_glue.c:1464-1484`), to
-  `<state folder>/.ra-progress/<state file name>.progress` (`ra_glue.c:1344-1358`): "RAPROG01",
+  serializes it (`ra_glue.c:1478-1498`), to
+  `<state folder>/.ra-progress/<state file name>.progress` (`ra_glue.c:1358-1372`): "RAPROG01",
   then the RAM's CRC-32, the RAM's size and the progress's size as little-endian 32-bit values,
-  then the progress (`ra_glue.c:1336-1340,1390-1424`). It writes a temporary file and renames it
-  over the old one, and if that fails it removes the old file (`ra_glue.c:1419-1420`). With
+  then the progress (`ra_glue.c:1350-1354,1404-1438`). It writes a temporary file and renames it
+  over the old one, and if that fails it removes the old file (`ra_glue.c:1433-1434`). With
   nothing to keep, as with achievements off or before the game has loaded, the save removes the
-  old file (`ra_glue.c:1511-1530`). So a state saved before the game has loaded keeps no
+  old file (`ra_glue.c:1525-1544`). So a state saved before the game has loaded keeps no
   progress, even while progress from a state loaded earlier waits for the game (next bullet).
 - OBSERVED: an M64P save returns success once it has passed the file write to `queue_work`, even
   if that write then fails to open or write the file (`savestates.c:1533-1566,1999-2002`). The
@@ -1007,20 +1007,20 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   the hook still runs after a failed write, though the app is now told that the save failed (see
   "Failed save-state writes").
 - OBSERVED: a load reads that file and applies it only if the RAM size and the CRC-32 in it match
-  the RAM the core has just restored (`ra_glue.c:1428-1461`). Otherwise, or without a file, rcheevos
-  is given no progress, which starts every count from zero (`ra_glue.c:1487-1492`;
+  the RAM the core has just restored (`ra_glue.c:1442-1475`). Otherwise, or without a file, rcheevos
+  is given no progress, which starts every count from zero (`ra_glue.c:1501-1506`;
   `rc_client.c:6891-6893`). A load before the game has finished loading, as when a session
   resumes from its auto save, keeps the progress until the first `ra_glue_do_frame` or
-  `ra_glue_idle` after the game has loaded (`ra_glue.c:112-120,979-999,1501-1509,1532-1552`).
+  `ra_glue_idle` after the game has loaded (`ra_glue.c:115-123,983-1003,1515-1523,1546-1566`).
   `ra_glue_reset` runs on another thread (see "Threads in the glue"), so it only marks that
-  progress to be dropped, and the emulator thread drops it (`ra_glue.c:1001-1009`).
+  progress to be dropped, and the emulator thread drops it (`ra_glue.c:1005-1013`).
 - OBSERVED: before this change the app kept one copy of the progress per game, in its
   `ra_progress` preferences: it saved it when emulation stopped and restored it once the next
   session's game had loaded, whatever that session started from, and loading a state kept the
   progress from before the load (`CoreService.java:924-927,1405-1432,1505-1510` at `7aa5bdb3e`).
   That code and `RetroAchievementsManager.serializeProgress` and `deserializeProgress` are gone.
   The glue's `ra_glue_serialize_progress` and `ra_glue_deserialize_progress` stay exported, and
-  the app no longer calls them (`ra_glue.h:91-98`). The old `ra_progress` file stays on devices,
+  the app no longer calls them (`ra_glue.h:106-113`). The old `ra_progress` file stays on devices,
   unread.
 - OBSERVED: the app's file prompts list the files of a folder but not its folders
   (`Prompt.java:337-340`, used by `CoreFragment.java:791,817`), so the progress files are not
@@ -1084,7 +1084,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `CoreService.onRaLoginResult`). In `fd6b452f1` the password went first and the token was tried
   only when no password was saved, with no fallback either way.
 - OBSERVED: a sign-in that returns a session token deletes the saved password, in a game session
-  (`CoreService.onRaLoginResult`, `CoreService.java:1531-1547`) and in the Connect check in
+  (`CoreService.onRaLoginResult`, `CoreService.java:1540-1556`) and in the Connect check in
   Settings (`LoginPreference.onRaAsyncResult`, `LoginPreference.java:130-146`). A sign-in that
   returns no token keeps it (`RaSignInRules.forgetsPassword`). In a game session the same
   `commit()` also saves the token, even when it has not changed. Connect checks the saved password
@@ -1148,7 +1148,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   handles the broadcast still brings back the old token and the password, until the broadcast
   deletes the password again. Handling the broadcast saves the main process's whole copy, so it
   undoes other settings that the emulation process saved since the main process last read the
-  file, such as the GPU driver benchmark result (`CoreService.java:1722`). Any later save by the
+  file, such as the GPU driver benchmark result (`CoreService.java:1731`). Any later save by the
   main process did that before this change too; the broadcast adds one such save, and only when a
   sign-in saved a new token or deleted the password.
 - DERIVED: a RetroAchievements settings screen that is already open in the main process keeps
@@ -1167,8 +1167,8 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   If the server returns that same token, Connect's commit changes nothing and Android writes nothing
   (`:127-140`; AOSP `android-14.0.0_r1`, `app/SharedPreferencesImpl.java:566-575,583-585,749-768`),
   so the file keeps the rejected token until the password is entered again or Settings saves another
-  change. A game's process ends with the game (`CoreService.java:1315-1317`; `forceExit`,
-  `:1573-1576`). Sending the broadcast from Connect would instead make the game's process save its
+  change. A game's process ends with the game (`CoreService.java:1324-1326`; `forceExit`,
+  `:1582-1585`). Sending the broadcast from Connect would instead make the game's process save its
   whole copy, which could undo Settings changes made during the game.
 - REFERENCE (RAWeb `ac7bf9b84d98`, `app/Connect/Actions/LoginAction.php`): a token that does not
   match the user gets `invalid_credentials` (lines 105-107, response built at 159-169; banned
@@ -1182,20 +1182,20 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `RC_INVALID_CREDENTIALS` (-34) and `RC_EXPIRED_TOKEN` (-35) (`rc_api_common.c:304-319`,
   `rc_error.h:47-48`). The login parser returns that code (`rc_api_user.c:72-74`), the login
   callback gets it unchanged (`rc_client_server_error_message`, `rc_client.c:497-516`; callback
-  `:698-708`), and `ra_glue_async_cb` passes it to Java (`ra_glue.c:503-514`). A failed HTTP
-  request becomes `RC_NO_RESPONSE` (`RetroAchievementsManager.java:446-452`,
+  `:698-708`), and `ra_glue_async_cb` passes it to Java (`ra_glue.c:506-517`). A failed HTTP
+  request becomes `RC_NO_RESPONSE` (`RetroAchievementsManager.java:461-467`,
   `rc_api_common.c:360-365`). Only -34 and -35 are retried with the password.
 - OBSERVED: `loadGame` is requested only after a login succeeds. rc_client results carry no
-  request ID (`ra_glue_async_cb`, `ra_glue.c:503-514`), so the session makes one request at a
+  request ID (`ra_glue_async_cb`, `ra_glue.c:506-517`), so the session makes one request at a
   time and `mRaLoginCredential` tells which login a result belongs to. A request call that returns
   false ends the session at once, as before. It returns false when `ra_glue`'s own checks refuse
-  without a callback (`ra_glue.c:1026-1027,1036-1037,1055-1056`), when rc_client refuses, which
+  without a callback (`ra_glue.c:1040-1041,1050-1051,1069-1070`), when rc_client refuses, which
   it also reports through the callback (login `rc_client.c:766-775,800-813,833-846`; load
   `:2444-2461,2927-2948`), and when the request finishes before the call returns (login
   `:786-792`, load `:2900`). `onRaAsyncResult` ignores any result that arrives after that.
 - DERIVED: in that last case a successful login is dropped, and the session runs without
   achievements and with enforcement released. It needs the main thread to stall for a whole HTTP
-  round trip (responses arrive on the HTTP thread, `RetroAchievementsManager.java:305`), so it
+  round trip (responses arrive on the HTTP thread, `RetroAchievementsManager.java:320`), so it
   should be rare. In `fd6b452f1` the same case latched the failure but still loaded the game, so
   achievements would run with enforcement released.
 - DERIVED: the password login starts from the token login's result, which is posted to the main
@@ -1203,7 +1203,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   not refuse it as "Login already in progress" (`:757-760`).
 - OBSERVED: the token from a successful login is written with `commit()`, and only when it differs
   from the saved one or the same commit deletes the password. `forceExit` kills the emulation
-  process (`CoreService.java:1573-1576`).
+  process (`CoreService.java:1582-1585`).
 - DERIVED: `apply()` only starts a background write (Android `SharedPreferences.Editor.apply`
   reference), so a token saved with it could be lost when that process is killed.
 - OBSERVED (host JVM): `RaSignInRulesTest` failed against the old order (password first, no
@@ -1265,17 +1265,28 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
     this session: <reason>", where the reason is rcheevos' error text (for example "Unknown
     game"), "could not start the request", "no sign-in is saved in Settings", "the game's MD5 is
     not known" or "the achievements client could not start". Offline, rcheevos' text is the app's
-    own "RA network error: <message>" (`RetroAchievementsManager.java:448`), and after any other
-    failure of the request "RA request error: <exception>" (`:452`); rcheevos passes either on as
+    own "RA network error: <message>" (`RetroAchievementsManager.java:463`), and after any other
+    failure of the request "RA request error: <exception>" (`:467`); rcheevos passes either on as
     the error message (`rc_api_common.c:360-365`).
+- OBSERVED: a hardcore start can now show three notices of its own. Before emulation starts, the
+  emulation job posts "Hardcore mode: cheats are disabled" when the player has cheats on for the
+  game, and "Hardcore mode: this game's compatibility fixes are disabled" when the ROM database
+  lists codes for it, both short toasts made on the main thread (`CoreService.java:400-408,888-910`;
+  `Notifier.java:95`). The mode notice above follows once the game's achievements have loaded,
+  which happens only on the emulator thread once emulation runs (see "Memory reads" and "Paused
+  emulation"). A sign-in that sends unlocks from an earlier session again can add two more
+  (`CoreService.java:1478-1489`). DERIVED: Android refuses a toast only when five of the app's
+  toasts are already queued (see Open items), so the three cannot be refused on their own; with the
+  two about earlier unlocks the queue can hold five for a moment, and a toast made then, such as an
+  unlock or a "disabled" toast, is lost.
 - OBSERVED: two start-up exits that ended achievements without a notice now call `failRaSession`:
-  a game started without an MD5 (`CoreService.java:1342-1346`) and a failed
-  `RetroAchievementsManager.initialize()` (`:1349-1353`). Both come before `mRaGameMd5` is set
-  (`:1359`), so `isRaHardcore()` was already false and hardcore was never enforced; only the
-  notice is new. The service reads the MD5 from its start intent (`CoreService.java:1241`); the
+  a game started without an MD5 (`CoreService.java:1351-1355`) and a failed
+  `RetroAchievementsManager.initialize()` (`:1358-1362`). Both come before `mRaGameMd5` is set
+  (`:1368`), so `isRaHardcore()` was already false and hardcore was never enforced; only the
+  notice is new. The service reads the MD5 from its start intent (`CoreService.java:1250`); the
   gallery computes it when it scans a game (`CacheRomInfoService.java:490,534`). `initialize()`
   fails only when `rc_client_create` cannot allocate the client
-  (`RetroAchievementsManager.java:159-162`; `ra_glue.c:926-930`; `rc_client.c:169-171`). Neither
+  (`RetroAchievementsManager.java:159-162`; `ra_glue.c:929-933`; `rc_client.c:169-171`). Neither
   failure has been seen on a device.
 - DERIVED: the mode toast shows what the app enforces. rcheevos changes its own hardcore setting
   only when the media changes (`rc_client.c:3221-3227`), and `ra_glue` never changes media, so
@@ -1304,10 +1315,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   (`:368-388`); both are retried, as below. `rc_client_should_retry` asks for a retry for HTTP
   status 502, 503, 504, 429 and 521-525, for an answer without a body, and for the app's answer
   to a request that failed without an HTTP answer, offline or otherwise (status -2,
-  `RetroAchievementsManager.java:446-452`; `rc_client.c:625-627`), and an answer without an error
+  `RetroAchievementsManager.java:461-467`; `rc_client.c:625-627`), and an answer without an error
   message is retried as well. So an error page with any other status, for example 500 or 403, ends
   the request with a server error instead of a retry. The app passes on only HTTP statuses and -2
-  (`RetroAchievementsManager.java:440,447,451`). The first retry is sent at
+  (`RetroAchievementsManager.java:455,462,466`). The first retry is sent at
   once, later ones after 1 s, doubling up to 120 s, with no limit on the count
   (`rc_client.c:4675-4706,5377-5408`). While a retry is scheduled, rcheevos counts as
   disconnected; when that changes, `rc_client_idle` raises a disconnected or a reconnected event
@@ -1320,16 +1331,16 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   still on its way, and a new "disconnected" follows if that one fails again.
 - OBSERVED: the glue passes these on. `ra_server_error_title` looks up the title of the
   achievement or leaderboard that a server error names, by the request name rcheevos gives
-  (`ra_glue.c:748-766`), and the server-error JSON carries it as `"title"`, empty when the lookup
-  finds nothing (`:820-834`). The disconnected and reconnected events, which
+  (`ra_glue.c:751-769`), and the server-error JSON carries it as `"title"`, empty when the lookup
+  finds nothing (`:823-837`). The disconnected and reconnected events, which
   `ra_build_event_json` dropped before, arrive as `{"type":"disconnected"}` and
-  `{"type":"reconnected"}` (`:836-842`). `CoreService.onRaEvent` shows the notices
-  (`CoreService.java:1409-1439,1454-1466`).
+  `{"type":"reconnected"}` (`:839-845`). `CoreService.onRaEvent` shows the notices
+  (`CoreService.java:1418-1448,1463-1475`).
 - OBSERVED: the glue looks the title up in its event handler, on the thread that raises the
   server error. A refused answer (`rc_client.c:4669-4674`, `:5375`) and a failed allocation for a
   retry (`:4691,5393`) raise it in the response callback, which runs on the HTTP thread that
-  delivers the answer (`RetroAchievementsManager.java:305`). When the glue has no free request
-  slot, it answers at once on the sending thread with HTTP 503 (`ra_glue.c:558-576`), which
+  delivers the answer (`RetroAchievementsManager.java:320`). When the glue has no free request
+  slot, it answers at once on the sending thread with HTTP 503 (`ra_glue.c:561-579`), which
   rcheevos always retries (`rc_client.c:593-595`), so there only a failed allocation for that
   retry can raise one. While the client shuts down, the glue answers with status -1 instead, which
   rcheevos does not retry, so an unlock or leaderboard entry ends with a server error there (see
@@ -1339,10 +1350,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `rc_client_get_achievement_info` takes that mutex, which is recursive, to update the
   achievement's display data (`rc_client.c:4485-4531`; `rc_compat.c:230`);
   `rc_client_get_leaderboard_info` takes none (`rc_client.c:4900-4922`). The glue holds no lock of
-  its own while rcheevos handles an answer (`ra_glue.c:607-637`), and `ra_glue_shutdown` waits
-  until that handling ends (`ra_glue.c:951-958`). The disconnected and reconnected events come
+  its own while rcheevos handles an answer (`ra_glue.c:610-640`), and `ra_glue_shutdown` waits
+  until that handling ends (`ra_glue.c:954-961`). The disconnected and reconnected events come
   from the emulator thread. `RetroAchievementsManager` posts every event to the main thread
-  (`RetroAchievementsManager.java:321`).
+  (`RetroAchievementsManager.java:336`).
 - DERIVED: both lookups read the loaded game, which stays loaded while the event is handled,
   because the app never unloads it during a session (see "Threads in the glue", also derived).
 - DERIVED: a request that waits for a retry stays in memory only, and nothing retries it after the
@@ -1402,7 +1413,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   used: a DISABLED achievement keeps that state even when unlocked (`rc_client.c:1458-1485`).
 - OBSERVED: the summary JSON has a new `"hardcore"` field from `rc_client_get_hardcore_enabled`.
   `ra_glue_get_hardcore()` returns the requested flag, the mode the app enforces
-  (`ra_glue.c:56-59`).
+  (`ra_glue.c:56-58`).
 - REFERENCE (RAWeb `ac7bf9b84d98`): `GetAchievementSetsAction.php:493-552` puts the client warning
   achievement first in the first set, and its comment says it unlocks itself a few seconds after
   loading; in softcore the server's start-session answer lists it as already earned (see
@@ -1418,7 +1429,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   reads only the mode and the game title from the summary JSON. For a game that also loads a bonus
   set, the totals cover every set. Set headings and warning rows are not counted.
 - OBSERVED: each achievement in the list JSON also has `"unsupported"` and `"set"`, taken from the
-  rcheevos bucket it is listed in (`ra_glue.c:1201-1206`). `"unsupported"` is 1 in the "Unsupported"
+  rcheevos bucket it is listed in (`ra_glue.c:1215-1220`). `"unsupported"` is 1 in the "Unsupported"
   bucket. rcheevos puts an achievement there when its logic cannot be parsed
   (`rc_client.c:2113-2116,2126-2129`), or when its logic uses a bad address
   (`rc_client.c:1293-1314`). When the game loads, rcheevos checks every address once: an address
@@ -1427,12 +1438,12 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   makes its address bad, unless the read followed a pointer
   (`rc_client.c:5864-5876,5895-5896,5937-5938`). The bucket never changes afterwards
   (`rc_client.c:4100-4101`). `ra_glue_read_memory` refuses an address only while `g_mem_base` is
-  NULL, or at 16 MB and above (`ra_glue.c:148-152`); "Memory reads" describes what it refused
+  NULL, or at 16 MB and above (`ra_glue.c:151-155`); "Memory reads" describes what it refused
   before. The dialog shows an unsupported achievement as "Unsupported", or as "Unlocked" if the
   player already earned it in this mode (`rc_client.c:1686-1689`). `"set"` is the set's title from
   `rc_client_get_subset_info` when the game has more than one active set, and empty otherwise,
   because rcheevos sets a bucket's `subset_id` only then (`rc_client.c:4297-4301,4420`).
-- OBSERVED: with the lock-state grouping the glue requests (`ra_glue.c:1180-1182`), rcheevos lists
+- OBSERVED: with the lock-state grouping the glue requests (`ra_glue.c:1194-1196`), rcheevos lists
   all of one set's buckets before the next set's (`rc_client.c:4397-4431`), and the dialog adds a
   heading row whenever the set title changes. DERIVED: two sets with the same title in a row would
   share one heading.
@@ -1440,7 +1451,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   (`list_item_two_text_icon.xml:36-38`) and other dialogs use it, so `AchievementsDialog` turns that
   off for its own rows.
 - OBSERVED: the glue returns 0 both when it fails and when the list does not fit the buffer
-  (`ra_glue.c:1183-1184,1267-1271`). The list used to be read into a fixed 128 KB buffer, so a
+  (`ra_glue.c:1197-1198,1281-1285`). The list used to be read into a fixed 128 KB buffer, so a
   longer list showed "No achievements are loaded". `RetroAchievementsManager.readText` now grows
   the buffer fourfold up to 2 MB for the list (`ACHIEVEMENTS_BUFFER_MAX`). "No achievements are
   loaded" now shows only when no game is loaded; a loaded game whose list cannot be read
@@ -1484,9 +1495,9 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   event (`rc_client.c:6190-6193,6399-6422`).
 - OBSERVED: the glue passes these on, where `ra_build_event_json` used to drop them: challenge_show
   and challenge_hide with the achievement's ID and title, progress_show and progress_update with
-  the progress text as well, and progress_hide with no other field (`ra_glue.c:786-818`). Each
+  the progress text as well, and progress_hide with no other field (`ra_glue.c:789-821`). Each
   achievement in the list JSON also has `"progress"`, the same text, and `"challenge"`, 1 while
-  it is primed (`ra_glue.c:1215-1223,1228,1251`): rcheevos refreshes both when it builds the list
+  it is primed (`ra_glue.c:1229-1237,1242,1265`): rcheevos refreshes both when it builds the list
   (`rc_client.c:4306`) and puts a primed achievement in the "Active Challenges" bucket
   (`rc_client.c:4151-4152`). The dialog adds ", progress 3/10" and ", challenge active" to a row's
   status (`AchievementsDialog.java:120-126`).
@@ -1498,7 +1509,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   shows progress, in white on a dark rounded background. An activity created for a session that
   is already running starts with the active challenges from the achievement list. Nothing makes
   the overlay or its lines clickable or gives them a touch listener (`RaIndicatorOverlay.java`).
-  `CoreService.onRaEvent` does not log progress updates (`CoreService.java:1410-1413`).
+  `CoreService.onRaEvent` does not log progress updates (`CoreService.java:1419-1422`).
 - DERIVED: Android draws the overlay above the game screen's other views, and passes each touch
   on to the views below it, because nothing in the overlay handles one. An FPS counter placed at
   the top centre (`GlobalPrefs.java:626-628`) can be hidden under the lines while they show. A
@@ -1510,7 +1521,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   titles sorted either way or reversed, fail the order test (javac 17.0.20.1, JUnit 4.13.2).
 - OBSERVED: `GameActivity` gets the manager with `getInstance()` (`GameActivity.java:417`), which
   loads the core library (`RetroAchievementsManager.java:102-114,126`). Its other callers in the
-  emulation process are `CoreService` methods (`CoreService.java:386,418,1348,1401,1490`). In
+  emulation process are `CoreService` methods (`CoreService.java:386,418,1357,1410,1499`). In
   Settings, Connect gets it (`LoginPreference.java:91,121`) and calls `initialize()` (`:92`) in
   the app's main process (`preferences_ra.xml:25`; `RaPrefsActivity.java:66`;
   `AndroidManifest.xml:208-213`). Only `CoreInterface` loads `ae-bridge` in the Java code
@@ -1574,15 +1585,15 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   and leave the value out of a submission: leaderboard_started and leaderboard_failed with the
   leaderboard's ID and title, leaderboard_submitted with its `tracker_value` as well,
   tracker_show and tracker_update with the tracker's ID and value, and tracker_hide with its ID
-  (`ra_glue.c:852-896`).
+  (`ra_glue.c:855-899`).
 - OBSERVED: `CoreService.onRaEvent` shows a long toast for each leaderboard event: "Leaderboard
   attempt started: <title>", "Leaderboard attempt failed: <title>" and "Submitted <value> for
-  <title>" (`CoreService.java:1417-1426`; `strings.xml:296-298`). It logs neither progress nor
-  tracker updates, which can come every frame (`CoreService.java:1410-1413`).
+  <title>" (`CoreService.java:1426-1435`; `strings.xml:297-299`). It logs neither progress nor
+  tracker updates, which can come every frame (`CoreService.java:1419-1422`).
 - OBSERVED: `RaIndicatorOverlay` shows "Leaderboard: <value>" for each tracker, between the
   challenge lines and the progress line, in the order the trackers were shown; an update changes
   its line in place (`RaIndicatorOverlay.java:50-53,96-106,156-174`;
-  `RaIndicatorState.java:31-42`; `strings.xml:300`). The lines use a fixed-width font, and the
+  `RaIndicatorState.java:31-42`; `strings.xml:301`). The lines use a fixed-width font, and the
   overlay reuses them rather than making new ones for each update.
 - DERIVED: a game screen created again while an attempt runs shows the attempt's value only when
   the value next changes. rcheevos's public leaderboard information has no tracker ID
@@ -1628,7 +1639,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   from a controller button mapped to it (`PeripheralController.java:349-351`;
   `CoreFragment.java:465-473`). In the compiled method the netplay check now comes first
   (`javap`). Before, `advanceFrame` refused it only under hardcore, and netplay runs in softcore
-  (`CoreService.java:1368`). Not yet verified on device.
+  (`CoreService.java:1377`). Not yet verified on device.
 - DERIVED: so before this change a frame advance during netplay paused the core after one frame
   (`main.c:539-544,895-899`), and as the core refuses to toggle the pause while netplay is active
   (`main.c:510-511`), the game could not be resumed that way: another frame advance ran one more
@@ -1640,48 +1651,48 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - DERIVED: until this change an unlock or a leaderboard entry that still waited for a retry when
   the game closed was never sent. rcheevos keeps it only in memory, and `rc_client_destroy` frees
   the client without sending it (`rc_client.c:191-227,3185-3198`); the app destroys the client
-  when the session ends (`CoreService.java:1315,1403`; `ra_glue.c:963`). The progress kept with a
+  when the session ends (`CoreService.java:1324,1412`; `ra_glue.c:966`). The progress kept with a
   save state holds only the runtime state of active achievements (`rc_client.c:6762,6825-6826`),
   so a later session started that achievement locked again, from the server's unlocks.
 - OBSERVED: the glue now keeps each unlock and leaderboard entry that rcheevos sends in a file,
   from its first request until the server records it or refuses it in a way rcheevos does not
-  retry (`ra_glue.c:208-226`). It reads the achievement or leaderboard, the hardcore flag or the
+  retry (`ra_glue.c:211-229`). It reads the achievement or leaderboard, the hardcore flag or the
   score, the game's hash and the player's name from the request's form data and, if the file does
   not hold that entry yet, rewrites the file before it hands the request to Java
-  (`ra_glue.c:302-334,406-423,543-552`). The file is plain text with no token, rewritten through a
-  temporary file and a rename (`ra_glue.c:345-403`). The app keeps
+  (`ra_glue.c:305-337,409-426,546-555`). The file is plain text with no token, rewritten through a
+  temporary file and a rename (`ra_glue.c:348-406`). The app keeps
   it as `retroachievements-unsent.txt` in its folder of files that Android does not back up, and
-  names it only from the game's process (`CoreService.java:1354-1357`; `AndroidManifest.xml:418`;
-  `RetroAchievementsManager.java:199-208`; `ra_glue.h:63-67`). Settings' Connect check signs in
+  names it only from the game's process (`CoreService.java:1363-1366`; `AndroidManifest.xml:418`;
+  `RetroAchievementsManager.java:199-208`; `ra_glue.h:78-82`). Settings' Connect check signs in
   from the app's main process (`AndroidManifest.xml:208-213`; `LoginPreference.java:91,121`). The
-  new entry point is exported and declared for JNA (`api_export.ver:74`; `CoreLibrary.java:110`).
+  new entry point is exported and declared for JNA (`api_export.ver:76`; `CoreLibrary.java:114`).
 - OBSERVED: the glue drops an entry when the server's answer reads, as rcheevos reads it, as
   recorded, which includes an unlock the player already has, or as a refusal rcheevos does not
-  retry (`ra_glue.c:440-483,620-635`; `rc_client.c:497-516,586-640,4666-4674,5368-5376`;
+  retry (`ra_glue.c:443-486,623-638`; `rc_client.c:497-516,586-640,4666-4674,5368-5376`;
   `rc_api_runtime.c:706-716`). An answer the glue gives itself, when no request slot is free or
-  the client is shutting down, never counts as the server's (`ra_glue.c:558-576`), so an unlock
+  the client is shutting down, never counts as the server's (`ra_glue.c:561-579`), so an unlock
   that rcheevos ends with a server error during shutdown (see "Network requests and shutdown")
   stays in the file.
 - OBSERVED: after each sign-in, the glue sends the signed-in player's entries again, one at a
   time, with the seconds since each was first sent in the request's `o` parameter
-  (`ra_glue.c:670-729`; `rc_api_runtime.c:649-650,659-666,758-759`). The first is handed to Java
-  before the app hears of the sign-in and asks for the game (`ra_glue.c:733-746,1030,1040`); Java
+  (`ra_glue.c:673-732`; `rc_api_runtime.c:649-650,659-666,758-759`). The first is handed to Java
+  before the app hears of the sign-in and asks for the game (`ra_glue.c:736-749,1044,1054`); Java
   answers on two threads, so the game's requests can still be answered first
   (`RetroAchievementsManager.java:127`). After an answer rcheevos would retry, the rest wait for
   the next sign-in. Once the server has recorded or refused any, the glue raises one
-  `unsent_done` event with both counts (`ra_glue.c:648-666`), and the app shows
+  `unsent_done` event with both counts (`ra_glue.c:651-669`), and the app shows
   "RetroAchievements recorded 2 unlocks or leaderboard entries from an earlier session", or "did
-  not record" for refusals (`CoreService.java:1433-1434,1468-1480`; `strings.xml:288-295`).
+  not record" for refusals (`CoreService.java:1442-1443,1477-1489`; `strings.xml:289-296`).
 - DERIVED: an entry sent again meets the same server rule for hardcore unlocks (see "Hardcore
   unlocks"). Another player's entries wait until that player signs in. The file keeps at most
-  256 entries (`ra_glue.c:227`). If it cannot be rewritten it keeps its old entries, so one the
+  256 entries (`ra_glue.c:230`). If it cannot be rewritten it keeps its old entries, so one the
   server has answered since goes out again later, and the server answers a repeated unlock that
   the player already has it. An entry from an earlier session that rcheevos sends during the
   session, before the resend reaches it, goes out twice: keeping it again does not mark it as
-  sent by this sign-in (`ra_glue.c:406-423`). An entry's age comes from the device's clock.
+  sent by this sign-in (`ra_glue.c:409-426`). An entry's age comes from the device's clock.
 - OBSERVED (host build): six new runs of the session test name a file in the test's state folder.
   In a hardcore session, an unlock that gets the app's answer for a server it cannot reach
-  (status -2 with the error's text, `RetroAchievementsManager.java:446-448`) and an entry that a
+  (status -2 with the error's text, `RetroAchievementsManager.java:461-463`) and an entry that a
   proxy answers with an HTTP 503 page raise no server error and are in the file when the session
   ends; the next sign-in sends them again, one at a time, only the first before the app hears of
   the sign-in, with their hardcore flag, score and hash, and the file is empty once the server
@@ -1785,12 +1796,12 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   nothing the app does when the report reaches it comes between them: its listener posts the rest
   to another thread (`CoreService.java:327-356`). On its exit path the app also asks the core to
   stop, 500 ms after the report or earlier, as its watchdog asks every 500 ms from the start of the
-  save (`:314-318,1661-1679`); a request to stop only sets a flag (`main.c:2024-2053`;
+  save (`:314-318,1670-1688`); a request to stop only sets a flag (`main.c:2028-2057`;
   `device.c:272-276`) that nothing between the report and the hook reads, and `gen_interrupt` runs
   a pending save job even with that flag set (`interrupt.c:542-550,652-658`). So the new order
   adds one way to get a complete auto save without its progress file: a process killed between the
   report and the hook. A progress write that fails gives the same in either order, as the glue then
-  removes the old progress file (`ra_glue.c:1413-1420`). Either way that auto save loads with every
+  removes the old progress file (`ra_glue.c:1427-1434`). Either way that auto save loads with every
   count at zero (see "Achievement progress kept with save states").
 - OBSERVED (host build): `tools/test-savestate-lock.sh` builds `tools/tests/savestate-lock-test.c`,
   which includes `savestates.c` and hands it states through `queue_work` as `savestates_save_m64p`
@@ -1842,12 +1853,12 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   "Load from auto save…" does the same with the files in the game's folder of auto saves whose
   names end in "sav", and so does Resume, after leaving hardcore, with the latest auto save it
   finds there (`GameActivity.java:983-984`; `CoreFragment.java:805-829`;
-  `GameDataManager.java:29,40-85`; `CoreService.java:721-724,908-912`). A slot load whose slot
+  `GameDataManager.java:29,40-85`; `CoreService.java:721-724,917-921`). A slot load whose slot
   holds no state of the core's own looks for `<header name>.pj<slot>.zip` and then
   `<header name>.pj<slot>` in the core's folder of slot saves, which the app sets to the game's,
   where the header name is the name in the ROM's header (`CoreService.java:517-524`;
   `CoreInterface.java:825-829`; `main.c:285-288`; `NativeConfigFiles.java:110`;
-  `savestates.c:93-101,1456-1485`; `rom.c:190-192`). The loader takes the size of the RDRAM in
+  `savestates.c:93-101,1456-1485`; `rom.c:191-193`). The loader takes the size of the RDRAM in
   the state from the state (`savestates.c:1029`), allocates that size plus 0x2754 bytes, a sum
   computed in 32 bits (`:1002,1038-1039`), and reads that much of the state (`:1045-1050`). It
   copies at most the core's own RDRAM from it (`:1280-1289`), but sets up the registers of one
@@ -1943,12 +1954,12 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 
 ### Benchmark result toast
 - OBSERVED: with "Benchmark mode" on in the display settings (`preferences_display.xml:136-140`;
-  `strings.xml:432-433`), a session that runs the parallel plugin outside netplay averages the
+  `strings.xml:433-434`), a session that runs the parallel plugin outside netplay averages the
   frame rate for 30 seconds, then shows the result in a toast and stores it under the GPU driver's
   name, which is empty for the device's own driver, so results with that driver are not stored
-  (`CoreService.java:222,914-925,1681-1702,1714-1730`). That toast now goes through the method
+  (`CoreService.java:222,923-934,1690-1711,1723-1739`). That toast now goes through the method
   that posts the resume and cheats notices to the main thread, which now passes format arguments
-  on (`:400-408,419,891,1728-1729`). This is outside RetroAchievements; it was an open item here.
+  on (`:400-408,419,891,1737-1738`). This is outside RetroAchievements; it was an open item here.
 - OBSERVED: `Notifier` has one `showToast` for a string resource, and it takes format arguments
   (`Notifier.java:79-82`), so the resume and cheats notices, which pass none, make the same call
   as before.
@@ -1959,7 +1970,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   calls the swap that ae-bridge gives the core (`CoreInterface.java:578`; `ae_bridge.cpp:597-601`;
   `frontend.c:405-410`; `vidext.c:99-101,778-782`; `ae_bridge.h:73`), and that swap counts frames
   and calls back into Java on that thread (`ae_bridge.cpp:397-407,453-460`;
-  `CoreInterface.java:207-211`), whose listener is the service (`CoreService.java:1273`). So until
+  `CoreInterface.java:207-211`), whose listener is the service (`CoreService.java:1282`). So until
   this change the result toast was made on that thread, and on Android 6 to 10 it never showed
   (see the `Toast` REFERENCE under "Save states and Resume under hardcore"); from Android 11 it
   shows either way. Not verified on a device running Android 6 to 10; see the emulator run below.
@@ -1971,7 +1982,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED (Android 10 x86_64 emulator, 2026-10-23, one run of each build): the parallel plugin
   does not start on this emulator (Granite: "VK_KHR_16bit_storage for SSBOs is not supported!
   This is a minimum requirement for paraLLEl-RDP."), so two test builds of `017042299` dropped the
-  parallel-plugin check from the benchmark's condition (`CoreService.java:915-916`) and ran it
+  parallel-plugin check from the benchmark's condition (`CoreService.java:924-925`) and ran it
   with Glide64. Both also had the ae-bridge fix of PR #20 (branch
   `fix/non-arm64-game-start-crash`), without which every game start crashes on x86_64. The build
   with `CoreService.java` as it was before this change (from `1530dde6d`) logged the result,
@@ -2008,15 +2019,15 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 
 ### Controller Pak saves of players 2 to 4
 - OBSERVED: the core keeps the four Controller Paks in one 128 KB file
-  (`main.c:173-176,1061-1064,1682`; `device.h:55`; `mempak.h:40`). Each player's pak is a 32 KB
+  (`main.c:173-176,1061-1064,1686`; `device.h:55`; `mempak.h:40`). Each player's pak is a 32 KB
   part of it, with a storage of its own whose save goes to the file's storage, and only the paks
-  use that kind of storage (`main.c:1789-1795`; `file_storage.c:129-135,158-163`). The in-game
+  use that kind of storage (`main.c:1793-1799`; `file_storage.c:129-135,158-163`). The in-game
   menu has a pak choice for each of the four players (`GameActivity.java:997-1004`). A game
   writes a pak 32 bytes at a time (`game_controller.c:36,137`), and each write copies the bytes
   into that player's part and saves their range (`mempak.c:184-192`). The file's storage writes
   the whole file on the session's first save and only the given range after that
   (`file_storage.c:38,104-114`), and when the game closes, or a plugin fails to open, the core
-  only frees it (`main.c:1972,2015`; `file_storage.c:76-80`).
+  only frees it (`main.c:1976,2019`; `file_storage.c:76-80`).
 - OBSERVED: before this change, a part's save passed the range at the pak's own address, without
   the part's place in the file (`file_storage.c:125-129` at `801d6b18d`). That code was the same
   where this branch starts (`d9779061b`).
@@ -2032,11 +2043,11 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   from mupen64plus-ae's fork at `3c4182f7473b` (`mupen64plus-core/upstream/.gitrepo`), which is
   still the head of that fork's `master` (checked 2026-10-23) and lacks the fix.
 - OBSERVED: this change applies those three hunks unchanged (`file_storage.h:32`;
-  `file_storage.c:129-135`; `main.c:1792`). Nothing fills that struct by position, which a new
+  `file_storage.c:129-135`; `main.c:1796`). Nothing fills that struct by position, which a new
   field would break, and the paks' storages, the only ones whose save reads the field, set it.
 - OBSERVED (host build): `tools/test-mempak-save.sh` builds `tools/tests/mempak-save-test.c` with
   the core's `file_storage.c`, `mempak.c` and file helpers. The test sets up the four paks as
-  `main_run` does, but sets each pak's offset itself, so `main.c:1792` is checked only by reading
+  `main_run` does, but sets each pak's offset itself, so `main.c:1796` is checked only by reading
   it and by the build. It writes 32-byte blocks to each pak after the session's first save,
   compares the file with the bytes it should hold, and reads the blocks back as the next session
   would. It passes with GCC 16.2.1 and clang 23.1.3, and in a scratch build under clang ASan,
@@ -2058,10 +2069,10 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
 - OBSERVED: the core writes each save type to a file of its own (`main.c:173-191,1061-1124`):
   EEPROM, SRAM, FlashRAM, and the four Controller Paks together in one 128 KB file. It names them
   after the game's name in its ROM database, or for a game not in it, the name in the game's
-  header followed by " (unknown rom)" (`rom.c:198,218-219`). The EEPROM file holds 512 bytes, or
+  header followed by " (unknown rom)" (`rom.c:199,219-220`). The EEPROM file holds 512 bytes, or
   2 KB when the game's database entry, or for a game not in the database its homebrew header,
   gives a 16 Kbit EEPROM, as the session's first save rewrites the file at that size
-  (`main.c:1120-1123`; `rom.c:235-244,323-324,553,625-627`;
+  (`main.c:1120-1123`; `rom.c:236-245,324-325,554,626-628`;
   `mupen64plus-core/upstream/src/api/m64p_types.h:238-239`; `file_storage.c:104-114`;
   `util.c:70`). The core stores EEPROM and pak bytes in the order the game sees them
   (`eeprom.c:59,74`; `mempak.c:176,190`; `si_controller.c:64,69`), and SRAM and FlashRAM bytes
@@ -2071,7 +2082,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   `mupen64plus-core`, and the `build_common` files that `Android.mk` and `build.gradle` include,
   `native_common.mk` and `native_common.gradle`). Its SRAM is 32 KB, and it keeps only the low
   16 bits of an SRAM address (`sram.h:29`; `sram.c:32,53,72`), also for homebrew whose header
-  asks for 768 Kbit (banked) or 1 Mbit of SRAM (`rom.c:326-329`). Since `6bacc7a09`, a CPU read
+  asks for 768 Kbit (banked) or 1 Mbit of SRAM (`rom.c:327-330`). Since `6bacc7a09`, a CPU read
   at an offset from 32 KB to 64 KB gives 0, a write there is dropped, and a DMA out of SRAM stops
   at 32 KB, as one into it already did (`sram.c:55,74,88,103`). It reads a file shorter than
   its save type as far as the file goes and leaves the rest of its copy unset; it fills in a
@@ -2112,7 +2123,7 @@ Issue: https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/15 (stays ope
   folder (`main.c:193-196,1454-1457`). The core opens the save at the RAM size that the Game Boy
   game's header gives and saves at each write to that RAM (`gb_cart.c:105,138,1024-1040`;
   `main.c:1442-1481`). After the game, the app writes the whole copy over the start of the chosen
-  file, opened with mode "rw", and deletes the working folder (`CoreService.java:941,945`;
+  file, opened with mode "rw", and deletes the working folder (`CoreService.java:950,954`;
   `CoreInterface.java:522-530`; `FileUtil.java:676,691-700`).
 - OBSERVED: before this change, the first write to that RAM rewrote the save at the RAM's size,
   without anything that followed the RAM (`file_storage.c:102-110` at `9fcd0913a`; `util.c:70`).
@@ -2209,9 +2220,24 @@ B. Hardcore rules
 - MET (cheats a player chooses): OBSERVED: under hardcore the emulation job adds none of the
   game's enabled cheats, and the GameShark button is refused (`CoreService.java:594-600,888-901`);
   `:898`, in that loop, is the app's only call of `coreAddCheat`.
-- USER (the core's own database patches): OBSERVED: in every mode the core also adds the codes its
-  ROM database lists under the game's `Cheat` keys (`rom.c:688-716`; `main.c:1624`;
-  `cheat.c:497-536`). It writes boot codes at the first frame, and again after each soft reset,
+- MET (the core's own database patches): OBSERVED: the core adds the codes its ROM database lists
+  under the game's `Cheat` keys (`rom.c:689-717`; `cheat.c:497-536`) only while the glue's
+  database-codes flag is on; otherwise, when the database lists codes for the game, it logs
+  "RetroAchievements hardcore mode: the ROM database's cheat codes are off" instead
+  (`main.c:1624-1628`). The flag starts on, and `ra_glue_shutdown` turns it on again
+  (`ra_glue.c:71,975,1028-1036`). Only the emulation job turns it off, when `isRaHardcore()`
+  holds, after the player's cheats and before `emuStart`, on the thread that then runs the core
+  (`CoreService.java:903-910,937`; `RetroAchievementsManager.java:299-303`). DERIVED: so the
+  codes follow the rule that keeps out the player's cheats, applied after a resumed session has
+  turned hardcore off on that thread (`CoreService.java:722-725`): a resumed session keeps them,
+  as does a netplay session, which never runs that branch (`:880-882`) and never turns hardcore
+  on (`:1377`), a session with achievements off in Settings, and one whose sign-in or game load
+  has failed before that point, which the app announces as "RetroAchievements is off for this
+  session" (`:1568-1571`). The glue's requested mode (`ra_glue_get_hardcore`) is not used,
+  because it stays on after such a failure: with no sign-in saved, `setHardcore` comes before
+  the check that fails (`:1377,1382-1387`). A hardcore session whose sign-in or game load fails
+  after the job's check (`:904`) runs on without the codes, as it does without the player's
+  cheats. The core writes boot codes at the first frame, and again after each soft reset,
   which sets the frame count back to zero (`interrupt.c:449`), and the others on every frame after
   the first 60; a code that follows a test is written only on frames when the test holds
   (`main.c:972-986,1011`; `cheat.c:229-236,242-267,281-282`). In the shipped database
@@ -2219,18 +2245,37 @@ B. Hardcore rules
   dumps of Ocarina of Time ("End Credits Fix": tests, each followed by a write), five of
   Mario Kart 64 ("Multiplayer Timing Fix": writes) and two of Rat Attack ("Allows the game to
   boot": boot codes). 39 more entries refer to one of these with `RefMD5` and have no codes of
-  their own, so they take its codes (`rom.c:350,406-411`): other dumps, translations, trainers and
+  their own, so they take its codes (`rom.c:351,407-412`): other dumps, translations, trainers and
   hacks of the same games, and three debug builds of Ocarina of Time Master Quest.
   That makes 53 entries: 15 of Ocarina of Time, 34 of Mario Kart 64 and 4 of Rat Attack. A dump
   the database does not list by MD5 gets the codes of the entry with its header's CRCs, if no
-  other entry has the same CRCs (`rom.c:195-196,214,849-858`). REFERENCE (upstream mupen64plus-core
+  other entry has the same CRCs (`rom.c:196-197,215,850-859`). REFERENCE (upstream mupen64plus-core
   pull requests 203, 333 and 714, merged as `337a0842`, `cc1e7f02` and `f93c9e77`): upstream
   added the Mario Kart 64 and Rat Attack codes, with these comments, to fix multiplayer timing and
-  to let Rat Attack boot. HYPOTHESIS: the codes correct emulation or let a dump boot rather than
-  change play, so they are not section G's "gameplay-altering cheats", and turning them off would
-  bring the problems back; the game code they patch was not examined. The page also disables
-  "Built-in cheat engines", and these codes run through the core's, so the approval request should
-  name them for RetroAchievements to decide.
+  to let Rat Attack boot. DERIVED: so in hardcore, as the maintainer decided on 2026-10-27, these
+  games run without them: going by upstream's comments, Rat Attack may not boot, and neither
+  Mario Kart 64's multiplayer timing nor those Ocarina of Time dumps' end credits are fixed. Not
+  tried. HYPOTHESIS: the codes correct emulation or let a dump boot rather than change play; the
+  game code they patch was not examined. REFERENCE: the page disables "Built-in cheat engines" in
+  hardcore, and these codes run through the core's. OBSERVED: players are told in two places, as
+  the maintainer chose on 2026-10-27. The hardcore setting's summary ends "Hardcore mode also turns
+  off the emulator's fixes for three games: Rat Attack may not start, and the Mario Kart 64
+  multiplayer timing fix and the Ocarina of Time GameCube end-credits fix are off."
+  (`strings.xml:331`). And when the job turns the codes off for a game the database lists codes for,
+  it posts "Hardcore mode: this game's compatibility fixes are disabled" to the main thread, as it
+  does the cheats notice (`CoreService.java:905-908`; `strings.xml:270`; see "On-screen notices").
+  It asks the core with `ra_glue_has_database_codes`, which returns whether `open_rom` found codes
+  for the open ROM (`rom.c:189,215,234,867-870`), after the ROM is open and before `emuStart`
+  (`CoreService.java:801,807-809,937`; `RetroAchievementsManager.java:305-308`). It is in `rom.c`,
+  beside `ROM_PARAMS`, so the host tests that compile `ra_glue.c` without `rom.c` need nothing more;
+  it is declared, exported and bound like the glue's other entry points (`ra_glue.h:72-76`;
+  `api_export.ver:75`; `CoreLibrary.java:112`). Checked on this change: the session test, whose last
+  run checks the glue's flag, passes when built with GCC and with clang, and does not build against
+  the base's glue, which lacks the flag's functions; the memory and wave-race tests pass; Gradle
+  builds the app's resources and Java code and passes the app's unit tests; and NDK clang accepts
+  the changed core files with `-fsyntax-only`. The core was not built in these checks. Not yet
+  verified on device: a hardcore session of one of these games should log the line above and show
+  the notice once, and a casual, resumed or netplay session, or a game without codes, neither.
 - N/A (rewind): OBSERVED: no file in the app's or the core's sources mentions rewind.
 - MET (slowdown and frame advance): every speed other than 100% and frame advance are refused
   (see "Speed lock under hardcore").
@@ -2241,12 +2286,12 @@ B. Hardcore rules
 - MET (resume): a game resumed from its auto save runs in softcore, with a notice (see "Save
   states and Resume under hardcore").
 - MET (mode switching): OBSERVED: a session turns hardcore on only where it starts achievements,
-  before signing in (`CoreService.java:1368`), once per service (`:1331-1334`) and from the
-  settings read when the service was created (`:1103,1120`). Otherwise it only turns hardcore
-  off, for Resume and netplay (`:418,1368`; see "Hardcore session start"). DERIVED: a changed
+  before signing in (`CoreService.java:1377`), once per service (`:1340-1343`) and from the
+  settings read when the service was created (`:1112,1129`). Otherwise it only turns hardcore
+  off, for Resume and netplay (`:418,1377`; see "Hardcore session start"). DERIVED: a changed
   setting applies to the next game.
 - MET (no memory editors, debuggers, scripting or input playback): OBSERVED: the core's debugger
-  is built only with `DBG` (`main.c:83,934,1930,1954,2055`), which none of the core's Android
+  is built only with `DBG` (`main.c:83,934,1934,1958,2059`), which none of the core's Android
   build files define (`Android.mk`, `Application.mk`, `mupen64plus-core.mk` and `build.gradle` in
   `mupen64plus-core`), and the app's Java sources mention no memory editor, Lua scripting or movie
   playback. The core exports `DebugMemGetPointer`, which returns a pointer to the console's RAM,
@@ -2276,7 +2321,7 @@ D. Eligibility timeline
 E. Defaults and UX
 - MET: OBSERVED: softcore is the default (`preferences_ra.xml:31-36`), and hardcore is one
   checkbox on the same RetroAchievements screen as the sign-in, whose summary says what it
-  disables (`preferences_ra.xml:7-37`; `strings.xml:327-328`). Each session shows its mode once
+  disables (`preferences_ra.xml:7-37`; `strings.xml:330-331`). Each session shows its mode once
   the game's achievements load (see "On-screen notices").
 
 F. Transparency and legality
@@ -2331,7 +2376,7 @@ The privacy policy and the license page are published (see F). Before applying, 
 must settle the USER items under F, run the device checks the sections above list, and send the
 approval request to RetroAchievements; the page names no contact for it. The request must
 disclose `Mupen64PlusAE` and `Mupen64PlusAE/3.0 (Android)` (see "User-Agent") and should name the
-parent and its first public release (see D) and the core's database patches (see B).
+parent and its first public release (see D).
 
 ### Open items (not fixed here)
 - REFERENCE (AOSP `android-14.0.0_r1`, `NotificationManagerService.java`): Android refuses a new
@@ -2339,7 +2384,7 @@ parent and its first public release (see D) and the core's database patches (see
   (`:384,3365-3377`), and shows queued toasts one at a time, a long one for 3.5 seconds
   (`:399,8648-8653,8763`). OBSERVED: the RetroAchievements notices share that limit with the app's
   other toasts, including the hardcore "disabled" toasts, because `Notifier.showToast` makes a new
-  toast on each call (`Notifier.java:95`; `CoreService.java:431,549,564,597`, and `:419,891`
+  toast on each call (`Notifier.java:95`; `CoreService.java:431,549,564,597`, and `:419,891,908`
   through `:407`). DERIVED: toasts beyond five are lost, so several unlocks on the same frame, or
   an unlock that arrives while repeated taps on a blocked control fill the queue, go unannounced.
   A "disabled" toast that follows a notice waits for it, up to 3.5 seconds for each notice ahead
