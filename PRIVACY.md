@@ -8,10 +8,11 @@ Last updated: 27 October 2026
 
 - The app shows no ads. It has no analytics and no crash reporting.
 - The maintainer runs no server. The app sends nothing to the maintainer.
-- Some features send data to other services: RetroAchievements, a cover-art server at
-  `zurita.me`, Google Drive and GitHub. Release V339 also uses a netplay server at
-  `zurita.me`. Cover art is on by default. RetroAchievements and Google Drive backup are off
-  until you turn them on. Each feature is described below.
+- Some features send data to other services: RetroAchievements, Google Drive and GitHub,
+  which also serves the cover art. Release V339 instead gets cover art from a server at
+  `zurita.me`, and uses a netplay server there too. Cover art is on by default.
+  RetroAchievements and Google Drive backup are off until you turn them on. Each feature is
+  described below.
 - The app keeps your settings, saves and sign-in details on your device. They leave it only
   for the features below, for example when Drive backup uploads your saves.
 
@@ -61,6 +62,13 @@ next release and the test builds are made. V339 differs from it in these ways:
   only the file's extension.
 - When it joins a netplay game, it keeps looking for rooms on your local network for the
   whole game, and connects to each new room that it finds.
+- It downloads cover art over plain HTTP, not HTTPS, from `coverart.zurita.me`. The app got
+  this address from Francisco Zurita's commits to his fork of Mupen64Plus-AE, on which this
+  app is based, and the domain carries his name. Anyone who can see your network traffic, for
+  example on public Wi-Fi, can see which covers it downloads. No privacy policy covers this
+  server, and how long it keeps its logs is unknown. It is hosted by DigitalOcean, LLC (US),
+  which lists the server's address in Clifton, New Jersey, US. The current code downloads
+  cover art over HTTPS from GitHub (see "Cover art (on by default)").
 - Its online netplay codes go through a server, `np.zurita.me` (port 37520). When you host
   and tap **Get Code**, the app registers your room there. The server sees your public IP
   address, gives your address and your room's port to anyone who enters your code, and is
@@ -120,10 +128,11 @@ The app does not download badge or avatar images from RetroAchievements.
 
 ### Cover art (on by default)
 
-When you scan for games with **Download cover art** ticked, the app downloads a cover image
-for each game that it finds. The box is ticked by default. The app also downloads a cover,
-without asking, when another app (for example a game frontend) opens a game file with this
-app and the game is not in your library yet. No setting turns off this second case.
+When you scan for games with **Download cover art** ticked, the app asks GitHub for a cover
+image for each game in your library that has no cover yet, including games that earlier
+scans found. The box is ticked by default. The app also asks GitHub for a game's cover,
+without asking you, when another app (for example a game frontend) opens a game file with
+this app and the game is not in your library yet. No setting turns off this second case.
 
 The app sends:
 
@@ -131,12 +140,18 @@ The app sends:
 - Android's default User-Agent, which contains your Android version, your device model and
   its build ID.
 
-The server is `coverart.zurita.me`. The app got this address from Francisco Zurita's commits
-to his fork of Mupen64Plus-AE, on which this app is based, and the domain carries his name.
-The connection uses plain HTTP, not HTTPS. Anyone who can see your network
-traffic, for example on public Wi-Fi, can see which covers you download. No privacy policy
-covers this server, and how long it keeps its logs is unknown. It is hosted by DigitalOcean,
-LLC (US), which lists the server's address in Clifton, New Jersey, US.
+The images come over HTTPS from the maintainer's public repository on GitHub,
+<https://github.com/pwnedbygary/mupen64plus-ae-turnip-coverart>, by way of
+`raw.githubusercontent.com`. GitHub, Inc. (US), not the maintainer, receives these requests,
+under the
+[GitHub General Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
+GitHub shows anyone with push access to a repository, such as the maintainer, its traffic of
+the past 14 days: the numbers of visitors and of full clones, the referring sites and the
+popular content
+([Viewing traffic to a repository](https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/viewing-traffic-to-a-repository)).
+GitHub's documentation does not say whether downloads through `raw.githubusercontent.com`
+count in this traffic.
+Release V339 gets cover art from another server (see "How release V339 differs").
 
 To stop downloads during a scan, untick **Download cover art** on the scan screen.
 
@@ -232,7 +247,8 @@ countries".
 
 ### Links
 
-Links to help, bug reports, releases, credits and game wiki pages open in your web browser.
+Links to help, bug reports, releases, credits, game wiki pages, this privacy policy and the
+licenses page open in your web browser.
 The app gives the browser only the address.
 
 ### The app's log and hardware info
@@ -257,9 +273,9 @@ screen. This stays on the device.
 | Service | Used for | Location | How long it keeps data |
 |---|---|---|---|
 | RetroAchievements | Achievements | Served through Cloudflare, Inc. (US). RetroAchievements does not publish where its servers are. | Not published. Its terms say "as long as necessary", and API usage logs "for a period deemed appropriate". |
-| `coverart.zurita.me`, and `np.zurita.me` in release V339 (addresses from Francisco Zurita's commits) | Cover art; online netplay codes in release V339 | DigitalOcean, LLC (US); DigitalOcean lists the address in Clifton, New Jersey, US | Unknown. No privacy policy covers these servers. |
+| `coverart.zurita.me` and `np.zurita.me`, in release V339 only (addresses from Francisco Zurita's commits) | Cover art and online netplay codes in release V339 | DigitalOcean, LLC (US); DigitalOcean lists the address in Clifton, New Jersey, US | Unknown. No privacy policy covers these servers. |
 | Google (sign-in and Drive) | Drive backup | "servers around the world" (Google) | Under Google's policy. Your backup files stay in your Drive until you delete them. |
-| GitHub | GPU drivers; update check | "your local region, the United States, and other countries" (GitHub) | Under GitHub's privacy statement. |
+| GitHub | Cover art; GPU drivers; update check | "your local region, the United States, and other countries" (GitHub) | Under GitHub's privacy statement. |
 | Other players; your router | Netplay | Direct connections, no server | Not applicable |
 | The maintainer | Nothing | No server | Keeps no data from the app |
 
