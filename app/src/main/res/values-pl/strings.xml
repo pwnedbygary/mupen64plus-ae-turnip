@@ -88,7 +88,7 @@
    <string name="profile_manage_profiles">Zarządzaj profilami</string>
 
     <!-- Popup Dialogs -->
-    <string name="popup_faq">Mupen64Plus jest rozwijany i utrzymywany przez ochotników.<small>\n\nAby naprawić błędy graficzne, spróbuj zmienić <i>wtyczkę wideo</i>.\n\nAby naprawić opóźnienie, spróbuj zmienić ustawienia <i>klatkowania widea</i> lub <i>wtyczki widea</i>.\n\nW przypadku nie odtwarzanych ROMów spróbuj rozpakować ROM lub wypróbować inną wersję ROMu.\n\nW przypadku problemów z kontrolą ekranu dotykowego, spróbuj zmienić <i>skalę przycisków</i> lub <i>układ przycisków</i>.\n\nW innych przypadkach lub jeśli nie wiesz co robić, kliknij przycisk <i>FAQ</i> poniżej. W przypadku błędów nie dotyczących gry, kliknij przycisk <i>Zgłoś błąd</i> poniżej. Odpowiadamy na większość postów w ciągu 24 godzin. Naprawdę.\n\n</small>Dziękujemy za pomoc w udoskonaleniu aplikacji!</string>
+    <string name="popup_faq">Mupen64Plus jest rozwijany i utrzymywany przez ochotników.<small>\n\nAby naprawić błędy graficzne, spróbuj zmienić <i>wtyczkę wideo</i>.\n\nAby naprawić opóźnienie, spróbuj zmienić ustawienia <i>klatkowania widea</i> lub <i>wtyczki widea</i>.\n\nW przypadku nie odtwarzanych ROMów spróbuj rozpakować ROM lub wypróbować inną wersję ROMu.\n\nW przypadku problemów z kontrolą ekranu dotykowego, spróbuj zmienić <i>skalę przycisków</i> lub <i>układ przycisków</i>.\n\nW innych przypadkach lub jeśli nie wiesz co robić, kliknij przycisk <i>FAQ</i> poniżej. W przypadku błędów nie dotyczących gry, kliknij przycisk <i>Zgłoś błąd</i> poniżej.\n\n</small>Dziękujemy za pomoc w udoskonaleniu aplikacji!</string>
     <string name="popup_version">Wersja: %1$s\nKod Wersji: %2$d</string>
 
    <!-- Lists -->
