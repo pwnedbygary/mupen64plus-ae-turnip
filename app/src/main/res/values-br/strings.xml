@@ -108,7 +108,7 @@
     <string name="profile_manage_profiles">Merañ ar profiloù</string>
 
     <!-- Popup Dialogs -->
-    <string name="popup_faq">Mupen64Plus a zo diorroet ha derc\'helaet gant tud a-youl vat.<small>\n\nEvit stabilaat ar c\'hlitchoù grafikel, klaskit cheñch al <i>lugant video</i>.\n\nEvit stabilaat al lag, klaskit cheñch ar <i>video frameskip</i> arventennoù pe al <i>lugant video</i>.\n\nEvit ar ROMoù dic\'hoarius, klask dizipañ ar ROM da gentañ pe ur stumm disheñvel eus ar ROM.\n\nEvit an touchskramm kontroll kudennoù, klaskit cheñch ar <i>skeul bouton</i> pe <i>bouton fichañ</i>.\n\nEvit kudennoù all, pe ma \'z oc\'h stanket c\'hoazh, klikit c\'hoazh ar <i>FAG</i> bouton dindan. Evit ar beugoù nan-c\'hoari-spis, klikit an <i>Daneveller beugoù</i> bouton dindan. Respont a reomp d\'ar postoù brasañ e-barzh 24 eurvezh. Onest.\n\n</small>Trugarez vras da sikour ac\'hanomp da wellaat an arload!</string>
+    <string name="popup_faq">Mupen64Plus a zo diorroet ha derc\'helaet gant tud a-youl vat.<small>\n\nEvit stabilaat ar c\'hlitchoù grafikel, klaskit cheñch al <i>lugant video</i>.\n\nEvit stabilaat al lag, klaskit cheñch ar <i>video frameskip</i> arventennoù pe al <i>lugant video</i>.\n\nEvit ar ROMoù dic\'hoarius, klask dizipañ ar ROM da gentañ pe ur stumm disheñvel eus ar ROM.\n\nEvit an touchskramm kontroll kudennoù, klaskit cheñch ar <i>skeul bouton</i> pe <i>bouton fichañ</i>.\n\nEvit kudennoù all, pe ma \'z oc\'h stanket c\'hoazh, klikit c\'hoazh ar <i>FAG</i> bouton dindan. Evit ar beugoù nan-c\'hoari-spis, klikit an <i>Daneveller beugoù</i> bouton dindan.\n\n</small>Trugarez vras da sikour ac\'hanomp da wellaat an arload!</string>
     <string name="popup_version">Stumm: %1$s\nStumm kod: %2$d</string>
 
     <!-- Lists -->

@@ -176,7 +176,7 @@
 
 触摸屏控制的问题，请尝试更改 "<i>〖按钮比例〗</i> 或 <i>〖按钮布局〗</i>"。
 
-其他问题，或者如果你仍然被困，请单击 "<i>〖FAQ〗</i> 下面的按钮。对于非特定游戏的 bug，请单击 <i>〖报告 bug〗</i>" 下面的按钮。我们在 24 小时内回复绝大多数的帖子。诚实。
+其他问题，或者如果你仍然被困，请单击 "<i>〖FAQ〗</i> 下面的按钮。对于非特定游戏的 bug，请单击 <i>〖报告 bug〗</i>" 下面的按钮。
 "</small>感谢您帮助我们改善应用程序！</string>
     <string name="popup_titleBuiltin">%1$s （内置）</string>
     <string name="popup_titleCustom">%1$s</string>
