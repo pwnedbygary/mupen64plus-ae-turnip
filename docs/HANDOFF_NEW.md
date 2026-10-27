@@ -5430,6 +5430,22 @@ C takes after bounding the TLB writes.
   `54bd9af818` ("fix build"). With the three SDL commits named above, every
   commit from `542a3723b2` on failed (undeclared SDL 2 types, and SDL 2
   functions that would not have linked).
+  The check compiled `cp2.c` whenever a commit had it, and compiling does not
+  link, so it missed one break: at pick 13, `8f6a47e9d` (upstream
+  `fc872ea9a1`, "Implement cop2 support"), the pure interpreter's new COP2
+  instructions call `r4300_cp2_regs_simple`, `r4300_cp2_regs_double`,
+  `r4300_cp2_fcr0` and `r4300_cp2_fcr31`, which only `cp2.c` defines, and the
+  core's makefile lists `cp2.c` only from the next commit, `401baf33e` ("Build
+  the core's new cp2.c"). The NDK links the core with `-Wl,--no-undefined`, so
+  the core library does not link at pick 13. Separately, going by the code
+  (not run), the app cannot show a game at pick 67, `8b073c92c` (upstream
+  `761b34443a`, "Add Video Extension functions to support Vulkan"): the core
+  refuses a table of fewer than 17 video-extension functions, the app's
+  ae-bridge passes 14 until the next commit, `9abbc7156`, and the core's own
+  SDL video code, which it then uses, cannot set a video mode with the app's
+  SDL stub. A `git bisect` that lands on pick 13, 17 to 20, 27 or 67 should
+  skip it; `git bisect skip` with `8f6a47e9d`, `f6b3e13bd`, `dd37d7868`,
+  `6d6fd07d3`, `eedf3c53a`, `66d9d7743` and `8b073c92c` skips all seven.
 - Every `tools/test-*.sh` at `master` (an export of `354a643f4`) and with this
   change, with both compilers: the same results. At both, `test-dd-rsp-mac`
   fails (exit 8; it checks a capture script's text), `test-p07-verifier` is
