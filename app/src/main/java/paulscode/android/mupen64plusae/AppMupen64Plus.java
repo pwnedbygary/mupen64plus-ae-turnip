@@ -22,11 +22,14 @@ package paulscode.android.mupen64plusae;
 
 import androidx.multidex.MultiDexApplication;
 
+import paulscode.android.mupen64plusae.persistent.RaCredentialSync;
+
 public class AppMupen64Plus extends MultiDexApplication
 {
     @Override
     public void onCreate()
     {
         super.onCreate();
+        RaCredentialSync.register( this );
     }
 }

@@ -5,6 +5,8 @@ import org.junit.Test;
 import paulscode.android.mupen64plusae.jni.RaSignInRules.Credential;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class RaSignInRulesTest {
 
@@ -51,5 +53,50 @@ public class RaSignInRulesTest {
                 RaSignInRules.nextCredential(Credential.TOKEN, RC_INVALID_CREDENTIALS, ""));
         assertEquals(Credential.NONE,
                 RaSignInRules.nextCredential(Credential.PASSWORD, RC_INVALID_CREDENTIALS, "password"));
+    }
+
+    @Test
+    public void onlyRejectedTokensAskForThePassword() {
+        assertTrue(RaSignInRules.tokenRejected(Credential.TOKEN, RC_INVALID_CREDENTIALS));
+        assertTrue(RaSignInRules.tokenRejected(Credential.TOKEN, RC_EXPIRED_TOKEN));
+        assertFalse(RaSignInRules.tokenRejected(Credential.TOKEN, RC_NO_RESPONSE));
+        assertFalse(RaSignInRules.tokenRejected(Credential.TOKEN, RC_ACCESS_DENIED));
+        assertFalse(RaSignInRules.tokenRejected(Credential.PASSWORD, RC_INVALID_CREDENTIALS));
+    }
+
+    @Test
+    public void connectChecksSavedPasswordFirst() {
+        assertEquals(Credential.PASSWORD, RaSignInRules.connectCredential("user", "password", "token"));
+        assertEquals(Credential.PASSWORD, RaSignInRules.connectCredential("user", "password", null));
+    }
+
+    @Test
+    public void connectUsesTokenWithoutPassword() {
+        assertEquals(Credential.TOKEN, RaSignInRules.connectCredential("user", "", "token"));
+        assertEquals(Credential.TOKEN, RaSignInRules.connectCredential("user", null, "token"));
+    }
+
+    @Test
+    public void connectNeedsUserNameAndCredential() {
+        assertEquals(Credential.NONE, RaSignInRules.connectCredential("", "password", "token"));
+        assertEquals(Credential.NONE, RaSignInRules.connectCredential(null, "password", "token"));
+        assertEquals(Credential.NONE, RaSignInRules.connectCredential("user", "", null));
+    }
+
+    @Test
+    public void signInThatReturnsTokenForgetsPassword() {
+        assertTrue(RaSignInRules.forgetsPassword("token", "password"));
+    }
+
+    @Test
+    public void signInWithoutTokenKeepsPassword() {
+        assertFalse(RaSignInRules.forgetsPassword("", "password"));
+        assertFalse(RaSignInRules.forgetsPassword(null, "password"));
+    }
+
+    @Test
+    public void noPasswordLeavesNothingToForget() {
+        assertFalse(RaSignInRules.forgetsPassword("token", ""));
+        assertFalse(RaSignInRules.forgetsPassword("token", null));
     }
 }
