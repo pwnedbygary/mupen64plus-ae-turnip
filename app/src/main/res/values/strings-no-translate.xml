@@ -10,6 +10,8 @@
     <!-- Web links, email addresses, etc. -->
     <string name="uri_forum" translatable="false">https://github.com/pwnedbygary/mupen64plus-ae-turnip/discussions</string>
     <string name="uri_bugReport" translatable="false">https://github.com/pwnedbygary/mupen64plus-ae-turnip/issues/new/choose</string>
+    <string name="uri_privacyPolicy" translatable="false">https://github.com/pwnedbygary/mupen64plus-ae-turnip/blob/master/PRIVACY.md</string>
+    <string name="uri_licenses" translatable="false">https://github.com/pwnedbygary/mupen64plus-ae-turnip/blob/master/LICENSES.md</string>
     <string name="assetExtractor_uriHelp" translatable="false">tinyurl.com/bfbb4jc</string>
 
     <!-- Strings only seen in the eclipse editor -->

@@ -935,6 +935,12 @@ public class GalleryActivity extends AppCompatActivity implements GameSidebarAct
         } else if (item.getItemId() == R.id.menuItem_credits) {
             startActivity(new Intent(GalleryActivity.this, CreditRollActivity.class));
             return true;
+        } else if (item.getItemId() == R.id.menuItem_privacyPolicy) {
+            ActivityHelper.launchUri(this, R.string.uri_privacyPolicy);
+            return true;
+        } else if (item.getItemId() == R.id.menuItem_licenses) {
+            ActivityHelper.launchUri(this, R.string.uri_licenses);
+            return true;
         } else if (item.getItemId() == R.id.menuItem_localeOverride) {
             final CharSequence title = getText( R.string.menuItem_localeOverride );
             final LocaleDialog localeDialog = LocaleDialog.newInstance(title.toString());
