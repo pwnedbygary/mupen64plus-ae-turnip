@@ -394,25 +394,8 @@ else(UNIX OR BCMHOST)
 endif(ANDROID)
 
 if(ANDROID)
-    add_library( ANDROID_FREETYPE
-            SHARED
-            IMPORTED )
-
-    if( GLIDEN64_BUILD_TYPE STREQUAL "Debug")
-        set( BUILD_VARIANT "debug" )
-    else()
-        set( BUILD_VARIANT "release" )
-    endif()
-
-    set_target_properties( # Specifies the target library.
-            ANDROID_FREETYPE
-
-            # Specifies the parameter you want to define.
-            PROPERTIES IMPORTED_LOCATION
-
-            # Provides the path to the library you want to import.
-            ${ANDROID_LIB_PATH}/libs/${BUILD_VARIANT}/${ANDROID_ABI}/libfreetype.so)
-    set(FREETYPE_LIBRARIES ANDROID_FREETYPE)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/../../freetype-png.cmake)
+    set(FREETYPE_LIBRARIES freetype)
 else(ANDROID)
     FIND_PACKAGE( Freetype REQUIRED )
     # presume a qt build linked to freetype

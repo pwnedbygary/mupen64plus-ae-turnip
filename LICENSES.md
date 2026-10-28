@@ -2,7 +2,7 @@
 
 **Mupen64Plus-AE Turnip** (shown on your device as "M64P Turnip")
 
-Last updated: 27 October 2026
+Last updated: 28 October 2026
 
 This page lists the third-party software, data and art found in the app, with their licenses
 and where their texts are. The section [Full license notices](#full-license-notices) gives, in
@@ -30,10 +30,11 @@ Each release on the [releases page](https://github.com/pwnedbygary/mupen64plus-a
 has a tag with the same name in this repository, for example `V339` (commit `d9779061b`).
 The source code of a release is this repository at that tag. Each release page also has
 "Source code" downloads of the tag. The tag contains the source of every native library that
-the build compiles, the copies of the upstream projects, and the build scripts. For the
-prebuilt libraries in [Prebuilt libraries](#prebuilt-libraries), the repository does not
-record how they were built, and it does not contain the source of the
-libpng 1.6.34 inside `libfreetype.so`.
+the build compiles, the copies of the upstream projects, and the build scripts. The build
+compiles every native library in the app except `libc++_shared.so`, `liboboe.so` and
+`libjnidispatch.so`, which come from the Android NDK and from the Oboe and JNA packages.
+V339 also contains libraries that were built in 2021 outside this repository: see
+[Release V339](#release-v339).
 
 ## Parts that are not open source
 
@@ -64,8 +65,7 @@ table lists each component in them. The full text of each notice in the last col
 | MD5 code by L. Peter Deutsch | `libmupen64plus-core.so` | `Zlib` | Not recorded | Header of `mupen64plus-core/upstream/subprojects/md5/md5.c` |
 | xxHash (0.8.3 in the core, 0.8.0 in GLideN64 and Glide64mk2) | `libmupen64plus-core.so`, `libmupen64plus-video-GLideN64.so`, `libmupen64plus-video-glide64mk2*.so` (ARM only) | `BSD-2-Clause` | <https://github.com/Cyan4973/xxHash> | Headers of `mupen64plus-core/upstream/subprojects/xxhash/xxhash.h`, `mupen64plus-video-gliden64/upstream/src/xxHash/xxhash.h`, `mupen64plus-video-glide64mk2/upstream/src/Neon/xxhash.h` |
 | CIC-NUS-6105 code by X-Scale | `libmupen64plus-core.so` | `BSD-2-Clause` | Not recorded | Header of `mupen64plus-core/upstream/src/device/pif/n64_cic_nus_6105.c` |
-| libpng 1.6.59, built from source as a static library | `libmupen64plus-core.so`, `libmupen64plus-video-rice.so` | `libpng-2.0` | <https://github.com/pnggroup/libpng>, tag `v1.6.59` | `ndkLibs/png/LICENSE` |
-| libpng 1.6.34, inside the prebuilt `libfreetype.so` (GLideN64 uses this copy) | `libfreetype.so` | `Libpng` | <https://github.com/pnggroup/libpng>, tag `v1.6.34` | `ndkLibs/png/LICENSE` at commit `9bcca07a6`; the current file is libpng 1.6.59's |
+| libpng 1.6.59, built from source as a static library (GLideN64 uses the copy in `libfreetype.so`) | `libmupen64plus-core.so`, `libmupen64plus-video-rice.so`, `libfreetype.so` | `libpng-2.0` | <https://github.com/pnggroup/libpng>, tag `v1.6.59` | `ndkLibs/png/LICENSE` |
 | SDL_net 2.4.0, built from source; a header of this app's build, `ndkLibs/config/SDL_net/SDL_net_libc.h`, maps six SDL functions to the C library | `libSDL2_net.so` | `Zlib` | <https://github.com/libsdl-org/SDL_net>, tag `release-2.4.0` | `ndkLibs/SDL_net/LICENSE.txt`; header of `ndkLibs/SDL_net/include/SDL_net.h` |
 | libadrenotools | `libae-bridge.so`; hook libraries `libfile_redirect_hook.so`, `libgsl_alloc_hook.so`, `libhook_impl.so`, `libmain_hook.so` | `BSD-2-Clause` | <https://github.com/bylaws/libadrenotools> | `adrenotools/LICENSE` |
 | liblinkernsbypass | `libae-bridge.so`, `libhook_impl.so` | `BSD-2-Clause` | <https://github.com/bylaws/liblinkernsbypass> | `adrenotools/lib/linkernsbypass/LICENSE` |
@@ -108,22 +108,11 @@ table lists each component in them. The full text of each notice in the last col
 | Granite Vulkan back end, by Hans-Kristian Arntzen | `libmupen64plus-video-parallel.so` | `MIT` | <https://github.com/Themaister/Granite> | Headers of the compiled files in `mupen64plus-video-parallel/upstream/vulkan/` and `util/` |
 | volk | `libmupen64plus-video-parallel.so` | `MIT` | <https://github.com/zeux/volk> | End of `mupen64plus-video-parallel/upstream/volk/volk.h` |
 | Vulkan headers, version 187 | `libmupen64plus-video-parallel.so` | `Apache-2.0` | <https://github.com/KhronosGroup/Vulkan-Headers> | `mupen64plus-video-parallel/upstream/vulkan-headers/include/vulkan/vulkan_core.h` |
-| FreeType, prebuilt (the source in this repository is Android's copy of version 2.5.3) | `libfreetype.so` | `FTL` | <https://freetype.org>; <https://android.googlesource.com/platform/external/freetype> | `ndkLibs/freetype/NOTICE` |
+| FreeType 2.15.0, built from source, with its own copy of zlib 1.3.1 for its gzip support (`libfreetype.so` also holds libpng 1.6.59, in the libpng row) | `libfreetype.so` | `FTL OR GPL-2.0-or-later`; its `src/base/fthash.c`: a license in MIT style (no SPDX id); its copy of zlib: `Zlib` | <https://freetype.org>; <https://gitlab.freedesktop.org/freetype/freetype>, tag `VER-2-15-0` | `ndkLibs/freetype/docs/FTL.TXT`, `ndkLibs/freetype/docs/GPLv2.TXT`, `ndkLibs/freetype/LICENSE.TXT`; header of `ndkLibs/freetype/src/base/fthash.c`; `ndkLibs/freetype/src/gzip/zlib.h` |
 
-The app does not contain zlib, libEGL, libGLESv2, liblog or the other Android system
-libraries that these libraries use. Android provides them.
-
-### Prebuilt libraries
-
-These libraries are committed to `ndkLibs/libs/` as binaries. The build copies them into the
-app. The repository does not record how they were built. For the
-libpng 1.6.34 in `libfreetype.so` and `libpng.a`, it does not contain the source either. This
-is to be fixed later.
-
-| Prebuilt library | Last committed | Source in this repository | What is missing |
-|---|---|---|---|
-| `libfreetype.so` | 19 December 2021 | Android's FreeType tree (`ndkLibs/freetype/`) | The build recipe: `ndkLibs/freetype/Android.mk` builds a library named `libft2`. The source of the libpng 1.6.34 inside it: `ndkLibs/png/` now holds libpng 1.6.59 |
-| `libpng.a` (static; GLideN64 links it, but takes its `png_*` functions from `libfreetype.so`) | 19 December 2021 | None: `ndkLibs/png/` now holds libpng 1.6.59, which the core and Rice use | The source (the binary's version string is 1.6.34) and the build recipe |
+The app does not contain the Android system libraries that these libraries use, such as
+zlib's `libz.so`, libEGL, libGLESv2 and liblog: Android provides them. `libfreetype.so` holds
+FreeType's own copy of zlib (see the FreeType row).
 
 ## Java and Kotlin libraries
 
@@ -633,7 +622,7 @@ Mesa's `gl.h` header, used by EGLLoader in `libae-bridge.so` and `libmupen64plus
 ```
 
 <!-- notice: libpng-1-6-59 -->
-libpng 1.6.59, a static library inside `libmupen64plus-core.so` and `libmupen64plus-video-rice.so`. Source: `libpng-1.6.59/LICENSE` in <https://download.sourceforge.net/libpng/libpng-1.6.59.tar.xz> (archive SHA-256 `d80dd2a38a37f803cb9b6ac7b14bd6e74ddc3b654780a8380bdf93523fdb4389`), lines 1-134; the same file is `ndkLibs/png/LICENSE` in this repository.
+libpng 1.6.59, a static library inside `libmupen64plus-core.so`, `libmupen64plus-video-rice.so` and `libfreetype.so`. Source: `libpng-1.6.59/LICENSE` in <https://download.sourceforge.net/libpng/libpng-1.6.59.tar.xz> (archive SHA-256 `d80dd2a38a37f803cb9b6ac7b14bd6e74ddc3b654780a8380bdf93523fdb4389`), lines 1-134; the same file is `ndkLibs/png/LICENSE` in this repository.
 ```text
 COPYRIGHT NOTICE, DISCLAIMER, and LICENSE
 =========================================
@@ -772,7 +761,7 @@ be appreciated.
 ```
 
 <!-- notice: libpng -->
-libpng 1.6.34, inside the prebuilt `libfreetype.so`, whose `png_*` functions GLideN64 calls. Source: `ndkLibs/png/LICENSE`, lines 1-133, at `9bcca07a6`.
+libpng 1.6.34, in V339's core, Rice and prebuilt `libfreetype.so` (see [Release V339](#release-v339)). Source: `ndkLibs/png/LICENSE`, lines 1-133, at `9bcca07a6`.
 ```text
 
 This copy of the libpng notices is provided for your convenience.  In case of
@@ -1888,8 +1877,233 @@ volk, by Arseny Kapoulkine, in `libmupen64plus-video-parallel.so`. The file's he
  * SOFTWARE.
 ```
 
+<!-- notice: freetype-2-15-0 -->
+FreeType 2.15.0, built from source as `libfreetype.so`: the FreeType License. This software is based in part on the work of the FreeType Team. Source: `freetype-2.15.0/docs/FTL.TXT` in <https://download.savannah.gnu.org/releases/freetype/freetype-2.15.0.tar.xz> (archive SHA-256 `93cd47eb719c325107f2d3cf087d06299e944c3b48a40b55537302304dea1dd5`), lines 1-169; the same file is `ndkLibs/freetype/docs/FTL.TXT` in this repository.
+```text
+                    The FreeType Project LICENSE
+                    ----------------------------
+
+                            2006-Jan-27
+
+                    Copyright 1996-2002, 2006 by
+          David Turner, Robert Wilhelm, and Werner Lemberg
+
+
+
+Introduction
+============
+
+  The FreeType  Project is distributed in  several archive packages;
+  some of them may contain, in addition to the FreeType font engine,
+  various tools and  contributions which rely on, or  relate to, the
+  FreeType Project.
+
+  This  license applies  to all  files found  in such  packages, and
+  which do not  fall under their own explicit  license.  The license
+  affects  thus  the  FreeType   font  engine,  the  test  programs,
+  documentation and makefiles, at the very least.
+
+  This  license   was  inspired  by  the  BSD,   Artistic,  and  IJG
+  (Independent JPEG  Group) licenses, which  all encourage inclusion
+  and  use of  free  software in  commercial  and freeware  products
+  alike.  As a consequence, its main points are that:
+
+    o We don't promise that this software works. However, we will be
+      interested in any kind of bug reports. (`as is' distribution)
+
+    o You can  use this software for whatever you  want, in parts or
+      full form, without having to pay us. (`royalty-free' usage)
+
+    o You may not pretend that  you wrote this software.  If you use
+      it, or  only parts of it,  in a program,  you must acknowledge
+      somewhere  in  your  documentation  that  you  have  used  the
+      FreeType code. (`credits')
+
+  We  specifically  permit  and  encourage  the  inclusion  of  this
+  software, with  or without modifications,  in commercial products.
+  We  disclaim  all warranties  covering  The  FreeType Project  and
+  assume no liability related to The FreeType Project.
+
+
+  Finally,  many  people  asked  us  for  a  preferred  form  for  a
+  credit/disclaimer to use in compliance with this license.  We thus
+  encourage you to use the following text:
+
+   """
+    Portions of this software are copyright © <year> The FreeType
+    Project (https://freetype.org).  All rights reserved.
+   """
+
+  Please replace <year> with the value from the FreeType version you
+  actually use.
+
+
+Legal Terms
+===========
+
+0. Definitions
+--------------
+
+  Throughout this license,  the terms `package', `FreeType Project',
+  and  `FreeType  archive' refer  to  the  set  of files  originally
+  distributed  by the  authors  (David Turner,  Robert Wilhelm,  and
+  Werner Lemberg) as the `FreeType Project', be they named as alpha,
+  beta or final release.
+
+  `You' refers to  the licensee, or person using  the project, where
+  `using' is a generic term including compiling the project's source
+  code as  well as linking it  to form a  `program' or `executable'.
+  This  program is  referred to  as  `a program  using the  FreeType
+  engine'.
+
+  This  license applies  to all  files distributed  in  the original
+  FreeType  Project,   including  all  source   code,  binaries  and
+  documentation,  unless  otherwise  stated   in  the  file  in  its
+  original, unmodified form as  distributed in the original archive.
+  If you are  unsure whether or not a particular  file is covered by
+  this license, you must contact us to verify this.
+
+  The FreeType  Project is copyright (C) 1996-2000  by David Turner,
+  Robert Wilhelm, and Werner Lemberg.  All rights reserved except as
+  specified below.
+
+1. No Warranty
+--------------
+
+  THE FREETYPE PROJECT  IS PROVIDED `AS IS' WITHOUT  WARRANTY OF ANY
+  KIND, EITHER  EXPRESS OR IMPLIED,  INCLUDING, BUT NOT  LIMITED TO,
+  WARRANTIES  OF  MERCHANTABILITY   AND  FITNESS  FOR  A  PARTICULAR
+  PURPOSE.  IN NO EVENT WILL ANY OF THE AUTHORS OR COPYRIGHT HOLDERS
+  BE LIABLE  FOR ANY DAMAGES CAUSED  BY THE USE OR  THE INABILITY TO
+  USE, OF THE FREETYPE PROJECT.
+
+2. Redistribution
+-----------------
+
+  This  license  grants  a  worldwide, royalty-free,  perpetual  and
+  irrevocable right  and license to use,  execute, perform, compile,
+  display,  copy,   create  derivative  works   of,  distribute  and
+  sublicense the  FreeType Project (in  both source and  object code
+  forms)  and  derivative works  thereof  for  any  purpose; and  to
+  authorize others  to exercise  some or all  of the  rights granted
+  herein, subject to the following conditions:
+
+    o Redistribution of  source code  must retain this  license file
+      (`FTL.TXT') unaltered; any  additions, deletions or changes to
+      the original  files must be clearly  indicated in accompanying
+      documentation.   The  copyright   notices  of  the  unaltered,
+      original  files must  be  preserved in  all  copies of  source
+      files.
+
+    o Redistribution in binary form must provide a  disclaimer  that
+      states  that  the software is based in part of the work of the
+      FreeType Team,  in  the  distribution  documentation.  We also
+      encourage you to put an URL to the FreeType web page  in  your
+      documentation, though this isn't mandatory.
+
+  These conditions  apply to any  software derived from or  based on
+  the FreeType Project,  not just the unmodified files.   If you use
+  our work, you  must acknowledge us.  However, no  fee need be paid
+  to us.
+
+3. Advertising
+--------------
+
+  Neither the  FreeType authors and  contributors nor you  shall use
+  the name of the  other for commercial, advertising, or promotional
+  purposes without specific prior written permission.
+
+  We suggest,  but do not require, that  you use one or  more of the
+  following phrases to refer  to this software in your documentation
+  or advertising  materials: `FreeType Project',  `FreeType Engine',
+  `FreeType library', or `FreeType Distribution'.
+
+  As  you have  not signed  this license,  you are  not  required to
+  accept  it.   However,  as  the FreeType  Project  is  copyrighted
+  material, only  this license, or  another one contracted  with the
+  authors, grants you  the right to use, distribute,  and modify it.
+  Therefore,  by  using,  distributing,  or modifying  the  FreeType
+  Project, you indicate that you understand and accept all the terms
+  of this license.
+
+4. Contacts
+-----------
+
+  There are two mailing lists related to FreeType:
+
+    o freetype@nongnu.org
+
+      Discusses general use and applications of FreeType, as well as
+      future and  wanted additions to the  library and distribution.
+      If  you are looking  for support,  start in  this list  if you
+      haven't found anything to help you in the documentation.
+
+    o freetype-devel@nongnu.org
+
+      Discusses bugs,  as well  as engine internals,  design issues,
+      specific licenses, porting, etc.
+
+  Our home page can be found at
+
+    https://freetype.org
+
+
+--- end of FTL.TXT ---
+```
+
+<!-- notice: freetype-fthash -->
+FreeType 2.15.0's `src/base/fthash.c`, which the build compiles into `libfreetype.so` through `src/base/ftbase.c`. Source: `freetype-2.15.0/src/base/fthash.c` in <https://download.savannah.gnu.org/releases/freetype/freetype-2.15.0.tar.xz> (archive SHA-256 `93cd47eb719c325107f2d3cf087d06299e944c3b48a40b55537302304dea1dd5`), lines 10-30; the same file is `ndkLibs/freetype/src/base/fthash.c` in this repository.
+```text
+ * Copyright 2000 Computing Research Labs, New Mexico State University
+ * Copyright 2001-2015
+ *   Francesco Zappa Nardelli
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COMPUTING RESEARCH LAB OR NEW MEXICO STATE UNIVERSITY BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT
+ * OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+ * THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+<!-- notice: freetype-zlib -->
+zlib 1.3.1, FreeType's copy in `src/gzip`, which the build compiles into `libfreetype.so` for FreeType's gzip support. Source: `freetype-2.15.0/src/gzip/zlib.h` in <https://download.savannah.gnu.org/releases/freetype/freetype-2.15.0.tar.xz> (archive SHA-256 `93cd47eb719c325107f2d3cf087d06299e944c3b48a40b55537302304dea1dd5`), lines 4-23; the same file is `ndkLibs/freetype/src/gzip/zlib.h` in this repository.
+```text
+  Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+  Jean-loup Gailly        Mark Adler
+  jloup@gzip.org          madler@alumni.caltech.edu
+```
+
 <!-- notice: freetype -->
-FreeType, prebuilt `libfreetype.so`. Source: `ndkLibs/freetype/NOTICE`, lines 1-173, at `9bcca07a6`, converted from ISO-8859-1 to UTF-8 (the "©" in line 55).
+FreeType in V339's prebuilt `libfreetype.so`, Android's copy of FreeType 2.5.3 (see [Release V339](#release-v339)). Source: `ndkLibs/freetype/NOTICE`, lines 1-173, at `9bcca07a6`, converted from ISO-8859-1 to UTF-8 (the "©" in line 55).
 ```text
 This software is based in part on the work of the FreeType Team.
 
@@ -2374,6 +2588,15 @@ these ways that matter for this page:
 - Its core and Rice contain libpng 1.6.34, from the prebuilt `libpng.a`, instead of libpng
   1.6.59. Its notice is the block above for libpng 1.6.34. The tag `V339` holds a libpng
   1.6.34 source tree in `ndkLibs/png/`.
+- Its `libfreetype.so` is the prebuilt library of December 2021 instead of FreeType 2.15.0
+  built from source: Android's copy of FreeType (commit `9c745321`, after version 2.5.3), with
+  libpng 1.6.34 and FreeType's copy of zlib 1.1.4 inside, and with only the version 35
+  TrueType interpreter. Its GLideN64 links the prebuilt `libpng.a` but takes its `png_*`
+  functions from that `libfreetype.so`. Their notices are the blocks above for that FreeType
+  and for libpng 1.6.34; zlib 1.1.4's is the block above for FreeType's copy of zlib, with
+  "1995-2002" for "1995-2024" (lines 4-23 of `ndkLibs/freetype/src/gzip/zlib.h` at `V339`).
+  The tag `V339` holds that FreeType source tree in `ndkLibs/freetype/`, but no record of how
+  the library was built.
 - Its `libSDL2_net.so`, `libminiupnp-build.so` and `libnatpmp.so` are the prebuilt libraries
   of December 2021 instead of SDL_net 2.4.0, miniupnpc 2.3.3 and libnatpmp `134fc89e`: SDL_net
   of upstream commit `01285e4a` (after version 2.0.1), miniupnpc of upstream commit `3a87be33`
