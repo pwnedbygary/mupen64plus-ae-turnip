@@ -2,7 +2,7 @@
 
 **Mupen64Plus-AE Turnip** (shown on your device as "M64P Turnip")
 
-Last updated: 27 October 2026
+Last updated: 28 October 2026
 
 ## In short
 
@@ -43,7 +43,7 @@ next release and the test builds are made. V339 differs from it in these ways:
 
 - It identifies itself to RetroAchievements as `Mupen64PlusAE/3.0 (Android)`. The current
   code sends `Mupen64Turnip/`, the app version and the Android version, for example
-  `Mupen64Turnip/3.0.338 (Android 13)`.
+  `Mupen64Turnip/3.0.340 (Android 13)`.
 - It keeps your RetroAchievements password on the device after you sign in, and sends the
   password to sign in at the start of each game. The current code signs in with the session
   token first, and deletes the password when a sign-in returns a session token.
@@ -226,8 +226,10 @@ use the [third-party connections page](https://myaccount.google.com/connections)
 Google Account.
 
 Google sign-in works only if Google has a client registered for the app's package name and
-signing key. The maintainer has not confirmed that sign-in works in the published releases.
-If you cannot sign in, the app sends nothing to Google Drive.
+signing key. When the maintainer tried release V339 in October 2026, **Sign in to Google
+drive** did nothing. The current code signs in the same way, for the same package name and
+signing key, so sign-in most likely does not work in later releases either. If you cannot
+sign in, the app sends nothing to Google Drive.
 
 ### GPU drivers and the update check (GitHub)
 
