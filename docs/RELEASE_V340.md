@@ -143,7 +143,7 @@ the 32-bit and x86 recompilers, #34 and #35.
   as in fzurita's FZ Edition (#23). Stores that filter apps by hardware, such as Google Play, used
   to treat Wi-Fi as required; devices without Wi-Fi, such as a TV on Ethernet only, now pass that
   filter. Android does not check these declarations when you install the APK yourself. Checked in
-  the built APK; not installed on a device.
+  the built APK; not checked on a device.
 - On a device without Wi-Fi (Android 9 and later), hosting or joining a netplay room no longer
   crashes (#24). Not run on a device.
 
@@ -176,10 +176,11 @@ the 32-bit and x86 recompilers, #34 and #35.
   code).
 
 Checked on a Retroid Pocket 6 with debug builds: Cancel in the host's and the joining player's
-dialogs (#27), both dialogs across two font size changes each (#32), and hosting and joining rooms
-four times without a crash, which does not exercise the threading fixes (#33). Not run on a
-device: a netplay session between two devices, the new codes (#45), a room of another version
-(#28), a device without Wi-Fi (#24) and the registration and join-list fixes (#30).
+dialogs (#27), both dialogs across two font size changes each (#32), hosting and joining rooms
+four times without a crash, which does not exercise the threading fixes (#33), and a new code
+made through NAT-PMP (#45; see "Device verification"). Not checked on a device: a netplay
+session between two devices, joining with a code (#45), a room of another version (#28), a device
+without Wi-Fi (#24) and the registration and join-list fixes (#30).
 
 ## Privacy, permissions and licenses
 
@@ -207,7 +208,7 @@ device: a netplay session between two devices, the new codes (#45), a room of an
   and the F-Droid description is rewritten for this fork, in the folder that F-Droid reads. It can
   appear on F-Droid only with a release, and whether F-Droid lists this app was not checked.
 
-None of these was run on a device.
+None of these was checked on a device.
 
 ## Native libraries built from source
 
@@ -229,8 +230,8 @@ those that come with the Android NDK and the Oboe and JNA packages.
 - `libhidapi.so`, which nothing in the app used, is no longer packaged (#42).
 
 The libraries were checked in local builds of the native code (each library's format,
-dependencies, symbols and version), and CI built each pull request's debug APK. None was run on a
-device; the device checks are listed under "Device verification".
+dependencies, symbols and version), and CI built each pull request's debug APK. The pull requests
+did not run them on a device; the device checks made since are under "Device verification".
 
 ## Tests and documentation
 
@@ -242,21 +243,48 @@ device; the device checks are listed under "Device verification".
 - `docs/RETROACHIEVEMENTS_REMAINING_ISSUES.md` records RetroAchievements' hardcore compliance
   checklist and the dated device checks (#19 and later pull requests).
 
+## Known problems
+
+- **Google Drive backup most likely does not work in this release.** In the maintainer's test of
+  release V339, which has this release's package name, signing key and Google sign-in code,
+  **Sign in to Google drive** did nothing, and **Download Google Drive backup** opened a window
+  that closed again at once. Google sign-in works only when Google has a client registered for the
+  app's package name and signing key, and the app shows no message when Google's sign-in screen
+  returns a failure. **Sign out of Google drive** says "Signed out of Google Drive" whether or not
+  an account is signed in.
+
 ## Device verification
 
 The device checks named above ran on debug builds of the pull requests' branches, not on this
 release build.
 
-DEVICE_RESULTS
+On 28 October 2026, the debug build of this release's pull request (#55, version name
+`3.0.340 26760c0b`) ran on a Retroid Pocket 6 (Android 13) with Mario Tennis, beside the previous
+debug build, `3.0.338 83fff39b`:
 
-Pending when these notes were written:
+- **Video plugins:** the game starts with GLideN64, Rice and Glide64mk2 and runs at 29 to 30
+  frames per second, as with the previous build, and the log shows no crash. Rice's row of
+  speckles along the bottom edge and Glide64mk2's grey square at the top left look the same with
+  the previous build.
+- **Screenshot:** the in-game menu's screenshot is saved and opens. Android's own encoder writes
+  it, not the app's libpng.
+- **On-screen text:** GLideN64's frame counters are legible, at the same place and size; with
+  FreeType 2.15.0 their letters are slightly softer and thinner.
+- **libpng in GLideN64:** GLideN64's texture dump wrote 146 PNG files through the rebuilt libpng,
+  and all of them are valid.
+- **Audio:** with "floating point" off and on, with time stretching on and off, after pause and
+  resume, and at 250% game speed, the game's sound plays without clipping, and it is silent while
+  the game is paused. With "floating point" off and time stretching on, its level matches the
+  previous build's.
+- **Get Code:** on a router that maps ports through NAT-PMP, the host gets a code and the public
+  address, and the app's log shows three port mappings added, and removed again after **Cancel**.
 
-- The rebuilt native libraries: a game starts with GLideN64, Rice and Glide64mk2; a screenshot is
-  saved and opens; GLideN64's on-screen text compared with the previous build; a GLideN64 and a
-  Rice hi-res texture pack load and look the same; audio with "floating point" off and on, at
-  normal speed and time-stretched, and after pause and resume; **Get Code** adds and removes the
-  router's port mapping and shows the public address, through NAT-PMP and through UPnP; and a
-  netplay session between two devices.
+Not checked for this release:
+
+- **Get Code** through UPnP, which the app uses when the router does not answer NAT-PMP: the
+  router used has no switch to turn NAT-PMP off.
+- A netplay session between two devices, so no player has joined with one of the new codes yet.
+- Hi-res texture packs, which GLideN64 and Rice read with the rebuilt libpng.
 - The maintainer's three RetroAchievements checks: a hardcore unlock, and how the server records
   it; an unlock made offline, sent after the next sign-in; and a screenshot of the line at the top
   of the screen with an active challenge, achievement progress or a leaderboard value.

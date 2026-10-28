@@ -226,8 +226,10 @@ use the [third-party connections page](https://myaccount.google.com/connections)
 Google Account.
 
 Google sign-in works only if Google has a client registered for the app's package name and
-signing key. The maintainer has not confirmed that sign-in works in the published releases.
-If you cannot sign in, the app sends nothing to Google Drive.
+signing key. When the maintainer tried release V339 in October 2026, **Sign in to Google
+drive** did nothing. The current code signs in the same way, for the same package name and
+signing key, so sign-in most likely does not work in later releases either. If you cannot
+sign in, the app sends nothing to Google Drive.
 
 ### GPU drivers and the update check (GitHub)
 

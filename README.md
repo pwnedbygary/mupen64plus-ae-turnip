@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <b>Free & Open-Source</b> &bull; No Ads &bull; No Analytics &bull; No Pro Gates &bull; Free Cloud Saves & Netplay
+  <b>Free & Open-Source</b> &bull; No Ads &bull; No Analytics &bull; No Pro Gates &bull; Free Netplay
 </p>
 
 ---
@@ -51,8 +51,8 @@
 
 This configuration applies to the English translation; it is not a claim of compatibility with every cartridge, disk, or IPL combination.
 
-**Installation and saves:** the signed release keeps the existing release package and signing identity, so it can update the earlier signed release without uninstalling. It does not replace the separate `.debug` beta or automatically transfer its private saves. Keep backups: full-restart persistence, custom-track saves, and writable-cart persistence have not been re-tested on the current binary. The device checks made for v340, on debug builds, are listed under "Device verification" in its [release notes](docs/RELEASE_V340.md#device-verification); the planned checks do not cover the N64DD and Expansion Kit save paths.
-DEVICE_RESULTS_README
+**Installation and saves:** the signed release keeps the existing release package and signing identity, so it can update the earlier signed release without uninstalling. It does not replace the separate `.debug` beta or automatically transfer its private saves. Keep backups: full-restart persistence, custom-track saves, and writable-cart persistence have not been re-tested on the current binary. The device checks made for v340, on debug builds, are listed under "Device verification" in its [release notes](docs/RELEASE_V340.md#device-verification); those checks do not cover the N64DD and Expansion Kit save paths.
+On a Retroid Pocket 6, a debug build of v340 ran a game with GLideN64, Rice and Glide64mk2, saved a screenshot, played sound in every audio mode tried and made a netplay code through NAT-PMP; netplay between two devices, a router's UPnP path and hi-res texture packs were not checked.
 
 ### How the EK Cart Hack saves with WritableROM
 
@@ -101,7 +101,7 @@ This is what lets the Cart Hack **work and save**, despite placing writable Expa
 - **ParaLLEl-RDP** Vulkan renderer with upscaling, texture filtering, and modern RDP accuracy.
 - **All classic plugins**: GLideN64, glide64mk2, GLN64, Rice, Angrylion, plus HLE/cxd4/parallel RSPs.
 - **RetroAchievements** — sign in from the app, see unlocks, server problems, the session's mode, active challenges, achievement progress and leaderboard attempts on screen while you play and open the game's achievement list from the in-game menu, with unlocks and leaderboard entries made offline sent after the next sign-in and hardcore mode enforced on loading save states and slots, cheats, GameShark and game speed (normal speed only: no fast-forward, slow motion, frame advance or audio sync; resumed games and netplay run in casual mode).
-- **Netplay & Cloud Sync**: Local and room-based netplay, Google Drive cloud backup, touchscreen/controller profiles, and zip ROM support (7z on Android 7.0 or newer).
+- **Netplay, profiles and archives**: Local and room-based netplay, touchscreen/controller profiles, and zip ROM support (7z on Android 7.0 or newer).
 - **In-app update checker** — checks for new releases directly from GitHub and notifies you when an update is available.
 
 ---
