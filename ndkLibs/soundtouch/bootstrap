@@ -10,7 +10,7 @@ then
 	elif [ -a configure ]
 	then
 		configure && $0 --clean
-	else 
+	else
 		bootstrap && configure && $0 --clean
 	fi
 

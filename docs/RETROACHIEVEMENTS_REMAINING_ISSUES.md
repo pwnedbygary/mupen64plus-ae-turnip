@@ -2342,8 +2342,7 @@ F. Transparency and legality
   this repository at the release's tag (`LICENSES.md`, "Source code of each release"), except for
   the prebuilt libraries: the repository does not record how they were built, and it does not
   hold the source of the libpng 1.6.34 inside `libfreetype.so`
-  ("Prebuilt libraries"). One of them, SoundTouch, is
-  `LGPL-2.1-or-later` ("Native libraries"). The page's library table shows two combinations from
+  ("Prebuilt libraries"). The page's library table shows two combinations from
   upstream: GLideN64's library is `GPL-2.0-only`, as its license file names version 2 and no
   later one (`mupen64plus-video-gliden64/upstream/LICENSE:4`), and has `GPL-3.0` code (xBRZ);
   angrylion-rdp-plus's library has MAME-licensed code with `GPL-2.0-or-later` glue

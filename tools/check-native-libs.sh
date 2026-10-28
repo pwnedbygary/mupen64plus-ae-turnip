@@ -12,6 +12,12 @@
 # User-Agent in libminiupnp-build.so names the version of
 # ndkLibs/miniupnpc/include/miniupnpc.h; SDLNet_Linked_Version() in libSDL2_net.so stores the
 # version of ndkLibs/SDL_net/include/SDL_net.h (read from its machine code).
+# libsoundtouch.so exports putSamples for 16-bit integer samples and libsoundtouch_fp.so for
+# float samples, and both hold the version of ndkLibs/soundtouch/include/SoundTouch.h (the value
+# getVersionId() returns, and the version string). Unstripped, as the audio module's CMake build
+# leaves them in mupen64plus-audio-android/build/intermediates/cxx/<Variant>/<hash>/obj, their
+# line tables must show none of the code of ndkLibs/soundtouch/source/SoundTouch that only
+# ST_SIMD_AVOID_UNALIGNED builds.
 #
 # Usage: tools/check-native-libs.sh [--expect LIB[,LIB...]]... PATH...
 # PATH is an APK, or a folder in which each library is in a folder named after its ABI, for
@@ -78,6 +84,13 @@ miniupnpc_version="$(sed -n 's/^#define MINIUPNPC_VERSION[[:space:]]*"\(.*\)"$/\
   "$repo/ndkLibs/miniupnpc/include/miniupnpc.h")"
 [[ $sdl_net_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && -n "$miniupnpc_version" ]] \
   || { echo "Cannot read the SDL_net or miniupnpc version" >&2; exit 2; }
+soundtouch_h="$repo/ndkLibs/soundtouch/include/SoundTouch.h"
+st_version="$(sed -n 's/^#define SOUNDTOUCH_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' "$soundtouch_h")"
+st_version_id="$(sed -n 's/^#define SOUNDTOUCH_VERSION_ID[[:space:]]*(\([0-9]*\)).*/\1/p' "$soundtouch_h")"
+[[ -n "$st_version" && -n "$st_version_id" ]] \
+  || { echo "Cannot read the SoundTouch version from $soundtouch_h" >&2; exit 2; }
+export ST_VERSION="$st_version" ST_VERSION_ID="$st_version_id" \
+  ST_SOURCE="$repo/ndkLibs/soundtouch/source/SoundTouch"
 sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 if [[ -z "$sdk" && -f "$repo/local.properties" ]]; then
   sdk="$(sed -n 's/^sdk\.dir=//p' "$repo/local.properties")"
@@ -91,6 +104,8 @@ for candidate in "$ndk"/toolchains/llvm/prebuilt/*/bin; do
     && bin="$candidate"
 done
 [[ -n "$bin" ]] || { echo "llvm-readelf, llvm-nm and llvm-objdump not found under $ndk" >&2; exit 2; }
+[[ -x "$bin/llvm-objdump" && -x "$bin/llvm-dwarfdump" ]] \
+  || { echo "llvm-objdump and llvm-dwarfdump not found in $bin" >&2; exit 2; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
@@ -139,7 +154,7 @@ ABIS = {
 # Prebuilt libraries still committed in ndkLibs/libs, built in 2021 with NDK r23b. Remove each
 # one from this list in the change that builds it from source.
 PREBUILT_NOTE = dict.fromkeys(
-    ("libfreetype.so", "libsoundtouch.so", "libsoundtouch_fp.so"), ("r23b", "7779620"))
+    ("libfreetype.so",), ("r23b", "7779620"))
 # Built elsewhere (the NDK, and the Oboe and JNA packages): their notes are not checked, and
 # JNA's library has no SONAME.
 NOT_BUILT_HERE = {"libc++_shared.so", "liboboe.so", "libjnidispatch.so"}
@@ -162,9 +177,18 @@ BRIDGE_IMPORTS = {
 }
 USER_AGENT_RE = re.compile(rb"User-Agent: ([ -~]*?)\r\n")
 MINIUPNPC_RE = re.compile(rb"MiniUPnPc/([0-9][0-9.]*[0-9])")
+SOUNDTOUCH_LIBS = {"libsoundtouch.so": "short", "libsoundtouch_fp.so": "float"}
+ST_PUT_SAMPLES = {"short": "_ZN10soundtouch10SoundTouch10putSamplesEPKsj",
+                  "float": "_ZN10soundtouch10SoundTouch10putSamplesEPKfj"}
+ST_GET_VERSION_ID = "_ZN10soundtouch10SoundTouch12getVersionIdEv"
+ST_VERSION = os.environ["ST_VERSION"]
+ST_VERSION_ID = int(os.environ["ST_VERSION_ID"])
+ST_VERSION_RE = re.compile(rb"(?<![0-9A-Za-z.])" + re.escape(ST_VERSION.encode()) + rb"\x00")
+ST_SIMD = "ST_SIMD_AVOID_UNALIGNED"
 # Every library that a check below names. An APK must hold each of them for each of its ABIs.
 CHECKED_BY_NAME = sorted({"libae-bridge.so", *PNG_LIBS, *NO_PNG_LIBS, *PREBUILT_NOTE,
-                          "libminiupnp-bridge.so", *BRIDGE_IMPORTS, "libSDL2_net.so"})
+                          "libminiupnp-bridge.so", *BRIDGE_IMPORTS, "libSDL2_net.so",
+                          *SOUNDTOUCH_LIBS})
 EXPECT = sorted({name for name in os.environ["EXPECT"].split(",") if name})
 LABELS = os.environ["ROOT_LABELS"].split("\n")
 
@@ -324,6 +348,90 @@ def stored_bytes(lib, abi, symbol):
         if sorted(memory) == list(range(low, low + len(memory))) else None
 
 
+def strip_comments(text, in_comment):
+    """A source line without its comments, and whether a /* comment is still open after it."""
+    out = ""
+    while text:
+        if in_comment:
+            end = text.find("*/")
+            if end < 0:
+                return out, True
+            text, in_comment = text[end + 2:], False
+            continue
+        starts = [i for i in (text.find("//"), text.find("/*")) if i >= 0]
+        if not starts:
+            return out + text, False
+        out += text[:min(starts)]
+        if text.startswith("//", min(starts)):
+            return out, False
+        text, in_comment = text[min(starts) + 2:], True
+    return out, in_comment
+
+
+def soundtouch_simd_lines(source):
+    """Per file name, the code lines of the SoundTouch sources that only ST_SIMD_AVOID_UNALIGNED
+    builds ("on") and those it leaves out ("off"), and the conditionals not understood here."""
+    on, off, unknown = collections.defaultdict(set), collections.defaultdict(set), []
+    term = r"defined\s*\(?\s*\w+\s*\)?"
+    any_of = re.compile(rf"{term}(\s*\|\|\s*{term})*")
+    for path in sorted(Path(source).glob("*.cpp")):
+        # One entry per open conditional: None, or [first branch needs the macro, this one does].
+        stack, in_comment = [], False
+        for number, raw in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            text, in_comment = strip_comments(raw, in_comment)
+            text = text.strip()
+            directive = re.match(r"#\s*(\w+)\s*(.*)", text)
+            if not directive:
+                states = {frame[1] for frame in stack if frame}
+                if text and states == {True}:
+                    on[path.name].add(number)
+                elif text and states == {False}:
+                    off[path.name].add(number)
+                continue
+            word, condition = directive.groups()
+            if word in ("if", "ifdef", "ifndef", "elif") and ST_SIMD in condition:
+                if word == "ifdef" or (word == "if" and any_of.fullmatch(condition)):
+                    stack.append([True, True])
+                    continue
+                if word == "ifndef":
+                    stack.append([False, False])
+                    continue
+                unknown.append(f"{path.name}:{number}")
+            if word in ("if", "ifdef", "ifndef"):
+                stack.append(None)
+            elif word in ("elif", "else") and stack and stack[-1]:
+                stack[-1][1] = not stack[-1][0]
+            elif word == "endif" and stack:
+                stack.pop()
+    return on, off, unknown
+
+
+def line_table(path):
+    """The (file name, line) of every row of the DWARF line tables, or None without any."""
+    rows, names, current = set(), {}, None
+    for line in run(BIN / "llvm-dwarfdump", "--debug-line", path).splitlines():
+        file_entry = re.match(r"file_names\[\s*(\d+)\]", line)
+        name = re.match(r'\s+name:\s.*"([^"]*)"', line)
+        row = re.match(r"0x[0-9a-f]+\s+(\d+)\s+\d+\s+(\d+)\s", line)
+        if line.startswith("debug_line["):
+            names, current = {}, None
+        elif file_entry:
+            current = int(file_entry.group(1))
+        elif name and current is not None:
+            names[current] = re.split(r"[\\/]", name.group(1))[-1]
+        elif row:
+            rows.add((names.get(int(row.group(2))), int(row.group(1))))
+    return rows or None
+
+
+def version_id_constants(path):
+    """The immediate values in the code of soundtouch::SoundTouch::getVersionId()."""
+    out = run(BIN / "llvm-objdump", "-d", "--no-show-raw-insn", "--print-imm-hex",
+              f"--disassemble-symbols={ST_GET_VERSION_ID}", path)
+    return sorted({int(value, 16) for line in out.splitlines() if re.match(r"\s+[0-9a-f]+:", line)
+                   for value in re.findall(r"[#$](0x[0-9a-f]+)\b", line)})
+
+
 fails, passes, notes = [], [], []
 libs = collections.defaultdict(dict)
 # Library names by ABI, for each APK and for all folders together ("dir").
@@ -343,6 +451,10 @@ for root, label in zip(sys.argv[1:], LABELS):
 if not libs:
     print("FAIL: no libraries found in folders named after an ABI")
     sys.exit(1)
+SIMD_ON, SIMD_OFF, simd_unknown = soundtouch_simd_lines(os.environ["ST_SOURCE"])
+if simd_unknown and any(name in libs[abi] for abi in libs for name in SOUNDTOUCH_LIBS):
+    fails.append(f"FAIL ndkLibs/soundtouch: {ST_SIMD} conditionals not understood here: "
+                 + " ".join(simd_unknown))
 
 for abi in sorted(libs):
     machine, triple = ABIS[abi]
@@ -477,6 +589,44 @@ for abi in sorted(libs):
         else:
             fails.append(f"FAIL {abi}/libSDL2_net.so: SDLNet_Linked_Version() stores {shown} "
                          f"(expected {expected})")
+    for name, sample in SOUNDTOUCH_LIBS.items():
+        lib = libs[abi].get(name)
+        if not lib:
+            continue
+        other = "float" if sample == "short" else "short"
+        put, wrong = lib.defined.get(ST_PUT_SAMPLES[sample]), lib.defined.get(ST_PUT_SAMPLES[other])
+        if put == "T" and not wrong:
+            passes.append(f"{abi}/{name}: putSamples takes {sample} samples")
+        else:
+            fails.append(f"FAIL {abi}/{name}: putSamples({sample}) {put or 'not exported'}, "
+                         f"putSamples({other}) {wrong or 'not exported'} (expected T and not "
+                         "exported)")
+        constants = version_id_constants(lib.path)
+        string_found = bool(ST_VERSION_RE.search(lib.path.read_bytes()))
+        if ST_VERSION_ID in constants and string_found:
+            passes.append(f"{abi}/{name}: SoundTouch {ST_VERSION}, getVersionId() returns "
+                          f"{ST_VERSION_ID}")
+        else:
+            fails.append(f"FAIL {abi}/{name}: getVersionId() constants {constants or 'none'}, "
+                         f"version string {ST_VERSION} {'found' if string_found else 'not found'} "
+                         f"(expected {ST_VERSION_ID} and found)")
+            notes.append(f"NOTE {abi}/{name}: not SoundTouch {ST_VERSION}, so its line table is "
+                         "not compared with ndkLibs/soundtouch")
+            continue
+        rows = line_table(lib.path)
+        if rows is None:
+            notes.append(f"NOTE {abi}/{name}: stripped, {ST_SIMD} code not checked")
+            continue
+        built = sorted(f"{f}:{n}" for f, n in rows if n in SIMD_ON.get(f, ()))
+        control = sorted(f"{f}:{n}" for f, n in rows if n in SIMD_OFF.get(f, ()))
+        if built:
+            fails.append(f"FAIL {abi}/{name}: code built with {ST_SIMD}: " + " ".join(built))
+        elif not control:
+            fails.append(f"FAIL {abi}/{name}: its line table shows neither the code built with "
+                         f"{ST_SIMD} nor the code built without it, so it cannot be checked")
+        else:
+            passes.append(f"{abi}/{name}: no {ST_SIMD} code (its line table shows "
+                          f"{' '.join(control)}, built without it)")
 
 for label, abis in sorted(found.items()):
     where = "the folders" if label == "dir" else label[len("apk "):]

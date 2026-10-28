@@ -72,13 +72,13 @@ table lists each component in them. The full text of each notice in the last col
 | Linux kernel header `kgsl.h` | `libhook_impl.so` | `GPL-2.0-only WITH Linux-syscall-note` | Not recorded | First line of `adrenotools/src/hook/kgsl.h` |
 | Khronos OpenGL headers `glcorearb.h` and `glext.h`, used by EGLLoader, and GLideN64's own copies of both | `libae-bridge.so`, `libmupen64plus-video-glide64mk2-egl.so`, `libmupen64plus-video-GLideN64.so` | Khronos license in MIT style (no SPDX id) | <https://www.khronos.org/> | Headers of `ndkLibs/GL/GL/glcorearb.h`, `ndkLibs/GL/GL/glext.h`, `mupen64plus-video-gliden64/upstream/src/inc/GL/glcorearb.h` and `mupen64plus-video-gliden64/upstream/src/inc/GL/glext.h` |
 | Mesa's `gl.h` header, used by EGLLoader | `libae-bridge.so`, `libmupen64plus-video-glide64mk2-egl.so` | `MIT` | Not recorded | Header of `ndkLibs/GL/GL/gl.h` |
-| LLVM libc++, libc++abi and libunwind, from Android NDK 26.1.10909125, whose toolchain is based on LLVM commit `c4c5e79d` | `libc++_shared.so`. libc++ and libc++abi are also linked into `libmupen64plus-video-GLideN64.so`, `libmupen64plus-video-parallel.so`, `libmupen64plus-rsp-parallel.so` and `libmupen64plus-video-angrylion-plus.so`. libunwind is also linked into those four and into `libae-bridge.so`, `libhook_impl.so`, `libminiupnp-bridge.so`, `libmupen64plus-audio-android*.so`, `libmupen64plus-video-glide64mk2*.so`, `libmupen64plus-video-rice.so` and `libsoundtouch*.so`; for `armeabi-v7a`, only into those four, `libsoundtouch*.so` and `liboboe.so` | `Apache-2.0 WITH LLVM-exception`; the older code is also under the University of Illinois/NCSA and MIT licenses | <https://github.com/llvm/llvm-project> | Not in this repository; reproduced below from llvm-project at commit `c4c5e79d`, except the Apache-2.0 part, which is in the app as `assets/mupen64plus_data/doc/doc/apache-license` |
+| LLVM libc++, libc++abi and libunwind, from Android NDK 26.1.10909125, whose toolchain is based on LLVM commit `c4c5e79d` | `libc++_shared.so`. libc++ and libc++abi are also linked into `libmupen64plus-video-GLideN64.so`, `libmupen64plus-video-parallel.so`, `libmupen64plus-rsp-parallel.so` and `libmupen64plus-video-angrylion-plus.so`. libunwind is also linked into those four and into `libae-bridge.so`, `libhook_impl.so`, `libminiupnp-bridge.so`, `libmupen64plus-audio-android*.so`, `libmupen64plus-video-glide64mk2*.so`, `libmupen64plus-video-rice.so` and `libsoundtouch*.so`; for `armeabi-v7a`, only into those four and `liboboe.so` | `Apache-2.0 WITH LLVM-exception`; the older code is also under the University of Illinois/NCSA and MIT licenses | <https://github.com/llvm/llvm-project> | Not in this repository; reproduced below from llvm-project at commit `c4c5e79d`, except the Apache-2.0 part, which is in the app as `assets/mupen64plus_data/doc/doc/apache-license` |
 | JNA 5.13.0, native part | `libjnidispatch.so` | `Apache-2.0 OR LGPL-2.1-or-later` | <https://github.com/java-native-access/jna> | Not in this repository (see [Files removed from the app](#license-and-notice-files-removed-from-the-app)); in the app: `assets/mupen64plus_data/doc/doc/apache-license`, `assets/mupen64plus_data/doc/doc/lgpl-license` |
 | libffi, built into JNA's native library | `libjnidispatch.so` | `MIT` | <https://github.com/libffi/libffi>; JNA's copy at tag `5.13.0` | Not in this repository; reproduced below from JNA at tag `5.13.0` |
 | GCC's unwinder from libgcc, built into JNA's native library for `armeabi-v7a` | `libjnidispatch.so` (`armeabi-v7a`) | `GPL-3.0-or-later WITH GCC-exception-3.1` | <https://gcc.gnu.org/>; the exception: <https://www.gnu.org/licenses/gcc-exception-3.1.html> | Not in this repository. The GCC Runtime Library Exception lets a program compiled with GCC carry this code under the program's own terms |
 | Oboe 1.6.1 | `liboboe.so` | `Apache-2.0` | <https://github.com/google/oboe>, tag `1.6.1` | Not in this repository; in the app: `assets/mupen64plus_data/doc/doc/apache-license` |
 | Mupen64Plus-AE audio plugin (plugin and dynamic-library code) | `libmupen64plus-audio-android.so`, `libmupen64plus-audio-android-fp.so` | `GPL-2.0-or-later` | This repository | Header of `mupen64plus-audio-android/src/plugin.cpp` |
-| SoundTouch, prebuilt (the source in this repository is version 2.2) | `libsoundtouch.so`, `libsoundtouch_fp.so` | `LGPL-2.1-or-later` | <https://www.surina.net/soundtouch>; <https://codeberg.org/soundtouch/soundtouch> | `ndkLibs/soundtouch/COPYING.TXT` |
+| SoundTouch 2.4.1, built from source | `libsoundtouch.so`, `libsoundtouch_fp.so` | `LGPL-2.1-or-later` | <https://www.surina.net/soundtouch>; <https://codeberg.org/soundtouch/soundtouch>, tag `2.4.1` | `ndkLibs/soundtouch/COPYING.TXT`; header of `ndkLibs/soundtouch/source/SoundTouch/SoundTouch.cpp` |
 | readerwriterqueue and atomicops, by Cameron Desrochers | `libmupen64plus-audio-android*.so`, `libmupen64plus-video-GLideN64.so` | `BSD-2-Clause`; the semaphore code in `atomicops.h` is `Zlib` | <https://github.com/cameron314/readerwriterqueue> | Headers of `mupen64plus-audio-android/src/readerwriterqueue.h` and `atomicops.h`; `mupen64plus-video-gliden64/upstream/licenses/readerwriterqueue/LICENSE.md` |
 | PortManager, from PPSSPP | `libminiupnp-bridge.so` | `GPL-2.0-or-later` | <https://github.com/hrydgard/ppsspp> | Header of `miniupnp-bridge/src/PortManager.cpp` |
 | miniupnpc 2.3.3, built from source | `libminiupnp-build.so` | `BSD-3-Clause` | <http://miniupnp.free.fr/>; <https://github.com/miniupnp/miniupnp>, tag `miniupnpc_2_3_3` | `ndkLibs/miniupnpc/LICENSE` |
@@ -123,7 +123,6 @@ is to be fixed later.
 | Prebuilt library | Last committed | Source in this repository | What is missing |
 |---|---|---|---|
 | `libfreetype.so` | 19 December 2021 | Android's FreeType tree (`ndkLibs/freetype/`) | The build recipe: `ndkLibs/freetype/Android.mk` builds a library named `libft2`. The source of the libpng 1.6.34 inside it: `ndkLibs/png/` now holds libpng 1.6.59 |
-| `libsoundtouch.so`, `libsoundtouch_fp.so` | 19 December 2021 | SoundTouch 2.2 (`ndkLibs/soundtouch/`) | A working build recipe: the paths in `ndkLibs/soundtouch/Android.mk` do not resolve from where the file is |
 | `libpng.a` (static; GLideN64 links it, but takes its `png_*` functions from `libfreetype.so`) | 19 December 2021 | None: `ndkLibs/png/` now holds libpng 1.6.59, which the core and Rice use | The source (the binary's version string is 1.6.34) and the build recipe |
 
 ## Java and Kotlin libraries
@@ -965,7 +964,7 @@ to be used under both.
 ```
 
 <!-- notice: llvm-legacy-libunwind -->
-LLVM libunwind, in `libc++_shared.so`, and linked into 14 other libraries for `arm64-v8a`, 13 for `x86` and `x86_64`, and 7 for `armeabi-v7a`, which the LLVM row of [Native libraries](#native-libraries) names. Source: <https://raw.githubusercontent.com/llvm/llvm-project/c4c5e79dd4b4c78eee7cffd9b0d7394b5bedcf12/libunwind/LICENSE.TXT>, lines 240-243, commit `c4c5e79dd4b4c78eee7cffd9b0d7394b5bedcf12`.
+LLVM libunwind, in `libc++_shared.so`, and linked into 14 other libraries for `arm64-v8a`, 13 for `x86` and `x86_64`, and 5 for `armeabi-v7a`, which the LLVM row of [Native libraries](#native-libraries) names. Source: <https://raw.githubusercontent.com/llvm/llvm-project/c4c5e79dd4b4c78eee7cffd9b0d7394b5bedcf12/libunwind/LICENSE.TXT>, lines 240-243, commit `c4c5e79dd4b4c78eee7cffd9b0d7394b5bedcf12`.
 ```text
 The libunwind library is dual licensed under both the University of Illinois
 "BSD-Like" license and the MIT license.  As a user of this code you may choose
@@ -1069,6 +1068,27 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+<!-- notice: soundtouch -->
+SoundTouch 2.4.1, built from source as `libsoundtouch.so` and `libsoundtouch_fp.so`: the notice in its files, which refers to the LGPL-2.1 text that the app contains. Source: `soundtouch/source/SoundTouch/SoundTouch.cpp` in <https://codeberg.org/soundtouch/soundtouch/archive/2.4.1.tar.gz> (archive SHA-256 `35d404e6e8c2ebd12fb4000da6fadd75c99e37eed2126a04721828c11c0377ec`), lines 46-61; the same file is `ndkLibs/soundtouch/source/SoundTouch/SoundTouch.cpp` in this repository, and every other SoundTouch file that the build compiles or includes has the same lines in its header.
+```text
+//  SoundTouch audio processing library
+//  Copyright (c) Olli Parviainen
+//
+//  This library is free software; you can redistribute it and/or
+//  modify it under the terms of the GNU Lesser General Public
+//  License as published by the Free Software Foundation; either
+//  version 2.1 of the License, or (at your option) any later version.
+//
+//  This library is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+//  Lesser General Public License for more details.
+//
+//  You should have received a copy of the GNU Lesser General Public
+//  License along with this library; if not, write to the Free Software
+//  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 ```
 
 <!-- notice: moodycamel-header -->
@@ -2361,5 +2381,10 @@ these ways that matter for this page:
   blocks above for those prebuilt libraries. The tag `V339` holds the source of that miniupnpc
   and libnatpmp (`ndkLibs/miniupnp/`, `ndkLibs/libnatpmp/`), but only the headers of that
   SDL_net (`ndkLibs/SDL_net/include/`).
+- Its `libsoundtouch.so` and `libsoundtouch_fp.so` are SoundTouch 2.2, prebuilt in 2021,
+  instead of SoundTouch 2.4.1 built from source. Their notice is the block above for
+  SoundTouch 2.4.1, whose lines SoundTouch 2.2's files carry too. The tag `V339` holds the
+  SoundTouch 2.2 source tree in `ndkLibs/soundtouch/`. For `armeabi-v7a`, these two also
+  hold LLVM libunwind, which the copies built from source do not.
 - Its `mupen64plus.ini` game database is an older version.
 - It does not have the trophy icon, `ic_trophy.xml`, which was added on 21 October 2026.

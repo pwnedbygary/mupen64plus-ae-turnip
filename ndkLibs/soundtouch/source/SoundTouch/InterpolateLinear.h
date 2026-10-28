@@ -1,5 +1,5 @@
 ////////////////////////////////////////////////////////////////////////////////
-/// 
+///
 /// Linear interpolation routine.
 ///
 /// Author        : Copyright (c) Olli Parviainen
@@ -45,23 +45,23 @@ protected:
     int iFract;
     int iRate;
 
-    virtual void resetRegisters();
-
-    virtual int transposeMono(SAMPLETYPE *dest, 
-                       const SAMPLETYPE *src, 
-                       int &srcSamples);
-    virtual int transposeStereo(SAMPLETYPE *dest, 
-                         const SAMPLETYPE *src, 
-                         int &srcSamples);
-    virtual int transposeMulti(SAMPLETYPE *dest, const SAMPLETYPE *src, int &srcSamples);
+    virtual int transposeMono(SAMPLETYPE *dest,
+                       const SAMPLETYPE *src,
+                       int &srcSamples) override;
+    virtual int transposeStereo(SAMPLETYPE *dest,
+                         const SAMPLETYPE *src,
+                         int &srcSamples) override;
+    virtual int transposeMulti(SAMPLETYPE *dest, const SAMPLETYPE *src, int &srcSamples) override;
 public:
     InterpolateLinearInteger();
 
-    /// Sets new target rate. Normal rate = 1.0, smaller values represent slower 
+    /// Sets new target rate. Normal rate = 1.0, smaller values represent slower
     /// rate, larger faster rates.
-    virtual void setRate(double newRate);
+    virtual void setRate(double newRate) override;
 
-    int getLatency() const
+    virtual void resetRegisters() override;
+
+    virtual int getLatency() const override
     {
         return 0;
     }
@@ -74,18 +74,18 @@ class InterpolateLinearFloat : public TransposerBase
 protected:
     double fract;
 
-    virtual void resetRegisters();
-
-    virtual int transposeMono(SAMPLETYPE *dest, 
-                       const SAMPLETYPE *src, 
+    virtual int transposeMono(SAMPLETYPE *dest,
+                       const SAMPLETYPE *src,
                        int &srcSamples);
-    virtual int transposeStereo(SAMPLETYPE *dest, 
-                         const SAMPLETYPE *src, 
+    virtual int transposeStereo(SAMPLETYPE *dest,
+                         const SAMPLETYPE *src,
                          int &srcSamples);
     virtual int transposeMulti(SAMPLETYPE *dest, const SAMPLETYPE *src, int &srcSamples);
 
 public:
     InterpolateLinearFloat();
+
+    virtual void resetRegisters();
 
     int getLatency() const
     {

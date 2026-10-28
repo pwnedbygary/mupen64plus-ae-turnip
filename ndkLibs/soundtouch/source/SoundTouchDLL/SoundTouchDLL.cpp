@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////////////
 ///
-/// SoundTouch DLL wrapper - wraps SoundTouch routines into a Dynamic Load 
+/// SoundTouch DLL wrapper - wraps SoundTouch routines into a Dynamic Load
 /// Library interface.
 ///
 /// Author        : Copyright (c) Olli Parviainen
@@ -35,9 +35,9 @@
     #include <windows.h>
 
     // DLL main in Windows compilation
-    BOOL APIENTRY DllMain( HANDLE hModule,
+    BOOL APIENTRY DllMain([[maybe_unused]] HANDLE hModule,
                            DWORD  ul_reason_for_call,
-                           LPVOID lpReserved
+                           [[maybe_unused]] LPVOID lpReserved
                          )
     {
         switch (ul_reason_for_call)
@@ -90,10 +90,10 @@ SOUNDTOUCHDLL_API HANDLE __cdecl soundtouch_createInstance()
     {
         tmp->dwMagic = STMAGIC;
         tmp->pst = new SoundTouch();
-        if (tmp->pst == NULL)
+        if (tmp->pst == nullptr)
         {
             delete tmp;
-            tmp = NULL;
+            tmp = nullptr;
         }
     }
     return (HANDLE)tmp;
@@ -107,7 +107,7 @@ SOUNDTOUCHDLL_API void __cdecl soundtouch_destroyInstance(HANDLE h)
 
     sth->dwMagic = 0;
     if (sth->pst) delete sth->pst;
-    sth->pst = NULL;
+    sth->pst = nullptr;
     delete sth;
 }
 
@@ -119,7 +119,7 @@ SOUNDTOUCHDLL_API const char *__cdecl soundtouch_getVersionString()
 }
 
 
-/// Get SoundTouch library version string - alternative function for 
+/// Get SoundTouch library version string - alternative function for
 /// environments that can't properly handle character string as return value
 SOUNDTOUCHDLL_API void __cdecl soundtouch_getVersionString2(char* versionString, int bufferSize)
 {
@@ -185,7 +185,7 @@ SOUNDTOUCHDLL_API void __cdecl soundtouch_setPitch(HANDLE h, float newPitch)
     sth->pst->setPitch(newPitch);
 }
 
-/// Sets pitch change in octaves compared to the original pitch  
+/// Sets pitch change in octaves compared to the original pitch
 /// (-1.00 .. +1.00)
 SOUNDTOUCHDLL_API void __cdecl soundtouch_setPitchOctaves(HANDLE h, float newPitch)
 {
@@ -207,21 +207,37 @@ SOUNDTOUCHDLL_API void __cdecl soundtouch_setPitchSemiTones(HANDLE h, float newP
 
 
 /// Sets the number of channels, 1 = mono, 2 = stereo
-SOUNDTOUCHDLL_API void __cdecl soundtouch_setChannels(HANDLE h, uint numChannels)
+SOUNDTOUCHDLL_API int __cdecl soundtouch_setChannels(HANDLE h, uint numChannels)
 {
     STHANDLE *sth = (STHANDLE*)h;
-    if (sth->dwMagic != STMAGIC) return;
+    if (sth->dwMagic != STMAGIC) return 0;
 
-    sth->pst->setChannels(numChannels);
+    try
+    {
+        sth->pst->setChannels(numChannels);
+    }
+    catch (const std::exception&)
+    {
+        return 0;
+    }
+    return 1;
 }
 
 /// Sets sample rate.
-SOUNDTOUCHDLL_API void __cdecl soundtouch_setSampleRate(HANDLE h, uint srate)
+SOUNDTOUCHDLL_API int __cdecl soundtouch_setSampleRate(HANDLE h, uint srate)
 {
     STHANDLE *sth = (STHANDLE*)h;
-    if (sth->dwMagic != STMAGIC) return;
+    if (sth->dwMagic != STMAGIC) return 0;
 
-    sth->pst->setSampleRate(srate);
+    try
+    {
+        sth->pst->setSampleRate(srate);
+    }
+    catch (const std::exception&)
+    {
+        return 0;
+    }
+    return 1;
 }
 
 /// Flushes the last samples from the processing pipeline to the output.
@@ -231,18 +247,26 @@ SOUNDTOUCHDLL_API void __cdecl soundtouch_setSampleRate(HANDLE h, uint srate)
 /// stream. This function may introduce additional blank samples in the end
 /// of the sound stream, and thus it's not recommended to call this function
 /// in the middle of a sound stream.
-SOUNDTOUCHDLL_API void __cdecl soundtouch_flush(HANDLE h)
+SOUNDTOUCHDLL_API int __cdecl soundtouch_flush(HANDLE h)
 {
     STHANDLE *sth = (STHANDLE*)h;
-    if (sth->dwMagic != STMAGIC) return;
+    if (sth->dwMagic != STMAGIC) return 0;
 
-    sth->pst->flush();
+    try
+    {
+        sth->pst->flush();
+    }
+    catch (const std::exception&)
+    {
+        return 0;
+    }
+    return 1;
 }
 
 /// Adds 'numSamples' pcs of samples from the 'samples' memory position into
 /// the input of the object. Notice that sample rate _has_to_ be set before
 /// calling this function, otherwise throws a runtime_error exception.
-SOUNDTOUCHDLL_API void __cdecl soundtouch_putSamples(HANDLE h, 
+SOUNDTOUCHDLL_API int __cdecl soundtouch_putSamples(HANDLE h,
         const SAMPLETYPE *samples,      ///< Pointer to sample buffer.
         unsigned int numSamples         ///< Number of samples in buffer. Notice
                                         ///< that in case of stereo-sound a single sample
@@ -250,9 +274,17 @@ SOUNDTOUCHDLL_API void __cdecl soundtouch_putSamples(HANDLE h,
         )
 {
     STHANDLE *sth = (STHANDLE*)h;
-    if (sth->dwMagic != STMAGIC) return;
+    if (sth->dwMagic != STMAGIC) return 0;
 
-    sth->pst->putSamples(samples, numSamples);
+    try
+    {
+        sth->pst->putSamples(samples, numSamples);
+    }
+    catch (const std::exception&)
+    {
+        return 0;
+    }
+    return 1;
 }
 
 /// int16 version of soundtouch_putSamples(): This accept int16 (short) sample data
@@ -303,9 +335,9 @@ SOUNDTOUCHDLL_API void __cdecl soundtouch_clear(HANDLE h)
 
 /// Changes a setting controlling the processing system behaviour. See the
 /// 'SETTING_...' defines for available setting ID's.
-/// 
+///
 /// \return 'nonzero' if the setting was successfully changed
-SOUNDTOUCHDLL_API int __cdecl soundtouch_setSetting(HANDLE h, 
+SOUNDTOUCHDLL_API int __cdecl soundtouch_setSetting(HANDLE h,
         int settingId,   ///< Setting ID number. see SETTING_... defines.
         int value        ///< New setting value.
         )
@@ -320,7 +352,7 @@ SOUNDTOUCHDLL_API int __cdecl soundtouch_setSetting(HANDLE h,
 /// 'SETTING_...' defines for available setting ID's.
 ///
 /// \return the setting value.
-SOUNDTOUCHDLL_API int __cdecl soundtouch_getSetting(HANDLE h, 
+SOUNDTOUCHDLL_API int __cdecl soundtouch_getSetting(HANDLE h,
         int settingId    ///< Setting ID number, see SETTING_... defines.
         )
 {
@@ -341,12 +373,10 @@ SOUNDTOUCHDLL_API uint __cdecl soundtouch_numUnprocessedSamples(HANDLE h)
 }
 
 
-/// Adjusts book-keeping so that given number of samples are removed from beginning of the 
-/// sample buffer without copying them anywhere. 
+/// Receive ready samples from the processing pipeline.
 ///
-/// Used to reduce the number of samples in the buffer when accessing the sample buffer directly
-/// with 'ptrBegin' function.
-SOUNDTOUCHDLL_API uint __cdecl soundtouch_receiveSamples(HANDLE h, 
+/// if called with outBuffer=nullptr, just reduces amount of ready samples within the pipeline.
+SOUNDTOUCHDLL_API uint __cdecl soundtouch_receiveSamples(HANDLE h,
         SAMPLETYPE *outBuffer,      ///< Buffer where to copy output samples.
         unsigned int maxSamples     ///< How many samples to receive at max.
         )
@@ -376,7 +406,7 @@ SOUNDTOUCHDLL_API uint __cdecl soundtouch_receiveSamples_i16(HANDLE h,
     if (sth->dwMagic != STMAGIC) return 0;
     uint outTotal = 0;
 
-    if (outBuffer == NULL)
+    if (outBuffer == nullptr)
     {
         // only reduce sample count, not receive samples
         return sth->pst->receiveSamples(maxSamples);
@@ -444,11 +474,18 @@ SOUNDTOUCHDLL_API HANDLE __cdecl bpm_createInstance(int numChannels, int sampleR
     if (tmp)
     {
         tmp->dwMagic = BPMMAGIC;
-        tmp->pbpm = new BPMDetect(numChannels, sampleRate);
-        if (tmp->pbpm == NULL)
+        try
+        {
+            tmp->pbpm = new BPMDetect(numChannels, sampleRate);
+        }
+        catch (const std::exception&)
+        {
+            tmp->pbpm = nullptr;
+        }
+        if (tmp->pbpm == nullptr)
         {
             delete tmp;
-            tmp = NULL;
+            tmp = nullptr;
         }
     }
     return (HANDLE)tmp;
@@ -462,13 +499,13 @@ SOUNDTOUCHDLL_API void __cdecl bpm_destroyInstance(HANDLE h)
 
     sth->dwMagic = 0;
     if (sth->pbpm) delete sth->pbpm;
-    sth->pbpm = NULL;
+    sth->pbpm = nullptr;
     delete sth;
 }
 
 
 /// Feed 'numSamples' sample frames from 'samples' into the BPM detection handler
-SOUNDTOUCHDLL_API void __cdecl bpm_putSamples(HANDLE h, 
+SOUNDTOUCHDLL_API void __cdecl bpm_putSamples(HANDLE h,
         const float *samples,
         unsigned int numSamples)
 {
@@ -481,7 +518,7 @@ SOUNDTOUCHDLL_API void __cdecl bpm_putSamples(HANDLE h,
 
 /// Feed 'numSamples' sample frames from 'samples' into the BPM detection handler.
 /// 16bit int sample format version.
-SOUNDTOUCHDLL_API void __cdecl bpm_putSamples_i16(HANDLE h, 
+SOUNDTOUCHDLL_API void __cdecl bpm_putSamples_i16(HANDLE h,
         const short *samples,
         unsigned int numSamples)
 {
@@ -524,4 +561,22 @@ SOUNDTOUCHDLL_API float __cdecl bpm_getBpm(HANDLE h)
     if (bpmh->dwMagic != BPMMAGIC) return 0;
 
     return bpmh->pbpm->getBpm();
+}
+
+
+/// Get beat position arrays. Note: The array includes also really low beat detection values
+/// in absence of clear strong beats. Consumer may wish to filter low values away.
+/// - "pos" receive array of beat positions
+/// - "values" receive array of beat detection strengths
+/// - max_num indicates max.size of "pos" and "values" array.
+///
+/// You can query a suitable array sized by calling this with nullptr in "pos" & "values".
+///
+/// \return number of beats in the arrays.
+SOUNDTOUCHDLL_API int __cdecl bpm_getBeats(HANDLE h, float* pos, float* strength, int count)
+{
+	BPMHANDLE *bpmh = (BPMHANDLE *)h;
+	if (bpmh->dwMagic != BPMMAGIC) return 0;
+
+	return bpmh->pbpm->getBeats(pos, strength, count);
 }

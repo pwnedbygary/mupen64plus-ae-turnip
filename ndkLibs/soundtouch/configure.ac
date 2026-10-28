@@ -1,39 +1,38 @@
 dnl This file is part of SoundTouch, an audio processing library for pitch/time adjustments
-dnl 
+dnl
 dnl SoundTouch is free software; you can redistribute it and/or modify it under the
 dnl terms of the GNU General Public License as published by the Free Software
 dnl Foundation; either version 2 of the License, or (at your option) any later
 dnl version.
-dnl 
+dnl
 dnl SoundTouch is distributed in the hope that it will be useful, but WITHOUT ANY
 dnl WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
 dnl FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
 dnl details.
-dnl 
+dnl
 dnl You should have received a copy of the GNU General Public License along with
 dnl this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 dnl Place - Suite 330, Boston, MA  02111-1307, USA
 # Process this file with autoconf to produce a configure script.
 
-AC_INIT([SoundTouch], [2.2], [http://www.surina.net/soundtouch])
+AC_INIT([SoundTouch],[2.4.0],[http://www.surina.net/soundtouch])
 dnl Default to libSoundTouch.so.$LIB_SONAME.0.0
 LIB_SONAME=1
 AC_SUBST(LIB_SONAME)
 
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_MACRO_DIR([config/m4])
-AM_CONFIG_HEADER([config.h include/soundtouch_config.h])
+AC_CONFIG_HEADERS([config.h include/soundtouch_config.h])
 AM_INIT_AUTOMAKE
 AM_SILENT_RULES([yes])
-#AC_DISABLE_SHARED	dnl This makes libtool only build static libs 
+#AC_DISABLE_SHARED	dnl This makes libtool only build static libs
 AC_DISABLE_STATIC	dnl This makes libtool only build shared libs
-#AC_GNU_SOURCE 		dnl enable posix extensions in glibc
+#AC_USE_SYSTEM_EXTENSIONS 		dnl enable posix extensions in glibc
 
 AC_LANG(C++)
 
-# Compiler flags. Apply -ffast-math to allow gcc autovectorization
-# generate effective SIMD code.
-CXXFLAGS="-O3 -ffast-math"
+# Compiler flags. Apply -ffast-math to allow compiler autovectorization generate effective SIMD code for arm compilation
+CXXFLAGS="${CXXFLAGS} -O3 -ffast-math -Wall -Wextra -Wzero-as-null-pointer-constant -Wno-unknown-pragmas"
 
 # Set AR_FLAGS to avoid build warning "ar: `u' modifier ignored since `D' is the default (see `U')"
 AR_FLAGS='cr'
@@ -51,7 +50,7 @@ AC_PROG_INSTALL
 #AC_PROG_LN_S
 AC_PROG_MAKE_SET
 
-AM_PROG_LIBTOOL dnl turn on using libtool
+LT_INIT dnl turn on using libtool
 
 
 
@@ -59,7 +58,7 @@ AM_PROG_LIBTOOL dnl turn on using libtool
 dnl ############################################################################
 dnl # Checks for header files                                                  #
 dnl ############################################################################
-AC_HEADER_STDC
+
 #AC_HEADER_SYS_WAIT
 #	add any others you want to check for here
 AC_CHECK_HEADERS([cpuid.h])
@@ -70,7 +69,7 @@ if test "x$ac_cv_header_cpuid_h" = "xno"; then
 	AC_MSG_WARN([If using a x86 architecture and optimizations are desired then please install gcc (>= 4.3).])
 	AC_MSG_WARN([If using a non-x86 architecture then this is expected and can be ignored.])
 fi
- 
+
 
 dnl ############################################################################
 dnl # Checks for typedefs, structures, and compiler characteristics            $
@@ -82,14 +81,12 @@ AC_C_INLINE
 
 
 AC_ARG_ENABLE(integer-samples,
-              [AC_HELP_STRING([--enable-integer-samples],
-                              [use integer samples instead of floats [default=no]])],,
+              [AS_HELP_STRING([--enable-integer-samples],[use integer samples instead of floats [default=no]])],,
               [enable_integer_samples=no])
 
 
 AC_ARG_ENABLE(openmp,
-              [AC_HELP_STRING([--enable-openmp],
-                              [use parallel multicore calculation through OpenMP [default=no]])],,
+              [AS_HELP_STRING([--enable-openmp],[use parallel multicore calculation through OpenMP [default=no]])],,
               [enable_openmp=no])
 
 # Let the user enable/disable the x86 optimizations.
@@ -112,7 +109,6 @@ AC_ARG_ENABLE([neon-optimizations],
 # Note: We check if optimizations are supported a few lines down.
 AM_CONDITIONAL([X86_OPTIMIZATIONS], [test "x$enable_x86_optimizations" = "xyes"])
 
-
 if test "x$enable_integer_samples" = "xyes"; then
         echo "****** Integer sample type enabled ******"
         AC_DEFINE(SOUNDTOUCH_INTEGER_SAMPLES,1,[Use Integer as Sample type])
@@ -120,7 +116,7 @@ else
         echo "****** Float sample type enabled ******"
         AC_DEFINE(SOUNDTOUCH_FLOAT_SAMPLES,1,[Use Float as Sample type])
 fi
-
+AM_CONDITIONAL([SOUNDTOUCH_FLOAT_SAMPLES], [test "x$enable_integer_samples" != "xyes"])
 
 if test "x$enable_openmp" = "xyes"; then
         echo "****** openmp optimizations enabled ******"
@@ -232,6 +228,26 @@ if test "x$enable_neon_optimizations" = "xyes" -a "x$ac_cv_header_arm_neon_h" = 
 	fi
 fi
 
+
+AC_CANONICAL_HOST
+HOST_OS=""
+AS_CASE([$host_cpu],
+        [x86_64],
+        [
+            x86_64=true
+            x86=true
+        ],
+        [i?86],
+        [
+            x86=true
+        ])
+
+AM_CONDITIONAL([X86], [test "$x86" = true])
+AM_CONDITIONAL([X86_64], [test "$x86_64" = true])
+
+AC_SUBST([HOST_OS])
+
+
 # Set AM_CXXFLAGS
 AC_SUBST([AM_CXXFLAGS], [$AM_CXXFLAGS])
 
@@ -254,11 +270,9 @@ AM_CONDITIONAL([HAVE_SSE], [test "x$have_sse_intrinsics" = "xyes"])
 dnl ############################################################################
 dnl # Checks for library functions/classes                                     #
 dnl ############################################################################
-AC_FUNC_MALLOC
-AC_TYPE_SIGNAL
 
 dnl make -lm get added to the LIBS
-AC_CHECK_LIB(m, sqrt,,AC_MSG_ERROR([compatible libc math library not found])) 
+AC_CHECK_LIB(m, sqrt,,AC_MSG_ERROR([compatible libc math library not found]))
 
 dnl add whatever functions you might want to check for here
 #AC_CHECK_FUNCS([floor ftruncate memmove memset mkdir modf pow realpath sqrt strchr strdup strerror strrchr strstr strtol])
@@ -288,11 +302,12 @@ AC_CONFIG_FILES([
 	source/Makefile
 		source/SoundTouch/Makefile
 		source/SoundStretch/Makefile
+        source/SoundTouchDLL/Makefile
 	include/Makefile
 ])
 
-AC_OUTPUT(
-	soundtouch.pc
-)
+AC_CONFIG_FILES([soundtouch.pc
+])
+AC_OUTPUT
 
 dnl use 'echo' to put stuff here if you want a message to the builder

@@ -1,6 +1,6 @@
 ////////////////////////////////////////////////////////////////////////////////
-/// 
-/// Sample interpolation routine using 8-tap band-limited Shannon interpolation 
+///
+/// Sample interpolation routine using 8-tap band-limited Shannon interpolation
 /// with kaiser window.
 ///
 /// Notice. This algorithm is remarkably much heavier than linear or cubic
@@ -46,23 +46,24 @@ namespace soundtouch
 class InterpolateShannon : public TransposerBase
 {
 protected:
-    void resetRegisters();
-    int transposeMono(SAMPLETYPE *dest, 
-                        const SAMPLETYPE *src, 
-                        int &srcSamples);
-    int transposeStereo(SAMPLETYPE *dest, 
-                        const SAMPLETYPE *src, 
-                        int &srcSamples);
-    int transposeMulti(SAMPLETYPE *dest, 
-                        const SAMPLETYPE *src, 
-                        int &srcSamples);
+    int transposeMono(SAMPLETYPE *dest,
+                        const SAMPLETYPE *src,
+                        int &srcSamples) override;
+    int transposeStereo(SAMPLETYPE *dest,
+                        const SAMPLETYPE *src,
+                        int &srcSamples) override;
+    int transposeMulti(SAMPLETYPE *dest,
+                        const SAMPLETYPE *src,
+                        int &srcSamples) override;
 
     double fract;
 
 public:
     InterpolateShannon();
 
-    int getLatency() const
+    void resetRegisters() override;
+
+    virtual int getLatency() const override
     {
         return 3;
     }
