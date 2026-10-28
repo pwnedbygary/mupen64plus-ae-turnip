@@ -8,7 +8,7 @@
 # It also defines some flags to the configure script for specifying
 # the location to search for libSoundTouch
 #
-# A user of libSoundTouch should add @SOUNDTOUCH_LIBS@ and 
+# A user of libSoundTouch should add @SOUNDTOUCH_LIBS@ and
 # @SOUNDTOUCH_CXXFLAGS@ to the appropriate variables in his
 # Makefile.am files
 #
@@ -32,10 +32,10 @@ AC_DEFUN([AM_PATH_SOUNDTOUCH],[
 	then
 		saved_CPPFLAGS="$CPPFLAGS"
 		saved_LDFLAGS="$LDFLAGS"
-	   
+
 		CPPFLAGS="$CPPFLAGS -I$soundtouch_prefix/include"
 		LDFLAGS="$LDFLAGS -L$soundtouch_prefix/lib"
-   
+
 		dnl make sure SoundTouch.h header file exists
 			dnl could use AC_CHECK_HEADERS to check for all of them, but the supporting .h file names may change later
 		AC_CHECK_HEADER([soundtouch/SoundTouch.h],[
@@ -49,7 +49,7 @@ AC_DEFUN([AM_PATH_SOUNDTOUCH],[
 
 					dnl run action-if-found
 					ifelse([$2], , :, [$2])
-				],[ 
+				],[
 					dnl run action-if-not-found
 					ifelse([$3], , :, [$3])
 				])

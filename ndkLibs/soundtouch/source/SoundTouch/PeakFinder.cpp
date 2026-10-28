@@ -1,8 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 ///
-/// Peak detection routine. 
+/// Peak detection routine.
 ///
-/// The routine detects highest value on an array of values and calculates the 
+/// The routine detects highest value on an array of values and calculates the
 /// precise peak location as a mass-center of the 'hump' around the peak value.
 ///
 /// Author        : Copyright (c) Olli Parviainen
@@ -80,7 +80,7 @@ int PeakFinder::findTop(const float *data, int peakpos) const
 
 
 // Finds 'ground level' of a peak hump by starting from 'peakpos' and proceeding
-// to direction defined by 'direction' until next 'hump' after minimum value will 
+// to direction defined by 'direction' until next 'hump' after minimum value will
 // begin
 int PeakFinder::findGround(const float *data, int peakpos, int direction) const
 {
@@ -136,10 +136,9 @@ int PeakFinder::findGround(const float *data, int peakpos, int direction) const
 // proceeds to direction defined in 'direction'
 int PeakFinder::findCrossingLevel(const float *data, float level, int peakpos, int direction) const
 {
-    float peaklevel;
     int pos;
 
-    peaklevel = data[peakpos];
+    [[maybe_unused]] float peaklevel = data[peakpos];
     assert(peaklevel >= level);
     pos = peakpos;
     while ((pos >= minPos) && (pos + direction < maxPos))
@@ -186,7 +185,7 @@ double PeakFinder::getPeakCenter(const float *data, int peakpos) const
 
     peakLevel = data[peakpos];
 
-    if (gp1 == gp2) 
+    if (gp1 == gp2)
     {
         // avoid rounding errors when all are equal
         assert(gp1 == peakpos);
@@ -210,7 +209,7 @@ double PeakFinder::getPeakCenter(const float *data, int peakpos) const
 }
 
 
-double PeakFinder::detectPeak(const float *data, int aminPos, int amaxPos) 
+double PeakFinder::detectPeak(const float *data, int aminPos, int amaxPos)
 {
 
     int i;
@@ -225,19 +224,19 @@ double PeakFinder::detectPeak(const float *data, int aminPos, int amaxPos)
     peak = data[minPos];
     for (i = minPos + 1; i < maxPos; i ++)
     {
-        if (data[i] > peak) 
+        if (data[i] > peak)
         {
             peak = data[i];
             peakpos = i;
         }
     }
-    
+
     // Calculate exact location of the highest peak mass center
     highPeak = getPeakCenter(data, peakpos);
     peak = highPeak;
 
-    // Now check if the highest peak were in fact harmonic of the true base beat peak 
-    // - sometimes the highest peak can be Nth harmonic of the true base peak yet 
+    // Now check if the highest peak were in fact harmonic of the true base beat peak
+    // - sometimes the highest peak can be Nth harmonic of the true base peak yet
     // just a slightly higher than the true base
 
     for (i = 1; i < 3; i ++)
@@ -254,7 +253,7 @@ double PeakFinder::detectPeak(const float *data, int aminPos, int amaxPos)
         // calculate mass-center of possible harmonic peak
         peaktmp = getPeakCenter(data, peakpos);
 
-        // accept harmonic peak if 
+        // accept harmonic peak if
         // (a) it is found
         // (b) is within ±4% of the expected harmonic interval
         // (c) has at least half x-corr value of the max. peak

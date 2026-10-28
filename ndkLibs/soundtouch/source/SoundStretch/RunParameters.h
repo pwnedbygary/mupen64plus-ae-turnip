@@ -32,34 +32,39 @@
 #ifndef RUNPARAMETERS_H
 #define RUNPARAMETERS_H
 
-#include "STTypes.h"
 #include <string>
+#include "STTypes.h"
+#include "SS_CharTypes.h"
+#include "WavFile.h"
 
-using namespace std;
+namespace soundstretch
+{
 
 /// Parses command line parameters into program parameters
 class RunParameters
 {
 private:
-    void throwIllegalParamExp(const string &str) const;
+    void throwIllegalParamExp(const STRING& str) const;
     void throwLicense() const;
-    void parseSwitchParam(const string &str);
+    void parseSwitchParam(const STRING& str);
     void checkLimits();
-    float parseSwitchValue(const string &str) const;
+    double parseSwitchValue(const STRING& tr) const;
 
 public:
-    char  *inFileName;
-    char  *outFileName;
-    float tempoDelta;
-    float pitchDelta;
-    float rateDelta;
-    int   quick;
-    int   noAntiAlias;
-    float goalBPM;
-    bool  detectBPM;
-    bool  speech;
+    STRING inFileName;
+    STRING outFileName;
+    double tempoDelta{ 0 };
+    double pitchDelta{ 0 };
+    double rateDelta{ 0 };
+    int   quick{ 0 };
+    int   noAntiAlias{ 0 };
+    double goalBPM{ 0 };
+    bool  detectBPM{ false };
+    bool  speech{ false };
 
-    RunParameters(const int nParams, const char * const paramStr[]);
+    RunParameters(int nParams, const CHARTYPE* paramStr[]);
 };
+
+}
 
 #endif

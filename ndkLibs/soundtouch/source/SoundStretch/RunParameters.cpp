@@ -30,15 +30,18 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include <string>
-#include <stdlib.h>
+#include <cstdlib>
 
 #include "RunParameters.h"
 
 using namespace std;
 
-// Program usage instructions 
+namespace soundstretch
+{
 
-static const char licenseText[] = 
+// Program usage instructions
+
+static const char licenseText[] =
     "    LICENSE:\n"
     "    ========\n"
     "    \n"
@@ -61,12 +64,12 @@ static const char licenseText[] =
     "This application is distributed with full source codes; however, if you\n"
     "didn't receive them, please visit the author's homepage (see the link above).";
 
-static const char whatText[] = 
+static const char whatText[] =
     "This application processes WAV audio files by modifying the sound tempo,\n"
     "pitch and playback rate properties independently from each other.\n"
     "\n";
 
-static const char usage[] = 
+static const char usage[] =
     "Usage :\n"
     "    soundstretch infilename outfilename [switches]\n"
     "\n"
@@ -87,53 +90,41 @@ static const char usage[] =
 // Converts a char into lower case
 static int _toLowerCase(int c)
 {
-    if (c >= 'A' && c <= 'Z') 
+    if (c >= 'A' && c <= 'Z')
     {
         c += 'a' - 'A';
     }
     return c;
 }
 
-
 // Constructor
-RunParameters::RunParameters(const int nParams, const char * const paramStr[])
+RunParameters::RunParameters(int nParams, const CHARTYPE* paramStr[])
 {
     int i;
     int nFirstParam;
 
-    if (nParams < 3) 
+    if (nParams < 3)
     {
         // Too few parameters
-        if (nParams > 1 && paramStr[1][0] == '-' && 
-            _toLowerCase(paramStr[1][1]) == 'l') 
+        if (nParams > 1 && paramStr[1][0] == '-' &&
+            _toLowerCase(paramStr[1][1]) == 'l')
         {
             // '-license' switch
             throwLicense();
         }
         string msg = whatText;
         msg += usage;
-        ST_THROW_RT_ERROR(msg.c_str());
+        throw(msg);
     }
 
-    inFileName = NULL;
-    outFileName = NULL;
-    tempoDelta = 0;
-    pitchDelta = 0;
-    rateDelta = 0;
-    quick = 0;
-    noAntiAlias = 0;
-    goalBPM = 0;
-    speech = false;
-    detectBPM = false;
-
     // Get input & output file names
-    inFileName = (char*)paramStr[1];
-    outFileName = (char*)paramStr[2];
+    inFileName = paramStr[1];
+    outFileName = paramStr[2];
 
     if (outFileName[0] == '-')
     {
-        // no outputfile name was given but parameters
-        outFileName = NULL;
+        // outputfile name was omitted but other parameter switches given instead
+        outFileName = STRING_CONST("");
         nFirstParam = 2;
     }
     else
@@ -142,7 +133,7 @@ RunParameters::RunParameters(const int nParams, const char * const paramStr[])
     }
 
     // parse switch parameters
-    for (i = nFirstParam; i < nParams; i ++) 
+    for (i = nFirstParam; i < nParams; i ++)
     {
         parseSwitchParam(paramStr[i]);
     }
@@ -154,76 +145,84 @@ RunParameters::RunParameters(const int nParams, const char * const paramStr[])
 // Checks parameter limits
 void RunParameters::checkLimits()
 {
-    if (tempoDelta < -95.0f) 
+    if (tempoDelta < -95.0f)
     {
         tempoDelta = -95.0f;
-    } 
-    else if (tempoDelta > 5000.0f) 
+    }
+    else if (tempoDelta > 5000.0f)
     {
         tempoDelta = 5000.0f;
     }
 
-    if (pitchDelta < -60.0f) 
+    if (pitchDelta < -60.0f)
     {
         pitchDelta = -60.0f;
-    } 
-    else if (pitchDelta > 60.0f) 
+    }
+    else if (pitchDelta > 60.0f)
     {
         pitchDelta = 60.0f;
     }
 
-    if (rateDelta < -95.0f) 
+    if (rateDelta < -95.0f)
     {
         rateDelta = -95.0f;
-    } 
-    else if (rateDelta > 5000.0f) 
+    }
+    else if (rateDelta > 5000.0f)
     {
         rateDelta = 5000.0f;
     }
 }
 
-
-// Unknown switch parameter -- throws an exception with an error message
-void RunParameters::throwIllegalParamExp(const string &str) const
+// Convert STRING to std::string. Actually needed only if STRING is std::wstring, but conversion penalty is negligible
+std::string convertString(const STRING& str)
 {
-    string msg = "ERROR : Illegal parameter \"";
-    msg += str;
-    msg += "\".\n\n";
-    msg += usage;
-    ST_THROW_RT_ERROR(msg.c_str());
+    std::string res;
+    for (auto c : str)
+    {
+        res += (char)c;
+    }
+    return res;
 }
 
+// Unknown switch parameter -- throws an exception with an error message
+void RunParameters::throwIllegalParamExp(const STRING &str) const
+{
+    string msg = "ERROR : Illegal parameter \"";
+    msg += convertString(str);
+    msg += "\".\n\n";
+    msg += usage;
+    ST_THROW_RT_ERROR(msg);
+}
 
 void RunParameters::throwLicense() const
 {
     ST_THROW_RT_ERROR(licenseText);
 }
 
-
-float RunParameters::parseSwitchValue(const string &str) const
+double RunParameters::parseSwitchValue(const STRING& str) const
 {
     int pos;
 
     pos = (int)str.find_first_of('=');
-    if (pos < 0) 
+    if (pos < 0)
     {
         // '=' missing
         throwIllegalParamExp(str);
     }
 
     // Read numerical parameter value after '='
-    return (float)atof(str.substr(pos + 1).c_str());
+    return stof(str.substr(pos + 1).c_str());
 }
 
 
 // Interprets a single switch parameter string of format "-switch=xx"
 // Valid switches are "-tempo=xx", "-pitch=xx" and "-rate=xx". Stores
 // switch values into 'params' structure.
-void RunParameters::parseSwitchParam(const string &str)
+void RunParameters::parseSwitchParam(const STRING& str)
 {
     int upS;
 
-    if (str[0] != '-') 
+    if (str[0] != '-')
     {
         // leading hyphen missing => not a valid parameter
         throwIllegalParamExp(str);
@@ -233,7 +232,7 @@ void RunParameters::parseSwitchParam(const string &str)
     upS = _toLowerCase(str[1]);
 
     // interpret the switch name & operate accordingly
-    switch (upS) 
+    switch (upS)
     {
         case 't' :
             // switch '-tempo=xx'
@@ -256,7 +255,7 @@ void RunParameters::parseSwitchParam(const string &str)
             try
             {
                 goalBPM = parseSwitchValue(str);
-            } 
+            }
             catch (const runtime_error &)
             {
                 // illegal or missing bpm value => just calculate bpm
@@ -288,4 +287,6 @@ void RunParameters::parseSwitchParam(const string &str)
             // unknown switch
             throwIllegalParamExp(str);
     }
+}
+
 }

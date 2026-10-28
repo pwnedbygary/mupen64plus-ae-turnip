@@ -16,9 +16,10 @@
 #include "../../SoundStretch/WavFile.h"
 
 using namespace std;
+using namespace soundstretch;
 
 // DllTest main
-int main(int argc, char *argv[])
+int wmain(int argc, const wchar_t *argv[])
 {
     // Check program arguments
     if (argc < 4)
@@ -27,22 +28,22 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    const char *inFileName = argv[1];
-    const char *outFileName = argv[2];
-    string str_sampleType = argv[3];
+    wstring inFileName = argv[1];
+    wstring outFileName = argv[2];
+    wstring str_sampleType = argv[3];
 
     bool floatSample;
-    if (str_sampleType.compare("float") == 0)
+    if (str_sampleType == L"float")
     {
         floatSample = true;
     }
-    else if (str_sampleType.compare("short") == 0)
+    else if (str_sampleType == L"short")
     {
         floatSample = false;
     }
     else
     { 
-        cerr << "Missing or invalid sampletype '" << str_sampleType << "'. Expected either short or float" << endl;
+        cerr << "Missing or invalid sampletype. Expected either short or float" << endl;
         return -1;
     }
 

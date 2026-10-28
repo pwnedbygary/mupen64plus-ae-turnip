@@ -15,8 +15,8 @@
 
 <body class="normal">
   <hr>
-  <h1>SoundTouch audio processing library v2.2</h1>
-  <p class="normal">SoundTouch library Copyright &copy; Olli Parviainen 2001-2020</p>
+  <h1>SoundTouch audio processing library v2.4.0</h1>
+  <p class="normal">SoundTouch library Copyright &copy; Olli Parviainen 2001-2025</p>
   <hr>
   <h2>1. Introduction </h2>
   <p>SoundTouch is an open-source audio processing library that allows
@@ -35,11 +35,11 @@
   <p>Author email: oparviai 'at' iki.fi </p>
   <p>SoundTouch WWW page: <a href="http://soundtouch.surina.net">http://soundtouch.surina.net</a></p>
   <p>SoundTouch git repository: <a
-      href="https://gitlab.com/soundtouch/soundtouch.git">https://gitlab.com/soundtouch/soundtouch.git</a></p>
+      href="https://codeberg.org/soundtouch/soundtouch.git">https://codeberg.org/soundtouch/soundtouch.git</a></p>
   <hr>
   <h2>2. Compiling SoundTouch</h2>
   <p>Before compiling, notice that you can choose the sample data format if it's
-    desirable to use floating point sample data instead of 16bit integers. See
+    desirable to use 16bit integer sample data instead of floating point samples. See
     section &quot;sample data format&quot; for more information.</p>
   <p>Also notice that SoundTouch can use OpenMP instructions for parallel
     computation to accelerate the runtime processing speed in multi-core systems,
@@ -72,15 +72,17 @@
     <li>x64 64bit: C:\Program Files (x86)\Microsoft Visual Studio
       9.0\VC\redist\amd64\Microsoft.VC90.OPENMP\vcomp90.dll</li>
   </ul>
-  <p>In Visual Studio 2008, a SP1 version may be required for these libraries. In
-    other VC++ versions the required library will be expectedly found in similar
+  <p>In other VC++ versions the required library will be expectedly found in similar
     &quot;redist&quot; location.</p>
   <p>Notice that as minor demonstration of a &quot;dll hell&quot; phenomenon both the 32-bit
     and 64-bit version of vcomp90.dll have the same filename but different contents,
-    thus choose the proper version to allow the program start.</p>
+    thus choose the proper version to allow the program to start.</p>
   <h3>2.2. Building in Gnu platforms</h3>
   <p>The SoundTouch library compiles in practically any platform
-    supporting GNU compiler (GCC) tools. SoundTouch requires GCC version 4.3 or later.</p>
+    supporting GNU compiler (GCC) tools.
+  <h4>2.2.1 Compiling with autotools</h4>
+  <p>To install build prerequisites for 'autotools' tool chain (for Ubuntu/Debian. Use dnf/yum/etc in other distros):</p>
+  <pre>    sudo apt install -y automake autoconf libtool build-essential</pre>
   <p>To build and install the binaries, run the following commands in
     /soundtouch directory:</p>
   <table border="0" cellpadding="0" cellspacing="4">
@@ -127,34 +129,32 @@
       </tr>
     </tbody>
   </table>
-  <h4><b>2.2.1 Required GNU tools</b></h4>
-  <p> <span style="font-weight: bold;">Bash shell</span>, <span style="font-weight: bold;">GNU C++ compiler</span>,
-    <span style="font-weight: bold;">libtool</span>, <span style="font-weight: bold;">autoconf</span> and <span
-      style="font-weight: bold;">automake</span> tools
-    are required for compiling the SoundTouch library. These are usually
-    included with the GNU/Linux distribution, but if not, install these
-    packages first. For example, Ubuntu Linux can acquire and install
-    these with the following command:</p>
-  <pre><b>sudo apt-get install automake autoconf libtool build-essential</b></pre>
-  <h4><b>2.2.2 Problems with GCC compiler compatibility</b></h4>
-  <p>At the release time the SoundTouch package has been tested to
-    compile in GNU/Linux platform. However, If you have problems getting the
-    SoundTouch library compiled, try disabling optimizations that are specific for
-    x86 processors by running <b>./configure</b> script with switch
-  <blockquote>
-    <pre>--enable-x86-optimizations=no</pre>
-  </blockquote>
 
-  Alternatively, if you don't use GNU Configure system, edit file "include/STTypes.h"
-  directly and remove the following definition:<blockquote>
-    <pre>#define SOUNDTOUCH_ALLOW_X86_OPTIMIZATIONS 1</pre>
-  </blockquote>
+  <b>Compiling portable Shared Library / DLL version</b>
+  <p> The GNU autotools compilation automatically builds an additional dynamic-link version
+    of SoundTouch library that features position-independent code and "C"-style API that is
+    more suitable for calling the SoundTouch routines from other programming languages.</p>
+    <p>This dynamic-link library is built under source/SoundTouchDLL directory, whose
+    subdirectories also comtain simple example apps that use the dynamic-link library.
+  </p>
 
-  <h4><b>2.2.3 Compiling portable Shared Library / DLL version in GNU environment</b></h4>
-  <p> The GNU compilation does not automatically create a shared-library version of
-    SoundTouch (.so or .dll) that features position-independent code and C-language
-    api that are more suitable for cross-language development than C++ libraries.</p>
-  <p> Use script "make-gnu-dll-sh" to build a portable dynamic library version if such is desired.</p>
+  <h4><b>2.2.2 Compiling with cmake</b></h4>
+  <p>'cmake' build scripts are provided as an alternative to the autotools toolchain.</p>
+  <p>To install cmake build prerequisites (for Ubuntu/Debian. Use dnf/yum/etc in other distros):</p>
+  <pre>    sudo apt install -y libtool build-essential cmake</pre>
+  <p>To build:</p>
+  <pre>
+    cmake .
+    make -j
+    make install</pre>
+  <p>To list available build options:</p>
+  <pre>
+    cmake -LH</pre>
+  <p>To compile the additional portable Shared Library / DLL version with the native C-language API:</p>
+  <pre>
+    cmake . -DSOUNDTOUCH_DLL=ON
+    make -j
+    make install</pre>
 
   <h3>2.3. Building in Android</h3>
   <p>Android compilation instructions are within the
@@ -171,7 +171,7 @@
 
   <h3>2.4. Building in Mac</h3>
   <p>Install autoconf tool as instructed in <a
-      href="http://macappstore.org/autoconf/">http://macappstore.org/autoconf/</a>.</p>
+      href="http://macappstore.org/autoconf/">http://macappstore.org/autoconf/</a>, or alternatively the 'cmake' toolchain.</p>
   <p>Then, build as described above in section "Building in Gnu platforms".</p>
 
   <hr>
@@ -205,7 +205,7 @@
       separate mono channels, this isn't recommended because processing the
       channels separately would result in losing the phase coherency between
       the channels, which consequently would ruin the stereo effect.</p>
-    <p>Sample rates between 8000-48000H are supported.</p>
+    <p>Sample rates between 8000-48000Hz are supported.</p>
     <h3>3.2. Processing latency</h3>
     <p>The processing and latency constraints of the SoundTouch library are:</p>
     <ul>
@@ -304,7 +304,8 @@
         <br>
         This shouldn't be that critical parameter. If you reduce the
         DEFAULT_SEQUENCE_MS setting by a large amount, you might wish to try a
-        smaller value on this.</li>
+        smaller value on this.
+      </li>
     </ul>
     <p>Notice that these parameters can also be set during execution time
       with functions "<strong>TDStretch::setParameters()</strong>" and "<strong>SoundTouch::setSetting()</strong>".</p>
@@ -415,7 +416,8 @@
       quad-core ARM of Raspberry Pi2). </p>
     <p>See an external blog article with more detailed discussion about the
       <a href="http://www.softwarecoven.com/parallel-computing-in-embedded-mobile-devices/">
-        SoundTouch OpenMP optimization</a>.</p>
+        SoundTouch OpenMP optimization</a>.
+    </p>
     <p>The parallel computing support is implemented using OpenMP spec 3.0
       instructions. These instructions are supported by Visual C++ 2008 and later, and
       GCC v4.2 and later. Compilers that do not supporting OpenMP will ignore these
@@ -439,7 +441,8 @@
         </strong>settings. Set
         there &quot;<strong>OpenMP support</strong>&quot; to &quot;<strong>Yes</strong>&quot;. Alternatively add
         <strong>/openmp</strong> switch to command-line
-        parameters</li>
+        parameters
+      </li>
       <li><strong>GNU</strong>: Run the configure script with &quot;<strong>./configure
           --enable-openmp</strong>&quot; switch, then run make as usually</li>
       <li><strong>Android</strong>: Add &quot;<strong>-fopenmp</strong>&quot; switches to compiler &amp; linker
@@ -450,7 +453,7 @@
     <h2><a name="SoundStretch"></a>4. SoundStretch audio processing utility
     </h2>
     <p>SoundStretch audio processing utility<br>
-      Copyright (c) Olli Parviainen 2002-2015</p>
+      Copyright (c) Olli Parviainen 2002-2024</p>
     <p>SoundStretch is a simple command-line application that can change
       tempo, pitch and playback rates of WAV sound files. This program is
       intended primarily to demonstrate how the "SoundTouch" library can be
@@ -603,8 +606,56 @@
       <pre>soundstretch original.wav output.wav -pitch=-0.318</pre>
     </blockquote>
     <hr>
-    <h2>5. Change History</h2>
+    <a name="changehistory"><h2>5. Change History</h2></a>
     <h3>5.1. SoundTouch library Change History </h3>
+    <p><b>2.4.1:</b></p>
+    <ul class="current">
+        <li>Resolve buffer overflow in FIR filter when processing more than 16 channels</li>
+    </ul>
+    <p><b>2.4.0:</b></p>
+    <ul>
+        <li>Set CMake minimum version to 3.5 to avoid deprecation warning</li>
+        <li>Increase max nr. of channels from 16 to 32</li>
+        <li>Don't use `pow()` when using integer precision samples</li>
+        <li>Replace `-Ofast` that's being deprecated in some compilers, by `-O3 -ffast-math`</li>
+    </ul>
+    <p><b>2.3.3:</b></p>
+    <ul>
+        <li>Fixing compiler warnings, maintenance fixes to make/build files for various systems
+        </li>
+    </ul>
+    <p><b>2.3.2:</b></p>
+    <ul>
+        <li>Improve autotools makefiles to build the `SoundTouchDLL` dynamic-link link library with
+          C-style API. This library variation is easier to import and use from other programming
+          languages than the default C++ library.
+      </li>
+    </ul>
+    <p><b>2.3.1:</b></p>
+    <ul>
+      <li>Adjusted cmake build settings and header files that cmake installs</li>
+    </ul>
+    <p><b>2.3.0:</b></p>
+    <ul>
+      <li>Disable setting "SOUNDTOUCH_ALLOW_NONEXACT_SIMD_OPTIMIZATION" by default. The original
+        purpose of this setting was to avoid performance penalty due to unaligned SIMD memory
+        accesses in old CPUs, but that is not any more issue in concurrent CPU SIMD implementations
+        and having this setting enabled can cause slight compromise in result quality.
+      </li>
+      <li>Bugfix: soundtouch.clear() to really clear whole processing pipeline state. Earlier
+        individual variables were left uncleared, which caused slightly different result if
+        the same audio stream were processed again after calling clear().
+      </li>
+      <li>Bugfix: TDstretch to align initial offset position to be in middle of correlation search
+        window. This ensures that with zero tempo change the output will be same as input.
+      </li>
+      <li>Bugfix: Fix a bug in TDstrectch with too small initial skipFract value that occurred
+        with certain processing parameter settings: Replace assert with assignment that
+        corrects the situation.
+      </li>
+      <li>Remove OpenMP "_init_threading" workaround from Android build as it's not needed with concurrent
+        Android SDKs any more.</li>
+    </ul>
     <p><b>2.2:</b></p>
     <ul>
       <li>Improved source codes so that compiler can autovectorize them more effectively.
@@ -841,12 +892,20 @@
     <ul>
       <li> Initial release</li>
     </ul>
+    <br><br>
     <h3>5.2. SoundStretch application Change History </h3>
+    <p><b>2.4.0:</b></p>
+    <ul class="current_soundstretch">
+      <li>parse command-line argument values with double float precision.</li>
+    </ul>
+    <p><b>2.3.3:</b></p>
+    <ul>
+      <li>Added support for Asian / non-latin filenames in Windows. Gnu platform has supported them already earlier.</li>
+    </ul>
     <p><b>1.9:</b></p>
     <ul>
       <li>Added support for WAV file 'fact' information chunk.</li>
     </ul>
-
     <p><b>1.7.0:</b></p>
     <ul>
       <li>Bugfixes in Wavfile: exception string formatting, avoid getLengthMs() integer
@@ -943,6 +1002,7 @@
       <li> Michael Pruett</li>
       <li> Rajeev Puran</li>
       <li> RJ Ryan</li>
+      <li> Serge Sans Paille</li>
       <li> John Sheehy</li>
       <li> Tim Shuttleworth</li>
       <li> Albert Sirvent</li>
@@ -952,6 +1012,7 @@
       <li> Rémi Verschelde</li>
       <li> Katja Vetter</li>
       <li> Wu Q.</li>
+      <li> Olivier Laflamme</li>
     </ul>
     <p>Moral greetings to all other contributors and users also!</p>
     <hr>

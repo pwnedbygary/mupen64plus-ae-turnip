@@ -41,12 +41,12 @@ static void _setErrmsg(const char *msg)
 	_errMsg = msg;
 }
 
-
+#if 0   // apparently following workaround not needed any more with concurrent Android SDKs
 #ifdef _OPENMP
 
 #include <pthread.h>
 extern pthread_key_t gomp_tls_key;
-static void * _p_gomp_tls = NULL;
+static void * _p_gomp_tls = nullptr;
 
 /// Function to initialize threading for OpenMP.
 ///
@@ -54,7 +54,7 @@ static void * _p_gomp_tls = NULL;
 /// called from the Android App main thread because in the main thread the gomp_tls storage is
 /// properly set, however, Android does not properly initialize gomp_tls storage for other threads.
 /// Thus if OpenMP routines are invoked from some other thread than the main thread,
-/// the OpenMP routine will crash the application due to NULL pointer access on uninitialized storage.
+/// the OpenMP routine will crash the application due to nullptr access on uninitialized storage.
 ///
 /// This workaround stores the gomp_tls storage from main thread, and copies to other threads.
 /// In order this to work, the Application main thread needws to call at least "getVersionString"
@@ -63,7 +63,7 @@ static int _init_threading(bool warn)
 {
 	void *ptr = pthread_getspecific(gomp_tls_key);
 	LOGV("JNI thread-specific TLS storage %ld", (long)ptr);
-	if (ptr == NULL)
+	if (ptr == nullptr)
 	{
 		LOGV("JNI set missing TLS storage to %ld", (long)_p_gomp_tls);
 		pthread_setspecific(gomp_tls_key, _p_gomp_tls);
@@ -74,7 +74,7 @@ static int _init_threading(bool warn)
 		_p_gomp_tls = ptr;
 	}
 	// Where critical, show warning if storage still not properly initialized
-	if ((warn) && (_p_gomp_tls == NULL))
+	if ((warn) && (_p_gomp_tls == nullptr))
 	{
 		_setErrmsg("Error - OpenMP threading not properly initialized: Call SoundTouch.getVersionString() from the App main thread!");
 		return -1;
@@ -90,6 +90,7 @@ static int _init_threading(bool warn)
 }
 #endif
 
+#endif
 
 // Processes the sound file
 static void _processFile(SoundTouch *pSoundTouch, const char *inFileName, const char *outFileName)
@@ -162,8 +163,9 @@ extern "C" DLL_PUBLIC jstring Java_net_surina_soundtouch_SoundTouch_getVersionSt
     // Call example SoundTouch routine
     verStr = SoundTouch::getVersionString();
 
-    /// gomp_tls storage bug workaround - see comments in _init_threading() function!
-    _init_threading(false);
+    // gomp_tls storage bug workaround - see comments in _init_threading() function!
+    // update: apparently this is not needed any more with concurrent Android SDKs
+    // _init_threading(false);
 
     int threads = 0;
 	#pragma omp parallel
@@ -232,7 +234,8 @@ extern "C" DLL_PUBLIC int Java_net_surina_soundtouch_SoundTouch_processFile(JNIE
 	LOGV("JNI process file %s", inputFile);
 
     /// gomp_tls storage bug workaround - see comments in _init_threading() function!
-    if (_init_threading(true)) return -1;
+    // update: apparently this is not needed any more with concurrent Android SDKs
+    // if (_init_threading(true)) return -1;
 
 	try
 	{
