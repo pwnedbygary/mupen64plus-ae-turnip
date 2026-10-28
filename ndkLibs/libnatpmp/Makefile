@@ -61,19 +61,22 @@ else
 endif
 endif
 
-HEADERS = natpmp.h
+HEADERS = natpmp.h natpmp_declspec.h
 
 EXECUTABLES = testgetgateway natpmpc-shared natpmpc-static
+
+LIBDIR ?= lib
 
 INSTALLPREFIX ?= $(PREFIX)/usr
 INSTALLDIRINC = $(INSTALLPREFIX)/include
 
-INSTALLDIRLIB = $(INSTALLPREFIX)/lib
+INSTALLDIRLIB = $(INSTALLPREFIX)/$(LIBDIR)
 ifneq (, $(findstring x86_64, $(ARCH)))
 INSTALLDIRLIB = $(INSTALLPREFIX)/lib64
 endif
 
 INSTALLDIRBIN = $(INSTALLPREFIX)/bin
+PKGCONFIGDIR  = $(INSTALLDIRLIB)/pkgconfig
 
 JAVA ?= java
 JAVAC ?= javac
@@ -96,6 +99,7 @@ installpythonmodule: pythonmodule
 clean:
 	$(RM) $(OBJS) $(EXECUTABLES) $(STATICLIB) $(SHAREDLIB) $(JAVACLASSES) $(JNISHAREDLIB)
 	$(RM) pythonmodule
+	$(RM) natpmp.pc
 	$(RM) -r build/ dist/ libraries/
 	$(RM) JavaTest.class fr_free_miniupnp_libnatpmp_NatPmp.h
 
@@ -105,12 +109,14 @@ distclean: clean
 depend:
 	makedepend -f$(MAKEFILE_LIST) -Y $(OBJS:.o=.c) 2>/dev/null
 
-install:	$(HEADERS) $(STATICLIB) $(SHAREDLIB) natpmpc-shared
+install:	$(HEADERS) $(STATICLIB) $(SHAREDLIB) natpmpc-shared natpmp.pc
 	$(INSTALL) -d $(INSTALLDIRINC)
 	$(INSTALL) -m 644 $(HEADERS) $(INSTALLDIRINC)
 	$(INSTALL) -d $(INSTALLDIRLIB)
 	$(INSTALL) -m 644 $(STATICLIB) $(INSTALLDIRLIB)
 	$(INSTALL) -m 644 $(SHAREDLIB) $(INSTALLDIRLIB)/$(SONAME)
+	$(INSTALL) -d $(DESTDIR)$(PKGCONFIGDIR)
+	$(INSTALL) -m 644 natpmp.pc $(DESTDIR)$(PKGCONFIGDIR)
 	$(INSTALL) -d $(INSTALLDIRBIN)
 	$(INSTALL) -m 755 natpmpc-shared $(INSTALLDIRBIN)/natpmpc
 	ln -s -f $(SONAME) $(INSTALLDIRLIB)/$(SHAREDLIB)
@@ -167,6 +173,20 @@ cleaninstall:
 	$(RM) $(INSTALLDIRLIB)/$(SONAME)
 	$(RM) $(INSTALLDIRLIB)/$(SHAREDLIB)
 	$(RM) $(INSTALLDIRLIB)/$(STATICLIB)
+	$(RM) $(INSTALLDIRLIB)/$(PKGCONFIGDIR)
+
+natpmp.pc: VERSION
+	$(RM) $@
+	echo "prefix=$(INSTALLPREFIX)" >> $@
+	echo "exec_prefix=\$${prefix}" >> $@
+	echo "libdir=\$${exec_prefix}/$(LIBDIR)" >> $@
+	echo "includedir=\$${prefix}/include" >> $@
+	echo "" >> $@
+	echo "Name: libnatpmp" >> $@
+	echo "Description: NAT-PMP client library" >> $@
+	echo "Version: $(VERSION)" >> $@
+	echo "Libs: -L\$${libdir} -lnatpmp" >> $@
+	echo "Cflags: -I\$${includedir}" >> $@
 
 testgetgateway:	testgetgateway.o getgateway.o
 

@@ -151,8 +151,10 @@ bool PortManager::Initialize(const unsigned int timeout)
 
 		// Get LAN IP address that connects to the router
 		char lanaddr[64] = "unset";
-		UPNP_GetValidIGD(devlist, urls, datas, lanaddr, sizeof(lanaddr)); //possible "status" values, 0 = NO IGD found, 1 = A valid connected IGD has been found, 2 = A valid IGD has been found but it reported as not connected, 3 = an UPnP device has been found but was not recognized as an IGD
+		char wanaddr[64] = ""; // The router's public address: never log it
+		int igdStatus = UPNP_GetValidIGD(devlist, urls, datas, lanaddr, sizeof(lanaddr), wanaddr, sizeof(wanaddr)); //possible "status" values, 0 = UPNP_NO_IGD (no IGD found), 1 = UPNP_CONNECTED_IGD (a valid connected IGD), 2 = UPNP_PRIVATEIP_IGD (a valid connected IGD with a reserved, non-routable address), 3 = UPNP_DISCONNECTED_IGD (a valid IGD that is not connected), 4 = UPNP_UNKNOWN_DEVICE (a UPnP device not recognized as an IGD), -1 = out of memory
 		m_lanip = std::string(lanaddr);
+        __android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "UPNP_GetValidIGD result: %d", igdStatus);
         __android_log_print(ANDROID_LOG_INFO, "miniupnp-bridge", "LAN IP %s", m_lanip == "unset" ? "not detected" : "detected");
 
 		// Additional Info

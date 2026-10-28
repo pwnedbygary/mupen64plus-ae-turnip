@@ -7,18 +7,61 @@
 # below). Then the libraries built from the sources of former prebuilts: libae-bridge.so
 # exports EGLLoader's loader and its 173 g_gl* pointers; the core and Rice contain the libpng
 # version of ndkLibs/png/png.h and no other libpng 1.6 version, and export no png_* symbol;
-# the Glide64mk2 libraries contain no libpng.
+# the Glide64mk2 libraries contain no libpng; libminiupnp-bridge.so takes its 12 miniupnpc
+# imports from libminiupnp-build.so and its 5 libnatpmp imports from libnatpmp.so; the
+# User-Agent in libminiupnp-build.so names the version of
+# ndkLibs/miniupnpc/include/miniupnpc.h; SDLNet_Linked_Version() in libSDL2_net.so stores the
+# version of ndkLibs/SDL_net/include/SDL_net.h (read from its machine code).
 #
-# Usage: tools/check-native-libs.sh PATH...
+# Usage: tools/check-native-libs.sh [--expect LIB[,LIB...]]... PATH...
 # PATH is an APK, or a folder in which each library is in a folder named after its ABI, for
-# example <module>/build/intermediates/cxx/Debug/<hash>/obj/local after a native build, or
-# app/build/intermediates/merged_native_libs/debug/out/lib. Unstripped libraries, as in
-# obj/local, also let the script check that Rice holds libpng's NEON filter code and that
-# Glide64mk2's EGL library holds EGLLoader.
+# example <module>/build/intermediates/cxx/Debug/<hash>/obj/local after an ndk-build module's
+# native build, <module>/build/intermediates/cxx/<Variant>/<hash>/obj after a CMake module's,
+# or app/build/intermediates/merged_native_libs/debug/out/lib. Unstripped libraries, as in
+# those obj folders, also let the script check that Rice holds libpng's NEON filter code and
+# that Glide64mk2's EGL library holds EGLLoader.
+# Missing libraries: the checks above that name a library run only where it is found, so an
+# APK must hold every library that they name (CHECKED_BY_NAME below) for each of its ABIs,
+# or the check fails. A folder often holds one module's libraries, so for folders the check
+# fails on a missing library only for the libraries named with --expect (comma-separated,
+# and the option can be repeated): each ABI found in the folders must hold each of them. For
+# example, for miniupnp-bridge's folder: --expect
+# libminiupnp-bridge.so,libminiupnp-build.so,libnatpmp.so. With an APK, --expect adds to its
+# list.
 set -euo pipefail
 export LC_ALL=C
+expect=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --expect)
+      [[ $# -ge 2 ]] || { echo "--expect needs a list of libraries" >&2; exit 2; }
+      expect="$expect,$2"
+      shift 2
+      ;;
+    --expect=*)
+      expect="$expect,${1#--expect=}"
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+IFS=, read -ra expect_names <<< "$expect"
+for name in "${expect_names[@]}"; do
+  [[ -z $name || ($name == lib*.so && $name != */*) ]] \
+    || { echo "--expect: $name is not a library file name" >&2; exit 2; }
+done
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 PATH..." >&2
+  echo "Usage: $0 [--expect LIB[,LIB...]]... PATH..." >&2
   exit 2
 fi
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,6 +71,13 @@ min_sdk="$(sed -n 's/.*minSdkVersion \([0-9]*\).*/\1/p' "$gradle")"
 png_version="$(sed -n 's/^#define PNG_LIBPNG_VER_STRING "\(.*\)"$/\1/p' "$repo/ndkLibs/png/png.h")"
 [[ -n "$ndk_version" && -n "$min_sdk" && -n "$png_version" ]] \
   || { echo "Cannot read the NDK version, minSdkVersion or libpng version" >&2; exit 2; }
+sdl_net_version="$(sed -n \
+  's/^#define SDL_NET_\(MAJOR_VERSION\|MINOR_VERSION\|PATCHLEVEL\) *\([0-9][0-9]*\)$/\2/p' \
+  "$repo/ndkLibs/SDL_net/include/SDL_net.h" | paste -sd.)"
+miniupnpc_version="$(sed -n 's/^#define MINIUPNPC_VERSION[[:space:]]*"\(.*\)"$/\1/p' \
+  "$repo/ndkLibs/miniupnpc/include/miniupnpc.h")"
+[[ $sdl_net_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && -n "$miniupnpc_version" ]] \
+  || { echo "Cannot read the SDL_net or miniupnpc version" >&2; exit 2; }
 sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 if [[ -z "$sdk" && -f "$repo/local.properties" ]]; then
   sdk="$(sed -n 's/^sdk\.dir=//p' "$repo/local.properties")"
@@ -37,21 +87,25 @@ grep -qx "Pkg.Revision = $ndk_version" "$ndk/source.properties" 2>/dev/null \
   || { echo "NDK $ndk_version not found at $ndk (set ANDROID_HOME)" >&2; exit 2; }
 bin=""
 for candidate in "$ndk"/toolchains/llvm/prebuilt/*/bin; do
-  [[ -x "$candidate/llvm-readelf" && -x "$candidate/llvm-nm" ]] && bin="$candidate"
+  [[ -x "$candidate/llvm-readelf" && -x "$candidate/llvm-nm" && -x "$candidate/llvm-objdump" ]] \
+    && bin="$candidate"
 done
-[[ -n "$bin" ]] || { echo "llvm-readelf and llvm-nm not found under $ndk" >&2; exit 2; }
+[[ -n "$bin" ]] || { echo "llvm-readelf, llvm-nm and llvm-objdump not found under $ndk" >&2; exit 2; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 roots=()
+labels=()
 n=0
 for path in "$@"; do
   if [[ -d "$path" ]]; then
     roots+=("$path")
+    labels+=("dir")
   elif [[ -f "$path" ]]; then
     n=$((n + 1))
     unzip -q "$path" 'lib/*' -d "$work/apk$n" || { echo "No lib/ folder in $path" >&2; exit 2; }
     roots+=("$work/apk$n/lib")
+    labels+=("apk $path")
   else
     echo "Not found: $path" >&2
     exit 2
@@ -59,6 +113,8 @@ for path in "$@"; do
 done
 
 BIN="$bin" NDK_VERSION="$ndk_version" MIN_SDK="$min_sdk" PNG_VERSION="$png_version" \
+  SDL_NET_VERSION="$sdl_net_version" MINIUPNPC_VERSION="$miniupnpc_version" \
+  EXPECT="$expect" ROOT_LABELS="$(printf '%s\n' "${labels[@]}")" \
   python3 - "${roots[@]}" <<'PY'
 import collections
 import hashlib
@@ -83,8 +139,7 @@ ABIS = {
 # Prebuilt libraries still committed in ndkLibs/libs, built in 2021 with NDK r23b. Remove each
 # one from this list in the change that builds it from source.
 PREBUILT_NOTE = dict.fromkeys(
-    ("libSDL2_net.so", "libfreetype.so", "libsoundtouch.so", "libsoundtouch_fp.so",
-     "libnatpmp.so", "libminiupnp-build.so"), ("r23b", "7779620"))
+    ("libfreetype.so", "libsoundtouch.so", "libsoundtouch_fp.so"), ("r23b", "7779620"))
 # Built elsewhere (the NDK, and the Oboe and JNA packages): their notes are not checked, and
 # JNA's library has no SONAME.
 NOT_BUILT_HERE = {"libc++_shared.so", "liboboe.so", "libjnidispatch.so"}
@@ -92,6 +147,26 @@ PNG_LIBS = ("libmupen64plus-core.so", "libmupen64plus-video-rice.so")
 NO_PNG_LIBS = ("libmupen64plus-video-glide64mk2.so", "libmupen64plus-video-glide64mk2-egl.so")
 EGL_LOADER = "_ZN9EGLLoader16loadEGLFunctionsEv"
 PNG_VERSION_RE = re.compile(rb"(?<![0-9.])1\.6\.[0-9]+(?=\x00)")
+SDL_NET_VERSION = tuple(int(n) for n in os.environ["SDL_NET_VERSION"].split("."))
+MINIUPNPC_VERSION = os.environ["MINIUPNPC_VERSION"]
+# The miniupnpc and libnatpmp functions that miniupnp-bridge/src calls, by library.
+BRIDGE_IMPORTS = {
+    "libminiupnp-build.so": (
+        "FreeUPNPUrls", "GetUPNPUrls", "UPNP_AddPortMapping", "UPNP_DeletePortMapping",
+        "UPNP_GetConnectionTypeInfo", "UPNP_GetExternalIPAddress",
+        "UPNP_GetGenericPortMappingEntry", "UPNP_GetValidIGD", "freeUPNPDevlist", "miniwget",
+        "parserootdesc", "upnpDiscover"),
+    "libnatpmp.so": (
+        "closenatpmp", "initnatpmp", "readnatpmpresponseorretry", "sendnewportmappingrequest",
+        "sendpublicaddressrequest"),
+}
+USER_AGENT_RE = re.compile(rb"User-Agent: ([ -~]*?)\r\n")
+MINIUPNPC_RE = re.compile(rb"MiniUPnPc/([0-9][0-9.]*[0-9])")
+# Every library that a check below names. An APK must hold each of them for each of its ABIs.
+CHECKED_BY_NAME = sorted({"libae-bridge.so", *PNG_LIBS, *NO_PNG_LIBS, *PREBUILT_NOTE,
+                          "libminiupnp-bridge.so", *BRIDGE_IMPORTS, "libSDL2_net.so"})
+EXPECT = sorted({name for name in os.environ["EXPECT"].split(",") if name})
+LABELS = os.environ["ROOT_LABELS"].split("\n")
 
 
 def run(*args):
@@ -144,13 +219,121 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+IMM = r"(-?(?:0x[0-9a-f]+|[0-9]+))"
+X86_REGS = {}
+for wide, narrow in (("ax", "al"), ("bx", "bl"), ("cx", "cl"), ("dx", "dl"), ("si", "sil"),
+                     ("di", "dil"), ("bp", "bpl")):
+    X86_REGS.update(dict.fromkeys(("r" + wide, "e" + wide, wide, narrow), wide))
+for number in range(8, 16):
+    X86_REGS.update(dict.fromkeys([f"r{number}{s}" for s in ("", "d", "w", "b")], f"r{number}"))
+
+
+def stored_bytes(lib, abi, symbol):
+    """The bytes that the exported function `symbol` stores with constant values, by offset
+    from the lowest one, as SDLNet_Linked_Version() fills its static version struct; read
+    from the function's machine code up to its first return. None if a store's value or
+    address is not a constant that this reads."""
+    found = re.search(r"^\s*\d+:\s+([0-9a-f]+)\s+(\d+)\s+FUNC\s.*\s" + re.escape(symbol)
+                      + r"(?:@\S*)?$", run(BIN / "llvm-readelf", "--dyn-syms", "--wide",
+                                           lib.path), re.M)
+    if not found:
+        return None
+    value, size = int(found.group(1), 16), int(found.group(2))
+    start = value & ~1
+    args = [BIN / "llvm-objdump", "-d", "--no-show-raw-insn", f"--start-address={start:#x}",
+            f"--stop-address={start + size:#x}"]
+    if abi == "armeabi-v7a" and value & 1:
+        args.append("--triple=thumbv7-none-linux-androideabi")
+    x86 = abi.startswith("x86")
+    comment = {"arm64-v8a": "//", "armeabi-v7a": "@"}.get(abi, "#")
+    regs, stores = {}, []
+
+    def reg(name):
+        name = name.lstrip("%")
+        if name in ("wzr", "xzr"):
+            return "zero"
+        if x86:
+            return X86_REGS.get(name, name)
+        return "r" + name[1:] if re.fullmatch(r"[wx][0-9]+", name) else name
+
+    def value_of(name):
+        name = reg(name)
+        return 0 if name == "zero" else regs.get(name)
+
+    pending = None  # a RIP-relative store, whose address needs the next instruction's address
+    for line in run(*args, lib.path).splitlines():
+        insn = re.match(r"^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$", line)
+        if not insn:
+            continue
+        if pending is not None:
+            base, displacement, width, data = stores[pending]
+            stores[pending] = (base, int(insn.group(1), 16) + displacement, width, data)
+            pending = None
+        op = insn.group(2).split(".")[0]
+        text = insn.group(3).partition(comment)[0].strip()
+        if op in ("ret", "retq", "retl") or (op == "bx" and text == "lr") \
+                or (op == "pop" and "pc" in text):
+            break
+        if x86:
+            move = re.fullmatch(r"\$" + IMM + r",\s*%(\w+)", text)
+            if op.startswith("mov") and move:
+                regs[reg(move.group(2))] = int(move.group(1), 0)
+                continue
+            zeroed = re.fullmatch(r"%(\w+),\s*%(\w+)", text)
+            if op.startswith("xor") and zeroed and reg(zeroed.group(1)) == reg(zeroed.group(2)):
+                regs[reg(zeroed.group(1))] = 0
+                continue
+            store = re.fullmatch(r"(?:\$" + IMM + r"|%(\w+)),\s*" + IMM + r"?\(%(\w+)\)", text)
+            if op in ("movb", "movw", "movl") and store:
+                data = int(store.group(1), 0) if store.group(1) else value_of(store.group(2))
+                base, offset = store.group(4), int(store.group(3) or "0", 0)
+                if base == "rip":
+                    # The address is the next instruction's plus the displacement. objdump's
+                    # comment with the address is no help: after an "imm =" comment it moves
+                    # to a line of its own.
+                    pending = len(stores)
+                stores.append((base, offset, {"b": 1, "w": 2, "l": 4}[op[-1]], data))
+                continue
+        else:
+            move = re.fullmatch(r"(\w+),\s*#" + IMM, text)
+            if op in ("mov", "movs", "movw", "movz") and move:
+                regs[reg(move.group(1))] = int(move.group(2), 0)
+                continue
+            move = re.fullmatch(r"(\w+),\s*(wzr|xzr)(?:,\s*#" + IMM + ")?", text)
+            if op in ("mov", "orr") and move:
+                regs[reg(move.group(1))] = int(move.group(3), 0) if move.group(3) else 0
+                continue
+            store = re.fullmatch(r"(\w+),\s*\[(\w+)(?:,\s*#" + IMM + r")?\]", text)
+            if op in ("strb", "strh", "str", "sturb", "sturh", "stur") and store:
+                width = {"b": 1, "h": 2}.get(op[-1], 8 if store.group(1).startswith("x") else 4)
+                stores.append((reg(store.group(2)), int(store.group(3) or "0", 0), width,
+                               value_of(store.group(1))))
+                continue
+        target = re.match(r"%?(\w+)", text if not x86 else text.rpartition(",")[2].strip())
+        if target:
+            regs.pop(reg(target.group(1)), None)
+    if pending is not None or not stores or len({s[0] for s in stores}) != 1 \
+            or any(s[1] is None or s[3] is None for s in stores):
+        return None
+    memory = {}
+    for _, offset, width, data in stores:
+        for i in range(width):
+            memory[offset + i] = (data >> (8 * i)) & 0xFF
+    low = min(memory)
+    return tuple(memory[low + i] for i in range(len(memory))) \
+        if sorted(memory) == list(range(low, low + len(memory))) else None
+
+
 fails, passes, notes = [], [], []
 libs = collections.defaultdict(dict)
-for root in sys.argv[1:]:
+# Library names by ABI, for each APK and for all folders together ("dir").
+found = collections.defaultdict(lambda: collections.defaultdict(set))
+for root, label in zip(sys.argv[1:], LABELS):
     for path in sorted(Path(root).rglob("*.so")):
         abi = path.parent.name
         if abi not in ABIS or not path.is_file() or path.read_bytes()[:4] != b"\x7fELF":
             continue
+        found[label][abi].add(path.name)
         first = libs[abi].get(path.name)
         if first is None:
             libs[abi][path.name] = Lib(path)
@@ -257,6 +440,56 @@ for abi in sorted(libs):
                 fails.append(f"FAIL {abi}/{name}: contains libpng {versions}")
             else:
                 passes.append(f"{abi}/{name}: no libpng")
+    bridge = libs[abi].get("libminiupnp-bridge.so")
+    for name, functions in BRIDGE_IMPORTS.items():
+        lib = libs[abi].get(name)
+        if not bridge or not lib:
+            continue
+        imported = sorted(n for n in bridge.undefined if n in lib.defined)
+        undefined = sorted(n for n in functions if lib.defined.get(n) != "T")
+        if name in bridge.needed and imported == sorted(functions) and not undefined:
+            passes.append(f"{abi}/libminiupnp-bridge.so: its {len(functions)} imports from "
+                          f"{name} resolve there")
+        else:
+            fails.append(f"FAIL {abi}/libminiupnp-bridge.so: imports {imported or 'nothing'} "
+                         f"from {name}, expected {sorted(functions)}; not functions there: "
+                         f"{undefined or 'none'}")
+    lib = libs[abi].get("libminiupnp-build.so")
+    if lib:
+        data = lib.path.read_bytes()
+        agents = sorted({a.decode() for a in USER_AGENT_RE.findall(data)})
+        versions = sorted({v.decode() for v in MINIUPNPC_RE.findall(data)})
+        if agents and versions == [MINIUPNPC_VERSION] \
+                and all(a.endswith(" MiniUPnPc/" + MINIUPNPC_VERSION) for a in agents):
+            passes.append(f"{abi}/libminiupnp-build.so: User-Agent "
+                          + ", ".join(f'"{a}"' for a in agents))
+        else:
+            fails.append(f"FAIL {abi}/libminiupnp-build.so: User-Agent "
+                         f"{agents or 'not found'}, MiniUPnPc versions {versions or 'none'} "
+                         f"(expected {MINIUPNPC_VERSION})")
+    lib = libs[abi].get("libSDL2_net.so")
+    if lib:
+        stored = stored_bytes(lib, abi, "SDLNet_Linked_Version")
+        shown = ".".join(map(str, stored)) if stored else "nothing this script can read"
+        expected = ".".join(map(str, SDL_NET_VERSION))
+        if stored == SDL_NET_VERSION:
+            passes.append(f"{abi}/libSDL2_net.so: SDLNet_Linked_Version() stores {shown}")
+        else:
+            fails.append(f"FAIL {abi}/libSDL2_net.so: SDLNet_Linked_Version() stores {shown} "
+                         f"(expected {expected})")
+
+for label, abis in sorted(found.items()):
+    where = "the folders" if label == "dir" else label[len("apk "):]
+    required = sorted(set(EXPECT) | (set() if label == "dir" else set(CHECKED_BY_NAME)))
+    if not required:
+        notes.append("NOTE the folders: missing libraries not checked (no --expect)")
+        continue
+    for abi in sorted(abis):
+        missing = [name for name in required if name not in abis[abi]]
+        if missing:
+            fails.append(f"FAIL {abi}: missing from {where}: {' '.join(missing)}")
+        else:
+            passes.append(f"{abi}: all {len(required)} expected libraries are in {where}")
 
 for line in notes:
     print(line)

@@ -41,13 +41,6 @@ LOCAL_CPPFLAGS := -fvisibility-inlines-hidden -O3 -ffast-math -Wno-unused-value 
 LOCAL_EXPORT_C_INCLUDES := $(JNI_LOCAL_PATH)/../ndkLibs/GL
 include $(BUILD_STATIC_LIBRARY)
 
-#SDL_net
-include $(CLEAR_VARS)
-LOCAL_MODULE := SDL2_net
-LOCAL_SRC_FILES := $(JNI_LOCAL_PATH)/../ndkLibs/libs/$(BUILD_VARIANT)/$(TARGET_ARCH_ABI)/libSDL2_net.so
-LOCAL_EXPORT_C_INCLUDES := $(JNI_LOCAL_PATH)/../ndkLibs/SDL_net/include/
-include $(PREBUILT_SHARED_LIBRARY)
-
 AE_BRIDGE_INCLUDES := $(JNI_LOCAL_PATH)/ae-bridge/
 M64P_API_INCLUDES := $(JNI_LOCAL_PATH)/../mupen64plus-core/upstream/src/api/
 GL_INCLUDES := $(JNI_LOCAL_PATH)/../ndkLibs/GL

@@ -1,4 +1,4 @@
-#! /usr/bin/python
+#! /usr/bin/env python
 # vim: tabstop=8 shiftwidth=8 expandtab
 # $Id: setup.py,v 1.3 2012/03/05 04:54:01 nanard Exp $
 #
