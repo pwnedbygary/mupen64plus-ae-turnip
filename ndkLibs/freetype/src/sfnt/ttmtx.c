@@ -1,58 +1,73 @@
-/***************************************************************************/
-/*                                                                         */
-/*  ttmtx.c                                                                */
-/*                                                                         */
-/*    Load the metrics tables common to TTF and OTF fonts (body).          */
-/*                                                                         */
-/*  Copyright 2006-2009, 2011-2013 by                                      */
-/*  David Turner, Robert Wilhelm, and Werner Lemberg.                      */
-/*                                                                         */
-/*  This file is part of the FreeType project, and may only be used,       */
-/*  modified, and distributed under the terms of the FreeType project      */
-/*  license, LICENSE.TXT.  By continuing to use, modify, or distribute     */
-/*  this file you indicate that you have read the license and              */
-/*  understand and accept it fully.                                        */
-/*                                                                         */
-/***************************************************************************/
+/****************************************************************************
+ *
+ * ttmtx.c
+ *
+ *   Load the metrics tables common to TTF and OTF fonts (body).
+ *
+ * Copyright (C) 2006-2026 by
+ * David Turner, Robert Wilhelm, and Werner Lemberg.
+ *
+ * This file is part of the FreeType project, and may only be used,
+ * modified, and distributed under the terms of the FreeType project
+ * license, LICENSE.TXT.  By continuing to use, modify, or distribute
+ * this file you indicate that you have read the license and
+ * understand and accept it fully.
+ *
+ */
 
 
-#include <ft2build.h>
-#include FT_INTERNAL_DEBUG_H
-#include FT_INTERNAL_STREAM_H
-#include FT_TRUETYPE_TAGS_H
+#include <freetype/internal/ftdebug.h>
+#include <freetype/internal/ftstream.h>
+#include <freetype/tttags.h>
+
+#ifdef TT_CONFIG_OPTION_GX_VAR_SUPPORT
+#include <freetype/internal/services/svmetric.h>
+#endif
+
 #include "ttmtx.h"
 
 #include "sferrors.h"
 
 
-  /*************************************************************************/
-  /*                                                                       */
-  /* The macro FT_COMPONENT is used in trace mode.  It is an implicit      */
-  /* parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log  */
-  /* messages during execution.                                            */
-  /*                                                                       */
+  /* IMPORTANT: The TT_HoriHeader and TT_VertHeader structures should   */
+  /*            be identical except for the names of their fields,      */
+  /*            which are different.                                    */
+  /*                                                                    */
+  /*            This ensures that `tt_face_load_hmtx' is able to read   */
+  /*            both the horizontal and vertical headers.               */
+
+
+  /**************************************************************************
+   *
+   * The macro FT_COMPONENT is used in trace mode.  It is an implicit
+   * parameter of the FT_TRACE() and FT_ERROR() macros, used to print/log
+   * messages during execution.
+   */
 #undef  FT_COMPONENT
-#define FT_COMPONENT  trace_ttmtx
+#define FT_COMPONENT  ttmtx
 
 
-  /*************************************************************************/
-  /*                                                                       */
-  /* <Function>                                                            */
-  /*    tt_face_load_hmtx                                                  */
-  /*                                                                       */
-  /* <Description>                                                         */
-  /*    Load the `hmtx' or `vmtx' table into a face object.                */
-  /*                                                                       */
-  /* <Input>                                                               */
-  /*    face     :: A handle to the target face object.                    */
-  /*                                                                       */
-  /*    stream   :: The input stream.                                      */
-  /*                                                                       */
-  /*    vertical :: A boolean flag.  If set, load `vmtx'.                  */
-  /*                                                                       */
-  /* <Return>                                                              */
-  /*    FreeType error code.  0 means success.                             */
-  /*                                                                       */
+  /**************************************************************************
+   *
+   * @Function:
+   *   tt_face_load_hmtx
+   *
+   * @Description:
+   *   Load the `hmtx' or `vmtx' table into a face object.
+   *
+   * @Input:
+   *   face ::
+   *     A handle to the target face object.
+   *
+   *   stream ::
+   *     The input stream.
+   *
+   *   vertical ::
+   *     A boolean flag.  If set, load `vmtx'.
+   *
+   * @Return:
+   *   FreeType error code.  0 means success.
+   */
   FT_LOCAL_DEF( FT_Error )
   tt_face_load_hmtx( TT_Face    face,
                      FT_Stream  stream,
@@ -66,13 +81,15 @@
 
     if ( vertical )
     {
-      tag           = TTAG_vmtx;
+      tag           = face->vert_metrics_is_extended ? TTAG_VMTX
+                                                     : TTAG_vmtx;
       ptable_offset = &face->vert_metrics_offset;
       ptable_size   = &face->vert_metrics_size;
     }
     else
     {
-      tag           = TTAG_hmtx;
+      tag           = face->horz_metrics_is_extended ? TTAG_HMTX
+                                                     : TTAG_hmtx;
       ptable_offset = &face->horz_metrics_offset;
       ptable_size   = &face->horz_metrics_size;
     }
@@ -89,24 +106,27 @@
   }
 
 
-  /*************************************************************************/
-  /*                                                                       */
-  /* <Function>                                                            */
-  /*    tt_face_load_hhea                                                  */
-  /*                                                                       */
-  /* <Description>                                                         */
-  /*    Load the `hhea' or 'vhea' table into a face object.                */
-  /*                                                                       */
-  /* <Input>                                                               */
-  /*    face     :: A handle to the target face object.                    */
-  /*                                                                       */
-  /*    stream   :: The input stream.                                      */
-  /*                                                                       */
-  /*    vertical :: A boolean flag.  If set, load `vhea'.                  */
-  /*                                                                       */
-  /* <Return>                                                              */
-  /*    FreeType error code.  0 means success.                             */
-  /*                                                                       */
+  /**************************************************************************
+   *
+   * @Function:
+   *   tt_face_load_hhea
+   *
+   * @Description:
+   *   Load the `hhea' or 'vhea' table into a face object.
+   *
+   * @Input:
+   *   face ::
+   *     A handle to the target face object.
+   *
+   *   stream ::
+   *     The input stream.
+   *
+   *   vertical ::
+   *     A boolean flag.  If set, load `vhea'.
+   *
+   * @Return:
+   *   FreeType error code.  0 means success.
+   */
   FT_LOCAL_DEF( FT_Error )
   tt_face_load_hhea( TT_Face    face,
                      FT_Stream  stream,
@@ -114,13 +134,17 @@
   {
     FT_Error        error;
     TT_HoriHeader*  header;
+    FT_UInt32*      metrics_count;
+    FT_Bool*        is_extended;
+    FT_ULong        lower_tag;
+    FT_ULong        upper_tag;
 
     static const FT_Frame_Field  metrics_header_fields[] =
     {
 #undef  FT_STRUCTURE
 #define FT_STRUCTURE  TT_HoriHeader
 
-      FT_FRAME_START( 36 ),
+      FT_FRAME_START( 34 ),
         FT_FRAME_ULONG ( Version ),
         FT_FRAME_SHORT ( Ascender ),
         FT_FRAME_SHORT ( Descender ),
@@ -137,7 +161,6 @@
         FT_FRAME_SHORT ( Reserved[2] ),
         FT_FRAME_SHORT ( Reserved[3] ),
         FT_FRAME_SHORT ( metric_Data_Format ),
-        FT_FRAME_USHORT( number_Of_HMetrics ),
       FT_FRAME_END
     };
 
@@ -147,27 +170,71 @@
       void  *v = &face->vertical;
 
 
-      error = face->goto_table( face, TTAG_vhea, stream, 0 );
-      if ( error )
-        goto Fail;
-
-      header = (TT_HoriHeader*)v;
+      header        = (TT_HoriHeader*)v;
+      metrics_count = &face->vert_metrics_count;
+      is_extended   = &face->vert_metrics_is_extended;
+      lower_tag     = TTAG_vhea;
+      upper_tag     = TTAG_VHEA;
     }
     else
     {
-      error = face->goto_table( face, TTAG_hhea, stream, 0 );
+      header        = &face->horizontal;
+      metrics_count = &face->horz_metrics_count;
+      is_extended   = &face->horz_metrics_is_extended;
+      lower_tag     = TTAG_hhea;
+      upper_tag     = TTAG_HHEA;
+    }
+
+    *metrics_count = 0;
+    *is_extended   = FALSE;
+
+    if ( face->is_extended_glyf )
+    {
+      error = face->goto_table( face, upper_tag, stream, 0 );
       if ( error )
         goto Fail;
 
-      header = &face->horizontal;
+      *is_extended = TRUE;
+    }
+    else
+    {
+      error = face->goto_table( face, lower_tag, stream, 0 );
+      if ( FT_ERR_EQ( error, Table_Missing ) )
+      {
+        error = face->goto_table( face, upper_tag, stream, 0 );
+        if ( !error )
+          *is_extended = TRUE;
+      }
+      if ( error )
+        goto Fail;
     }
 
     if ( FT_STREAM_READ_FIELDS( metrics_header_fields, header ) )
       goto Fail;
 
+    if ( *is_extended )
+    {
+      if ( FT_READ_ULONG( *metrics_count ) )
+        goto Fail;
+    }
+    else
+    {
+      FT_UShort  count;
+
+
+      if ( FT_READ_USHORT( count ) )
+        goto Fail;
+
+      *metrics_count = count;
+    }
+
+    header->number_Of_HMetrics = *metrics_count > 0xFFFFU
+                                   ? 0xFFFFU
+                                   : (FT_UShort)*metrics_count;
+
     FT_TRACE3(( "Ascender:          %5d\n", header->Ascender ));
     FT_TRACE3(( "Descender:         %5d\n", header->Descender ));
-    FT_TRACE3(( "number_Of_Metrics: %5u\n", header->number_Of_HMetrics ));
+    FT_TRACE3(( "number_Of_Metrics: %5lu\n", (FT_ULong)*metrics_count ));
 
     header->long_metrics  = NULL;
     header->short_metrics = NULL;
@@ -177,63 +244,67 @@
   }
 
 
-  /*************************************************************************/
-  /*                                                                       */
-  /* <Function>                                                            */
-  /*    tt_face_get_metrics                                                */
-  /*                                                                       */
-  /* <Description>                                                         */
-  /*    Return the horizontal or vertical metrics in font units for a      */
-  /*    given glyph.  The values are the left side bearing (top side       */
-  /*    bearing for vertical metrics) and advance width (advance height    */
-  /*    for vertical metrics).                                             */
-  /*                                                                       */
-  /* <Input>                                                               */
-  /*    face     :: A pointer to the TrueType face structure.              */
-  /*                                                                       */
-  /*    vertical :: If set to TRUE, get vertical metrics.                  */
-  /*                                                                       */
-  /*    gindex   :: The glyph index.                                       */
-  /*                                                                       */
-  /* <Output>                                                              */
-  /*    abearing :: The bearing, either left side or top side.             */
-  /*                                                                       */
-  /*    aadvance :: The advance width or advance height, depending on      */
-  /*                the `vertical' flag.                                   */
-  /*                                                                       */
-  FT_LOCAL_DEF( FT_Error )
+  /**************************************************************************
+   *
+   * @Function:
+   *   tt_face_get_metrics
+   *
+   * @Description:
+   *   Return the horizontal or vertical metrics in font units for a
+   *   given glyph.  The values are the left side bearing (top side
+   *   bearing for vertical metrics) and advance width (advance height
+   *   for vertical metrics).
+   *
+   * @Input:
+   *   face ::
+   *     A pointer to the TrueType face structure.
+   *
+   *   vertical ::
+   *     If set to TRUE, get vertical metrics.
+   *
+   *   gindex ::
+   *     The glyph index.
+   *
+   * @Output:
+   *   abearing ::
+   *     The bearing, either left side or top side.
+   *
+   *   aadvance ::
+   *     The advance width or advance height, depending on
+   *     the `vertical' flag.
+   */
+  FT_LOCAL_DEF( void )
   tt_face_get_metrics( TT_Face     face,
                        FT_Bool     vertical,
                        FT_UInt     gindex,
                        FT_Short   *abearing,
                        FT_UShort  *aadvance )
   {
-    FT_Error        error;
-    FT_Stream       stream = face->root.stream;
-    TT_HoriHeader*  header;
-    FT_ULong        table_pos, table_size, table_end;
-    FT_UShort       k;
+    FT_Error   error;
+    FT_Stream  stream = face->root.stream;
+    FT_ULong   table_pos, table_size, table_end;
+    FT_UInt32  k;
+
+#ifdef TT_CONFIG_OPTION_GX_VAR_SUPPORT
+    FT_Service_MetricsVariations  var =
+      (FT_Service_MetricsVariations)face->tt_var;
+#endif
 
 
     if ( vertical )
     {
-      void*  v = &face->vertical;
-
-
-      header     = (TT_HoriHeader*)v;
       table_pos  = face->vert_metrics_offset;
       table_size = face->vert_metrics_size;
+      k          = face->vert_metrics_count;
     }
     else
     {
-      header     = &face->horizontal;
       table_pos  = face->horz_metrics_offset;
       table_size = face->horz_metrics_size;
+      k          = face->horz_metrics_count;
     }
 
     table_end = table_pos + table_size;
-
-    k = header->number_Of_HMetrics;
 
     if ( k > 0 )
     {
@@ -251,7 +322,7 @@
       else
       {
         table_pos += 4 * ( k - 1 );
-        if ( table_pos + 4 > table_end )
+        if ( table_pos + 2 > table_end )
           goto NoData;
 
         if ( FT_STREAM_SEEK( table_pos ) ||
@@ -263,7 +334,9 @@
           *abearing = 0;
         else
         {
-          if ( !FT_STREAM_SEEK( table_pos ) )
+          if ( FT_STREAM_SEEK( table_pos ) )
+            *abearing = 0;
+          else
             (void)FT_READ_SHORT( *abearing );
         }
       }
@@ -275,7 +348,35 @@
       *aadvance = 0;
     }
 
-    return FT_Err_Ok;
+#ifdef TT_CONFIG_OPTION_GX_VAR_SUPPORT
+    if ( var                                     &&
+         ( FT_IS_VARIATION( &face->root )      ||
+           FT_IS_NAMED_INSTANCE( &face->root ) ) )
+    {
+      FT_Face  f = FT_FACE( face );
+      FT_Int   a = (FT_Int)*aadvance;
+      FT_Int   b = (FT_Int)*abearing;
+
+
+      if ( vertical )
+      {
+        if ( var->vadvance_adjust )
+          var->vadvance_adjust( f, gindex, &a );
+        if ( var->tsb_adjust )
+          var->tsb_adjust( f, gindex, &b );
+      }
+      else
+      {
+        if ( var->hadvance_adjust )
+          var->hadvance_adjust( f, gindex, &a );
+        if ( var->lsb_adjust )
+          var->lsb_adjust( f, gindex, &b );
+      }
+
+      *aadvance = (FT_UShort)a;
+      *abearing = (FT_Short)b;
+    }
+#endif
   }
 
 

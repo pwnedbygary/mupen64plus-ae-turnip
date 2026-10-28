@@ -95,7 +95,7 @@ if( GLIDEN64_BUILD_TYPE STREQUAL "Debug")
     )
   elseif(ANDROID)
       target_link_libraries(GLideNHQ PRIVATE
-              ${ANDROID_LIB_PATH}/libs/${BUILD_VARIANT}/${ANDROID_ABI}/libpng.a
+              png_static
               z
               dl
               osal
@@ -132,7 +132,7 @@ else( GLIDEN64_BUILD_TYPE STREQUAL "Debug")
     )
   elseif(ANDROID)
     target_link_libraries(GLideNHQ PRIVATE
-      ${ANDROID_LIB_PATH}/libs/${BUILD_VARIANT}/${ANDROID_ABI}/libpng.a
+      png_static
       z
       dl
       osal

@@ -3,8 +3,8 @@
 # Every library: its ELF machine matches its ABI folder, its SONAME is its file name, each
 # NEEDED library is one of the checked libraries or an NDK system library for minSdkVersion,
 # each undefined symbol (other than weak ones) is defined in its NEEDED tree, and its Android
-# note names minSdkVersion and the pinned NDK (NDK r23b for the prebuilt libraries listed
-# below). Then the libraries built from the sources of former prebuilts: libae-bridge.so
+# note names minSdkVersion and the pinned NDK. Then the libraries built from the sources of
+# former prebuilts: libae-bridge.so
 # exports EGLLoader's loader and its 173 g_gl* pointers; the core and Rice contain the libpng
 # version of ndkLibs/png/png.h and no other libpng 1.6 version, and export no png_* symbol;
 # the Glide64mk2 libraries contain no libpng; libminiupnp-bridge.so takes its 12 miniupnpc
@@ -17,7 +17,13 @@
 # getVersionId() returns, and the version string). Unstripped, as the audio module's CMake build
 # leaves them in mupen64plus-audio-android/build/intermediates/cxx/<Variant>/<hash>/obj, their
 # line tables must show none of the code of ndkLibs/soundtouch/source/SoundTouch that only
-# ST_SIMD_AVOID_UNALIGNED builds.
+# ST_SIMD_AVOID_UNALIGNED builds. libfreetype.so exports each FT_* and png_* function that
+# libmupen64plus-video-GLideN64.so imports, and GLideN64 defines no png_* function itself;
+# FT_New_Library() in libfreetype.so stores the version of
+# ndkLibs/freetype/include/freetype/freetype.h (read from its machine code); libfreetype.so
+# holds the libpng version of ndkLibs/png/png.h and no other, and the module classes that
+# ndkLibs/config/freetype-android/ftmodule.h lists and none of the other classes of FreeType's
+# own include/freetype/config/ftmodule.h.
 #
 # Usage: tools/check-native-libs.sh [--expect LIB[,LIB...]]... PATH...
 # PATH is an APK, or a folder in which each library is in a folder named after its ABI, for
@@ -91,6 +97,13 @@ st_version_id="$(sed -n 's/^#define SOUNDTOUCH_VERSION_ID[[:space:]]*(\([0-9]*\)
   || { echo "Cannot read the SoundTouch version from $soundtouch_h" >&2; exit 2; }
 export ST_VERSION="$st_version" ST_VERSION_ID="$st_version_id" \
   ST_SOURCE="$repo/ndkLibs/soundtouch/source/SoundTouch"
+freetype_h="$repo/ndkLibs/freetype/include/freetype/freetype.h"
+ft_version="$(sed -n 's/^#define FREETYPE_\(MAJOR\|MINOR\|PATCH\) *\([0-9][0-9]*\)$/\2/p' \
+  "$freetype_h" | paste -sd.)"
+[[ $ft_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || { echo "Cannot read the FreeType version from $freetype_h" >&2; exit 2; }
+export FT_VERSION="$ft_version" FT_SOURCE="$repo/ndkLibs/freetype" \
+  FT_CONFIG="$repo/ndkLibs/config/freetype-android"
 sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 if [[ -z "$sdk" && -f "$repo/local.properties" ]]; then
   sdk="$(sed -n 's/^sdk\.dir=//p' "$repo/local.properties")"
@@ -135,6 +148,7 @@ import collections
 import hashlib
 import os
 import re
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -151,10 +165,6 @@ ABIS = {
     "x86": ("Intel 80386", "i686-linux-android"),
     "x86_64": ("Advanced Micro Devices X86-64", "x86_64-linux-android"),
 }
-# Prebuilt libraries still committed in ndkLibs/libs, built in 2021 with NDK r23b. Remove each
-# one from this list in the change that builds it from source.
-PREBUILT_NOTE = dict.fromkeys(
-    ("libfreetype.so",), ("r23b", "7779620"))
 # Built elsewhere (the NDK, and the Oboe and JNA packages): their notes are not checked, and
 # JNA's library has no SONAME.
 NOT_BUILT_HERE = {"libc++_shared.so", "liboboe.so", "libjnidispatch.so"}
@@ -185,8 +195,41 @@ ST_VERSION = os.environ["ST_VERSION"]
 ST_VERSION_ID = int(os.environ["ST_VERSION_ID"])
 ST_VERSION_RE = re.compile(rb"(?<![0-9A-Za-z.])" + re.escape(ST_VERSION.encode()) + rb"\x00")
 ST_SIMD = "ST_SIMD_AVOID_UNALIGNED"
+FREETYPE = "libfreetype.so"
+GLIDEN64 = "libmupen64plus-video-GLideN64.so"
+# The FreeType and libpng functions that GLideN64 imports from libfreetype.so.
+GLIDEN64_IMPORTS = (
+    "FT_Done_Face", "FT_Done_FreeType", "FT_Init_FreeType", "FT_Load_Char", "FT_New_Face",
+    "FT_Set_Pixel_Sizes", "png_create_info_struct", "png_create_read_struct",
+    "png_create_write_struct", "png_destroy_read_struct", "png_destroy_write_struct",
+    "png_get_IHDR", "png_get_rowbytes", "png_get_valid", "png_init_io", "png_read_end",
+    "png_read_info", "png_read_rows", "png_read_update_info", "png_set_expand_gray_1_2_4_to_8",
+    "png_set_filler", "png_set_gray_to_rgb", "png_set_IHDR", "png_set_interlace_handling",
+    "png_set_longjmp_fn", "png_set_palette_to_rgb", "png_set_sBIT", "png_set_sig_bytes",
+    "png_set_strip_16", "png_set_tRNS_to_alpha", "png_sig_cmp", "png_write_end",
+    "png_write_info", "png_write_row")
+FT_VERSION = tuple(int(n) for n in os.environ["FT_VERSION"].split("."))
+
+
+def module_classes(path):
+    """The module classes that an ftmodule.h registers, in its order."""
+    code = re.sub(r"/\*.*?\*/", "", Path(path).read_text(), flags=re.S)
+    return re.findall(r"^\s*FT_USE_MODULE\(\s*\w+\s*,\s*(\w+)\s*\)", code, re.M)
+
+
+FT_MODULES = module_classes(os.environ["FT_CONFIG"] + "/ftmodule.h")
+FT_OTHER_MODULES = sorted(set(module_classes(
+    os.environ["FT_SOURCE"] + "/include/freetype/config/ftmodule.h")) - set(FT_MODULES))
+# The version check reads the three FT_Int fields after the FT_Memory pointer.
+FT_LIBRARY_REC = re.search(r"typedef\s+struct\s+FT_LibraryRec_\s*\{(.*?)\}",
+                           Path(os.environ["FT_SOURCE"]
+                                + "/include/freetype/internal/ftobjs.h").read_text(), re.S)
+FT_VERSION_READABLE = bool(FT_LIBRARY_REC) and re.findall(
+    r"^\s*(\w+)\s+(\w+);", FT_LIBRARY_REC.group(1), re.M)[:4] == [
+    ("FT_Memory", "memory"), ("FT_Int", "version_major"), ("FT_Int", "version_minor"),
+    ("FT_Int", "version_patch")]
 # Every library that a check below names. An APK must hold each of them for each of its ABIs.
-CHECKED_BY_NAME = sorted({"libae-bridge.so", *PNG_LIBS, *NO_PNG_LIBS, *PREBUILT_NOTE,
+CHECKED_BY_NAME = sorted({"libae-bridge.so", *PNG_LIBS, *NO_PNG_LIBS, FREETYPE, GLIDEN64,
                           "libminiupnp-bridge.so", *BRIDGE_IMPORTS, "libSDL2_net.so",
                           *SOUNDTOUCH_LIBS})
 EXPECT = sorted({name for name in os.environ["EXPECT"].split(",") if name})
@@ -432,6 +475,503 @@ def version_id_constants(path):
                    for value in re.findall(r"[#$](0x[0-9a-f]+)\b", line)})
 
 
+def readonly_reader(path):
+    """A function that reads a little-endian integer at an address of the library's read-only
+    LOAD segments, or returns None."""
+    data = path.read_bytes()
+    wide = data[4] == 2
+    phoff = struct.unpack_from("<Q" if wide else "<I", data, 0x20 if wide else 0x1C)[0]
+    entsize, count = struct.unpack_from("<HH", data, 0x36 if wide else 0x2A)
+    segments = []
+    for i in range(count):
+        at = phoff + i * entsize
+        if wide:
+            kind, flags, offset, vaddr, _, filesz = struct.unpack_from("<IIQQQQ", data, at)
+        else:
+            kind, offset, vaddr, _, filesz, _, flags = struct.unpack_from("<IIIIIII", data, at)
+        if kind == 1 and not flags & 2:  # PT_LOAD without PF_W
+            segments.append((vaddr, offset, filesz))
+
+    def read(address, size):
+        for vaddr, offset, filesz in segments:
+            if address is not None and vaddr <= address and address + size <= vaddr + filesz:
+                start = offset + address - vaddr
+                return int.from_bytes(data[start:start + size], "little")
+        return None
+    return read
+
+
+def object_stores(lib, abi, symbol):
+    """The stores in all of the machine code of the exported function `symbol`: for each object
+    that a register points to (followed through copies and added offsets), and for "abs"
+    (addresses that the code computes), a map from offset to the stored byte, or to None where
+    the value is not a constant that this reads; and the objects that an instruction not read
+    here may store to. Constants come from immediates, the zero registers and loads from the
+    library's read-only data. At branch targets and calls, what registers hold is forgotten.
+    None if the library does not export `symbol`."""
+    found = re.search(r"^\s*\d+:\s+([0-9a-f]+)\s+(\d+)\s+FUNC\s.*\s" + re.escape(symbol)
+                      + r"(?:@\S*)?$", run(BIN / "llvm-readelf", "--dyn-syms", "--wide",
+                                           lib.path), re.M)
+    if not found:
+        return None
+    value, size = int(found.group(1), 16), int(found.group(2))
+    start = value & ~1
+    thumb = abi == "armeabi-v7a" and value & 1
+    args = [BIN / "llvm-objdump", "-d", "--no-show-raw-insn", "--print-imm-hex",
+            f"--start-address={start:#x}", f"--stop-address={start + size:#x}"]
+    if thumb:
+        args.append("--triple=thumbv7-none-linux-androideabi")
+    lines = []
+    for line in run(*args, lib.path).splitlines():
+        insn = re.match(r"^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$", line)
+        if insn:
+            text = insn.group(3).partition({"arm64-v8a": "//", "armeabi-v7a": "@"}
+                                           .get(abi, "#"))[0].strip()
+            lines.append((int(insn.group(1), 16), insn.group(2).split(".")[0], insn.group(2),
+                          text))
+    targets = {int(t, 16) for _, op, _, text in lines if op.startswith(("b", "cb", "tb", "j"))
+               for t in re.findall(r"0x([0-9a-f]+) <", text)}
+    read = readonly_reader(lib.path)
+    arm64, arm32 = abi == "arm64-v8a", abi == "armeabi-v7a"
+    keep = {"arm64-v8a": {f"r{n}" for n in range(19, 31)} | {"sp"},
+            "armeabi-v7a": {f"r{n}" for n in range(4, 12)} | {"sp"},
+            "x86": {"bx", "si", "di", "bp", "sp"},
+            "x86_64": {"bx", "bp", "r12", "r13", "r14", "r15", "sp"}}[abi]
+    vals, ptrs = {}, {}  # register: constant value; register: (object, offset)
+    stores = collections.defaultdict(dict)
+    unread = set()
+    counter = iter(range(1, 1 << 30))
+    pic = None  # x86: the register that holds the address of the GOT, and that address
+
+    def reg(name):
+        name = name.strip().lstrip("%").lower()
+        if arm64:
+            if name in ("wzr", "xzr"):
+                return "zero"
+            if re.fullmatch(r"[wx]\d+", name):
+                return "r" + name[1:]
+            vector = re.fullmatch(r"[bhsdqv](\d+)(?:\.\w+)?", name)
+            return "v" + vector.group(1) if vector else name
+        if arm32:
+            return {"fp": "r11", "ip": "r12", "sb": "r9", "sl": "r10"}.get(name, name)
+        return X86_REGS.get(name, "sp" if name in ("esp", "rsp", "spl") else name)
+
+    def width_of(name):
+        name = name.strip().lstrip("%").lower()
+        if arm64:
+            return {"w": 4, "x": 8, "b": 1, "h": 2, "s": 4, "d": 8, "q": 16}.get(name[0], 8)
+        if arm32:
+            return {"r": 4, "s": 4, "d": 8, "q": 16}.get(name[0], 4)
+        if name.startswith("xmm"):
+            return 16
+        numbered = re.fullmatch(r"r\d+([dwb]?)", name)
+        if numbered:
+            return {"": 8, "d": 4, "w": 2, "b": 1}[numbered.group(1)]
+        if name.startswith("r"):
+            return 8
+        if name.startswith("e"):
+            return 4
+        return 1 if name.endswith(("l", "h")) else 2
+
+    def get(name):
+        r = reg(name)
+        return 0 if r == "zero" else vals.get(r)
+
+    def forget(name):
+        r = reg(name)
+        vals.pop(r, None)
+        ptrs[r] = (next(counter), 0)
+
+    def pointer(r):
+        if r not in ptrs:
+            ptrs[r] = (next(counter), 0)
+        return ptrs[r]
+
+    def store(base, offset, width, data):
+        """A store at base + offset; base is a register name or an address."""
+        if isinstance(base, int):
+            key, at = "abs", base + offset
+        elif reg(base) in vals:
+            key, at = "abs", vals[reg(base)] + offset
+        else:
+            obj, delta = pointer(reg(base))
+            key, at = obj, delta + offset
+        for i in range(width):
+            stores[key][at + i] = None if data is None else (data >> (8 * i)) & 0xFF
+
+    def mark_unread(base):
+        if base is not None and reg(base) != "sp":
+            unread.add(pointer(reg(base))[0])
+
+    def call():
+        for r in list(vals):
+            if r not in keep:
+                vals.pop(r)
+        for r in list(ptrs):
+            if r not in keep:
+                ptrs[r] = (next(counter), 0)
+
+    previous = None  # x86: the address that a call to the next instruction pushes
+    pending = None  # x86_64: an access relative to the next instruction's address
+    for index, (address, op, full, text) in enumerate(lines):
+        if pending is not None:
+            kind, details = pending
+            pending = None
+            if kind == "load":
+                dest, disp, width = details
+                vals.pop(dest, None)
+                got = read(address + disp, width)
+                if got is not None:
+                    vals[dest] = got
+            elif kind == "address":
+                dest, disp = details
+                vals[dest] = address + disp
+            else:
+                disp, width, data = details
+                store(address + disp, 0, width, data)
+        if address in targets:
+            base = (pic[0], vals.get(pic[0])) if pic else None
+            vals.clear()
+            if base and base[1] is not None:
+                vals[base[0]] = base[1]
+        ops = [o.strip() for o in re.split(r",\s*(?![^\[\]{}()]*[\]})])", text)] if text else []
+        if arm64:
+            immediate = re.fullmatch(r"#" + IMM, ops[1]) if len(ops) >= 2 else None
+            shift = re.fullmatch(r"lsl #(\d+)", ops[2]) if len(ops) == 3 else None
+            if op in ("bl", "blr"):
+                call()
+            elif op in ("mov", "movz") and immediate and (len(ops) == 2 or shift):
+                forget(ops[0])
+                vals[reg(ops[0])] = int(immediate.group(1), 0) << int(shift.group(1) if shift
+                                                                     else 0) \
+                    & ((1 << 8 * width_of(ops[0])) - 1)
+            elif op == "movk" and immediate and (len(ops) == 2 or shift):
+                old = get(ops[0])
+                at = int(shift.group(1)) if shift else 0
+                forget(ops[0])
+                if old is not None:
+                    vals[reg(ops[0])] = old & ~(0xFFFF << at) | int(immediate.group(1), 0) << at
+            elif op == "movi" and len(ops) == 2 and re.fullmatch(r"#(0x)?0+", ops[1]):
+                forget(ops[0])
+                vals[reg(ops[0])] = 0
+            elif op in ("mov", "orr") and len(ops) in (2, 3) and reg(ops[1]) == "zero" \
+                    and (len(ops) == 2 or re.fullmatch(r"#" + IMM, ops[2])):
+                forget(ops[0])
+                vals[reg(ops[0])] = int(ops[2][1:], 0) if len(ops) == 3 else 0
+            elif op == "mov" and len(ops) == 2 and not ops[1].startswith("#"):
+                source = reg(ops[1])
+                if source in vals:
+                    vals[reg(ops[0])] = vals[source]
+                else:
+                    vals.pop(reg(ops[0]), None)
+                ptrs[reg(ops[0])] = pointer(source)
+            elif op in ("adrp", "adr") and len(ops) == 2:
+                absolute = re.match(r"0x([0-9a-f]+)", ops[1])
+                forget(ops[0])
+                if absolute:
+                    vals[reg(ops[0])] = int(absolute.group(1), 16)
+                elif immediate and op == "adr":
+                    vals[reg(ops[0])] = address + int(immediate.group(1), 0)
+            elif op == "add" and len(ops) == 3 and re.fullmatch(r"[wx]\d+", ops[2]):
+                left, right = get(ops[1]), get(ops[2])
+                forget(ops[0])
+                if left is not None and right is not None:
+                    vals[reg(ops[0])] = (left + right) & ((1 << 8 * width_of(ops[0])) - 1)
+            elif op in ("add", "sub") and len(ops) == 3 and re.fullmatch(r"#" + IMM, ops[2]):
+                imm = int(ops[2][1:], 0) * (1 if op == "add" else -1)
+                source = reg(ops[1])
+                if source in vals:
+                    total = vals[source] + imm
+                    forget(ops[0])
+                    vals[reg(ops[0])] = total
+                else:
+                    obj, delta = pointer(source)
+                    vals.pop(reg(ops[0]), None)
+                    ptrs[reg(ops[0])] = (obj, delta + imm)
+            elif op in ("ldr", "ldur") and len(ops) == 2:
+                address_of = re.fullmatch(r"\[(\w+)(?:,\s*#" + IMM + r")?\]", ops[1])
+                literal = re.match(r"0x([0-9a-f]+)", ops[1])
+                got = None
+                if address_of and reg(address_of.group(1)) in vals:
+                    got = read(vals[reg(address_of.group(1))] + int(address_of.group(2) or "0", 0),
+                               width_of(ops[0]))
+                elif literal:
+                    got = read(int(literal.group(1), 16), width_of(ops[0]))
+                forget(ops[0])
+                if got is not None:
+                    vals[reg(ops[0])] = got
+            elif op.startswith("st"):
+                address_of = re.fullmatch(r"\[(\w+)(?:,\s*#" + IMM + r")?\](!?)", ops[-1]) \
+                    if ops else None
+                post = len(ops) >= 3 and re.fullmatch(r"#" + IMM, ops[-1]) \
+                    and re.fullmatch(r"\[(\w+)\]", ops[-2])
+                if post:
+                    address_of, sources = re.fullmatch(r"\[(\w+)\]()()", ops[-2]), ops[:-2]
+                else:
+                    sources = ops[:-1]
+                if op in ("str", "stur", "strb", "strh", "sturb", "sturh", "stp") \
+                        and address_of and len(sources) == (2 if op == "stp" else 1):
+                    width = {"b": 1, "h": 2}.get(op[-1]) or width_of(sources[0])
+                    if reg(address_of.group(1)) != "sp":
+                        for i, source in enumerate(sources):
+                            store(address_of.group(1),
+                                  int(address_of.group(2) or "0", 0) + i * width, width,
+                                  get(source))
+                    if address_of.group(3) or post:
+                        forget(address_of.group(1))
+                else:
+                    base = re.search(r"\[(\w+)", text)
+                    mark_unread(base.group(1) if base else None)
+            elif ops and op not in ("b", "br", "cbz", "cbnz", "tbz", "tbnz", "ret", "cmp",
+                                    "cmn", "tst", "ccmp", "ccmn", "fcmp", "fcmpe", "nop",
+                                    "prfm", "dmb", "dsb", "isb", "hint"):
+                pair = op in ("ldp", "ldnp", "ldpsw", "ldxp", "ldaxp")
+                for dest in ops[:2 if pair else 1]:
+                    forget(dest)
+        elif arm32:
+            pc = (address + 4) & ~3 if thumb else address + 8
+            if op in ("bl", "blx"):
+                call()
+            elif op in ("mov", "movs", "movw", "mvn", "mvns") and len(ops) == 2 \
+                    and re.fullmatch(r"#" + IMM, ops[1]):
+                imm = int(ops[1][1:], 0)
+                forget(ops[0])
+                vals[reg(ops[0])] = (~imm if op.startswith("mvn") else imm) & 0xFFFFFFFF
+            elif op == "movt" and len(ops) == 2 and re.fullmatch(r"#" + IMM, ops[1]):
+                old = get(ops[0])
+                forget(ops[0])
+                if old is not None:
+                    vals[reg(ops[0])] = old & 0xFFFF | int(ops[1][1:], 0) << 16
+            elif op == "adr" and len(ops) == 2 and re.fullmatch(r"#" + IMM, ops[1]):
+                forget(ops[0])
+                vals[reg(ops[0])] = pc + int(ops[1][1:], 0)
+            elif op == "vmov" and len(ops) == 2 and re.fullmatch(r"#(0x)?0+", ops[1]) \
+                    and re.fullmatch(r"[dq]\d+", ops[0]):
+                n = int(ops[0][1:])
+                for d in ([2 * n, 2 * n + 1] if ops[0][0] == "q" else [n]):
+                    vals[f"d{d}"] = 0
+            elif op in ("mov", "movs") and len(ops) == 2 and re.fullmatch(r"\w+", ops[1]):
+                source = reg(ops[1])
+                if source in vals:
+                    vals[reg(ops[0])] = vals[source]
+                else:
+                    vals.pop(reg(ops[0]), None)
+                ptrs[reg(ops[0])] = pointer(source)
+            elif op in ("add", "adds") and len(ops) in (2, 3) \
+                    and all(re.fullmatch(r"\w+", o) for o in ops):
+                left, right = [pc if reg(o) == "pc" else vals.get(reg(o)) for o in ops[-2:]]
+                forget(ops[0])
+                if left is not None and right is not None:
+                    vals[reg(ops[0])] = (left + right) & 0xFFFFFFFF
+            elif op in ("add", "adds", "sub", "subs") and len(ops) == 3 \
+                    and re.fullmatch(r"#" + IMM, ops[2]):
+                imm = int(ops[2][1:], 0) * (1 if op.startswith("add") else -1)
+                source = reg(ops[1])
+                if source == "pc" or source in vals:
+                    total = ((pc if source == "pc" else vals[source]) + imm) & 0xFFFFFFFF
+                    forget(ops[0])
+                    vals[reg(ops[0])] = total
+                else:
+                    obj, delta = pointer(source)
+                    vals.pop(reg(ops[0]), None)
+                    ptrs[reg(ops[0])] = (obj, delta + imm)
+            elif op in ("ldr", "vldr") and len(ops) == 2:
+                address_of = re.fullmatch(r"\[(\w+)(?:,\s*#" + IMM + r")?\]", ops[1])
+                got = None
+                if address_of:
+                    base = reg(address_of.group(1))
+                    at = pc if base == "pc" else vals.get(base)
+                    if at is not None:
+                        got = read(at + int(address_of.group(2) or "0", 0), width_of(ops[0]))
+                forget(ops[0])
+                if got is not None:
+                    vals[reg(ops[0])] = got
+            elif op == "vld1" and len(ops) == 2:
+                address_of = re.fullmatch(r"\[(\w+)(?::\d+)?\]", ops[1])
+                at = vals.get(reg(address_of.group(1))) if address_of else None
+                for i, d in enumerate(re.findall(r"d(\d+)", ops[0])):
+                    forget(f"d{d}")
+                    got = read(at + 8 * i, 8) if at is not None else None
+                    if got is not None:
+                        vals[f"d{d}"] = got
+            elif op.startswith(("st", "vst")):
+                address_of = re.fullmatch(r"\[(\w+)(?::\d+)?(?:,\s*#" + IMM + r")?\](!?)",
+                                          ops[-1]) if ops else None
+                if op in ("str", "strb", "strh", "strd", "vstr") and address_of:
+                    width = 4 if op == "strd" else {"b": 1, "h": 2}.get(op[-1]) \
+                        or width_of(ops[0])
+                    if reg(address_of.group(1)) != "sp":
+                        for i, source in enumerate(ops[:-1]):
+                            store(address_of.group(1),
+                                  int(address_of.group(2) or "0", 0) + i * width, width,
+                                  get(source))
+                    if address_of.group(3):
+                        forget(address_of.group(1))
+                elif op == "vst1" and address_of and not address_of.group(2) \
+                        and not address_of.group(3):
+                    if reg(address_of.group(1)) != "sp":
+                        for i, d in enumerate(re.findall(r"d(\d+)", ops[0])):
+                            store(address_of.group(1), 8 * i, 8, vals.get(f"d{d}"))
+                elif op in ("stm", "stmia") and len(ops) == 2 and re.fullmatch(r"\w+", ops[0]):
+                    if reg(ops[0]) != "sp":
+                        for i, source in enumerate(re.findall(r"\w+", ops[1])):
+                            store(ops[0], 4 * i, 4, get(source))
+                else:
+                    base = re.search(r"\[(\w+)", text)
+                    mark_unread(base.group(1) if base else ops[0].rstrip("!") if ops else None)
+            elif op in ("pop", "ldm", "ldmia", "vpop", "vldmia"):
+                for r in re.findall(r"\b(r\d+|lr|pc|fp|ip|d\d+)\b", text):
+                    forget(r)
+            elif ops and not re.fullmatch(
+                    r"b(l|lx|x)?(eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?|cbn?z"
+                    r"|it[te]{0,3}|cmp|cmn|tst|teq|push|vpush|nop|dmb|dsb|isb|vcmp|vcmpe", op):
+                pair = op in ("ldrd", "ldrexd", "umull", "smull", "umlal", "smlal") \
+                    or (op == "vmov" and len(ops) == 3 and re.fullmatch(r"r\d+|lr|ip|fp", ops[1]))
+                for dest in ops[:2 if pair else 1]:
+                    forget(dest)
+        else:
+            if full.startswith("call"):
+                target = re.match(r"0x([0-9a-f]+)(?: <([^>]*)>)?", text)
+                after = lines[index + 1][0] if index + 1 < len(lines) else None
+                if target and int(target.group(1), 16) == after:
+                    previous = after
+                    continue
+                call()
+                if target and target.group(2) and "get_pc_thunk." in target.group(2):
+                    thunk = reg(target.group(2).rpartition(".")[2])
+                    vals[thunk], pic = after, (thunk, after)
+                previous = None
+                continue
+            if full.startswith("pop") and previous is not None and len(ops) == 1:
+                vals[reg(ops[0])], pic = previous, (reg(ops[0]), previous)
+                previous = None
+                continue
+            previous = None
+            source = ops[0] if ops else ""
+            dest = ops[-1] if ops else ""
+
+            def memory(operand):
+                """(displacement, base) for disp(%base), ("other", base) for other memory
+                operands, None for registers and immediates."""
+                simple = re.fullmatch(IMM + r"?\(%(\w+)\)", operand)
+                if simple:
+                    return int(simple.group(1) or "0", 0), simple.group(2)
+                if "(" in operand:
+                    base = re.search(r"\(%(\w+)", operand)
+                    return "other", base.group(1) if base else None
+                return None
+            to_memory = memory(dest) if len(ops) == 2 else None
+            from_memory = memory(source) if len(ops) == 2 else None
+            move = re.fullmatch(r"mov(abs)?[bwlq]?|mov(s[sd]|aps|apd|ups|upd|dq[au]|d|lps|hps)",
+                                full)
+            width = {"movb": 1, "movw": 2, "movl": 4, "movq": 8, "movabsq": 8, "movss": 4,
+                     "movd": 4, "movsd": 8, "movlps": 8, "movhps": 8}.get(full)
+            if width is None and move and not re.fullmatch(r"mov(abs)?", full):
+                width = 16
+            skip = re.fullmatch(r"(cmp|test)[bwlq]?|push[lqw]?|j\w+|nop\w*|u?comis[sd]|bt[lqw]?",
+                                full)
+            if move and to_memory:
+                if to_memory[0] == "other":
+                    mark_unread(to_memory[1])
+                    continue
+                width = width or width_of(source)
+                data = int(source[1:], 0) & ((1 << 8 * width) - 1) if source.startswith("$") \
+                    else None if full == "movhps" else get(source)
+                disp, base = to_memory
+                if base == "rip":
+                    pending = ("store", (disp, width, data))
+                elif reg(base) != "sp":
+                    store(base, disp, width, data)
+            elif move and from_memory and dest.startswith("%"):
+                width = width or width_of(dest)
+                forget(dest)
+                if from_memory[0] != "other":
+                    disp, base = from_memory
+                    if base == "rip":
+                        pending = ("load", (reg(dest), disp, width))
+                    elif reg(base) in vals:
+                        got = read(vals[reg(base)] + disp, width)
+                        if got is not None:
+                            vals[reg(dest)] = got
+            elif move and source.startswith("$") and dest.startswith("%"):
+                forget(dest)
+                if width_of(dest) >= 4:
+                    vals[reg(dest)] = int(source[1:], 0) & ((1 << 8 * width_of(dest)) - 1)
+            elif move and source.startswith("%") and dest.startswith("%"):
+                origin = reg(source)
+                if origin in vals and width_of(source) >= 4:
+                    vals[reg(dest)] = vals[origin] & ((1 << 8 * width_of(dest)) - 1)
+                else:
+                    vals.pop(reg(dest), None)
+                ptrs[reg(dest)] = pointer(origin)
+            elif re.fullmatch(r"(add|sub)[lq]?", full) and len(ops) == 2 \
+                    and source.startswith("$") and dest.startswith("%"):
+                imm = int(source[1:], 0) * (1 if full.startswith("add") else -1)
+                target = reg(dest)
+                if target in vals:
+                    vals[target] += imm
+                    if pic and pic[0] == target:
+                        pic = (target, vals[target])
+                elif target != "sp":
+                    obj, delta = pointer(target)
+                    ptrs[target] = (obj, delta + imm)
+            elif re.fullmatch(r"lea[lq]?", full) and len(ops) == 2 and from_memory \
+                    and from_memory[0] != "other":
+                disp, base = from_memory
+                vals.pop(reg(dest), None)
+                if base == "rip":
+                    ptrs[reg(dest)] = (next(counter), 0)
+                    pending = ("address", (reg(dest), disp))
+                elif reg(base) in vals:
+                    vals[reg(dest)] = vals[reg(base)] + disp
+                    ptrs[reg(dest)] = (next(counter), 0)
+                else:
+                    obj, delta = pointer(reg(base))
+                    ptrs[reg(dest)] = (obj, delta + disp)
+            elif re.fullmatch(r"xor[lq]?|xorps|xorpd|pxor", full) and len(ops) == 2 \
+                    and source.startswith("%") and reg(source) == reg(dest):
+                forget(dest)
+                vals[reg(dest)] = 0
+            elif full.startswith(("rep", "stos")):
+                mark_unread("di")
+            elif to_memory and not skip:
+                mark_unread(to_memory[1])
+            elif ops and dest.startswith("%") and not skip:
+                forget(dest)
+                if full.startswith("xchg") and source.startswith("%"):
+                    forget(source)
+            if re.match(r"cltd|cqto|cltq|cwtl|mul|div|imul", full) and len(ops) <= 1:
+                forget("dx")
+                forget("ax")
+    return {key: dict(sorted(data.items())) for key, data in stores.items()}, unread
+
+
+def freetype_version(lib, abi):
+    """The (major, minor, patch) that FT_New_Library() stores in the library object, in the three
+    FT_Int fields after the FT_Memory pointer that FT_LibraryRec_ starts with. A field that it
+    stores nothing in keeps the zero that FT_NEW fills the object with. None if no object has
+    the major and minor fields stored as constants, or if the objects that do disagree."""
+    read = object_stores(lib, abi, "FT_New_Library")
+    if read is None:
+        return None
+    stores, unread = read
+    first = 8 if abi in ("arm64-v8a", "x86_64") else 4
+    candidates = set()
+    for key, data in stores.items():
+        if key == "abs" or key in unread:
+            continue
+        fields = []
+        for n in range(3):
+            raw = [data.get(first + 4 * n + i, "absent") for i in range(4)]
+            if (n < 2 and "absent" in raw) or None in raw \
+                    or ("absent" in raw and set(raw) != {"absent"}):
+                break
+            fields.append(0 if raw[0] == "absent" else int.from_bytes(bytes(raw), "little"))
+        else:
+            candidates.add(tuple(fields))
+    return candidates.pop() if len(candidates) == 1 else None
+
+
 fails, passes, notes = [], [], []
 libs = collections.defaultdict(dict)
 # Library names by ABI, for each APK and for all folders together ("dir").
@@ -472,7 +1012,7 @@ for abi in sorted(libs):
         if lib.soname != [name] and not (name in NOT_BUILT_HERE and not lib.soname):
             problems.append(f"SONAME {lib.soname}")
         if name not in NOT_BUILT_HERE:
-            rel, bld = PREBUILT_NOTE.get(name, NDK_NOTE)
+            rel, bld = NDK_NOTE
             if lib.note != (MIN_SDK, rel, bld):
                 problems.append(f"Android note {lib.note}, expected {(MIN_SDK, rel, bld)}")
         exported, seen, queue = set(), set(), list(lib.needed)
@@ -627,6 +1167,65 @@ for abi in sorted(libs):
         else:
             passes.append(f"{abi}/{name}: no {ST_SIMD} code (its line table shows "
                           f"{' '.join(control)}, built without it)")
+    gliden64, freetype = libs[abi].get(GLIDEN64), libs[abi].get(FREETYPE)
+    if gliden64:
+        own_png = sorted(n for n in set(gliden64.defined) | (gliden64.symtab() or set())
+                         if n.startswith("png_"))
+        if own_png:
+            fails.append(f"FAIL {abi}/{GLIDEN64}: defines {len(own_png)} png_* symbols: "
+                         + " ".join(own_png[:10]) + (" ..." if len(own_png) > 10 else ""))
+        else:
+            passes.append(f"{abi}/{GLIDEN64}: defines no png_* function"
+                          + ("" if gliden64.symtab() else " in its dynamic symbols (stripped)"))
+    if gliden64 and freetype:
+        ft_imports = sorted(n for n in gliden64.undefined if n.startswith(("FT_", "png_")))
+        unexpected = sorted(set(ft_imports) - set(GLIDEN64_IMPORTS))
+        not_imported = sorted(set(GLIDEN64_IMPORTS) - set(ft_imports))
+        not_exported = sorted(n for n in ft_imports if freetype.defined.get(n) != "T")
+        if FREETYPE in gliden64.needed and not (unexpected or not_imported or not_exported):
+            passes.append(f"{abi}/{FREETYPE}: exports the "
+                          f"{sum(n.startswith('FT_') for n in ft_imports)} FT_* and "
+                          f"{sum(n.startswith('png_') for n in ft_imports)} png_* functions that "
+                          f"{GLIDEN64} imports")
+        else:
+            fails.append(f"FAIL {abi}/{GLIDEN64}: FT_* and png_* imports not expected: "
+                         f"{unexpected or 'none'}; expected but not imported: "
+                         f"{not_imported or 'none'}; not functions of {FREETYPE}: "
+                         f"{not_exported or 'none'}; NEEDED {FREETYPE}: "
+                         f"{'yes' if FREETYPE in gliden64.needed else 'no'}")
+    if freetype:
+        expected = ".".join(map(str, FT_VERSION))
+        if not FT_VERSION_READABLE:
+            fails.append(f"FAIL {abi}/{FREETYPE}: FT_LibraryRec_ in ndkLibs/freetype no longer "
+                         "starts with memory and the three version fields, which this check reads")
+        else:
+            stored = freetype_version(freetype, abi)
+            shown = ".".join(map(str, stored)) if stored else "nothing this script can read"
+            if stored == FT_VERSION:
+                passes.append(f"{abi}/{FREETYPE}: FreeType {expected}, FT_New_Library() stores "
+                              f"{shown}")
+            else:
+                fails.append(f"FAIL {abi}/{FREETYPE}: FT_New_Library() stores {shown} "
+                             f"(expected {expected})")
+        ft_png = sorted({v.decode() for v in PNG_VERSION_RE.findall(freetype.path.read_bytes())})
+        if ft_png == [PNG_VERSION]:
+            passes.append(f"{abi}/{FREETYPE}: libpng {PNG_VERSION}")
+        else:
+            fails.append(f"FAIL {abi}/{FREETYPE}: libpng versions {ft_png or 'none'} (expected "
+                         f"{PNG_VERSION})")
+        classes = set(freetype.defined) | (freetype.symtab() or set())
+        absent = [c for c in FT_MODULES if c not in classes]
+        present = [c for c in FT_OTHER_MODULES if c in classes]
+        if not absent and not present:
+            passes.append(f"{abi}/{FREETYPE}: has the {len(FT_MODULES)} module classes of "
+                          "ndkLibs/config/freetype-android/ftmodule.h and none of FreeType's "
+                          "others")
+        elif freetype.symtab() is None and not present:
+            notes.append(f"NOTE {abi}/{FREETYPE}: stripped, and does not export "
+                         f"{' '.join(absent)}: module classes not checked")
+        else:
+            fails.append(f"FAIL {abi}/{FREETYPE}: module classes missing: {absent or 'none'}; "
+                         f"not in ftmodule.h but present: {present or 'none'}")
 
 for label, abis in sorted(found.items()):
     where = "the folders" if label == "dir" else label[len("apk "):]

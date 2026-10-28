@@ -51,8 +51,10 @@ that use libpng link (the core and Rice; Glide64mk2 links it too but calls none 
   `PNG_INTEL_SSE`, that version's `pngpriv.h` does not define `PNG_FILTER_OPTIMIZATIONS`, so
   nothing called them: the core and Rice used no SSE2 filters then, and use none now.
 
-GLideN64 does not use this tree yet: it calls the libpng 1.6.34 inside the prebuilt
-`ndkLibs/libs/<variant>/<abi>/libfreetype.so`, and compiles against its own
+GLideN64's CMake build compiles the same files, with the same libpng flags, as the static
+library `png_static` (`mupen64plus-video-gliden64/freetype-png.cmake`) and links it into
+`libfreetype.so`, whose `png_*` functions GLideN64 calls (see `ndkLibs/freetype/VENDOR.md`). Its
+include folders are private there, so GLideNHQ keeps compiling against its own
 `mupen64plus-video-gliden64/upstream/src/GLideNHQ/inc/png.h` (1.6.32).
 
 To update: check the new archive's SHA-256 against libpng.org, replace this folder's content

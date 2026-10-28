@@ -2339,15 +2339,18 @@ F. Transparency and legality
   features (see the monetization item above), and the README offers its releases as free
   downloads from GitHub (`README.md:12,129`).
 - USER (license obligations for the shipped binaries): OBSERVED: the source of each release is
-  this repository at the release's tag (`LICENSES.md`, "Source code of each release"), except for
-  the prebuilt libraries: the repository does not record how they were built, and it does not
-  hold the source of the libpng 1.6.34 inside `libfreetype.so`
-  ("Prebuilt libraries"). The page's library table shows two combinations from
-  upstream: GLideN64's library is `GPL-2.0-only`, as its license file names version 2 and no
-  later one (`mupen64plus-video-gliden64/upstream/LICENSE:4`), and has `GPL-3.0` code (xBRZ);
-  angrylion-rdp-plus's library has MAME-licensed code with `GPL-2.0-or-later` glue
-  (`gfx_m64p.c`). USER: the maintainer has to settle whether these meet each license; the page
-  says the prebuilt libraries are to be fixed later.
+  this repository at the release's tag, and the build compiles every native library in the app
+  from it, apart from the NDK's `libc++_shared.so` and the libraries of the Oboe and JNA
+  packages (`LICENSES.md`, "Source code of each release"). The build uses none of the prebuilt
+  archives that GLideN64's upstream tree keeps for its other builds, in its `projects/msvc/lib/`
+  and `src/GLideNHQ/lib/` folders (`mupen64plus-video-gliden64/upstream/`). Release V339 still
+  contains libraries built in 2021 outside this repository, whose build its tag does not record
+  (`LICENSES.md`, "Release V339"). The page's library table
+  shows two combinations from upstream: GLideN64's library is `GPL-2.0-only`, as its license
+  file names version 2 and no later one (`mupen64plus-video-gliden64/upstream/LICENSE:4`), and
+  has `GPL-3.0` code (xBRZ); angrylion-rdp-plus's library has MAME-licensed code with
+  `GPL-2.0-or-later` glue (`gfx_m64p.c`). USER: the maintainer has to settle whether these
+  meet each license.
 - MET (privacy policy): OBSERVED: `PRIVACY.md`, linked from the README
   (`README.md:153`), says what the app sends to each service, Google sign-in and
   Drive among them, and where each service is and how long it keeps data, or that this is not
