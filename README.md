@@ -14,18 +14,17 @@
 
 ---
 
-## What's New in v338
+## What's New in v340
 
-- **Wave Race Shindou English translation compatibility** — the verified translation now inherits the original Shindou ROM-database defaults, including Count per Op **3**, and existing installations refresh their bundled database. Explicit per-game overrides remain unchanged. Gameplay at the manual setting of 3 is device-confirmed; automatic-default behavior and save/reopen still need device verification.
+- **RetroAchievements** — achievements that read the game's memory unlock again; hardcore mode disables fast-forward, slow motion, frame advance, audio sync, loading save states, cheats and the emulator's built-in fixes for three games, and runs resumed games and netplay in casual mode; notices, challenges, progress and leaderboard attempts show during play; the in-game menu lists the game's achievements; unlocks made offline are sent after the next sign-in; and the password is deleted once a session token is saved. Going by RetroAchievements' server code, hardcore unlocks are still recorded as casual until RetroAchievements approves this app.
+- **Emulator core** — upstream mupen64plus-core's bug, safety and accuracy fixes, the remaining memory-safety gaps closed, the core built without fast math, and fixes for failed save-state writes, Controller Pak saves of players 2 to 4, Game Boy saves and damaged save states. Save states are now version 1.9; 1.8 states still load.
+- **Crash and hang fixes** — the crash at every game start on devices that use the 32-bit ARM or x86 libraries is fixed, and an exit through the in-game menu no longer holds its auto save back for most of a minute.
+- **Netplay** — online codes are made on the device from the router's public address, without a server, and netplay rooms get several fixes. Every player needs v340: netplay no longer works with earlier builds or with the official Mupen64Plus-AE app.
+- **Privacy** — a [privacy policy](PRIVACY.md) and a [licenses page](LICENSES.md), linked from the About menu; cover art over HTTPS from the maintainer's repository; no e-mail address, IP addresses or device names in the log; four fewer permissions.
+- **Native libraries built from source** — libpng 1.6.59, SDL_net 2.4.0, miniupnpc 2.3.3, libnatpmp, SoundTouch 2.4.1 and FreeType 2.15.0 are now built in this repository; GLideN64's on-screen text and time-stretched audio may differ slightly.
+- **Update check fixed** — version code **340**, with version name **3.0.340** plus the build commit hash. V339 carried version code 338, so it kept offering itself as an update.
 
-- **RetroAchievements support** — vendored rcheevos with native glue and a JNA bridge, a settings screen, password sign-in that keeps the session token, and hardcore mode enforced across loading save states and slots, GameShark and cheats.
-- **Gallery, orientation and theme fixes** — orientation changes are handled in place, the gallery keeps its draw-behind-system-bars behaviour across rotation, stale service broadcasts after gallery recreation are fixed (issue #1), the theme quick-switch crash from stacked `activity.recreate()` is fixed, and every dialog and popup now follows the app theme.
-- **Large ROM support** — ROMs larger than 64 MB are accepted, fixing the B3313 new-save crash (issue #3).
-- **Per-game GPU driver control** — corrected per-game driver labelling plus a per-game "force stock driver" option.
-- **New neon branding** — the launcher icon, splash screen, notification icon, Android TV banner and web listing icons all use the neon "M" logo, and the launcher icon is now round with transparent corners on every code path.
-- **Consistent release version** — version code **338**, with version name **3.0.338** plus the build commit hash.
-
-[Download v338](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/tag/v338) · [Full release notes](docs/RELEASE_V338.md)
+[Download v340](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/tag/v340) · [Full release notes](docs/RELEASE_V340.md) · [v338 release notes](docs/RELEASE_V338.md)
 
 ## Screenshots
 
@@ -39,7 +38,7 @@
 
 ## N64DD and Expansion Kit support
 
-- **Native F-Zero X Expansion Kit support** — preserves cartridge-first combo boot and the DD CPU/DMA and RSP fixes from the development build. The working configuration was demonstrated on the development build rather than re-confirmed since: native disk save and reopen, and writable-cart persistence, still need a device re-test, so keep backups.
+- **Native F-Zero X Expansion Kit support** — preserves cartridge-first combo boot and the DD CPU/DMA and RSP fixes from the development build. The working configuration was demonstrated on the development build. Since then, debug builds made during v340's development booted it to the title screen with the 64DD logo and the attract race on a Retroid Pocket 6, but native disk save and reopen, and writable-cart persistence, still need a device re-test, so keep backups.
 - **F-Zero X EK Cart Hack works and saves** — the WritableROM fix allows the hack to save changes to its embedded Expansion Kit data, which would otherwise be treated as read-only cartridge ROM. This is separate from native N64DD support and works with N64DD disabled.
 - **Per-game N64DD activation** — DD-specific behavior remains limited to games with N64DD explicitly enabled. WritableROM support for cartridge hacks remains independently controlled.
 
@@ -52,7 +51,8 @@
 
 This configuration applies to the English translation; it is not a claim of compatibility with every cartridge, disk, or IPL combination.
 
-**Installation and saves:** the signed release keeps the existing release package and signing identity, so it can update the earlier signed release without uninstalling. It does not replace the separate `.debug` beta or automatically transfer its private saves. Keep backups: full-restart persistence, custom-track saves, and writable-cart persistence have not been re-tested on the current binary. Device acceptance for v338 covered the signed release build on a Retroid Pocket 6 (Android 13): install, launch, launcher icon, splash and permission screen, and the notification icon were verified; the N64DD and Expansion Kit paths were not re-tested on this build.
+**Installation and saves:** the signed release keeps the existing release package and signing identity, so it can update the earlier signed release without uninstalling. It does not replace the separate `.debug` beta or automatically transfer its private saves. Keep backups: full-restart persistence, custom-track saves, and writable-cart persistence have not been re-tested on the current binary. The device checks made for v340, on debug builds, are listed under "Device verification" in its [release notes](docs/RELEASE_V340.md#device-verification); the planned checks do not cover the N64DD and Expansion Kit save paths.
+DEVICE_RESULTS_README
 
 ### How the EK Cart Hack saves with WritableROM
 
@@ -101,7 +101,7 @@ This is what lets the Cart Hack **work and save**, despite placing writable Expa
 - **ParaLLEl-RDP** Vulkan renderer with upscaling, texture filtering, and modern RDP accuracy.
 - **All classic plugins**: GLideN64, glide64mk2, GLN64, Rice, Angrylion, plus HLE/cxd4/parallel RSPs.
 - **RetroAchievements** — sign in from the app, see unlocks, server problems, the session's mode, active challenges, achievement progress and leaderboard attempts on screen while you play and open the game's achievement list from the in-game menu, with unlocks and leaderboard entries made offline sent after the next sign-in and hardcore mode enforced on loading save states and slots, cheats, GameShark and game speed (normal speed only: no fast-forward, slow motion, frame advance or audio sync; resumed games and netplay run in casual mode).
-- **Netplay & Cloud Sync**: Local and room-based netplay, Google Drive cloud backup, touchscreen/controller profiles, and 7z/zip ROM support.
+- **Netplay & Cloud Sync**: Local and room-based netplay, Google Drive cloud backup, touchscreen/controller profiles, and zip ROM support (7z on Android 7.0 or newer).
 - **In-app update checker** — checks for new releases directly from GitHub and notifies you when an update is available.
 
 ---
@@ -126,7 +126,7 @@ The custom driver applies to the **Parallel** plugin (the Vulkan renderer). If t
 
 | Build Type | Link |
 | :--- | :--- |
-| **Latest Signed Release — v338** | [Download v338](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/tag/v338) |
+| **Latest Signed Release — v340** | [Download v340](https://github.com/pwnedbygary/mupen64plus-ae-turnip/releases/tag/v340) |
 | **Nightly CI Builds** | [![Build Status][Build]][Actions] |
 
 [Actions]: https://github.com/pwnedbygary/mupen64plus-ae-turnip/actions/workflows/build.yml

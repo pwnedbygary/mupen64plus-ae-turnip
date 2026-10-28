@@ -110,4 +110,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: app/build/outputs/apk/release/*.apk
-          body_path: docs/RELEASE_V338.md
+          body_path: docs/RELEASE_V340.md

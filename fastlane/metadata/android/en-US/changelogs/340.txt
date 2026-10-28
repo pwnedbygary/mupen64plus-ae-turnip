@@ -1,0 +1,8 @@
+* RetroAchievements: memory-reading achievements unlock again
+* Hardcore: normal speed, no save-state loading, cheats or built-in fixes
+* Achievement list, on-screen progress, offline unlocks kept
+* Core: mupen64plus-core fixes, memory safety, save-state fixes
+* Fixed: game start on 32-bit ARM and x86, slow exit auto saves
+* Netplay codes need no server; every player needs this version
+* Privacy policy, licenses page, HTTPS cover art, fewer permissions
+* Native libraries built from source
