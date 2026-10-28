@@ -87,18 +87,27 @@ static int addr_is_reserved(struct in_addr * addr)
 
 void usage(FILE * out, const char * argv0)
 {
-	fprintf(out, "Usage :\n");
-	fprintf(out, "  %s [options]\n", argv0);
-	fprintf(out, "\tdisplay the public IP address.\n");
-	fprintf(out, "  %s -h\n", argv0);
-	fprintf(out, "\tdisplay this help screen.\n");
-	fprintf(out, "  %s [options] -a <public port> <private port> <protocol> [lifetime]\n", argv0);
-	fprintf(out, "\tadd a port mapping.\n");
-	fprintf(out, "\nOption available :\n");
-	fprintf(out, "  -g ipv4address\n");
-	fprintf(out, "\tforce the gateway to be used as destination for NAT-PMP commands.\n");
-	fprintf(out, "\n  In order to remove a mapping, set it with a lifetime of 0 seconds.\n");
-	fprintf(out, "  To remove all mappings for your machine, use 0 as private port and lifetime.\n");
+    fprintf(out, "Usage :\n"
+        "  %s [options]\n"
+        "\tdisplay the public IP address.\n"
+        "  %s -h\n"
+        "\tdisplay this help screen.\n"
+        "  %s [options] -a <public port> <private port> <protocol> [lifetime]\n"
+        "\tadd a port mapping.\n"
+        "\nOption available :\n"
+        "  -g ipv4address\n"
+        "\tforce the gateway to be used as destination for NAT-PMP commands.\n"
+        "\n  In order to remove a mapping, set it with a lifetime of 0 seconds.\n"
+        "  To remove all mappings for your machine, use 0 as private port and lifetime.\n", argv0, argv0, argv0);
+}
+
+static void handlenatpmpbadreplytype(natpmp_t* pnatpmp, const natpmpresp_t* presponse, int* preturncode){
+	char retry = (pnatpmp->try_number <= 9);
+	printf("readnatpmpresponseorretry received unexpected reply type %hu , %s...\n", presponse->type, (retry == 1 ? "retrying" : "no more retry"));
+	if (retry) {
+		*preturncode = NATPMP_TRYAGAIN;
+		pnatpmp->has_pending_request = 1;
+	}
 }
 
 /* sample code for using libnatpmp */
@@ -227,6 +236,9 @@ int main(int argc, char * * argv)
 			fprintf(stderr, "  errno=%d '%s'\n",
 			        sav_errno, strerror(sav_errno));
 		}
+		if (r >= 0 && response.type != 0) {
+			handlenatpmpbadreplytype(&natpmp, &response, &r);
+		}
 	} while(r==NATPMP_TRYAGAIN);
 	if(r<0)
 		return 1;
@@ -262,6 +274,11 @@ int main(int argc, char * * argv)
 			r = readnatpmpresponseorretry(&natpmp, &response);
 			printf("readnatpmpresponseorretry returned %d (%s)\n",
 			       r, r==0?"OK":(r==NATPMP_TRYAGAIN?"TRY AGAIN":"FAILED"));
+			if (r >= 0 && (
+					protocol == NATPMP_PROTOCOL_TCP && response.type != NATPMP_RESPTYPE_TCPPORTMAPPING ||
+					protocol == NATPMP_PROTOCOL_UDP && response.type != NATPMP_RESPTYPE_UDPPORTMAPPING)) {
+				handlenatpmpbadreplytype(&natpmp, &response, &r);
+			}
 		} while(r==NATPMP_TRYAGAIN);
 		if(r<0) {
 #ifdef ENABLE_STRNATPMPERR

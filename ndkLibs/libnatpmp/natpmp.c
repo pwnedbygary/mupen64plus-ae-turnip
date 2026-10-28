@@ -27,7 +27,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 */
 #ifdef __linux__
-#define _BSD_SOURCE 1
+#define _DEFAULT_SOURCE 1
 #endif
 #include <string.h>
 #include <time.h>
@@ -207,7 +207,11 @@ NATPMP_LIBSPEC int readnatpmpresponse(natpmp_t * p, natpmpresp_t * response)
 	unsigned char buf[16];
 	struct sockaddr_in addr;
 	socklen_t addrlen = sizeof(addr);
+#ifdef _WIN32
+	int n;
+#else
 	ssize_t n;
+#endif
 	if(!p)
 		return NATPMP_ERR_INVALIDARGS;
 	n = recvfrom(p->s, buf, sizeof(buf), 0,
@@ -315,7 +319,14 @@ NATPMP_LIBSPEC int readnatpmpresponseorretry(natpmp_t * p, natpmpresp_t * respon
 			}
 		}
 	} else {
-		p->has_pending_request = 0;
+		// check the response type
+		// we may receive reply from another type being reply to previous request because of network latency and retry mechanisms
+		if (p->pending_request[1] != response->type) {
+			n = NATPMP_TRYAGAIN;
+			// not a timeout : DON'T increment p->try_number and keep p->retry_time to trigger immediate receive retry, without new sending
+		} else {
+			p->has_pending_request = 0;
+		}
 	}
 	return n;
 }

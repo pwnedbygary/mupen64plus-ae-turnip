@@ -32,7 +32,7 @@ The source code of a release is this repository at that tag. Each release page a
 "Source code" downloads of the tag. The tag contains the source of every native library that
 the build compiles, the copies of the upstream projects, and the build scripts. For the
 prebuilt libraries in [Prebuilt libraries](#prebuilt-libraries), the repository does not
-record how they were built, and it does not contain the source of `libSDL2_net.so` or of the
+record how they were built, and it does not contain the source of the
 libpng 1.6.34 inside `libfreetype.so`.
 
 ## Parts that are not open source
@@ -66,7 +66,7 @@ table lists each component in them. The full text of each notice in the last col
 | CIC-NUS-6105 code by X-Scale | `libmupen64plus-core.so` | `BSD-2-Clause` | Not recorded | Header of `mupen64plus-core/upstream/src/device/pif/n64_cic_nus_6105.c` |
 | libpng 1.6.59, built from source as a static library | `libmupen64plus-core.so`, `libmupen64plus-video-rice.so` | `libpng-2.0` | <https://github.com/pnggroup/libpng>, tag `v1.6.59` | `ndkLibs/png/LICENSE` |
 | libpng 1.6.34, inside the prebuilt `libfreetype.so` (GLideN64 uses this copy) | `libfreetype.so` | `Libpng` | <https://github.com/pnggroup/libpng>, tag `v1.6.34` | `ndkLibs/png/LICENSE` at commit `9bcca07a6`; the current file is libpng 1.6.59's |
-| SDL_net, prebuilt (the headers in this repository are version 2.0.1) | `libSDL2_net.so` | `Zlib` | <https://github.com/libsdl-org/SDL_net> | Header of `ndkLibs/SDL_net/include/SDL_net.h` |
+| SDL_net 2.4.0, built from source; a header of this app's build, `ndkLibs/config/SDL_net/SDL_net_libc.h`, maps six SDL functions to the C library | `libSDL2_net.so` | `Zlib` | <https://github.com/libsdl-org/SDL_net>, tag `release-2.4.0` | `ndkLibs/SDL_net/LICENSE.txt`; header of `ndkLibs/SDL_net/include/SDL_net.h` |
 | libadrenotools | `libae-bridge.so`; hook libraries `libfile_redirect_hook.so`, `libgsl_alloc_hook.so`, `libhook_impl.so`, `libmain_hook.so` | `BSD-2-Clause` | <https://github.com/bylaws/libadrenotools> | `adrenotools/LICENSE` |
 | liblinkernsbypass | `libae-bridge.so`, `libhook_impl.so` | `BSD-2-Clause` | <https://github.com/bylaws/liblinkernsbypass> | `adrenotools/lib/linkernsbypass/LICENSE` |
 | Linux kernel header `kgsl.h` | `libhook_impl.so` | `GPL-2.0-only WITH Linux-syscall-note` | Not recorded | First line of `adrenotools/src/hook/kgsl.h` |
@@ -81,8 +81,8 @@ table lists each component in them. The full text of each notice in the last col
 | SoundTouch, prebuilt (the source in this repository is version 2.2) | `libsoundtouch.so`, `libsoundtouch_fp.so` | `LGPL-2.1-or-later` | <https://www.surina.net/soundtouch>; <https://codeberg.org/soundtouch/soundtouch> | `ndkLibs/soundtouch/COPYING.TXT` |
 | readerwriterqueue and atomicops, by Cameron Desrochers | `libmupen64plus-audio-android*.so`, `libmupen64plus-video-GLideN64.so` | `BSD-2-Clause`; the semaphore code in `atomicops.h` is `Zlib` | <https://github.com/cameron314/readerwriterqueue> | Headers of `mupen64plus-audio-android/src/readerwriterqueue.h` and `atomicops.h`; `mupen64plus-video-gliden64/upstream/licenses/readerwriterqueue/LICENSE.md` |
 | PortManager, from PPSSPP | `libminiupnp-bridge.so` | `GPL-2.0-or-later` | <https://github.com/hrydgard/ppsspp> | Header of `miniupnp-bridge/src/PortManager.cpp` |
-| miniupnpc, prebuilt (the source in this repository is version 2.2.2) | `libminiupnp-build.so` | `BSD-3-Clause` | <http://miniupnp.free.fr/>; <https://github.com/miniupnp/miniupnp> | `ndkLibs/miniupnp/miniupnpc/LICENSE` |
-| libnatpmp, prebuilt (the source in this repository is version 20120821) | `libnatpmp.so` | `BSD-3-Clause` | <http://miniupnp.free.fr/libnatpmp.html>; <https://github.com/miniupnp/libnatpmp> | `ndkLibs/libnatpmp/LICENSE` |
+| miniupnpc 2.3.3, built from source | `libminiupnp-build.so` | `BSD-3-Clause` | <http://miniupnp.free.fr/>; <https://github.com/miniupnp/miniupnp>, tag `miniupnpc_2_3_3` | `ndkLibs/miniupnpc/LICENSE` |
+| libnatpmp at commit `134fc89e` (April 2025, after release 20230423), built from source | `libnatpmp.so` | `BSD-3-Clause` | <http://miniupnp.free.fr/libnatpmp.html>; <https://github.com/miniupnp/libnatpmp>, commit `134fc89e` | `ndkLibs/libnatpmp/LICENSE` |
 | mupen64plus-input-raphnetraw | `libmupen64plus-input-raphnet.so` | `GPL-2.0-or-later` | <https://github.com/raphnet/mupen64plus-input-raphnetraw>; fork <https://github.com/mupen64plus-ae/mupen64plus-input-raphnetraw> at commit `5715b943` | `mupen64plus-input-raphnet/upstream/LICENSES`, `mupen64plus-input-raphnet/upstream/COPYING` |
 | libusb 1.0.19, with saki's Android back end | `libusb1.0.so` | `LGPL-2.1-or-later` | <https://github.com/libusb/libusb>; <https://github.com/saki4510t/UVCCamera> | `mupen64plus-input-raphnet/libusb/COPYING` |
 | cxd4 RSP | `libmupen64plus-rsp-cxd4.so` | `CC0-1.0` | <https://github.com/mupen64plus/mupen64plus-rsp-cxd4>; fork <https://github.com/mupen64plus-ae/mupen64plus-rsp-cxd4> at commit `b252fc1e` | `mupen64plus-rsp-cxd4/upstream/COPYING` |
@@ -116,17 +116,14 @@ libraries that these libraries use. Android provides them.
 ### Prebuilt libraries
 
 These libraries are committed to `ndkLibs/libs/` as binaries. The build copies them into the
-app. The repository does not record how they were built. For `libSDL2_net.so`, and for the
+app. The repository does not record how they were built. For the
 libpng 1.6.34 in `libfreetype.so` and `libpng.a`, it does not contain the source either. This
 is to be fixed later.
 
 | Prebuilt library | Last committed | Source in this repository | What is missing |
 |---|---|---|---|
-| `libSDL2_net.so` | 19 December 2021 | Headers only (`ndkLibs/SDL_net/include/`) | The source and the build recipe |
 | `libfreetype.so` | 19 December 2021 | Android's FreeType tree (`ndkLibs/freetype/`) | The build recipe: `ndkLibs/freetype/Android.mk` builds a library named `libft2`. The source of the libpng 1.6.34 inside it: `ndkLibs/png/` now holds libpng 1.6.59 |
 | `libsoundtouch.so`, `libsoundtouch_fp.so` | 19 December 2021 | SoundTouch 2.2 (`ndkLibs/soundtouch/`) | A working build recipe: the paths in `ndkLibs/soundtouch/Android.mk` do not resolve from where the file is |
-| `libnatpmp.so` | 22 December 2021 | libnatpmp (`ndkLibs/libnatpmp/`) | The build recipe: `ndkLibs/libnatpmp/CMakeLists.txt` builds a static library |
-| `libminiupnp-build.so` | 19 December 2021 | miniupnpc 2.2.2 and `ndkLibs/miniupnp-build/Android.mk` | A record that the binary was built from this source |
 | `libpng.a` (static; GLideN64 links it, but takes its `png_*` functions from `libfreetype.so`) | 19 December 2021 | None: `ndkLibs/png/` now holds libpng 1.6.59, which the core and Rice use | The source (the binary's version string is 1.6.34) and the build recipe |
 
 ## Java and Kotlin libraries
@@ -486,8 +483,31 @@ CIC-NUS-6105 code by X-Scale, in `libmupen64plus-core.so`. Source: `mupen64plus-
  * policies, either expressed or implied, of X-Scale.
 ```
 
+<!-- notice: sdl-net-2-4-0 -->
+SDL_net 2.4.0, `libSDL2_net.so`. Source: `SDL2_net-2.4.0/include/SDL_net.h` in <https://github.com/libsdl-org/SDL_net/releases/download/release-2.4.0/SDL2_net-2.4.0.tar.gz> (archive SHA-256 `9cbca2527feb3f1a622d48ba65cc7dee9b1e3f2c55ceafb7d7720bb058aafb30`), lines 3-20; the same file is `ndkLibs/SDL_net/include/SDL_net.h` in this repository. Its `LICENSE.txt` has the same terms, with only the first copyright line.
+```text
+  Copyright (C) 1997-2026 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 2012 Simeon Maxein <smaxein@googlemail.com>
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+```
+
 <!-- notice: sdl-net -->
-SDL_net, prebuilt `libSDL2_net.so`. Source: `ndkLibs/SDL_net/include/SDL_net.h`, lines 3-20, at `9bcca07a6`.
+SDL_net of upstream commit `01285e4a` (2020, after version 2.0.1), the prebuilt `libSDL2_net.so` in V339. Source: `ndkLibs/SDL_net/include/SDL_net.h`, lines 3-20, at `9bcca07a6`.
 ```text
   Copyright (C) 1997-2020 Sam Lantinga <slouken@libsdl.org>
   Copyright (C) 2012 Simeon Maxein <smaxein@googlemail.com>
@@ -1114,8 +1134,42 @@ Jeff Preshing's semaphore, embedded in `atomicops.h`, in both audio plugin libra
 	// 3. This notice may not be removed or altered from any source distribution.
 ```
 
+<!-- notice: miniupnpc-2-3-3 -->
+miniupnpc 2.3.3, `libminiupnp-build.so`. Source: `miniupnpc-2.3.3/LICENSE` in <https://miniupnp.tuxfamily.org/files/miniupnpc-2.3.3.tar.gz> (archive SHA-256 `d52a0afa614ad6c088cc9ddff1ae7d29c8c595ac5fdd321170a05f41e634bd1a`), lines 1-29; the same file is `ndkLibs/miniupnpc/LICENSE` in this repository.
+```text
+BSD 3-Clause License
+
+Copyright (c) 2005-2025, Thomas BERNARD
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 <!-- notice: miniupnpc -->
-miniupnpc, prebuilt `libminiupnp-build.so`. Source: `ndkLibs/miniupnp/miniupnpc/LICENSE`, lines 1-27, at `9bcca07a6`.
+miniupnpc of upstream commit `3a87be33` (2021, after version 2.2.2), the prebuilt `libminiupnp-build.so` in V339. Source: `ndkLibs/miniupnp/miniupnpc/LICENSE`, lines 1-27, at `9bcca07a6`.
 ```text
 MiniUPnPc
 Copyright (c) 2005-2020, Thomas BERNARD
@@ -1146,8 +1200,42 @@ POSSIBILITY OF SUCH DAMAGE.
 
 ```
 
+<!-- notice: libnatpmp-134fc89e -->
+libnatpmp at commit `134fc89e`, `libnatpmp.so`. Source: `LICENSE` in <https://codeload.github.com/miniupnp/libnatpmp/tar.gz/134fc89e2781e154e40042641f4d8bcbe42579f1>, the archive that GitHub makes of that commit (SHA-256 `be1864ed4e54a122590fd2de3824b085386b6e4aa9a91738c277c280ab8bf188` on 27 October 2026), lines 1-29; the same file is `ndkLibs/libnatpmp/LICENSE` in this repository.
+```text
+BSD 3-Clause License
+
+Copyright (c) 2007-2022, Thomas BERNARD
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 <!-- notice: libnatpmp -->
-libnatpmp, prebuilt `libnatpmp.so`. Source: `ndkLibs/libnatpmp/LICENSE`, lines 1-26, at `9bcca07a6`.
+libnatpmp of upstream commit `4536032a` (2020), the prebuilt `libnatpmp.so` in V339. Source: `ndkLibs/libnatpmp/LICENSE`, lines 1-26, at `9bcca07a6`.
 ```text
 Copyright (c) 2007-2011, Thomas BERNARD
 All rights reserved.
@@ -2266,5 +2354,12 @@ these ways that matter for this page:
 - Its core and Rice contain libpng 1.6.34, from the prebuilt `libpng.a`, instead of libpng
   1.6.59. Its notice is the block above for libpng 1.6.34. The tag `V339` holds a libpng
   1.6.34 source tree in `ndkLibs/png/`.
+- Its `libSDL2_net.so`, `libminiupnp-build.so` and `libnatpmp.so` are the prebuilt libraries
+  of December 2021 instead of SDL_net 2.4.0, miniupnpc 2.3.3 and libnatpmp `134fc89e`: SDL_net
+  of upstream commit `01285e4a` (after version 2.0.1), miniupnpc of upstream commit `3a87be33`
+  (after version 2.2.2) and libnatpmp of upstream commit `4536032a`. Their notices are the
+  blocks above for those prebuilt libraries. The tag `V339` holds the source of that miniupnpc
+  and libnatpmp (`ndkLibs/miniupnp/`, `ndkLibs/libnatpmp/`), but only the headers of that
+  SDL_net (`ndkLibs/SDL_net/include/`).
 - Its `mupen64plus.ini` game database is an older version.
 - It does not have the trophy icon, `ic_trophy.xml`, which was added on 21 October 2026.
